@@ -1340,7 +1340,7 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          PIN=d9bf5ce947826e53e2b6f0088cc580eef2d307aa
+          PIN=0604754384adc95adc0a766e44cced8b20df825c
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4627,7 +4627,7 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          PIN=d9bf5ce947826e53e2b6f0088cc580eef2d307aa
+          PIN=0604754384adc95adc0a766e44cced8b20df825c
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4883,7 +4883,7 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
-      JAX_F2E_STRUCTURED_EXPECTED_SHA: d9bf5ce947826e53e2b6f0088cc580eef2d307aa
+      JAX_F2E_STRUCTURED_EXPECTED_SHA: 0604754384adc95adc0a766e44cced8b20df825c
       JAX_REPO_PATH: ${{ github.workspace }}/jax
       JAX_REPO_BASE: ${{ github.workspace }}/jax
       JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
@@ -4903,7 +4903,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: fjruizhn/Jax
-          ref: d9bf5ce947826e53e2b6f0088cc580eef2d307aa
+          ref: 0604754384adc95adc0a766e44cced8b20df825c
           path: jax
       - name: Require exact F2-E pair
         env:
@@ -4931,7 +4931,7 @@ jobs:
               "platform_repository": "fjruizhn/jax-platform",
               "f2c_contract": {
                   "renderer": "f2-c.renderer.3",
-                  "domain": "f2-c.domain.6",
+                  "domain": "f2-c.domain.7",
                   "envelopes": ["f2-c.1"],
                   "structured_projection": "f2-c.structured-projection.1",
               },
@@ -5003,6 +5003,116 @@ jobs:
         with:
           name: f2e-structured-projection-exact-pair-evidence
           path: f2e-structured-projection-exact-pair-evidence.json
+
+  # STEP_STATUS shares the reconciled JAX #351 checkout with the structured
+  # projection pair.  It remains a separate gate because its source and enum
+  # assertions cover the SR2 runtime-status bridge.
+  f2e-sr2-step-status-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2e-structured-projection-platform-20261004'
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:12.3.3
+        env:
+          MARIADB_ROOT_PASSWORD: ci
+          MARIADB_DATABASE: jax_memory_test
+          MARIADB_USER: jax_test
+          MARIADB_PASSWORD: ci
+        ports: ["3308:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      JAX_SR2_EXPECTED_SHA: 0604754384adc95adc0a766e44cced8b20df825c
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_REPO_BASE: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/las_manos/config.toml
+      JAX_DB_HOST: 127.0.0.1
+      JAX_DB_PORT: "3306"
+      JAX_DB_USER: jax_test
+      JAX_DB_PASSWORD: ci
+      JAX_DB_NAME: jax_memory_test
+      SR2_STEP_STATUS_DB_TEST: "1"
+      JAX_JWT_SECRET: sr2-step-status-ci-only
+    steps:
+      - name: Checkout exact Platform pull request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout exact JAX #351 head
+        uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 0604754384adc95adc0a766e44cced8b20df825c
+          path: jax
+      - name: Resolve the test suite's MariaDB hostname on the runner
+        run: echo "127.0.0.1 mariadb.test" | sudo tee -a /etc/hosts
+      - name: Require exact JAX and Platform PR pair
+        env:
+          EXPECTED_PLATFORM_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git -C jax rev-parse HEAD)" = "$JAX_SR2_EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_PLATFORM_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Exercise exact SR2 pair through source, F2-B, F2-C and F2-D
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:warnings \
+            tests/test_step_status_exact_pair.py::test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan \
+            2>&1 | tee /tmp/sr2-step-status-mariadb
+          grep -qE '^1 passed in [0-9]+(\.[0-9]+)?s$' /tmp/sr2-step-status-mariadb || {
+            echo "FAIL-CLOSED: la prueba del resolvedor canónico STEP_STATUS no pasó con MariaDB real."; exit 1; }
+          python -m pytest -q -p no:warnings \
+            tests/test_runtime_status_sources.py \
+            tests/test_platform_runtime_status_bridge.py \
+            tests/test_step_status_exact_pair.py \
+            integration_tests/test_f2c_exact_pair_integration.py \
+            tests/test_output_lifecycle_transport.py \
+            -k 'not test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan'
+          python - <<'PY'
+          import json, os, subprocess
+          from policy.governance.governed_domain import (
+              GOVERNED_DOMAIN_SPEC_VERSION,
+              GOVERNED_ENVELOPE_SCHEMA_VERSIONS,
+              GOVERNED_RENDERER_API_VERSION,
+          )
+          evidence = {
+              "jax_repository": "fjruizhn/Jax", "jax_pr": 351,
+              "jax_head": os.environ["JAX_SR2_EXPECTED_SHA"],
+              "platform_repository": "fjruizhn/jax-platform",
+              "platform_pr": int(os.environ["GITHUB_PR_NUMBER"]),
+              "platform_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "coverage": [
+                  "canonical Jacobs step and owner snapshot with MariaDB",
+                  "F2-B STEP_STATUS receipt and exact response scope",
+                  "F2-C exact renderer/domain/envelope tuple",
+                  "F2-D effective output and transport lifecycle",
+              ],
+              "f2c_contract": {
+                  "renderer": GOVERNED_RENDERER_API_VERSION,
+                  "domain": GOVERNED_DOMAIN_SPEC_VERSION,
+                  "envelopes": sorted(GOVERNED_ENVELOPE_SCHEMA_VERSIONS),
+              },
+          }
+          with open("../f2e-sr2-step-status-exact-pair-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True)
+              f.write("\n")
+          PY
+          cat ../f2e-sr2-step-status-exact-pair-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload SR2 exact-pair evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f2e-sr2-step-status-exact-pair-evidence
+          path: f2e-sr2-step-status-exact-pair-evidence.json
 
   f2e-sr3-processing-exact-pair:
     if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'phase2/f2-e-sr3-processing-job-status-platform'

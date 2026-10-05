@@ -17,6 +17,47 @@
   proyecto: `apng`, `jpe`, `jfif`, `mpo` y `gif` se sumaron a
   `EXTENSIONES_ACEPTADAS` y a su aserción explícita de regresión.
 
+## Reconciliación con master y JAX #351
+
+**Fecha:** 2026-10-05. **Fuente:** `origin/master`
+`5636a43d864bc93d4af218172a02d6651ce1270f` y JAX #351 publicado
+`0604754384adc95adc0a766e44cced8b20df825c`.
+
+- Se hizo un merge regular de ese `master`. Los conflictos fueron
+  `.github/workflows/policy.yml`, `backend/proyectos_documentos/tipos.py` y
+  `backend/tests/test_proyectos_documentos_repositorio.py`. La lista de tipos
+  quedó idéntica a la compuerta JAX; la prueba conserva el parser AST que acepta
+  tanto una asignación anotada como una no anotada.
+- El workflow conserva a la vez el exact-pair F2-E y el exact-pair SR2 que
+  llegó desde `master`. Las referencias activas de este PR que clonan JAX
+  (los dos suites genéricos, F2-E y SR2) apuntan al mismo SHA #351. El camino
+  F2-E sigue siendo productor autenticado → F2-B → proyección estructurada
+  F2-C → bytes canónicos F2-D.
+- JAX #351 acredita `STEP_STATUS`, por lo que su contrato exacto avanza F2-C
+  a `f2-c.renderer.3` / `f2-c.domain.7` / `f2-c.1` y runtime-status a
+  `f2-e.runtime-status.4`. Platform actualizó el consumidor de pipelines y
+  el contrato de plantilla `PIPELINE_STATUS` a esas versiones exactas. La
+  incompatibilidad previa fallaba cerrado con 503; no se aceptó un rango de
+  versiones.
+- Se conservaron los máximos ya medidos: con DB `PISO_PASSED = 3690` y
+  `MAX_SKIPS = 1`; sin DB `JAX_CI_MIN_PASSED = 2238`; y el piso F2-E exacto
+  `89`. Se conservaron también el manifiesto B9 de migraciones 007--013 y su
+  evidencia histórica incorporada desde `master`.
+- El `TRASPASO.md` entrante describía el par SR2 anterior (JAX
+  `200f03c…` y pisos anteriores). Su contenido durable ya está archivado en
+  `docs/historia/2026-10-05-sr2-exact-pair-reconciliation.md`; se retiró del
+  árbol de trabajo al cerrar esta reconciliación para que no se use como estado
+  vigente.
+
+### Verificación de la reconciliación
+
+- YAML de `policy.yml` parseado con PyYAML; los seis puntos activos de pin usan
+  `0604754384adc95adc0a766e44cced8b20df825c` y los pisos/techo de skips se
+  mantuvieron.
+- Par F2-E completo contra JAX #351: `89 passed, 0 skipped`.
+- Par SR2 sin la única prueba MariaDB marcada para CI: `55 passed, 1 deselected`.
+- Paridad de extensiones y manifiesto B9: `87 passed`.
+
 ## Por qué
 
 `test_extensiones_aceptadas_coinciden_con_la_compuerta_de_jax` extrae por AST la lista

@@ -76,14 +76,11 @@ def e(client):
 
 def test_tipo_de_acepta_las_extensiones_del_extractor_en_minusculas():
     assert tipos.EXTENSIONES_ACEPTADAS == frozenset(
-        {
-            "pdf", "xlsx", "xlsm", "docx",
-            "png", "apng", "jpg", "jpeg", "jpe", "jfif", "mpo",
-            "tif", "tiff", "bmp", "gif", "webp",
-        }
-    )
+        {"pdf", "xlsx", "xlsm", "docx", "png", "apng", "jpg", "jpeg", "jpe", "jfif", "mpo",
+         "tif", "tiff", "bmp", "gif", "webp"})
     assert tipos.tipo_de("Informe FINAL.PDF") == "pdf"
     assert tipos.tipo_de("a.b.tiff") == "tiff"
+    assert tipos.tipo_de("Foto.GIF") == "gif"
 
 
 @pytest.mark.parametrize("nombre", ["archivo.exe", "viejo.xls", "datos.csv", "nota.txt", "leeme.md", "sin_extension", ".pdf", "termina.", "x.pdf.zip", ""])
@@ -91,62 +88,59 @@ def test_tipo_de_rechaza_lo_demas(nombre):
     assert tipos.tipo_de(nombre) is None
 
 
-def _assert_extension_sets_match(platform_extensions, jax_extensions):
-    assert platform_extensions == jax_extensions
-
-
 def test_extensiones_aceptadas_coinciden_con_la_compuerta_de_jax():
-    """Compara la lista canónica de JAX con su alias en la compuerta y Platform."""
+    """Se compara la lista de la plataforma con la fuente que usa la compuerta.
+
+    Las extensiones de imagen viven en `procesamiento/tipos_imagen.py`; la
+    compuerta expone ese mismo conjunto como `IMAGENES = set(EXTENSIONES_IMAGEN)`.
+    Se lee por ruta para evitar importar el paquete JAX en el proceso de tests.
+    """
     raiz = os.environ.get("JAX_REPO_PATH", "").strip()
     assert raiz, "JAX_REPO_PATH es requerido"
-    raiz_jax = Path(raiz)
-    arbol_tipos = ast.parse(
-        (raiz_jax / "procesamiento" / "tipos_imagen.py").read_text(encoding="utf-8")
+    procesamiento = Path(raiz) / "procesamiento"
+    arbol_imagenes = ast.parse(
+        (procesamiento / "tipos_imagen.py").read_text(encoding="utf-8")
     )
-    imagenes = None
-    for nodo in arbol_tipos.body:
-        if (
-            isinstance(nodo, ast.AnnAssign)
-            and isinstance(nodo.target, ast.Name)
-            and nodo.target.id == "EXTENSIONES_IMAGEN"
-        ):
+    extensiones_imagen = None
+    for nodo in arbol_imagenes.body:
+        if isinstance(nodo, ast.AnnAssign):
+            destino = nodo.target
+        elif isinstance(nodo, ast.Assign) and len(nodo.targets) == 1:
+            destino = nodo.targets[0]
+        else:
+            continue
+        if isinstance(destino, ast.Name) and destino.id == "EXTENSIONES_IMAGEN":
             llamada = nodo.value
             assert isinstance(llamada, ast.Call)
             assert isinstance(llamada.func, ast.Name) and llamada.func.id == "frozenset"
             assert len(llamada.args) == 1
-            imagenes = ast.literal_eval(llamada.args[0])
+            extensiones_imagen = ast.literal_eval(llamada.args[0])
             break
-    assert imagenes is not None, "JAX debe declarar EXTENSIONES_IMAGEN en tipos_imagen.py"
+    assert extensiones_imagen is not None, "JAX debe declarar EXTENSIONES_IMAGEN"
 
     arbol_compuerta = ast.parse(
-        (raiz_jax / "procesamiento" / "compuerta.py").read_text(encoding="utf-8")
+        (procesamiento / "compuerta.py").read_text(encoding="utf-8")
     )
     constantes = {}
     for nodo in arbol_compuerta.body:
-        if isinstance(nodo, ast.Assign) and len(nodo.targets) == 1 and isinstance(nodo.targets[0], ast.Name):
-            constantes[nodo.targets[0].id] = nodo.value
-    alias_imagenes = constantes.get("IMAGENES")
-    assert isinstance(alias_imagenes, ast.Call)
-    assert isinstance(alias_imagenes.func, ast.Name) and alias_imagenes.func.id == "set"
-    assert len(alias_imagenes.args) == 1
-    assert isinstance(alias_imagenes.args[0], ast.Name)
-    assert alias_imagenes.args[0].id == "EXTENSIONES_IMAGEN"
-
-    de_compuerta = set(imagenes)
-    for nombre in ("EXCEL", "WORD"):
-        valor = ast.literal_eval(constantes[nombre])
-        de_compuerta.update(valor)
-    jax_extensions = {extension.lstrip(".") for extension in de_compuerta} | {"pdf"}
-    _assert_extension_sets_match(tipos.EXTENSIONES_ACEPTADAS, jax_extensions)
-
-
-def test_paridad_de_extensiones_falla_si_solo_un_lado_agrega_una_extension():
-    extensiones_jax = {"pdf", "png", "docx"}
-    extensiones_platform = set(extensiones_jax)
-    extensiones_platform.add("solo-platform")
-
-    with pytest.raises(AssertionError):
-        _assert_extension_sets_match(extensiones_platform, extensiones_jax)
+        if not isinstance(nodo, ast.Assign) or len(nodo.targets) != 1:
+            continue
+        destino = nodo.targets[0]
+        if not isinstance(destino, ast.Name) or destino.id not in {"IMAGENES", "EXCEL", "WORD"}:
+            continue
+        if destino.id == "IMAGENES":
+            alias = nodo.value
+            assert isinstance(alias, ast.Call)
+            assert isinstance(alias.func, ast.Name) and alias.func.id == "set"
+            assert len(alias.args) == 1
+            assert isinstance(alias.args[0], ast.Name)
+            assert alias.args[0].id == "EXTENSIONES_IMAGEN"
+            constantes[destino.id] = extensiones_imagen
+        else:
+            constantes[destino.id] = ast.literal_eval(nodo.value)
+    assert set(constantes) == {"IMAGENES", "EXCEL", "WORD"}
+    de_compuerta = {e.lstrip(".") for c in constantes.values() for e in c} | {"pdf"}
+    assert tipos.EXTENSIONES_ACEPTADAS == de_compuerta
 
 
 # ------------------------------------------------------------------ repositorio

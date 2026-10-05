@@ -37,9 +37,28 @@ def _jax_runtime_status_bridge():
     loaded_path = Path(module.__file__).resolve()
     if not loaded_path.is_relative_to(root_path):
         raise RuntimeStatusBridgeUnavailable("loaded runtime-status bridge is outside configured JAX")
-    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.3":
+    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.4":
         raise RuntimeStatusBridgeUnavailable("unsupported JAX runtime-status bridge version")
     return module
+
+
+def _jacobs_step_governance_modules():
+    """STEP_STATUS lee jacobs.store/models; ambos deben cargar del MISMO JAX
+    configurado. Un modulo precargado desde otro checkout (p.ej. un pin viejo
+    en sys.modules) queda rechazado: si se usara, el resolver del SHA nuevo
+    llamaria al store viejo y escaparia un AttributeError fuera del fail-closed."""
+    root = os.environ.get("JAX_REPO_PATH", "")
+    if not root or not os.path.isabs(root):
+        raise RuntimeStatusBridgeUnavailable("JAX_REPO_PATH is unavailable")
+    root_path = Path(root).resolve()
+    for module_name in ("jacobs", "jacobs.store", "jacobs.models"):
+        try:
+            module = importlib.import_module(module_name)
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeStatusBridgeUnavailable("JAX jacobs step modules cannot load") from exc
+        module_file = getattr(module, "__file__", None)
+        if not module_file or not Path(module_file).resolve().is_relative_to(root_path):
+            raise RuntimeStatusBridgeUnavailable("loaded jacobs step module is outside configured JAX")
 
 
 def _arguments(arguments: Mapping[str, object] | object, *, expected_name: str | None = None):
@@ -123,5 +142,25 @@ class LasManosHealthStatusResolver:
         )
         try:
             return bridge.platform_runtime_status_evidence(typed_snapshot, arguments, scope)
+        except (TypeError, ValueError):
+            return None
+
+
+class JacobsStepStatusResolver:
+    """Use the configured JAX canonical step+owner resolver without aliases."""
+
+    async def evidence(self, arguments: Mapping[str, object], scope):
+        if (not isinstance(arguments, Mapping) or set(arguments) != {"step_id", "status"}
+                or not isinstance(arguments.get("step_id"), str)
+                or not arguments["step_id"]
+                or not isinstance(arguments.get("status"), str)
+                or not arguments["status"]):
+            return None
+        if getattr(scope, "project_id", None) is not None or getattr(scope, "subject_id", None) is None:
+            return None
+        bridge = _jax_runtime_status_bridge()
+        _jacobs_step_governance_modules()
+        try:
+            return await bridge.JacobsStepStatusResolver().evidence(arguments, scope)
         except (TypeError, ValueError):
             return None

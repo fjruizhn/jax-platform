@@ -22,8 +22,8 @@ class GovernedPipelineListUnavailable(RuntimeError):
 
 
 _SAFE_FALLBACK = b'{"detail":{"code":"governed_output_unavailable"}}'
-_F2C_TUPLE = ("f2-c.renderer.3", "f2-c.domain.6", frozenset({"f2-c.1"}))
-_RUNTIME_STATUS_VERSION = "f2-e.runtime-status.3"
+_F2C_TUPLE = ("f2-c.renderer.3", "f2-c.domain.7", frozenset({"f2-c.1"}))
+_RUNTIME_STATUS_VERSION = "f2-e.runtime-status.4"
 _STRUCTURED_PROJECTION_VERSION = "f2-c.structured-projection.1"
 _STRUCTURED_BYTES_VERSION = "f2-d.structured-bytes.1"
 logger = logging.getLogger(__name__)
@@ -185,7 +185,7 @@ async def _govern_pipeline_list(payload: dict, user: AuthUser, core=None) -> "Go
             resolution_receipt_ref=receipt_ref_id,
             disposition=response.ClaimDisposition.ASSERTABLE,
             template_contract=response.TemplateContract("PIPELINE_STATUS",
-                "f2-e.runtime-status.3", "es"),
+                "f2-e.runtime-status.4", "es"),
         )
         reference = response.ReferenceRef(
             receipt_ref_id, response.ReferenceType.RESOLUTION_RECEIPT,
