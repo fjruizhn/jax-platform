@@ -14,6 +14,7 @@ import json
 import logging
 from typing import Any
 
+import aiomysql
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
@@ -25,9 +26,11 @@ from auth.middleware import require_superadmin
 from auth.models import AuthUser
 from contrato_dispatch import (
     _MAX_TOKENS_PARAM_NAMES,
+    DETALLE_CONFLICTO_CONCURRENTE,
     binding_de,
     detalle_si_rompe_el_contrato,
     errores_del_contrato,
+    es_conflicto_de_lock,
     fila_de_rechazo,
     ip_de,
     registrar_binding_aplicado,
@@ -554,6 +557,9 @@ async def approve_proposal(
             # explicito cada UPDATE se confirmaria solo y un fallo de la
             # auditoria dejaria el binding cambiado sin rastro. Va DESPUES del
             # guard: el camino del 409 (arriba) no cambia.
+            # READ COMMITTED solo para esta transaccion: sin gap locks (ver el
+            # mismo comentario en facet_bindings.py::update_facet_binding).
+            await cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
             await conn.begin()
             try:
                 # Carrera entre approves: se relee la propuesta bloqueandola. El
@@ -568,27 +574,50 @@ async def approve_proposal(
                 # El binding que se va a pisar, leido con FOR UPDATE (por
                 # uk_facet_role) antes de escribir: es el "antes" de la auditoria.
                 antes = await binding_de(cur, facet_key, "primary", para_actualizar=True)
+                if antes is None:
+                    # Sin binding 'primary' no hay nada que reemplazar: el UPDATE
+                    # no aplicaria nada y la propuesta quedaria 'approved' (200)
+                    # sin cambio ni auditoria. 409 y no 422: el pedido es valido,
+                    # es el ESTADO de la faceta el que no lo admite; la propuesta
+                    # sigue 'pending'.
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"La faceta '{facet_key}' no tiene binding 'primary' que reemplazar",
+                    )
+                # El guard otra vez, DENTRO de la transaccion y con la fila de
+                # `model` bloqueada (y el binding ya bloqueado: el proveedor que
+                # compara es el vigente). Si ahora rompe, el mismo rechazo
+                # auditado y el mismo 409 que el chequeo de arriba.
+                detalle = await detalle_si_rompe_el_contrato(
+                    cur, facet_key, proposed_model_ref, bloquear_modelo=True)
+                if detalle is not None:
+                    await registrar_rechazo_de_binding(
+                        cur, detalle, proposal_id, decided_by, user.email, ip_de(request))
+                    await conn.commit()
+                    raise HTTPException(status_code=409, detail=detalle)
                 await cur.execute(
                     "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
                     "WHERE facet_key=%s AND role='primary'",
                     (proposed_model_ref, decided_by, facet_key),
                 )
-                # Sin fila 'primary' el UPDATE no aplica nada (preexistente):
-                # no hay cambio de binding que auditar.
-                if antes is not None:
-                    despues = await binding_de(cur, facet_key, "primary")
-                    await registrar_binding_aplicado(
-                        cur, facet_key, "primary", antes, despues, proposal_id,
-                        decided_by, user.email, ip_de(request))
+                despues = await binding_de(cur, facet_key, "primary")
+                await registrar_binding_aplicado(
+                    cur, facet_key, "primary", antes, despues, proposal_id,
+                    decided_by, user.email, ip_de(request))
                 await cur.execute(
                     "UPDATE model_binding_proposal SET status='approved', decided_by=%s, decided_at=NOW() "
                     "WHERE id=%s",
                     (decided_by, proposal_id),
                 )
+                await conn.commit()
+            except aiomysql.OperationalError as e:
+                await conn.rollback()
+                if es_conflicto_de_lock(e):
+                    raise HTTPException(status_code=409, detail=DETALLE_CONFLICTO_CONCURRENTE) from e
+                raise
             except BaseException:
                 await conn.rollback()
                 raise
-        await conn.commit()
 
     # DESPUES del commit a proposito: la sonda solo tiene sentido sobre un
     # binding ya aprobado. Encolada, no await inline -- un await colgaria

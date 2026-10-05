@@ -445,7 +445,7 @@ def test_dos_put_a_roles_nuevos_del_mismo_hueco_no_se_trancan(client, monkeypatc
             for f in futuros:
                 try:
                     resultados.append(f.result().status_code)
-                except Exception as e:  # el 500 sin atrapar sube como excepcion del TestClient
+                except Exception as e:  # fail-soft: no es codigo de produccion; el error se registra como repr(e) y el assert de abajo lo hace fallar con el detalle
                     resultados.append(repr(e))
         assert len(llegaron) == 2 and not agotaron, (llegaron, agotaron)  # la carrera ocurrio
         assert resultados == [200, 200], resultados

@@ -209,9 +209,15 @@ def errores_del_contrato(
 
 async def detalle_si_rompe_el_contrato(
     cur, facet_key: str, model_ref: int, provider_id: str | None = None,
+    bloquear_modelo: bool = False,
 ) -> dict | None:
     """Lo que chequean los dos escritores de facet_binding ANTES de escribir:
     ¿el dispatch de `facet_key` aceptaría la fila `model_ref`?
+
+    `bloquear_modelo`: la segunda pasada, DENTRO de la transaccion del escritor
+    (2026-10-04): lee la fila de `model` con LOCK IN SHARE MODE, asi nadie le
+    cambia el contrato entre este chequeo y el commit. El chequeo de antes del
+    BEGIN sigue igual (sin bloqueo) para que el 409 temprano no cambie.
 
     `provider_id`: el que quedará en facet_binding.provider_id. El PUT lo
     manda en el request; approve no lo toca (solo cambia model_ref), así que
@@ -260,7 +266,8 @@ async def detalle_si_rompe_el_contrato(
     await cur.execute("SELECT transport FROM facet WHERE `key`=%s", (facet_key,))
     facet_row = await cur.fetchone()
     await cur.execute(
-        "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s",
+        "SELECT provider_id, model_id, max_tokens_param, max_output_tokens FROM model WHERE id=%s"
+        + (" LOCK IN SHARE MODE" if bloquear_modelo else ""),
         (model_ref,),
     )
     model_row = await cur.fetchone()
@@ -352,6 +359,21 @@ async def registrar_rechazo_de_binding(
          proposal_id, detalle["code"], json.dumps(detalle, ensure_ascii=False),
          performed_by, performed_by_email, performed_from_ip),
     )
+
+
+# Un deadlock (1213) o un lock wait timeout (1205) en medio de la transaccion de
+# un escritor de facet_binding no es un fallo del servidor: es un choque con otro
+# escritor. Rollback y 409 "reintente" en vez de un 500.
+_ER_DEADLOCK = 1213
+_ER_LOCK_WAIT_TIMEOUT = 1205
+DETALLE_CONFLICTO_CONCURRENTE = {
+    "code": "binding_conflicto_concurrente",
+    "message": "Otro cambio concurrente sobre este binding chocó con el tuyo y no se aplicó nada. Reintente.",
+}
+
+
+def es_conflicto_de_lock(error: BaseException) -> bool:
+    return bool(error.args) and error.args[0] in (_ER_DEADLOCK, _ER_LOCK_WAIT_TIMEOUT)
 
 
 # Binding de una (faceta, rol), por el UNIQUE uk_facet_role (facet_key, role):
