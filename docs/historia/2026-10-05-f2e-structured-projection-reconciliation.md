@@ -47,6 +47,24 @@ igualdad y el mutante que rechaza una adición unilateral siguen vigentes.
 
 ## Decisiones y alternativas
 
+- El consumidor Platform ahora prepara todos los argumentos cerrados
+  `{"pipeline_id", "status"}` y solicita una sola vez
+  `JacobsPipelineStatusResolver.evidence_many(...)`. Conserva después una
+  resolución, recibo, referencia y claim independientes por fila: el lote
+  reduce las lecturas canónicas, sin convertir el estado del productor en
+  autoridad. La API batch de JAX quedó publicada en
+  `3f2393fae56564d02123892c68cb9eda13d233ca`; su resultado mantiene el orden
+  y la cardinalidad de los argumentos.
+- Platform falla cerrado antes de construir candidato si el lote no es una
+  tupla de igual cardinalidad, si hay IDs de pipeline duplicados en el
+  productor, o si una evidencia no está ligada al `ResponseScope` de la
+  respuesta. La resolución individual también rechaza una evidencia fuera de
+  orden porque sus argumentos canónicos no coinciden. La regresión verifica
+  una sola lectura batch, recibos/claims por cada fila, y los cuatro fallos
+  cerrados (cardinalidad, orden, alcance e ID duplicado).
+- Verificación focal posterior: `backend/tests/test_governed_pipeline_list.py`
+  pasó `11`; `backend/tests/test_historial_pipelines.py` pasó `15`, ambos con
+  el checkout JAX que contiene la API batch y el esquema cerrado compatible.
 - La vista `estado=discarded` termina las consultas y cálculos de costo dentro
   de `pool.acquire()`, libera la conexión, y sólo después espera el límite de
   gobernanza F2-B/F2-C/F2-D. La regresión usa un pool espía y prueba tanto la

@@ -41,6 +41,21 @@ def _user():
     return AuthUser(user_id="user-7", tenant_id="tenant-3", role="operator")
 
 
+def _status_snapshot(store, pipeline):
+    return store.PipelineStatusSnapshot(
+        pipeline_id=pipeline.pipeline_id, tenant_id=pipeline.tenant_id,
+        user_id=pipeline.user_id, status=pipeline.status,
+        observed_at=datetime.now(timezone.utc))
+
+
+def _active_row(pipeline_id, name, status):
+    return {
+        "pipeline_id": pipeline_id, "name": name, "status": status,
+        "created_at": 10.0, "updated_at": 12.5, "duracion_s": None,
+        "costo_usd": None, "causa": None,
+    }
+
+
 class _Cursor:
     def __init__(self):
         self.query = ""
@@ -89,11 +104,11 @@ def test_authenticated_pipeline_list_crosses_real_producer_f2b_f2c_f2d_and_sends
     models, store, boundary = _setup_pair(monkeypatch)
     canonical = _pipeline(models)
 
-    async def pipeline_get(pipeline_id):
-        assert pipeline_id == canonical.pipeline_id
-        return canonical
+    async def pipeline_status_snapshots(pipeline_ids):
+        assert pipeline_ids == (canonical.pipeline_id,)
+        return {canonical.pipeline_id: _status_snapshot(store, canonical)}
 
-    monkeypatch.setattr(store, "pipeline_get", pipeline_get)
+    monkeypatch.setattr(store, "pipeline_status_snapshots", pipeline_status_snapshots)
     from api import pipelines
     cursor = _Cursor()
     async def get_pool():
@@ -128,16 +143,149 @@ def test_pipeline_list_wrong_canonical_owner_fails_closed_without_candidate_leak
     models, store, boundary = _setup_pair(monkeypatch)
     canonical = _pipeline(models, owner="other-user")
 
-    async def pipeline_get(_pipeline_id):
-        return canonical
+    async def pipeline_status_snapshots(pipeline_ids):
+        assert pipeline_ids == (canonical.pipeline_id,)
+        return {canonical.pipeline_id: _status_snapshot(store, canonical)}
 
-    monkeypatch.setattr(store, "pipeline_get", pipeline_get)
+    monkeypatch.setattr(store, "pipeline_status_snapshots", pipeline_status_snapshots)
     response = asyncio.run(boundary.govern_pipeline_list({
-        "pipelines": [{"pipeline_id": "pipeline-7", "name": "private-name",
-                       "status": "running"}], "has_more": False}, _user()))
+        "pipelines": [_active_row("pipeline-7", "private-name", "running")],
+        "has_more": False}, _user()))
 
     assert response.status_code == 503
     assert response.body == b'{"detail":{"code":"governed_output_unavailable"}}'
+    assert b"private-name" not in response.body
+
+
+def test_pipeline_list_uses_one_ordered_evidence_batch_and_keeps_individual_claims(monkeypatch):
+    models, store, boundary = _setup_pair(monkeypatch)
+    canonical = {
+        "pipeline-7": _pipeline(models, status="running"),
+        "pipeline-8": models.Pipeline(
+            pipeline_id="pipeline-8", name="Pipeline eight", invoked_by="plataforma",
+            mode="supervised", status=models.PipelineStatus("completed"), tenant_id="tenant-3",
+            user_id="user-7", updated_at=datetime.now(timezone.utc).timestamp()),
+    }
+
+    calls = []
+
+    async def pipeline_status_snapshots(pipeline_ids):
+        calls.append(pipeline_ids)
+        return {pipeline_id: _status_snapshot(store, canonical[pipeline_id]) for pipeline_id in pipeline_ids}
+
+    monkeypatch.setattr(store, "pipeline_status_snapshots", pipeline_status_snapshots)
+    response = asyncio.run(boundary.govern_pipeline_list({
+        "pipelines": [
+            _active_row("pipeline-7", "Pipeline seven", "running"),
+            _active_row("pipeline-8", "Pipeline eight", "completed"),
+            ], "has_more": False}, _user()))
+
+    assert response.status_code == 200
+    assert calls == [("pipeline-7", "pipeline-8")]
+    decoded = json.loads(response.body)
+    assert [row["status"] for row in decoded["pipelines"]] == ["running", "completed"]
+    assert len(response._transport_unit.projection.claim_ids) == 2
+
+
+@pytest.mark.parametrize("batch", [
+    (),
+    (object(), object()),
+])
+def test_pipeline_list_rejects_evidence_batch_with_wrong_cardinality(monkeypatch, batch):
+    _, _, boundary = _setup_pair(monkeypatch)
+    core = boundary._paired_core()
+
+    class BatchResolver:
+        async def evidence_many(self, _arguments_seq, _scope):
+            return batch
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", BatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list({
+        "pipelines": [{"pipeline_id": "pipeline-7", "name": "private-name", "status": "running"}],
+        "has_more": False}, _user()))
+
+    assert response.status_code == 503
+    assert response.body == b'{"detail":{"code":"governed_output_unavailable"}}'
+    assert b"private-name" not in response.body
+
+
+def test_pipeline_list_rejects_wrong_scope_evidence_before_candidate(monkeypatch):
+    _, _, boundary = _setup_pair(monkeypatch)
+    core = boundary._paired_core()
+
+    class BatchResolver:
+        async def evidence_many(self, _arguments_seq, scope):
+            class Evidence:
+                observation_scope = type("OtherScope", (), {"scope_digest": scope.scope_digest + "-other"})()
+            return (Evidence(),)
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", BatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list({
+        "pipelines": [{"pipeline_id": "pipeline-7", "name": "private-name", "status": "running"}],
+        "has_more": False}, _user()))
+
+    assert response.status_code == 503
+    assert response.body == b'{"detail":{"code":"governed_output_unavailable"}}'
+    assert b"private-name" not in response.body
+
+
+def test_pipeline_list_rejects_evidence_batch_in_wrong_order(monkeypatch):
+    models, store, boundary = _setup_pair(monkeypatch)
+    canonical = {
+        "pipeline-7": _pipeline(models, status="running"),
+        "pipeline-8": models.Pipeline(
+            pipeline_id="pipeline-8", name="Pipeline eight", invoked_by="plataforma",
+            mode="supervised", status=models.PipelineStatus("completed"), tenant_id="tenant-3",
+            user_id="user-7", updated_at=datetime.now(timezone.utc).timestamp()),
+    }
+
+    async def pipeline_status_snapshots(pipeline_ids):
+        return {pipeline_id: _status_snapshot(store, canonical[pipeline_id]) for pipeline_id in pipeline_ids}
+
+    monkeypatch.setattr(store, "pipeline_status_snapshots", pipeline_status_snapshots)
+    core = boundary._paired_core()
+    original_resolver = core[4].JacobsPipelineStatusResolver
+
+    class ReversedBatchResolver:
+        async def evidence_many(self, arguments_seq, scope):
+            return tuple(reversed(await original_resolver().evidence_many(arguments_seq, scope)))
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", ReversedBatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list({
+        "pipelines": [
+            {"pipeline_id": "pipeline-7", "name": "private-name", "status": "running"},
+            {"pipeline_id": "pipeline-8", "name": "private-name", "status": "completed"},
+        ], "has_more": False}, _user()))
+
+    assert response.status_code == 503
+    assert response.body == b'{"detail":{"code":"governed_output_unavailable"}}'
+    assert b"private-name" not in response.body
+
+
+def test_pipeline_list_rejects_duplicate_producer_pipeline_ids_before_batch(monkeypatch):
+    _, _, boundary = _setup_pair(monkeypatch)
+    core = boundary._paired_core()
+    calls = 0
+
+    class BatchResolver:
+        async def evidence_many(self, _arguments_seq, _scope):
+            nonlocal calls
+            calls += 1
+            return ()
+
+    monkeypatch.setattr(core[4], "JacobsPipelineStatusResolver", BatchResolver)
+    monkeypatch.setattr(boundary, "_paired_core", lambda: core)
+    response = asyncio.run(boundary.govern_pipeline_list({
+        "pipelines": [
+            {"pipeline_id": "pipeline-7", "name": "private-name", "status": "running"},
+            {"pipeline_id": "pipeline-7", "name": "private-name", "status": "running"},
+        ], "has_more": False}, _user()))
+
+    assert response.status_code == 503
+    assert calls == 0
     assert b"private-name" not in response.body
 
 
@@ -145,13 +293,14 @@ def test_pipeline_list_transport_failure_records_unknown_without_ack(monkeypatch
     models, store, boundary = _setup_pair(monkeypatch)
     canonical = _pipeline(models)
 
-    async def pipeline_get(_pipeline_id):
-        return canonical
+    async def pipeline_status_snapshots(pipeline_ids):
+        assert pipeline_ids == (canonical.pipeline_id,)
+        return {canonical.pipeline_id: _status_snapshot(store, canonical)}
 
-    monkeypatch.setattr(store, "pipeline_get", pipeline_get)
+    monkeypatch.setattr(store, "pipeline_status_snapshots", pipeline_status_snapshots)
     response = asyncio.run(boundary._govern_pipeline_list({
-        "pipelines": [{"pipeline_id": "pipeline-7", "name": "Pipeline seven",
-                       "status": "running"}], "has_more": False}, _user()))
+        "pipelines": [_active_row("pipeline-7", "Pipeline seven", "running")],
+        "has_more": False}, _user()))
 
     sends = 0
 

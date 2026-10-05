@@ -135,20 +135,36 @@ async def _govern_pipeline_list(payload: dict, user: AuthUser, core=None) -> "Go
         platform_source_configuration=_platform_status_source_configuration())
     resolver = runtime.JacobsPipelineStatusResolver()
 
+    arguments_seq = []
+    source_rows = []
+    seen_pipeline_ids = set()
+    for row in payload.get("pipelines", []):
+        if not isinstance(row, dict):
+            raise GovernedPipelineListUnavailable("producer emitted invalid pipeline row")
+        pipeline_id, status = row.get("pipeline_id"), row.get("status")
+        if not isinstance(pipeline_id, str) or not pipeline_id or not isinstance(status, str):
+            raise GovernedPipelineListUnavailable("producer emitted invalid pipeline identity or status")
+        if pipeline_id in seen_pipeline_ids:
+            raise GovernedPipelineListUnavailable("producer emitted duplicate pipeline identity")
+        seen_pipeline_ids.add(pipeline_id)
+        source_rows.append(row)
+        arguments_seq.append({"pipeline_id": pipeline_id, "status": status})
+
+    evidences = await resolver.evidence_many(tuple(arguments_seq), scope)
+    if not isinstance(evidences, tuple) or len(evidences) != len(arguments_seq):
+        raise GovernedPipelineListUnavailable("canonical pipeline status batch cardinality is invalid")
+    for arguments, evidence in zip(arguments_seq, evidences, strict=True):
+        evidence_scope = getattr(evidence, "observation_scope", None)
+        if evidence_scope is None or evidence_scope.scope_digest != scope.scope_digest:
+            raise GovernedPipelineListUnavailable("canonical pipeline status batch scope is invalid")
+
     tool_rows = []
     claims = []
     references = []
     receipts = {}
     lookups = {}
     claim_ids = []
-    for index, row in enumerate(payload.get("pipelines", [])):
-        if not isinstance(row, dict):
-            raise GovernedPipelineListUnavailable("producer emitted invalid pipeline row")
-        pipeline_id, status = row.get("pipeline_id"), row.get("status")
-        if not isinstance(pipeline_id, str) or not pipeline_id or not isinstance(status, str):
-            raise GovernedPipelineListUnavailable("producer emitted invalid pipeline identity or status")
-        arguments = {"pipeline_id": pipeline_id, "status": status}
-        evidence = await resolver.evidence(arguments, scope)
+    for index, (row, arguments, evidence) in enumerate(zip(source_rows, arguments_seq, evidences, strict=True)):
         receipt = registry.resolve("PIPELINE_STATUS", arguments, scope,
             validation_time=datetime.now(timezone.utc), runtime_status_evidence=evidence)
         if receipt.status is not resolution.ResolutionStatus.RESOLVED:
