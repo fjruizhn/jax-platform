@@ -1,6 +1,8 @@
 from tests.identidades import cabeceras
 import httpx
 
+import http_client
+
 
 TENANT_ID = "1"  # DB-backed tenant of the authenticated fixture user.
 
@@ -33,11 +35,12 @@ def test_dashboard_health_checks_do_not_create_new_clients(client):
     """get_dashboard() probes LAS MANOS (/health) and, if JAX_PLATFORM_URL is
     set, JAX Engine (/api/health). Both are unreachable in the test env, so
     this only pins zero new httpx.AsyncClient() instantiations."""
-    # El cliente compartido nace perezoso en la primera llamada. Hasta 2026-10-04 lo
+    # El cliente COMPARTIDO nace perezoso en la primera llamada. Hasta 2026-10-04 lo
     # creaba de antemano _poll_las_manos de fondo; desde que las tareas de fondo no
-    # arrancan bajo pytest (PR #193), una primera peticion lo calienta y la medida
-    # sigue siendo la que importa: CERO clientes nuevos por peticion.
-    assert client.get("/api/admin/dashboard", headers=_superadmin_headers(client)).status_code == 200
+    # arrancan bajo pytest (PR #193) se calienta aqui DIRECTAMENTE -- no con una
+    # peticion al tablero, que tambien calentaria un cliente privado del tablero y
+    # lo dejaria escapar del contador (MINOR-1 de la auditoria del #193).
+    client.portal.call(http_client.get_http_client)
     with _ClientInstantiationCounter() as counter:
         resp = client.get("/api/admin/dashboard", headers=_superadmin_headers(client))
         assert resp.status_code == 200
