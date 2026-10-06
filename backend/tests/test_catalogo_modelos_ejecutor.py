@@ -502,6 +502,125 @@ def test_enviar_telegram_devuelve_false_si_la_red_falla(monkeypatch):
     assert resultado is False
 
 
+class _FakeRespuestaNoJson:
+    """Respuesta cuyo cuerpo NO es JSON (el HTML real de un proxy/gateway): `.json()` revienta como en httpx."""
+
+    def __init__(self, status_code, texto):
+        self.status_code = status_code
+        self.text = texto
+
+    def json(self):
+        raise json.JSONDecodeError("Expecting value", self.text, 0)
+
+
+_HTML_PROXY = ("<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center>"
+               "<hr><center>nginx</center></body></html>")
+
+
+def _desenlace_de(monkeypatch, respuesta=None, excepcion=None, con_entorno=True):
+    if con_entorno:
+        monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+        monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    else:
+        monkeypatch.delenv(ejecutor.TELEGRAM_TOKEN_ENV, raising=False)
+        monkeypatch.delenv(ejecutor.TELEGRAM_CHAT_ID_ENV, raising=False)
+    original = http_client._client
+    http_client._client = _FakePostClient(respuesta=respuesta, excepcion=excepcion)
+    try:
+        con_desenlace = _correr_async(ejecutor._enviar_telegram_con_desenlace("hola"))
+        como_bool = _correr_async(ejecutor._enviar_telegram("hola"))
+    finally:
+        http_client._client = original
+    return con_desenlace, como_bool
+
+
+def _casos_de_desenlace():
+    import httpx
+
+    D = ejecutor.Desenlace
+    return [
+        pytest.param(dict(respuesta=_FakePostResponse(200, {"ok": True})), D.ENTREGADO, id="200-ok"),
+        pytest.param(dict(respuesta=_FakePostResponse(200, {"ok": False})), D.FALLO_CIERTO, id="200-ok-falso"),
+        pytest.param(dict(respuesta=_FakePostResponse(400, {"ok": False})), D.FALLO_CIERTO, id="http-400"),
+        pytest.param(dict(respuesta=_FakePostResponse(502, {})), D.FALLO_CIERTO, id="http-502"),
+        pytest.param(dict(excepcion=httpx.ConnectError("refused")), D.FALLO_CIERTO, id="connect-error"),
+        pytest.param(dict(excepcion=httpx.ConnectTimeout("t")), D.FALLO_CIERTO, id="connect-timeout"),
+        pytest.param(dict(excepcion=ConnectionRefusedError("refused")), D.FALLO_CIERTO, id="refused"),
+        pytest.param(dict(excepcion=httpx.ReadTimeout("t")), D.DESCONOCIDO, id="read-timeout"),
+        pytest.param(dict(excepcion=httpx.ReadError("cortado")), D.DESCONOCIDO, id="read-error"),
+        pytest.param(dict(excepcion=httpx.RemoteProtocolError("cortado")), D.DESCONOCIDO, id="remote-protocol"),
+        pytest.param(dict(respuesta=_FakePostResponse(200, ["no", "objeto"])), D.DESCONOCIDO, id="200-no-objeto"),
+        pytest.param(dict(con_entorno=False), D.FALLO_CIERTO, id="sin-credenciales"),
+        # Nada procesable salio: proxy, protocolo no soportado, error local de protocolo, cliente cerrado, y un
+        # corte de ESCRITURA (un cuerpo incompleto no lo procesa Telegram).
+        pytest.param(dict(excepcion=httpx.ProxyError("403 del proxy")), D.FALLO_CIERTO, id="proxy-error"),
+        pytest.param(dict(excepcion=httpx.UnsupportedProtocol("sin esquema")), D.FALLO_CIERTO, id="unsupported"),
+        pytest.param(dict(excepcion=httpx.LocalProtocolError("cabecera invalida")), D.FALLO_CIERTO, id="local-proto"),
+        pytest.param(dict(excepcion=RuntimeError("Cannot send a request, as the client has been closed.")),
+                     D.FALLO_CIERTO, id="cliente-cerrado"),
+        # Cualquier OTRO RuntimeError (o subclase) pudo haber salido: desconocido, la opcion conservadora.
+        pytest.param(dict(excepcion=RuntimeError("fallo interno del transporte")), D.DESCONOCIDO, id="runtime-otro"),
+        pytest.param(dict(excepcion=NotImplementedError("x")), D.DESCONOCIDO, id="runtime-subclase"),
+        pytest.param(dict(excepcion=RuntimeError("Cannot reopen a client instance, once it has been closed.")),
+                     D.DESCONOCIDO, id="runtime-reopen"),
+        pytest.param(dict(excepcion=httpx.WriteError("cortado")), D.FALLO_CIERTO, id="write-error"),
+        pytest.param(dict(excepcion=httpx.WriteTimeout("t")), D.FALLO_CIERTO, id="write-timeout"),
+        pytest.param(dict(excepcion=httpx.PoolTimeout("t")), D.FALLO_CIERTO, id="pool-timeout"),
+        # Un 504/524 de gateway equivale a un ReadTimeout (con el HTML del proxy, no un `{}` de juguete).
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(504, _HTML_PROXY)), D.DESCONOCIDO, id="504-html"),
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(524, _HTML_PROXY)), D.DESCONOCIDO, id="524-html"),
+        pytest.param(dict(respuesta=_FakePostResponse(504, {"ok": False})), D.DESCONOCIDO, id="504-json"),
+        # Los demas 5xx, con cuerpo no JSON o JSON, son fallo cierto: Mata el mutante "500 no-JSON -> DESCONOCIDO".
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(500, _HTML_PROXY)), D.FALLO_CIERTO, id="500-html"),
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(502, _HTML_PROXY)), D.FALLO_CIERTO, id="502-html"),
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(503, _HTML_PROXY)), D.FALLO_CIERTO, id="503-html"),
+        pytest.param(dict(respuesta=_FakePostResponse(500, {"ok": False, "description": "x"})),
+                     D.FALLO_CIERTO, id="500-json"),
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(404, _HTML_PROXY)), D.FALLO_CIERTO, id="404-html"),
+        # Un 200 es entregado o desconocido, nunca fallo cierto: un 200 con cuerpo no-JSON es desconocido.
+        pytest.param(dict(respuesta=_FakeRespuestaNoJson(200, _HTML_PROXY)), D.DESCONOCIDO, id="200-html"),
+    ]
+
+
+@pytest.mark.parametrize("kwargs, esperado", _casos_de_desenlace())
+def test_enviar_telegram_distingue_entregado_fallo_cierto_y_desconocido(monkeypatch, kwargs, esperado):
+    """Tres desenlaces. `_enviar_telegram` (el contrato bool que usan los demas llamadores) solo es True
+    cuando Telegram confirmo: un desenlace desconocido NO cuenta como True para ellos."""
+    con_desenlace, como_bool = _desenlace_de(monkeypatch, **kwargs)
+    assert con_desenlace is esperado
+    assert como_bool is (esperado is ejecutor.Desenlace.ENTREGADO)
+
+
+def test_el_cliente_cerrado_real_de_httpx_es_fallo_cierto(monkeypatch):
+    """El RuntimeError lo lanza httpx de verdad (httpx/_client.py:1616, `AsyncClient.send`): si cambia su mensaje,
+    esta prueba lo dice en vez de dejar que el aviso pase a 'desconocido' en silencio."""
+    import httpx
+
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    cerrado = httpx.AsyncClient()
+    _correr_async(cerrado.aclose())
+    original = http_client._client
+    http_client._client = cerrado
+    try:
+        assert _correr_async(ejecutor._enviar_telegram_con_desenlace("hola")) is ejecutor.Desenlace.FALLO_CIERTO
+    finally:
+        http_client._client = original
+
+
+def test_sin_cliente_http_es_fallo_cierto(monkeypatch):
+    """Sin cliente HTTP no se envio nada: FALLO_CIERTO (nunca desconocido), y no hay POST."""
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+
+    async def sin_cliente():
+        raise RuntimeError("no hay cliente")
+
+    monkeypatch.setattr(http_client, "get_http_client", sin_cliente)
+    assert _correr_async(ejecutor._enviar_telegram_con_desenlace("hola")) is ejecutor.Desenlace.FALLO_CIERTO
+    assert _correr_async(ejecutor._enviar_telegram("hola")) is False
+
+
 def test_enviar_telegram_devuelve_false_sin_variables_de_entorno(monkeypatch):
     monkeypatch.delenv(ejecutor.TELEGRAM_TOKEN_ENV, raising=False)
     monkeypatch.delenv(ejecutor.TELEGRAM_CHAT_ID_ENV, raising=False)

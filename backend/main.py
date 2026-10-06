@@ -79,6 +79,16 @@ for _nombre, _nivel in (
     _h.setFormatter(logging.Formatter(f"%(levelname)s {_nombre}: %(message)s"))
     _lg.addHandler(_h)
 
+# El despachador no tiene handler en la raíz con el nivel de systemd
+# (--log-level warning); su salida de operación debe llegar al journal con
+# nombre y nivel explícitos, como api.chat.
+_despachador_logger = logging.getLogger("proyectos_documentos.despachador")
+_despachador_handler = logging.StreamHandler()
+_despachador_handler.setLevel(logging.WARNING)
+_despachador_handler.setFormatter(logging.Formatter(
+    "%(levelname)s proyectos_documentos.despachador: %(message)s"))
+_despachador_logger.addHandler(_despachador_handler)
+
 from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
@@ -219,7 +229,7 @@ async def lifespan(app: FastAPI):
     # RD2: vencidos y huérfanos de JAX_ADJUNTOS_DIR (ver almacen.INTERVALO_DE_LIMPIEZA).
     asyncio.create_task(almacen_de_adjuntos.start_limpieza_de_adjuntos())
     # Proyectos E2a: reparte los documentos en_cola a LAS MANOS y sincroniza su estado.
-    asyncio.create_task(despachador_de_documentos.start_despachador())
+    tarea_despachador = asyncio.create_task(despachador_de_documentos.start_despachador())
     asyncio.create_task(start_facet_canary())
     # Drenaje del respaldo de uso (2026-09-15, Task 3): reinserta las filas
     # de axioma_usage que quedaron en disco cuando la base no respondió.
@@ -234,6 +244,8 @@ async def lifespan(app: FastAPI):
     tarea_inactividad = await iniciar_cierre_por_inactividad(get_pool)
     yield
     await detener_cierre_por_inactividad(tarea_inactividad)
+    tarea_despachador.cancel()
+    await asyncio.gather(tarea_despachador, return_exceptions=True)
     # Cerrar conversaciones web abiertas -> el worker de facts las destila.
     try:
         from api.chat import flush_open_conversations

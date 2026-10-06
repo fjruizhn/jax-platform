@@ -383,3 +383,53 @@ describe('AdminSettings -- edad máxima del respaldo de C2 (2026-10-06)', () => 
     expect(en.adminSettingsC2EdadMaxAyuda).toContain('108000')
   })
 })
+
+describe('AdminSettings -- enfriamiento del freno de incertidumbre (#203)', () => {
+  const CLAVE = 'proyectos.documentos.freno_incertidumbre_enfriamiento_s'
+  const CON_FRENO = { data: {
+    config: [{ key: 'system_name', value: 'Axioma' }, { key: CLAVE, value: '3600' }],
+    limites: { ...LIMITES, [CLAVE]: { min: 60, max: 604800 } },
+  } }
+
+  it('el campo toma el valor y los límites del servidor', async () => {
+    api.get.mockResolvedValue(CON_FRENO)
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsFrenoIncertidumbreEnfriamiento)
+    expect(campo).toHaveValue(3600)
+    expect(campo).toHaveAttribute('min', '60')
+    expect(campo).toHaveAttribute('max', '604800')
+  })
+
+  it('guarda el valor con la clave de axioma_config', async () => {
+    api.get.mockResolvedValue(CON_FRENO)
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsFrenoIncertidumbreEnfriamiento)
+    fireEvent.change(campo, { target: { value: '7200' } })
+    await guardar()
+    await waitFor(() => expect(api.put).toHaveBeenCalled())
+    expect(api.put.mock.calls[0][1]).toContainEqual({ key: CLAVE, value: '7200' })
+  })
+
+  it('la etiqueta y la ayuda están traducidas en ambos idiomas', () => {
+    for (const clave of ['adminSettingsFrenoIncertidumbreEnfriamiento',
+      'adminSettingsFrenoIncertidumbreEnfriamientoAyuda']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+      expect(es[clave]).not.toBe(en[clave])
+    }
+    // La ayuda es una funcion del minimo del servidor: no lleva el numero escrito a mano.
+    expect(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(75)).toContain('75')
+    expect(en.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(75)).toContain('75')
+  })
+
+  it('la ayuda muestra el minimo que manda el servidor (limites), no un numero fijo', async () => {
+    api.get.mockResolvedValue({ data: {
+      ...CON_FRENO.data,
+      limites: { ...LIMITES, [CLAVE]: { min: 90, max: 604800 } },
+    } })
+    renderSettings()
+    await screen.findByLabelText(es.adminSettingsFrenoIncertidumbreEnfriamiento)
+    expect(screen.getByText(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(90))).toBeInTheDocument()
+  })
+})
