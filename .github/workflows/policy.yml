@@ -3615,7 +3615,10 @@ jobs:
           # fallas locales del pin de jax en ambos). Absoluto MEDIDO en el runner: run 37380333908
           # sobre 3ec63f7, backend-tests-con-db colectados=3756 passed=3754 skipped=2.
           # 3754 -> 3757 (2026-10-05, fix/par-jax-visible): +3 puras (test_el_nivel_va_en_el_handler_..., sin DB).
-          PISO_PASSED = 3757
+          # 3757 -> 3785 (2026-10-05, fix/respuesta-final-y-cierre-por-inactividad): +28 puras (mismos dos
+          # archivos que el piso sin DB; ninguna pide `client`). Delta MEDIDO por archivo (8 + 20 passed);
+          # el absoluto con DB NO se midio aca: piso = base + delta, lo re-mide quien integre (regla 5).
+          PISO_PASSED = 3792
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4687,7 +4690,15 @@ jobs:
       # 2270 -> 2300 passed / 1454 / 1454 skipped. Absoluto MEDIDO en el runner: run 37380333908
       # sobre 3ec63f7, backend-tests-no-db colectados=3756 passed=2302 skipped=1454.
       # 2302 -> 2305 (2026-10-05, fix/par-jax-visible): +3 puras (test_el_nivel_va_en_el_handler_..., sin DB).
-      JAX_CI_MIN_PASSED: "2305"
+      # 2305 -> 2333 (2026-10-05, fix/respuesta-final-y-cierre-por-inactividad): +28 puras
+      # (test_respuesta_final_solo_juicio.py 8 + test_chat_cierre_por_inactividad.py 20; ninguna pide
+      # `client`). MEDIDO el delta con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true: archivo a archivo,
+      # 8 passed + 20 passed, 0 skipped; suite completa en la rama 2331 passed / 1457 skipped / 2 failed
+      # por el pin local de jax (procesamiento_routes). El absoluto de CI NO se midio aca: piso = base + delta.
+      # 2333 -> 2340 (ronda 2 de #198): +7 puras (M1 x2, marcar actividad x2, detener la tarea, recorte del
+      # juicio x2). MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true: suite completa 2331 -> 2338 passed /
+      # 1457 / 1457 skipped / 2 failed por el pin local de jax en ambas. Piso = base + delta, absoluto sin medir.
+      JAX_CI_MIN_PASSED: "2340"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

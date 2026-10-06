@@ -152,8 +152,10 @@ def test_build_display_response_valid_contract_with_judgment():
         judgment="mi conclusión", degradation_reason=None, raw_text="...",
     )
     text, degraded = _build_display_response(contract)
-    assert "mi análisis" in text
-    assert "mi conclusión" in text
+    # Decisión de Fernando (2026-10-05): el usuario ve SOLO el juicio; el
+    # análisis es razonamiento interno y no se muestra.
+    assert text == "**mi conclusión**"
+    assert "mi análisis" not in text
     assert degraded is False
 
 
@@ -236,7 +238,7 @@ def test_chat_endpoint_marks_contract_degraded_on_truncated_json(client):
 def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
     """Complemento del test de arriba: cuando la faceta SÍ devuelve el
     contrato bien formado, contract_degraded debe ser False y la respuesta
-    mostrada es analysis (+judgment), no el JSON crudo — prueba que
+    mostrada es solo el judgment (no el analysis ni el JSON crudo) — prueba que
     is_canned=False (llamada real) efectivamente dispara el parseo, y que
     el parseo exitoso no degrada."""
     token = token_de(client, "test-contract-user-2", "operator", "1")
@@ -267,7 +269,8 @@ def test_chat_endpoint_contract_not_degraded_on_valid_json(client):
     # provider prose.  It must never take a third/raw path.
     if body["contract_state"] == "VALID":
         assert body["contract_degraded"] is False
-        assert "mi analisis real" in body["response"]
+        # Decisión de Fernando (2026-10-05): se muestra solo el juicio.
+        assert "mi analisis real" not in body["response"]
         assert "mi conclusion real" in body["response"]
         assert body["response_id"]
         assert body["envelope_digest"].startswith("sha256:")

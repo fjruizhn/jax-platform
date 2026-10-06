@@ -131,9 +131,14 @@ def _environment() -> str:
 
 
 def _narrative(contract: "ContractResult") -> str:
-    """Preserve non-governed prose without relying on Markdown presentation."""
-    if contract.judgment:
-        return f"{contract.analysis}\n\n{contract.judgment}"
+    """Preserve non-governed prose without relying on Markdown presentation.
+
+    Decisión de Fernando (2026-10-05): el usuario ve SOLO el juicio; el
+    análisis es razonamiento interno del modelo y no se muestra. Con juicio
+    vacío o ausente se muestra el análisis, para no dejar la respuesta vacía.
+    """
+    if contract.judgment and contract.judgment.strip():
+        return contract.judgment.strip()
     return contract.analysis
 
 
