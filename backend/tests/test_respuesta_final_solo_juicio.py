@@ -42,3 +42,14 @@ def test_build_display_response_sin_juicio_cae_al_analisis(vacio):
     from api.chat import _build_display_response
     texto, _ = _build_display_response(_contract("solo analisis", vacio))
     assert texto == "solo analisis"
+
+
+def test_narrative_recorta_el_juicio():
+    from api.governed_chat import _narrative
+    assert _narrative(_contract("a", "  \n Hola \n ")) == "Hola"
+
+
+def test_build_display_response_recorta_el_juicio():
+    from api.chat import _build_display_response
+    texto, _ = _build_display_response(_contract("a", "  Hola  "))
+    assert texto == "**Hola**"

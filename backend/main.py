@@ -230,10 +230,10 @@ async def lifespan(app: FastAPI):
     # umbral (JAX_CONVERSACION_INACTIVIDAD_MIN, default 30) se cierran para que la
     # memoria extraiga. Al arrancar se cierran en la base las que un reinicio dejó
     # abiertas; después, un barrido cada 5 min, cancelable al apagar. Best-effort.
-    from api.chat import iniciar_cierre_por_inactividad
+    from api.chat import detener_cierre_por_inactividad, iniciar_cierre_por_inactividad
     tarea_inactividad = await iniciar_cierre_por_inactividad(get_pool)
     yield
-    tarea_inactividad.cancel()
+    await detener_cierre_por_inactividad(tarea_inactividad)
     # Cerrar conversaciones web abiertas -> el worker de facts las destila.
     try:
         from api.chat import flush_open_conversations

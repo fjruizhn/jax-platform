@@ -138,7 +138,7 @@ def _narrative(contract: "ContractResult") -> str:
     vacío o ausente se muestra el análisis, para no dejar la respuesta vacía.
     """
     if contract.judgment and contract.judgment.strip():
-        return contract.judgment
+        return contract.judgment.strip()
     return contract.analysis
 
 

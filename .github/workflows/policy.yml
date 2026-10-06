@@ -4695,7 +4695,10 @@ jobs:
       # `client`). MEDIDO el delta con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true: archivo a archivo,
       # 8 passed + 20 passed, 0 skipped; suite completa en la rama 2331 passed / 1457 skipped / 2 failed
       # por el pin local de jax (procesamiento_routes). El absoluto de CI NO se midio aca: piso = base + delta.
-      JAX_CI_MIN_PASSED: "2333"
+      # 2333 -> 2340 (ronda 2 de #198): +7 puras (M1 x2, marcar actividad x2, detener la tarea, recorte del
+      # juicio x2). MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true: suite completa 2331 -> 2338 passed /
+      # 1457 / 1457 skipped / 2 failed por el pin local de jax en ambas. Piso = base + delta, absoluto sin medir.
+      JAX_CI_MIN_PASSED: "2340"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

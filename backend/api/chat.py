@@ -244,6 +244,17 @@ async def _cerrar_conversacion_best_effort(uuid_: str) -> bool:
         return False
 
 
+def _marcar_actividad(uuid_: str | None) -> None:
+    """Renueva el plazo de inactividad al TERMINAR un turno (el inicio ya lo
+    marca `_get_conv_uuid`). Sin efecto si el uuid ya no se rastrea."""
+    if not uuid_:
+        return
+    for key, u in _conv_uuids.items():
+        if u == uuid_:
+            _conv_ultima_actividad[key] = _reloj()
+            return
+
+
 async def cerrar_conversaciones_inactivas() -> int:
     """Cierra (end_conversation) y deja de rastrear las conversaciones web con
     inactividad >= umbral. Best-effort: nunca lanza. Devuelve cuántas cerró."""
@@ -255,6 +266,13 @@ async def cerrar_conversaciones_inactivas() -> int:
                 if ahora - _conv_ultima_actividad.get(k, ahora) >= limite]
     n = 0
     for key, uuid_ in vencidas:
+        # La foto envejece con cada await: otro turno pudo cerrar y reabrir esta
+        # clave (otro uuid) o renovarla. Solo se cierra lo que SIGUE siendo la
+        # misma conversación y SIGUE vencida (auditoría PR #198, M1).
+        if _conv_uuids.get(key) != uuid_:
+            continue
+        if _reloj() - _conv_ultima_actividad.get(key, ahora) < limite:
+            continue
         # Se saca del dict antes del await: un turno que llegue mientras tanto
         # abre una conversación nueva en vez de reusar la que se está cerrando.
         _conv_uuids.pop(key, None)
@@ -283,6 +301,16 @@ async def iniciar_cierre_por_inactividad(obtener_pool) -> "asyncio.Task":
     except Exception:  # fail-soft: sin pool no hay cierre al arrancar; el servicio sigue y el barrido en proceso cubre lo demás
         logger.warning("Cierre de conversaciones huérfanas al arrancar no disponible", exc_info=True)
     return asyncio.create_task(start_cierre_por_inactividad())
+
+
+async def detener_cierre_por_inactividad(tarea: "asyncio.Task") -> None:
+    """Cancela la tarea periódica y ESPERA su fin, suprimiendo solo el
+    CancelledError que ella misma provoca (el apagado sigue)."""
+    tarea.cancel()
+    try:
+        await tarea
+    except asyncio.CancelledError:  # fail-soft: es la cancelación pedida arriba
+        pass
 
 
 async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
@@ -767,7 +795,7 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     # Decisión de Fernando (2026-10-05): solo el juicio; el análisis es
     # razonamiento interno. Sin juicio, el análisis evita una respuesta vacía.
     if contract.judgment and contract.judgment.strip():
-        return f"**{contract.judgment}**", False
+        return f"**{contract.judgment.strip()}**", False
     return contract.analysis, False
 
 
@@ -1507,6 +1535,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
         if conv_uuid:
             _memory.save_message(conv_uuid, facet, display_text, facet=facet, model=model_name)
+            _marcar_actividad(conv_uuid)
         await _fire_completed(facet, tenant_id, user_id)
         return chat_response
 
@@ -1522,6 +1551,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: AuthUs
         _update_history(history_key, mensaje_para_historial(req.message, validados), display_text)
         if conv_uuid:
             _memory.save_message(conv_uuid, facet, display_text, facet=facet, model=model_name)
+            _marcar_actividad(conv_uuid)
         await _fire_completed(facet, tenant_id, user_id)
 
     try:
@@ -1598,6 +1628,7 @@ async def _runtime_notice_response(*, aviso: AvisoDeChat, facet: str, timestamp:
         if conv_uuid:
             _memory.save_message(conv_uuid, "assistant", governed.text,
                                  facet=facet, model="governed")
+            _marcar_actividad(conv_uuid)
         await _fire_completed(facet, user.tenant_id, user.user_id)
 
     if governed.transport_unit is None:

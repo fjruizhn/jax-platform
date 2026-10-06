@@ -301,4 +301,82 @@ def test_el_lifespan_arranca_y_cancela_el_cierre_por_inactividad():
     fuente = inspect.getsource(main.lifespan.__wrapped__)
     assert "iniciar_cierre_por_inactividad(get_pool)" in fuente
     assert fuente.index("iniciar_cierre_por_inactividad") < fuente.index("yield")
-    assert "tarea_inactividad.cancel()" in fuente.split("yield", 1)[1]
+    despues = fuente.split("yield", 1)[1]
+    assert "await detener_cierre_por_inactividad(tarea_inactividad)" in despues
+
+
+async def test_detener_espera_la_tarea_y_suprime_el_cancelled(mundo, monkeypatch):
+    monkeypatch.setattr(chat, "INTERVALO_BARRIDO_INACTIVIDAD_S", 3600)
+    tarea = asyncio.create_task(chat.start_cierre_por_inactividad())
+    await asyncio.sleep(0)
+    await chat.detener_cierre_por_inactividad(tarea)  # no lanza
+    assert tarea.done() and tarea.cancelled()
+
+
+async def test_marcar_actividad_al_terminar_el_turno_renueva_el_plazo(mundo):
+    mem, reloj = mundo
+    await chat._get_conv_uuid(1, "t", None)
+    reloj.avanzar_min(25)
+    chat._marcar_actividad("conv-1")  # el turno terminó
+    reloj.avanzar_min(25)             # 50 desde el inicio, 25 desde el fin del turno
+    assert await chat._get_conv_uuid(1, "t", None) == "conv-1"
+    assert mem.ended == []
+
+
+def test_marcar_actividad_de_un_uuid_desconocido_no_hace_nada(mundo):
+    chat._marcar_actividad("no-existe")
+    assert chat._conv_ultima_actividad == {}
+
+
+async def test_barrido_no_pisa_la_conversacion_nueva_de_otro_turno(mundo):
+    """M1 (auditoría PR #198): el barrido trabaja sobre una foto. Mientras cierra
+    despacio la conversación de A, llega un turno de B (también vencida en la foto):
+    el cierre perezoso la cierra y abre otra. El barrido, al llegar a B, no debe
+    sacar la conversación NUEVA ni cerrar la vieja por segunda vez."""
+    mem, reloj = mundo
+    await chat._get_conv_uuid(1, "t", None)   # A -> conv-1
+    await chat._get_conv_uuid(2, "t", None)   # B -> conv-2
+    reloj.avanzar_min(40)
+    entro_lento, soltar = asyncio.Event(), asyncio.Event()
+    original = mem.end_conversation
+
+    async def _end(uuid_):
+        if uuid_ == "conv-1":
+            entro_lento.set()
+            await soltar.wait()
+        await original(uuid_)
+
+    mem.end_conversation = _end
+    barrido = asyncio.create_task(chat.cerrar_conversaciones_inactivas())
+    await entro_lento.wait()
+    nueva_b = await chat._get_conv_uuid(2, "t", None)  # turno de B, intercalado
+    assert nueva_b == "conv-3"
+    soltar.set()
+    await barrido
+    assert sorted(mem.ended) == ["conv-1", "conv-2"]  # conv-2 una sola vez
+    assert chat._conv_uuids.get("t:2:None") == "conv-3"
+    assert "t:2:None" in chat._conv_ultima_actividad
+
+
+async def test_barrido_salta_la_conversacion_renovada_desde_la_foto(mundo):
+    mem, reloj = mundo
+    await chat._get_conv_uuid(1, "t", None)   # conv-1
+    await chat._get_conv_uuid(2, "t", None)   # conv-2
+    reloj.avanzar_min(40)
+    entro_lento, soltar = asyncio.Event(), asyncio.Event()
+    original = mem.end_conversation
+
+    async def _end(uuid_):
+        if uuid_ == "conv-1":
+            entro_lento.set()
+            await soltar.wait()
+        await original(uuid_)
+
+    mem.end_conversation = _end
+    barrido = asyncio.create_task(chat.cerrar_conversaciones_inactivas())
+    await entro_lento.wait()
+    chat._marcar_actividad("conv-2")   # B terminó un turno mientras tanto
+    soltar.set()
+    await barrido
+    assert mem.ended == ["conv-1"]
+    assert chat._conv_uuids.get("t:2:None") == "conv-2"
