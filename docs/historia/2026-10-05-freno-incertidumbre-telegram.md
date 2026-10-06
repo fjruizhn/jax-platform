@@ -22,9 +22,9 @@ El freno solo se rearma cuando el contador de incertidumbre llega a cero. El int
 - `frontend/src/pages/admin/AdminSettings.test.jsx`: 35 pasaron.
 - `tests/test_no_fail_open_except.py`: 16 pasaron.
 - Piso sin DB medido localmente: 2358 → 2361; CI también pasó el job sin DB en SHA `e5c1f94`.
-- El job aislado con DB en SHA `e5c1f94` contó 3834 pasadas y una fallida: la prueba de migración no incluía la clave nueva en su expectativa. Se corrigió esa expectativa. El piso queda en 3835, pendiente de confirmación verde sobre el SHA corregido.
-- Frontend completo: 1392/0/1392; el piso anterior 1389 se subió a 1392.
+- El primer job aislado con DB en SHA `e5c1f94` contó 3834 pasadas y una fallida: la prueba de migración no incluía la clave nueva en su expectativa. Se añadió la clave a la expectativa.
+- CI del SHA final `205ce8a4e2d97013bc0dcaa3bf95ed234de52872`, run `37451121724`: 3835 pasadas con DB y 2361 sin DB; ambos jobs verdes. Frontend: 1392/0/1392. Se fijaron los pisos respectivos en esos valores.
 
-## Pendiente
+## Estado
 
-Confirmar en CI de GitHub la suite con MariaDB desechable y fijar el piso con DB usando el conteo observado. No integrar el PR desde esta sesión.
+PR #203 actualizado y CI verde. Queda abierto para integración; esta sesión no lo integra.
