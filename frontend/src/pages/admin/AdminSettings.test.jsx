@@ -418,7 +418,18 @@ describe('AdminSettings -- enfriamiento del freno de incertidumbre (#203)', () =
       expect(en[clave], `en.${clave}`).toBeTruthy()
       expect(es[clave]).not.toBe(en[clave])
     }
-    expect(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('60')
-    expect(en.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('60')
+    // La ayuda es una funcion del minimo del servidor: no lleva el numero escrito a mano.
+    expect(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(75)).toContain('75')
+    expect(en.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(75)).toContain('75')
+  })
+
+  it('la ayuda muestra el minimo que manda el servidor (limites), no un numero fijo', async () => {
+    api.get.mockResolvedValue({ data: {
+      ...CON_FRENO.data,
+      limites: { ...LIMITES, [CLAVE]: { min: 90, max: 604800 } },
+    } })
+    renderSettings()
+    await screen.findByLabelText(es.adminSettingsFrenoIncertidumbreEnfriamiento)
+    expect(screen.getByText(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(90))).toBeInTheDocument()
   })
 })

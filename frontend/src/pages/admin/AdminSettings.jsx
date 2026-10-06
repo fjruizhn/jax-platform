@@ -155,7 +155,10 @@ export default function AdminSettings() {
           onChange={v => set('ejecutor.c2_edad_max_s', v)} />
         <CampoNumero id="ajuste-freno-incertidumbre-enfriamiento"
           etiqueta={t.adminSettingsFrenoIncertidumbreEnfriamiento}
-          ayuda={t.adminSettingsFrenoIncertidumbreEnfriamientoAyuda}
+          ayuda={limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s']
+            ? t.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(
+              limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s'].min)
+            : null}
           valor={config['proyectos.documentos.freno_incertidumbre_enfriamiento_s']}
           limite={limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s']}
           onChange={v => set('proyectos.documentos.freno_incertidumbre_enfriamiento_s', v)} />
