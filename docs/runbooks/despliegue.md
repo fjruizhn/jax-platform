@@ -108,7 +108,10 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 ## 1 · `jax` (si el cambio lo toca)
 
 ```bash
-cd /srv/jax-prod/jax && git fetch origin && git merge --ff-only origin/master
+sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+  git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
+sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
+sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
 sudo systemctl restart jax-las-manos
 ```
 
@@ -163,8 +166,11 @@ sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.
 ssh -p 58291 fruiz@172.16.20.11 'R=/www/wwwroot/axioma-ia.io; \
   B=~/respaldos-sitio/axioma-$(date +%Y%m%d-%H%M%S); mkdir -p "$B"; sudo cp -a "$R"/. "$B"/'
 
-# Publicar
-tar -czf - -C dist . | ssh -p 58291 fruiz@172.16.20.11 \
+# Publicar SIEMPRE desde la ruta absoluta del checkout de producción (nunca `-C dist`
+# relativo: desde ~/jax-platform/frontend publicaría el bundle de una rama de desarrollo)
+DIST=/srv/jax-prod/jax-platform/frontend/dist
+ls "$DIST"/assets/index-*.js | xargs -n1 basename   # anotarlo: es el que sección 5 tiene que ver publicado
+tar -czf - -C "$DIST" . | ssh -p 58291 fruiz@172.16.20.11 \
   'T=$(mktemp -d) && tar -xzf - -C "$T" && sudo cp -a "$T"/. /www/wwwroot/axioma-ia.io/ \
    && sudo chown -R www:www /www/wwwroot/axioma-ia.io/{assets,index.html,favicon.svg}; rm -rf "$T"'
 ```
@@ -176,6 +182,8 @@ que **el hash del bundle haya cambiado**:
 
 ```bash
 curl -s https://axioma-ia.io | grep -oE 'assets/index-[^"]*\.js'   # != ESTADO-ANTES.txt
+# y además IGUAL al de producción (no basta con que cambie: tiene que ser ESTE):
+ls /srv/jax-prod/jax-platform/frontend/dist/assets/index-*.js | xargs -n1 basename
 curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
 ```
 
@@ -226,7 +234,9 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
   mientras el `merge --ff-only` siguiente dice **«Already up to date»** contra
   una referencia vieja. Sale 0 y no desplegó nada. **Usá los comandos de arriba
   (safe.directory + llave + `chown` de vuelta)** y **comprobá el SHA después**,
-  no el mensaje. `fruiz` ya no puede escribir en esos checkouts.
+  no el mensaje. `fruiz` ya no puede escribir en esos checkouts **sin sudo**; como `fruiz`
+  está en el grupo `sudo`, esto protege de un error o de un proceso sin sudo, no de quien
+  tenga sudo.
 - **`ExecStartPre` se niega a arrancar** si el checkout no está limpio y en
   master (`jax-checkout-de-produccion-sano.sh`). Que el `merge` sea `--ff-only`
   y que no queden archivos sueltos.
@@ -507,12 +517,12 @@ y el 5 un clic en «Sincronizar» todavía podría colarse.
 **Si hay que abortar** (antes del paso 5): nada se reinició. Si ya se hizo el
 paso 4, devolver el checkout a como estaba con
 `sudo git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform reset --hard <SHA-previo>` seguido de `sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform` (anotado en
-`ESTADO-ANTES.txt` de la sección 0), comprobar `git status -s` vacío, y
+`ESTADO-ANTES.txt` de la sección 0), comprobar `git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform status -s` vacío, y
 **volver a arrancar el timer** (`sudo systemctl start jax-catalogo-modelos.timer`):
 si no, el catálogo deja de sincronizarse sin que nadie avise.
 
 **Volver atrás un despliegue ya hecho:** el mismo procedimiento, con dos
-cambios. En el paso 4, `git reset --hard <SHA-previo>` en lugar del `merge`
+cambios. En el paso 4, `sudo git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform reset --hard <SHA-previo>` seguido de `sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform` (y `sudo find /srv/jax-prod/jax-platform -user root | wc -l` = 0) en lugar del `merge`
 (se hace **después** de los pasos 1-3, nunca antes, porque si no el timer
 podría correr el código viejo con el candado viejo). En el paso 6, reinstalar
 las unidades de ese SHA.
@@ -653,8 +663,11 @@ arregla con un `chmod` a mano en la carpeta del proyecto: se corre el guion, que
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en
    atem-ai. Es lo más rápido y lo más visible.
-2. **Código:** `git -C <checkout> reset --hard <SHA de ESTADO-ANTES.txt>` y
-   reiniciar la unidad.
+2. **Código:** los dos checkouts son de `jaxsvc`, así que con `C=/srv/jax-prod/jax` o
+   `C=/srv/jax-prod/jax-platform`:
+   `sudo git -C $C -c safe.directory=$C reset --hard <SHA de ESTADO-ANTES.txt>`,
+   `sudo chown -R jaxsvc:jaxsvc $C`, `sudo find $C -user root | wc -l` (tiene que dar 0)
+   y reiniciar la unidad.
 3. **Esquema:** las migraciones de esta casa son **aditivas** (columnas nullable,
    índices). Volver el código NO exige volver el esquema, y no hay que borrar
    columnas para revertir. Si hiciera falta restaurar datos, está el volcado —
