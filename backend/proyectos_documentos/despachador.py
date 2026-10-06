@@ -83,6 +83,8 @@ INTERVALO_SEGUNDOS = 10
 TIMEOUT_HTTP_SEGUNDOS = 10.0
 # Tope de filas `en_cola` que una vuelta toma; lo que sobre sale en la siguiente.
 LIMITE_DE_FILAS_POR_CICLO = 1000
+# Tope de pasadas de una vuelta (una por clase frenada o grupo saltado, mas la ultima): acota el trabajo de una vuelta.
+MAXIMO_DE_PASADAS = 50
 
 # El nombre de GET_LOCK es global al SERVIDOR de MariaDB: lleva la base para que dos bases en
 # el mismo servidor (otra instancia, una suite de pruebas) no se frenen entre si.
@@ -395,6 +397,13 @@ async def _sincronizar(pool) -> None:
 
 # ---------------------------------------------------------------- despacho
 
+def abreviar_clave(clave: str) -> str:
+    """Hash corto de la clave para el log: IDENTICO a `abreviar()` de LAS MANOS (jax
+    las_manos/procesamiento_idempotencia.py) para poder unir las dos lineas. Un vector fijo lo vigila en las dos
+    pruebas."""
+    return hashlib.sha256(clave.encode("utf-8", "backslashreplace")).hexdigest()[:12]
+
+
 def _fecha_estable(valor: object) -> str:
     return valor.isoformat(timespec="microseconds") if isinstance(valor, datetime.datetime) else str(valor)
 
@@ -448,13 +457,14 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
     """'seguir' | 'saltar_grupo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
+    clave = clave_de_idempotencia(project_uuid, trozo)
     try:
         cliente = await get_http_client()
         respuesta = await cliente.post(
             f"{LAS_MANOS_URL}/procesamiento/trabajos",
             json={"project_uuid": project_uuid, "rutas": [f["ruta_entrada"] for f in trozo]},
             headers={**encabezados_procesamiento(contexto),
-                     ENCABEZADO_DE_IDEMPOTENCIA: clave_de_idempotencia(project_uuid, trozo)},
+                     ENCABEZADO_DE_IDEMPOTENCIA: clave},
             timeout=TIMEOUT_HTTP_SEGUNDOS)
     except ERRORES_DE_DESENLACE_INCIERTO:  # fail-soft: el pedido pudo llegar; las filas siguen en_cola pero no se re-despachan durante la ventana, para no duplicar el trabajo
         hasta = _reloj() + VENTANA_DE_INCERTIDUMBRE_SEGUNDOS
@@ -504,9 +514,9 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         # de version entre las dos, no del documento. Nunca lo convierte en `error`; queda en_cola y el log lo dice.
         # Es un problema de ESTE trozo (su proyecto): se salta el proyecto y los demas siguen despachando, como con
         # el 422 `proyecto_no_activo`. Cortar la vuelta frenaria a todos los tenants por una clave de uno.
-        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia (%s, %s); se salta el proyecto %s "
-                     "en esta vuelta: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola", estado,
-                     _codigo_de(respuesta), project_uuid, len(ids), ids[0], ids[-1])
+        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia %s (%s, %s); se salta el proyecto %s "
+                     "en esta vuelta: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola",
+                     abreviar_clave(clave), estado, _codigo_de(respuesta), project_uuid, len(ids), ids[0], ids[-1])
         return "saltar_proyecto"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
@@ -534,7 +544,10 @@ async def _despachar(pool) -> None:
     `extractores_no_disponibles` frena la CLASE entera (la falta de una biblioteca no es de un proyecto) hasta
     el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
     1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
-    mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
+    mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva O salte un (proyecto, dueno) nuevo:
+    sus filas tampoco se piden otra vez (`excluir_duenos`), asi un proyecto cuyo trozo LAS MANOS rechaza (409 de
+    clave, 422 `proyecto_no_activo`) no llena la ventana de LIMITE y deja sin despacho a los demas. El tope de
+    pasadas es `MAXIMO_DE_PASADAS`; lo que quede sale en la vuelta siguiente."""
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -550,12 +563,14 @@ async def _despachar(pool) -> None:
                        len(_en_incertidumbre), 2 * por_trabajo)
         return
     saltados: set[tuple[str, object]] = set()
-    for _pasada in range(len(tipos.CLASES) + 1):
-        antes = len(frenadas)
+    for _pasada in range(MAXIMO_DE_PASADAS):
+        antes = (len(frenadas), len(saltados))
         if await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados) == "cortar":
             return
-        if len(frenadas) == antes:
+        if (len(frenadas), len(saltados)) == antes:
             return
+    logger.warning("proyectos_documentos: %s pasadas de despacho en una vuelta (tope); lo que falte sale en la siguiente",
+                   MAXIMO_DE_PASADAS)
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
@@ -566,7 +581,8 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
     # LIMITE o mas de ellas las sanas de atras nunca entrarian en la ventana. Viven en la memoria de este proceso
     # (no en la base), asi que se pasan como ids; la condicion es temporal y ya se podo arriba por `_reloj`.
     for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas),
-                                         excluir_ids=frozenset(_en_incertidumbre)):
+                                         excluir_ids=frozenset(_en_incertidumbre),
+                                         excluir_duenos=frozenset((c.project_id, c.user_id) for _, c in saltados)):
         if fila["id"] in _en_incertidumbre:      # respaldo: se agrego una entre la consulta y aqui
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):

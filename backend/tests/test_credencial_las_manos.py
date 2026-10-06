@@ -61,7 +61,7 @@ def test_todo_pedido_a_las_manos_salvo_health_lleva_la_credencial():
         formas_de_procesamiento = {
             "encabezados_procesamiento(contexto)",
             "{**encabezados_procesamiento(contexto), ENCABEZADO_DE_IDEMPOTENCIA: "
-            "clave_de_idempotencia(project_uuid, trozo)}",
+            "clave}",
         }
         processing = (ruta == Path("proyectos_documentos/despachador.py") and headers
                       and ast.unparse(headers[0].value) in formas_de_procesamiento)

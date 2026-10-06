@@ -46,14 +46,18 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 _EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb4_nopad_bin"
 
 
-def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0) -> str:
+def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0,
+                      n_duenos_excluidos: int = 0) -> str:
     """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
     frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
     `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
     extensiones son constantes de `tipos`, nunca texto del usuario. El `ORDER BY d.id` sigue en el indice de
     despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden.
     `n_ids_excluidos`: cuantos `AND d.id NOT IN (%s, ...)` lleva (las filas con desenlace incierto del despachador,
-    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`)."""
+    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`).
+    `n_duenos_excluidos`: cuantos `AND NOT (d.project_id = %s AND u.user_id = %s)` lleva (los grupos (proyecto,
+    dueno) que el despachador ya salto en este ciclo: sin esto sus filas llenan la ventana de `LIMIT` y los demas
+    proyectos nunca entran; los parametros van despues de los ids y antes del `LIMIT`)."""
     desconocida = set(excluir_clases) - set(tipos.CLASES)
     if desconocida:
         raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
@@ -67,6 +71,7 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
             condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
     if n_ids_excluidos:
         condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
+    condiciones.extend(["NOT (d.project_id = %s AND u.user_id = %s)"] * n_duenos_excluidos)
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
         "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
@@ -363,7 +368,8 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
 
 
 async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset(),
-                        excluir_ids: frozenset[int] = frozenset()) -> list[dict]:
+                        excluir_ids: frozenset[int] = frozenset(),
+                        excluir_duenos: frozenset[tuple[int, int]] = frozenset()) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
@@ -373,7 +379,9 @@ async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = f
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             ids = sorted(excluir_ids)
-            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids)), (*ids, limite))
+            duenos = sorted(excluir_duenos)
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids), len(duenos)),
+                              (*ids, *[x for par in duenos for x in par], limite))
             filas = await cur.fetchall()
     # `sha256` y `actualizado_at` son lo que el despachador usa para la clave de idempotencia del envio
     # (`despachador.clave_de_idempotencia`): `updated_at` se mueve con CADA UPDATE de la fila, asi que

@@ -37,6 +37,7 @@ CONTRATO_IDEMPOTENCIA = (
     ("completed", True, "mismo"),
     ("failed", True, "crea"),
     ("cancelled", True, "crea"),
+    ("rejected", True, "crea"),
     ("pending", False, "conflicto"),
     ("failed", False, "conflicto"),
     ("completed", False, "conflicto"),
@@ -1219,6 +1220,8 @@ def test_un_409_de_clave_en_un_proyecto_no_frena_a_los_demas(e, caplog):
     assert e.fila(otro)[0] == "pendiente"                            # el otro proyecto salio en la misma vuelta
     msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
     assert e.uuid in msg and "se salta el proyecto" in msg and "idempotency_key_reuse" in msg
+    # El hash corto de la clave (el mismo `abreviar` de LAS MANOS) une esta linea con la suya.
+    assert despachador.abreviar_clave(e.las_manos.claves[0]) in msg and e.las_manos.claves[0] not in msg
 
 
 def test_ocultar_y_restaurar_una_fila_en_cola_no_cambia_su_clave(e):
@@ -1238,3 +1241,34 @@ def test_ocultar_y_restaurar_una_fila_en_cola_no_cambia_su_clave(e):
     e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='procesamiento_fallido' WHERE id=%s", (doc,))
     e.client.portal.call(sql, "UPDATE project_documents SET estado='en_cola', job_id=NULL, error=NULL WHERE id=%s", (doc,))
     assert clave() != antes
+
+
+def test_el_hash_corto_de_la_clave_es_el_mismo_que_el_de_las_manos():
+    """Vector fijo, copiado de la prueba de jax (`abreviar` de procesamiento_idempotencia): si una de las dos
+    cambia, las lineas de log de las dos puntas dejan de unirse."""
+    assert despachador.abreviar_clave("jxp-doc-a2dad605d3914f47985f83924083ec04") == "776783dd9d97"
+
+
+def test_un_409_que_llena_la_ventana_no_deja_sin_despacho_al_otro_proyecto(e, monkeypatch):
+    """MINOR-D: con LIMITE=3 y tres filas del proyecto rechazado, la ventana se llenaba con filas que se saltaban
+    y el otro proyecto nunca entraba. Ahora la pasada siguiente excluye al (proyecto, dueno) saltado."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    mias = [e.insertar(e.ruta("l1", f"a{i}.pdf"), n=None) for i in range(3)]
+    otro_id, otro_uuid = e.proyecto()
+    otro = _insertar(e.client, otro_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{otro_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})] * 10
+    e.ciclo()                                           # UNA vuelta alcanza
+    assert [e.fila(i)[0] for i in mias] == ["en_cola"] * 3
+    assert e.fila(otro)[0] == "pendiente"
+
+
+def test_explain_de_tomar_en_cola_con_duenos_excluidos_usa_el_indice_de_despacho(e):
+    consulta = repo.sql_tomar_en_cola(frozenset(), 2, 2)
+    assert consulta.count("NOT (d.project_id = %s AND u.user_id = %s)") == 2
+    plan = e.client.portal.call(
+        sql, "EXPLAIN " + consulta, (1, 2, 1, 2, 3, 4, 5), True)
+    d = [dict(zip(("id", "select_type", "table", "type", "possible_keys", "key"), f[:6])) for f in plan]
+    fila_d = next(x for x in d if x["table"] == "d")
+    assert fila_d["key"] == "idx_project_documents_despacho", plan
+    assert not any("filesort" in str(f).lower() or "temporary" in str(f).lower() for f in plan), plan

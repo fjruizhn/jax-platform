@@ -3651,7 +3651,12 @@ jobs:
           #   rojo contra el codigo de la ronda 1). Sin DB no suma (usan `client`): 2366 igual. MEDIDO sobre la
           #   rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3860 passed, 1 skipped, 0 failed (+12 sobre los
           #   3848 de la ronda 1); sin DB, 2366 passed / 1495 skipped. Piso = base + delta; el runner tiene la ultima palabra.
-          PISO_PASSED = 3859
+          # 3859 -> 3866 (ronda 3 de la auditoria de jax-platform#210): +7 con DB: 1 caso mas de la tabla de
+          #   contrato (`rejected`), 1 de que un 409 que llena la ventana LIMITE no deja sin despacho al otro
+          #   proyecto, 1 EXPLAIN de tomar_en_cola con duenos excluidos, y las 4 puras de arriba. Ninguna existente
+          #   cambia de conteo. Las de ventana y EXPLAIN vistas en rojo contra la ronda 2. MEDIDO sobre la rama, mismo comando del job: 3867
+          #   passed, 1 skipped, 0 failed (piso = base + delta, como en las rondas anteriores).
+          PISO_PASSED = 3866
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4746,7 +4751,13 @@ jobs:
       #   `client` (test_proyectos_documentos_despachador.py) se saltan sin DB. MEDIDO con JAX_CI_NO_DB=1 sobre
       #   la rama (jax en el worktree de la rama hermana, CI=true GITHUB_ACTIONS=true, MariaDB 12.3.3 efimera
       #   propia en su netns): 2366 passed / 1483 skipped / 0 failed. El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2366"
+      # 2366 -> 2370 (ronda 3 de la auditoria de jax-platform#210): +4 puras (el vector fijo del hash corto y las 3 de
+      #   tests/test_contrato_idempotencia_con_las_manos.py, que leen la tabla de contrato de jax en JAX_REPO_PATH:
+      #   FALLAN CERRADO si ese checkout no la trae, asi que el pin de jax del job tiene que ser un commit que
+      #   incluya las_manos/_procesamiento_idempotencia_db_test.py). MEDIDO con JAX_CI_NO_DB=1 sobre la rama, jax
+      #   en el worktree hermano (CI=true, MariaDB efimera propia): 2370 passed / 1498 skipped / 0 failed. El runner
+      #   tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2370"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
