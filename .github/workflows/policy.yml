@@ -3639,7 +3639,15 @@ jobs:
           #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
           #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
           #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
-          PISO_PASSED = 3836
+          # 3836 -> 3876 (Hyde, ronda 5 de #203 rebasada sobre master 303006f, 2026-10-06): MEDIDO LOCAL con el
+          # venv de pruebas (requirements + requirements-archivos del pin, como la CI) y mariadb:12.3.3
+          # desechable: master 303006f = 3837 passed / 1 skipped / 0 failed; esta rama = 3876 / 1 / 0.
+          # Delta +39 por archivo: test_ajustes +5 (EXPLAIN con relleno y sus bordes: 4 de bordes + la prueba
+          # del enfriamiento), test_catalogo_modelos_ejecutor +12 (desenlaces de Telegram),
+          # test_despachador_aviso_freno_simulado +13 (archivo nuevo), test_main_despachador_lifespan +2,
+          # test_proyectos_documentos_despachador +7. El absoluto del runner lo confirma la CI (regla 5);
+          # master local da 3837 contra su piso de 3836.
+          PISO_PASSED = 3876
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4729,7 +4737,13 @@ jobs:
       # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
       # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
       # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2361"
+      # 2361 -> 2394 (Hyde, ronda 5 de #203 rebasada sobre master 303006f, 2026-10-06): MEDIDO LOCAL con
+      # JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master
+      # 303006f = 2361 passed / 1477 skipped; esta rama = 2394 passed / 1483 skipped. Delta +33 puras por
+      # archivo: test_ajustes +1, test_catalogo_modelos_ejecutor +12, test_despachador_aviso_freno_simulado +13,
+      # test_main_despachador_lifespan +2, test_proyectos_documentos_despachador +5. Los +6 skipped son
+      # pruebas con `client`. El absoluto del runner lo confirma la CI (regla 5).
+      JAX_CI_MIN_PASSED: "2394"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
