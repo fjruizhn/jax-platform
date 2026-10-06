@@ -152,8 +152,10 @@ def test_build_display_response_valid_contract_with_judgment():
         judgment="mi conclusión", degradation_reason=None, raw_text="...",
     )
     text, degraded = _build_display_response(contract)
-    assert "mi análisis" in text
-    assert "mi conclusión" in text
+    # Decisión de Fernando (2026-10-05): el usuario ve SOLO el juicio; el
+    # análisis es razonamiento interno y no se muestra.
+    assert text == "**mi conclusión**"
+    assert "mi análisis" not in text
     assert degraded is False
 
 

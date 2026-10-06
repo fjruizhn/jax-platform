@@ -685,8 +685,10 @@ def _build_display_response(contract: ContractResult) -> tuple[str, bool]:
     """
     if not contract.contract_parsed:
         return "The response could not be verified safely.", True
-    if contract.judgment:
-        return f"{contract.analysis}\n\n**{contract.judgment}**", False
+    # Decisión de Fernando (2026-10-05): solo el juicio; el análisis es
+    # razonamiento interno. Sin juicio, el análisis evita una respuesta vacía.
+    if contract.judgment and contract.judgment.strip():
+        return f"**{contract.judgment}**", False
     return contract.analysis, False
 
 
