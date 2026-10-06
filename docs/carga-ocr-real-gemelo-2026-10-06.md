@@ -14,7 +14,7 @@ cambian el esquema, el volumen o el hardware, hay que volver a medir.
 | LAS MANOS | jax `f47820f5`, mismos binarios del host; lanzador propio que solo anula la composición B7 (necesita el manifiesto de build de producción) |
 | jax-platform | `365adba` (HEAD de `feat/e3-respaldo-chat` al armar el gemelo; la rama se rebasó después a `517b13f`: el diff 365adba..517b13f no toca la ruta de subida ni el OCR, solo `api/admin/models.py`, `contrato_dispatch.py`, pruebas, docs y `policy.yml`) |
 | Base | `mariadb:12.3.3` efímera, nombre único, `--rm`; base `jax_memory_test_ocrgem` |
-| Aislamiento | todo dentro del netns del contenedor (`nsenter --net`), sin ruta por defecto; 7777, 11434 y 3308 dan conexión rechazada (comprobado, también por `172.17.0.1`). Credenciales nuevas al azar en archivos 0600; `JACOBS_URL` y la URL de Ollama de LAS MANOS a puertos muertos; sin Telegram |
+| Aislamiento | todo dentro del netns del contenedor (`nsenter --net`), sin ruta por defecto; 7777, 11434 y 3308 dieron conexión rechazada, también por `172.17.0.1` (se observó en la sesión y no se guardó la salida: no hay artefacto que lo respalde; solo quedan en los registros rechazos a 3306, que no es ninguno de esos puertos). Credenciales nuevas al azar en archivos 0600; `JACOBS_URL` y la URL de Ollama de LAS MANOS a puertos muertos; sin Telegram |
 | Chat | proveedor SIMULADO (no es Ollama) con demora fija de 50 ms; responde en un formato que la plataforma marca `contract_degraded`, pero recorre el mismo camino del turno. El chat de la Mesa toma un `flock` por llamada (carril), así que este proveedor lo serializa: tope de unos 17 turnos/s |
 | Topes de adjuntos | valores por defecto documentados en `docs/superpowers/specs/2026-09-17-frente-d-adjuntos-por-referencia.md` (10 MiB, 20 páginas, 8000 caracteres, 30 subidas/min por usuario, 1 subida y 1 proceso de PDF en proceso). NO se leyeron los `JAX_ADJUNTO_*` reales de `/etc/jax/.env` (la regla permitía solo `JAX_PROCESAMIENTO_*` y `OMP_THREAD_LIMIT`); el disco libre mínimo se bajó a 1 GiB porque `/tmp` es tmpfs |
 | LAS MANOS (config) | en producción no hay `JAX_PROCESAMIENTO_*` ni `OMP_THREAD_LIMIT`: rigen los defaults (4 workers de OCR, 2 de E/S, 50 rutas por trabajo, OpenMP sin límite) |
@@ -71,7 +71,8 @@ subidas); R2 chat 5,7 + sondeo 2,8 (8,5); R4 chat 10,2 + sondeo 4,9 (15,2).
 | Total del gemelo: CPU% media / máx | 216 / 1220 | 190 / 833 | 170 / 883 |
 
 - Máximo 4 `tesseract` y 4 `pdftoppm` a la vez (el tope de 4 workers). Un pico de 1201 % es unos 12 núcleos de
-  32: son los hilos OpenMP de cada tesseract, porque no hay `OMP_THREAD_LIMIT`. En promedio el OCR ocupó 1 a 2 núcleos.
+  32. Hipótesis, no medida: serían los hilos OpenMP de cada tesseract, porque no hay `OMP_THREAD_LIMIT`; el muestreo
+  suma por proceso y no cuenta hilos de tesseract (la columna `hilos_manos` es de uvicorn). En promedio el OCR ocupó 1 a 2 núcleos.
 - Disco temporal: cada documento rasteriza sus 20 páginas a PNG bajo `JAX_WORKSPACE_DIR`
   (`ocr-pdf-*`), unos 55 MiB por documento (medido con `pdftoppm -png -r 300`). Con 4 en vuelo, transitorio máximo
   medido: 262 MiB (R1) y 261 MiB (R4). Crecimiento permanente: ~10 MiB por documento (original y texto), 201 MiB
@@ -106,8 +107,11 @@ blanco quedan `parcial` sin una sola palabra de texto: el estado no distingue «
    errores ni 429.
 4. **Lo que sí se degrada es el tiempo hasta tener el documento listo:** crece linealmente (≈ 17,5 s por documento
    de 20 páginas) y es independiente del cupo. Con 20 simultáneos el último espera unos 6 min; con 40, unos 12 min.
-   Si el criterio es «un PDF escaneado de 20 páginas listo en menos de 5 min», el límite medido es de unos 16
-   documentos al tope subidos a la vez. En producción real, con menos de 4 subidas simultáneas, no hay cola.
+   Si el criterio es «un PDF escaneado de 20 páginas listo en menos de 5 min», el límite **estimado** es de unos 16
+   documentos al tope subidos a la vez: es una extrapolación (300 s / 17,5 s por documento ≈ 17, redondeado a la baja a 16), no una
+   medición; ninguna corrida tuvo 16 documentos (se corrió con 20 y con 40). Que en producción real, con menos de 4
+   subidas simultáneas, no haya cola, **no se midió**: no se leyeron los `JAX_ADJUNTO_*` de producción (ver
+   «Qué se midió» y «Límites»); es solo lo que se esperaría del despachador de 4 trabajos.
 5. **Producción no se vio afectada:** `/health` del 7777 no se movió de su línea base y el corte nunca se disparó.
 
 ## Conclusiones sobre el cupo
