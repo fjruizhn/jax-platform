@@ -27,8 +27,9 @@ def test_no_pasa_de_max_paginas_y_lo_dice():
 
 
 def test_pdf_sin_texto_extraible():
-    with pytest.raises(pdf.PdfSinTexto):
+    with pytest.raises(pdf.PdfSinTexto) as fallo:
         pdf.extraer_texto(pdf_con_texto(["", ""]), max_paginas=20, max_chars=8000)
+    assert fallo.value.paginas == 2
 
 
 def test_basura_con_firma_de_pdf_es_ilegible():

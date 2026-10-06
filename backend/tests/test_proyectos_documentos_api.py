@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 from adjuntos import cuota
+from auth.models import AuthUser
 from proyectos_documentos import almacen, original, tipos
 from proyectos_documentos import repositorio as repo
 import kill_switch
@@ -170,6 +171,44 @@ def test_contributor_sube_y_queda_en_cola(ent, workspace):
     # el .exe no dejo nada, y jamas se toca `fuente/`
     assert [x.name for x in _en_disco(workspace)] == ["a.pdf"]
     assert not (workspace / "proyectos" / p.uuid / "fuente").exists()
+
+
+def test_pdf_escaneado_desde_chat_se_encola_y_expone_su_estado(ent, workspace, tmp_path, monkeypatch):
+    """El PDF crudo del chat entra por la misma biblioteca y cola durable de LAS MANOS."""
+    from api import upload as upload_mod
+    from starlette.datastructures import UploadFile
+    from tests.adjuntos_muestras import pdf_con_texto
+
+    proyecto = ent.proyecto()
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+    usuario = AuthUser(user_id=str(ent._id("dueno")), tenant_id=ent.tenant, role="operator")
+    archivo = UploadFile(io.BytesIO(pdf_con_texto(["", ""])), filename="estado.pdf")
+    resultado = asyncio.run(upload_mod.upload_file(file=archivo, user=usuario, project_id=proyecto.id))
+
+    assert resultado["tipo"] == "pdf_procesando"
+    assert resultado["project_id"] == proyecto.id
+    assert resultado["document_id"] == ent.filas(proyecto)[0][0]
+    assert ent.filas(proyecto)[0][5] == "en_cola"
+    assert [p.name for p in _en_disco(workspace)] == ["estado.pdf"]
+    assert list(adjuntos.rglob("*.dato")) == []
+
+
+def test_estado_de_documento_exige_que_pertenezca_al_proyecto(ent, workspace):
+    proyecto = ent.proyecto()
+    alta = ent.subir(proyecto, ent.dueno, [_parte("estado.pdf", "estado")])
+    documento_id = alta.json()["aceptados"][0]["id"]
+
+    estado = ent.client.get(f"{P}/{proyecto.id}/documentos/{documento_id}", headers=ent.dueno)
+    assert estado.status_code == 200, estado.text
+    assert estado.json()["id"] == documento_id
+    assert estado.json()["estado"] == "en_cola"
+    assert estado.json()["error"] is None
+
+    otro = ent.proyecto()
+    ajeno = ent.client.get(f"{P}/{otro.id}/documentos/{documento_id}", headers=ent.dueno)
+    assert ajeno.status_code == 404
 
 
 def test_el_dueno_tambien_sube(ent, workspace):

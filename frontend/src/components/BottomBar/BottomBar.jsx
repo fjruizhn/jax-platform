@@ -127,6 +127,25 @@ function BottomBar() {
     return () => { vivo = false }
   }, [])
 
+  useEffect(() => {
+    if (attachment?.tipo !== 'pdf_procesando' || !attachment.project_id || !attachment.document_id) return undefined
+    let vivo = true
+    let timer
+    const consultar = async () => {
+      try {
+        const { data } = await api.get(`/proyectos/${attachment.project_id}/documentos/${attachment.document_id}`)
+        if (vivo) setAttachment((actual) => actual?.document_id === attachment.document_id
+          ? { ...actual, estado: data.estado, error: data.error } : actual)
+        if (vivo && ['en_cola', 'pendiente', 'procesando'].includes(data.estado)) timer = setTimeout(consultar, 3000)
+      } catch {
+        if (vivo) setAttachment((actual) => actual?.document_id === attachment.document_id
+          ? { ...actual, estado: 'estado_no_disponible' } : actual)
+      }
+    }
+    consultar()
+    return () => { vivo = false; clearTimeout(timer) }
+  }, [attachment?.tipo, attachment?.project_id, attachment?.document_id])
+
   const MODES = [
     { id: 'chat',     label: t.modeChat },
     ...(esSuperadmin ? [{ id: 'ejecutor', label: t.ejecutor.modo }] : []),
@@ -159,6 +178,7 @@ function BottomBar() {
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
+    if (proyectoActivo?.id) formData.append('project_id', String(proyectoActivo.id))
     try {
       // A-21: sin Content-Type a mano -- el navegador pone el boundary.
       const { data } = await api.post('/chat/upload', formData)
@@ -189,6 +209,11 @@ function BottomBar() {
   async function handleSend() {
     const text = input.trim()
     if (!text || sending || imagenSinSoporte) return
+
+    if (attachment?.tipo === 'pdf_procesando') {
+      addToast({ message: t.erroresMesa.pdf_procesando_no_adjuntable(), type: 'info' })
+      return
+    }
 
     if (mode === 'pipeline') {
       setPipelineObjective(text)

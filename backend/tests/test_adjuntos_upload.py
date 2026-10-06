@@ -43,8 +43,8 @@ def _archivo(datos, nombre="f", mime="application/octet-stream"):
     return UploadFile(io.BytesIO(datos), filename=nombre, headers=Headers({"content-type": mime}))
 
 
-def _directo(datos, nombre="f", user=USUARIO):
-    return asyncio.run(upload_mod.upload_file(file=_archivo(datos, nombre), user=user))
+def _directo(datos, nombre="f", user=USUARIO, project_id=None):
+    return asyncio.run(upload_mod.upload_file(file=_archivo(datos, nombre), user=user, project_id=project_id))
 
 
 def _rechazo_directo(datos, nombre="f"):
@@ -109,10 +109,40 @@ def test_pdf_ilegible_es_422_con_codigo(client):
     assert r.json()["detail"] == {"code": "pdf_ilegible"}
 
 
+def test_pdf_escaneado_sin_proyecto_falla_cerrado(directorio):
+    try:
+        asyncio.run(upload_mod.upload_file(
+            file=_archivo(pdf_con_texto(["", ""]), "estado.pdf"), user=USUARIO, project_id=None,
+        ))
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert exc.detail == {"code": "pdf_escaneado_requiere_proyecto"}
+    else:
+        raise AssertionError("el escaneado no se debe aceptar sin un proyecto")
+    assert _archivos(directorio) == []
+
+
+def test_pdf_escaneado_supera_el_tope_de_paginas_configurado(directorio, monkeypatch):
+    monkeypatch.setenv("JAX_ADJUNTO_MAX_PAGINAS", "1")
+
+    async def sin_texto(*args):
+        raise upload_mod.PdfSinTexto(paginas=2)
+
+    monkeypatch.setattr(upload_mod, "extraer_texto_en_pool", sin_texto)
+    try:
+        _directo(pdf_con_texto(["", ""]), "estado.pdf", project_id=9)
+    except HTTPException as exc:
+        assert exc.status_code == 413
+        assert exc.detail == {"code": "adjunto_demasiadas_paginas", "max_paginas": 1}
+    else:
+        raise AssertionError("el tope de páginas debe venir de la configuración")
+    assert _archivos(directorio) == []
+
+
 def test_pdf_sin_texto_es_422_con_codigo(client):
     r = _subir(client, pdf_con_texto([""]), "escaneo.pdf", "application/pdf")
     assert r.status_code == 422
-    assert r.json()["detail"] == {"code": "pdf_sin_texto"}
+    assert r.json()["detail"] == {"code": "pdf_escaneado_requiere_proyecto"}
 
 
 def test_vacio_es_422(client):
@@ -198,7 +228,7 @@ def test_413_en_streaming_no_deja_archivos(directorio, monkeypatch):
     (b"MZ\x90\x00\x03", 415, "adjunto_tipo_no_permitido"),
     (b"", 422, "adjunto_vacio"),
     (b"%PDF-1.4 basura" * 5, 422, "pdf_ilegible"),
-    (pdf_con_texto([""]), 422, "pdf_sin_texto"),
+    (pdf_con_texto([""]), 422, "pdf_escaneado_requiere_proyecto"),
     (b"a" * 100 + b"\xff", 415, "adjunto_tipo_no_permitido"),
 ])
 def test_ningun_rechazo_deja_archivos(directorio, datos, status, code):

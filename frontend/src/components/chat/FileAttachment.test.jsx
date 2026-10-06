@@ -38,3 +38,11 @@ describe('FileAttachment -- vista previa local por id (RD4)', () => {
     expect(screen.getByText(es.altAttachment)).toBeInTheDocument()
   })
 })
+
+describe('FileAttachment scanned PDF status', () => {
+  it('announces the real OCR failure in the live status region', () => {
+    pintar({ attachment: { tipo: 'pdf_procesando', nombre: 'scan.pdf', estado: 'error', error: 'ocr_sin_texto' } })
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.getByRole('status')).toHaveTextContent('LAS MANOS no encontró texto en este escaneo')
+  })
+})

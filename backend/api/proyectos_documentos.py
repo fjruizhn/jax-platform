@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -172,7 +173,7 @@ async def _recibir_lote(request: Request, project_id: int, *, user: AuthUser, wo
 
 
 async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspace: Path, max_archivo: int,
-                        max_archivos: int, max_lote: int) -> dict:
+                        max_archivos: int, max_lote: int, incluir_id_duplicado: bool = False) -> dict:
     pool = await get_pool()
     lote = _nuevo_lote()
     carpeta: almacen.CarpetaLote | None = None
@@ -285,7 +286,12 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                     raise _error(500, "consulta_duplicado_fallida", lote=lote, aceptados=aceptados,
                                  ignorados=ignorados) from None
                 oculto = existente is not None and existente["oculto"]
-                ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto" if oculto else "duplicado"})
+                if oculto:
+                    ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto"})
+                else:
+                    ignorados.append({"nombre": nombre, "motivo": "duplicado"})
+                    if incluir_id_duplicado and existente is not None:
+                        ignorados[-1]["document_id"] = existente["id"]
                 continue
             aceptados.append({"id": nuevo, "nombre": nombre})
     finally:
@@ -299,6 +305,54 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
         except Exception:  # fail-soft: el aviso es un adelanto; las filas ya estan en_cola y el despachador de fondo las toma en su vuelta
             logger.warning("proyectos_documentos: no se pudo avisar al despachador (lote %s)", lote, exc_info=True)
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
+
+
+async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, user: AuthUser,
+                                 bytes_: int, max_bytes: int) -> dict:
+    """Admite un PDF escaneado en la misma cola durable que la biblioteca del proyecto.
+
+    La llamada sucede después de recibir y clasificar el adjunto; se vuelve a validar
+    membresía/estado antes de tocar el workspace y el INSERT vuelve a cerrar la carrera.
+    """
+    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
+    max_archivo = max_bytes
+    if bytes_ > max_archivo:
+        raise _error(413, "adjunto_demasiado_grande", max_bytes=max_archivo)
+    try:
+        workspace = almacen.cargar_workspace()
+    except almacen.WorkspaceNoConfigurado:
+        raise _error(503, "almacen_no_configurado") from None
+    # El stream se lee por bloques por almacen.escribir_streaming; no se carga el PDF
+    # completo a memoria ni se espera al OCR de LAS MANOS.
+    stream = await asyncio.to_thread(_abrir_archivo_sin_enlaces, ruta)
+    try:
+        parte = UploadFile(filename=nombre, file=stream)
+        respuesta = await _guardar_lote([parte], proyecto=proyecto, user=user, workspace=workspace,
+                                        max_archivo=max_archivo, max_archivos=1, max_lote=max_archivo,
+                                        incluir_id_duplicado=True)
+    finally:
+        await asyncio.to_thread(stream.close)
+    if respuesta["aceptados"]:
+        document_id = respuesta["aceptados"][0]["id"]
+    elif respuesta["ignorados"] and respuesta["ignorados"][0]["motivo"] in ("duplicado", "duplicado_oculto"):
+        # La unicidad de SQL resuelve carreras; reutilizar el id canónico si es visible.
+        document_id = respuesta["ignorados"][0].get("document_id")
+        if respuesta["ignorados"][0]["motivo"] == "duplicado" and document_id is not None:
+            estado_existente = await repo.estado_documento(await get_pool(), project_id=proyecto["id"],
+                                                           documento_id=document_id)
+            if estado_existente is not None:
+                return {"tipo": "pdf_procesando", "nombre": nombre, "project_id": project_id,
+                        "document_id": document_id, "estado": estado_existente["estado"]}
+        raise _error(409, "documento_duplicado_en_proyecto")
+    else:
+        raise _error(422, "documento_no_admitido")
+    return {"tipo": "pdf_procesando", "nombre": nombre, "project_id": project_id,
+            "document_id": document_id, "estado": "en_cola"}
+
+
+def _abrir_archivo_sin_enlaces(ruta: Path):
+    descriptor = os.open(ruta, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    return os.fdopen(descriptor, "rb")
 
 
 def _rechazo_definitivo(exc: Exception, lote: str, aceptados: list, ignorados: list) -> HTTPException:
@@ -350,6 +404,15 @@ async def listar(project_id: int, vista: Literal["visibles", "ocultos"] = "visib
                               antes_de=antes_de, limite=limite + 1)
     siguiente = filas[limite - 1]["id"] if len(filas) > limite else None
     return {"documentos": filas[:limite], "siguiente": siguiente}
+
+
+@router.get("/proyectos/{project_id}/documentos/{documento_id}")
+async def estado(project_id: int, documento_id: int, user: AuthUser = Depends(get_current_user)):
+    proyecto = await _con_papel(user, project_id, escribe=False)
+    fila = await repo.estado_documento(await get_pool(), project_id=proyecto["id"], documento_id=documento_id)
+    if fila is None:
+        raise _error(404, "documento_no_encontrado")
+    return fila
 
 
 async def _cambiar_visibilidad(project_id: int, documento_id: int, user: AuthUser, *, ocultar: bool) -> Response:

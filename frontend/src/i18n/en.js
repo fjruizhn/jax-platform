@@ -220,6 +220,17 @@ export default {
     imagen_no_soportada: () => "This facet's model does not accept images. Pick another facet or remove the image.",
     pdf_ilegible: () => 'The PDF could not be read: it is damaged or password-protected.',
     pdf_sin_texto: () => 'The PDF has no extractable text (is it a scan?).',
+    pdf_escaneado_requiere_proyecto: () => 'To process a scanned PDF, choose an active project where you can add documents.',
+    adjunto_demasiadas_paginas: (d) => `The PDF exceeds the configured limit of ${d?.max_paginas || 0} pages.`,
+    pdf_procesando_estado: (d) => d?.estado === 'listo' ? 'Processing complete; the document is in the project Documents tab.'
+      : d?.estado === 'parcial' ? 'Processing was partial; review the result in the project Documents tab.'
+      : d?.estado === 'error' ? (d?.error === 'ocr_sin_texto' ? 'LAS MANOS found no text in this scan. The document is in the project Documents tab.' : `Processing failed (${d?.error || 'no details'}). Review the project Documents tab.`)
+      : d?.estado === 'sin_extractor' ? 'No extractor is available for this document type. It is in the project Documents tab.'
+      : d?.estado === 'cancelado' ? 'Processing was cancelled. The document remains in the project Documents tab.'
+      : d?.estado === 'estado_no_disponible' ? 'The status could not be checked. Review the project Documents tab.'
+      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Document is in the processing queue (${d.estado}).`
+      : `Document status: ${d?.estado || 'unknown'}.`,
+    pdf_procesando_no_adjuntable: () => 'The scanned PDF was saved in the project Documents tab, but chat cannot read its result yet. Check its status in the project.',
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
     // Límite global de profundidad JSON (2026-09-17): 422 de cualquier
@@ -1634,6 +1645,10 @@ export default {
       },
       errores: {
         lote_demasiado_grande: 'The files together exceed the maximum number of files or size. Upload fewer files at a time.',
+        adjunto_demasiado_grande: 'The PDF exceeds the configured per-file limit.',
+        documento_duplicado_en_proyecto: 'This document is already in the project. Check its status in Documents.',
+        documento_no_admitido: 'The PDF could not be added to the project.',
+        documento_no_encontrado: 'This document does not exist or does not belong to the project.',
         proyecto_no_activo: 'The project is not active: its documents cannot be changed.',
         sin_espacio: 'The server is out of space. Tell an administrator.',
         almacen_no_configurado: 'The document store is not configured. Tell an administrator.',

@@ -227,6 +227,17 @@ export default {
     imagen_no_soportada: () => 'El modelo de esta faceta no acepta imágenes. Elige otra faceta o quita la imagen.',
     pdf_ilegible: () => 'No se pudo leer el PDF: está dañado o protegido con contraseña.',
     pdf_sin_texto: () => 'El PDF no tiene texto que se pueda extraer (¿es un escaneo?).',
+    pdf_escaneado_requiere_proyecto: () => 'Para procesar un PDF escaneado, elige un proyecto activo donde tengas permiso para agregar documentos.',
+    adjunto_demasiadas_paginas: (d) => `El PDF supera el máximo configurado de ${d?.max_paginas || 0} páginas.`,
+    pdf_procesando_estado: (d) => d?.estado === 'listo' ? 'Procesamiento completo; el documento está en Documentos del proyecto.'
+      : d?.estado === 'parcial' ? 'Procesamiento parcial; revisa el resultado en Documentos del proyecto.'
+      : d?.estado === 'error' ? (d?.error === 'ocr_sin_texto' ? 'LAS MANOS no encontró texto en este escaneo. El documento está en Documentos del proyecto.' : `El procesamiento terminó con error (${d?.error || 'sin detalle'}). Revisa Documentos del proyecto.`)
+      : d?.estado === 'sin_extractor' ? 'No hay extractor para este tipo de documento. Está en Documentos del proyecto.'
+      : d?.estado === 'cancelado' ? 'El procesamiento se canceló. El documento sigue en Documentos del proyecto.'
+      : d?.estado === 'estado_no_disponible' ? 'No se pudo consultar el estado. Revisa Documentos del proyecto.'
+      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Documento en la cola de procesamiento (${d.estado}).`
+      : `Estado del documento: ${d?.estado || 'desconocido'}.`,
+    pdf_procesando_no_adjuntable: () => 'El PDF escaneado se guardó en Documentos del proyecto, pero el chat todavía no puede leer su resultado. Revisa su estado en el proyecto.',
     // Frente B (2026-09-17): 423 de chat, imagen y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
     // Límite global de profundidad JSON (2026-09-17): 422 de cualquier
@@ -1730,6 +1741,10 @@ export default {
       },
       errores: {
         lote_demasiado_grande: 'Los archivos juntos superan el máximo de archivos o de tamaño. Subí menos archivos a la vez.',
+        adjunto_demasiado_grande: 'El PDF supera el máximo configurado por archivo.',
+        documento_duplicado_en_proyecto: 'Este documento ya está en el proyecto. Revisá su estado en Documentos.',
+        documento_no_admitido: 'No se pudo agregar el PDF al proyecto.',
+        documento_no_encontrado: 'Este documento no existe o no pertenece al proyecto.',
         proyecto_no_activo: 'El proyecto no está activo: no admite cambios en sus documentos.',
         sin_espacio: 'No hay espacio suficiente en el servidor. Avisá a un administrador.',
         almacen_no_configurado: 'El almacén de documentos no está configurado. Avisá a un administrador.',

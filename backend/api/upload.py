@@ -42,7 +42,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from adjuntos import almacen, cuota
 from adjuntos.errores import AdjuntoRechazado
@@ -88,6 +88,7 @@ def _tamano_recibido(archivo) -> int:
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
+    project_id: int | None = Form(default=None),
     # Kill switch (ruling del principal 2026-09-17): 423 como el resto de la
     # Mesa. En producción lo responde antes el middleware de subidas, sin leer
     # el cuerpo; la dependencia deja la ruta en RUTAS_FRENADAS y la cubre sola.
@@ -146,8 +147,16 @@ async def upload_file(
                 try:
                     texto, recortado = await extraer_texto_en_pool(
                         str(temporal), limites.max_paginas, limites.max_chars)
-                except PdfSinTexto:
-                    raise _rechazo(422, "pdf_sin_texto") from None
+                except PdfSinTexto as exc:
+                    if project_id is None:
+                        raise _rechazo(422, "pdf_escaneado_requiere_proyecto") from None
+                    if exc.paginas > limites.max_paginas:
+                        raise _rechazo(413, "adjunto_demasiadas_paginas", max_paginas=limites.max_paginas) from None
+                    from api.proyectos_documentos import encolar_pdf_desde_chat
+                    return await encolar_pdf_desde_chat(
+                        temporal, nombre=nombre, project_id=project_id, user=user, bytes_=tamano,
+                        max_bytes=min(limites.max_bytes, int(await _max_bytes_documento())),
+                    )
                 except PdfIlegible:
                     raise _rechazo(422, "pdf_ilegible") from None
                 origen = "pdf"
@@ -191,3 +200,9 @@ async def politica_de_adjuntos(user: AuthUser = Depends(get_current_user)):
         "accept": [*MIMES_DE_IMAGEN, MIME_PDF, *EXTENSIONES_DE_TEXTO],
         "facetas_con_imagen": await facetas_con_imagen(),
     }
+
+
+async def _max_bytes_documento() -> int:
+    # El límite del área de proyectos también es aplicable a la vía de chat.
+    import ajustes
+    return int(await ajustes.valor(ajustes.DOC_MAX_BYTES_ARCHIVO))

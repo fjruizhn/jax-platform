@@ -1119,8 +1119,12 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1389) {
-              console.error("PISO ROTO: se esperaban 1389 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1384 -> 1390 (2026-10-06, E3 respaldo chat): +6 en FileAttachment.test.jsx, incluidos
+            //   los cinco checks locales preexistentes que estaban sin versionar y se conservaron,
+            //   más el anuncio del resultado OCR real. A/B limpio origin/master d283d90 -> rama:
+            //   1384/0/1384 -> 1390/0/1390, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1390) {
+              console.error("PISO ROTO: se esperaban 1390 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -4720,14 +4724,11 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      # 2358 -> 2360 (ronda 2 de #199, ya integrado en master 46accbe): +2 pruebas sin DB.
-      # 2360 -> 2361 (ronda 2 de #200, 2026-10-06): +1 prueba sin DB. MEDIDO con JAX_CI_NO_DB=1, mismo comando
-      # que este job (jax en el pin 0604754, CI=true GITHUB_ACTIONS=true): master 46accbe 2360 passed / 1475
-      # skipped / 0 failed -> rama rebasada 2361 passed / 1476 skipped / 0 failed. El runner tiene la ultima palabra.
-      # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
-      # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
-      # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2361"
+      # 2358 -> 2362 (2026-10-06, E3 respaldo chat): +4 tests puros sin DB.
+      #   Delta medido con JAX_CI_NO_DB=1 sobre origin/master d283d90: test_adjuntos_upload.py 15 -> 17
+      #   passed, y test_proyectos_documentos_estado_unit.py 0 -> 2 passed. Las pruebas DB-required
+      #   de cola y aislamiento siguen omitidas en este runner y no suman.
+      JAX_CI_MIN_PASSED: "2362"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

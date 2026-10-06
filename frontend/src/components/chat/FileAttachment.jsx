@@ -28,7 +28,12 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
           <div className="text-xs text-texto-suave truncate">{attachment.vista_previa}</div>
         )}
         {uploading && <div className="text-xs text-info">{t.attachUploading}</div>}
-        {!uploading && attachment && <div className="text-xs text-exito">{t.attachReady}</div>}
+        {!uploading && attachment?.tipo === 'pdf_procesando' && (
+          <div className="text-xs text-info" role="status" aria-live="polite">
+            {t.erroresMesa.pdf_procesando_estado({ estado: attachment.estado, error: attachment.error })}
+          </div>
+        )}
+        {!uploading && attachment && attachment.tipo !== 'pdf_procesando' && <div className="text-xs text-exito">{t.attachReady}</div>}
         {!uploading && attachment?.recortado && <div className="text-xs text-aviso">{t.adjuntoRecortado}</div>}
       </div>
       {!uploading && (

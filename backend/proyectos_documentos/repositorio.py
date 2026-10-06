@@ -263,6 +263,21 @@ async def documento_para_reprocesar(pool, *, project_id: int, documento_id: int)
             "ruta_entrada": fila[7]}
 
 
+async def estado_documento(pool, *, project_id: int, documento_id: int) -> dict | None:
+    """Campos seguros para consultar el estado de un documento dentro de un proyecto."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, nombre_original, estado, error FROM project_documents "
+                "WHERE id = %s AND project_id = %s AND oculto_at IS NULL",
+                (documento_id, project_id))
+            fila = await cur.fetchone()
+        await conn.commit()
+    if fila is None:
+        return None
+    return {"id": int(fila[0]), "nombre": fila[1], "estado": fila[2], "error": fila[3]}
+
+
 async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: str, user_id: int,
                      roles_escritura: tuple[str, ...]) -> dict | None:
     """`sin_extractor` o `error` -> `en_cola` con `ruta_entrada = ruta_fuente` (el original ya esta en
