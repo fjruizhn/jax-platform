@@ -94,6 +94,21 @@ def test_una_clave_de_mas_de_100_caracteres_es_400_y_no_escribe(client, ajustes_
     assert ajustes_en_db.filas()["max_pipelines"] == "3"
 
 
+@pytest.mark.parametrize("clave", ["k" * 100, "ñ" * 100], ids=["100-ascii", "100-multibyte"])
+def test_una_clave_de_exactamente_100_caracteres_se_acepta(client, ajustes_en_db, clave):
+    """El tope cuenta CARACTERES como VARCHAR(100) en utf8mb4 (100 «ñ» = 200 bytes caben):
+    fija el borde contra un conteo en bytes o un `>=`."""
+    ajustes_en_db.poner(**ajustes_en_db.validos)
+    try:
+        r = _put(client, [{"key": clave, "value": "1"}])
+        assert r.status_code == 200, r.text
+        filas = client.portal.call(sql, "SELECT config_value FROM axioma_config WHERE config_key = %s", (clave,), True)
+        assert [f[0] for f in filas] == ["1"]
+    finally:
+        client.portal.call(sql, "DELETE FROM axioma_config_audit WHERE config_key = %s", (clave,))
+        client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key = %s", (clave,))
+
+
 def test_una_clave_con_espacio_final_en_un_lote_no_aplica_nada(client, ajustes_en_db):
     ajustes_en_db.poner(**ajustes_en_db.validos)
     r = _put(client, [{"key": "system_name", "value": "Otro"}, {"key": "max_pipelines ", "value": "2"}])

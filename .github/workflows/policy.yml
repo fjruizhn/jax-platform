@@ -3621,7 +3621,10 @@ jobs:
           # 3757 -> 3785 (2026-10-05, fix/respuesta-final-y-cierre-por-inactividad): +28 puras (mismos dos
           # archivos que el piso sin DB; ninguna pide `client`). Delta MEDIDO por archivo (8 + 20 passed);
           # el absoluto con DB NO se midio aca: piso = base + delta, lo re-mide quien integre (regla 5).
-          PISO_PASSED = 3792
+          # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
+          # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
+          # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
+          PISO_PASSED = 3830
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4701,7 +4704,10 @@ jobs:
       # 2333 -> 2340 (ronda 2 de #198): +7 puras (M1 x2, marcar actividad x2, detener la tarea, recorte del
       # juicio x2). MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true: suite completa 2331 -> 2338 passed /
       # 1457 / 1457 skipped / 2 failed por el pin local de jax en ambas. Piso = base + delta, absoluto sin medir.
-      JAX_CI_MIN_PASSED: "2340"
+      # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
+      # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
+      # (se saltean sin DB), así que no suman aquí.
+      JAX_CI_MIN_PASSED: "2358"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
