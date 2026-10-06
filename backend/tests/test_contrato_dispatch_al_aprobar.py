@@ -253,7 +253,9 @@ def test_chat_usa_los_mismos_validadores_que_los_admins():
 # Medido contra los lectores (ver el docstring de
 # contrato_dispatch.detalle_si_rompe_el_contrato): los resolvers sacan URL y
 # credencial de facet_binding.provider_id y el modelo de model_ref; approve
-# cambia model_ref sin tocar provider_id.
+# escribe model_ref, provider_id y model_id juntos desde la fila aprobada, pero
+# el guard corre antes de ese UPDATE y rechaza (409) una propuesta hacia un
+# modelo de otro proveedor que el del binding.
 
 def _assert_409_de_proveedor(resp, provider_binding, provider_modelo):
     assert resp.status_code == 409, resp.text
