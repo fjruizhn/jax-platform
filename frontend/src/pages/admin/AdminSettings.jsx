@@ -21,6 +21,7 @@ const ETIQUETAS = {
   pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
   'jacobs.tope_devoluciones': 'adminSettingsTopeDevoluciones',
   'ejecutor.c2_edad_max_s': 'adminSettingsC2EdadMax',
+  'proyectos.documentos.freno_incertidumbre_enfriamiento_s': 'adminSettingsFrenoIncertidumbreEnfriamiento',
 }
 
 const CLASE_ETIQUETA = 'block text-xs font-semibold text-texto-suave uppercase tracking-wider mb-1'
@@ -152,6 +153,15 @@ export default function AdminSettings() {
         <CampoNumero id="ajuste-c2-edad-max" etiqueta={t.adminSettingsC2EdadMax} ayuda={t.adminSettingsC2EdadMaxAyuda}
           valor={config['ejecutor.c2_edad_max_s']} limite={limites['ejecutor.c2_edad_max_s']}
           onChange={v => set('ejecutor.c2_edad_max_s', v)} />
+        <CampoNumero id="ajuste-freno-incertidumbre-enfriamiento"
+          etiqueta={t.adminSettingsFrenoIncertidumbreEnfriamiento}
+          ayuda={limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s']
+            ? t.adminSettingsFrenoIncertidumbreEnfriamientoAyuda(
+              limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s'].min)
+            : null}
+          valor={config['proyectos.documentos.freno_incertidumbre_enfriamiento_s']}
+          limite={limites['proyectos.documentos.freno_incertidumbre_enfriamiento_s']}
+          onChange={v => set('proyectos.documentos.freno_incertidumbre_enfriamiento_s', v)} />
 
         {error && (
           <AlertaError className="text-sm">{textoDeError(t, error)}</AlertaError>

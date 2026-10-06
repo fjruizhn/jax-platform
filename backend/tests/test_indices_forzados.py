@@ -225,8 +225,14 @@ def _correr_lifespan(monkeypatch):
                if n in vars(main) and n not in ("indices_forzados", "asyncio", "logger")]
     for n in nombres:
         monkeypatch.setattr(main, n, _Nada())
+    def _crear_tarea(coro):
+        coro.close()
+        tarea = asyncio.get_running_loop().create_future()
+        tarea.set_result(None)
+        return tarea
+
     monkeypatch.setattr(main, "asyncio", types.SimpleNamespace(
-        to_thread=asyncio.to_thread, create_task=lambda coro: None))
+        to_thread=asyncio.to_thread, create_task=_crear_tarea, gather=asyncio.gather))
 
     async def _sin_conversaciones():
         return 0

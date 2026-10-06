@@ -1119,8 +1119,12 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1389) {
-              console.error("PISO ROTO: se esperaban 1389 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1392 (Codex, ronda 2 de #203, 2026-10-06): +3 AdminSettings.test.jsx
+            //   para enfriamiento configurable. Medido con `npx vitest run`: 1392/0/1392, 113 archivos.
+            // 1392 -> 1393 (ronda 9 de #203, 2026-10-06): +1 AdminSettings.test.jsx (la ayuda del enfriamiento muestra el
+            //   minimo de `limites`). Medido con `npx vitest run`: 1393/0/1393, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1393) {
+              console.error("PISO ROTO: se esperaban 1393 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3640,6 +3644,26 @@ jobs:
           #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
           #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
           #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
+          # 3836 -> 3875 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO EN EL RUNNER, run
+          # 37498133766 sobre e8d2cca: colectados=3877 passed=3875 skipped=2 (1 de entorno y 1 SR2 gateado) failed=0.
+          # El local (venv-jxp-tests + mariadb:12.3.3 desechable) daba 3876: +1 sobre el runner, por un skip de
+          # entorno que el runner si saltea. Por eso el local NO fija el piso: el piso es base del runner + delta local.
+          # 3875 -> 3897 (ronda 6 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +22, medido con
+          # el mismo comando sobre e8d2cca (3876) y sobre la rama (3898): test_catalogo_modelos_ejecutor +17 (clasificar
+          # proxy, escritura, gateway y 200 ilegible; sin cliente HTTP) y test_despachador_aviso_freno_simulado +5
+          # (D2, recordatorio con ReadTimeout y con entrega confirmada, sin enfriamiento, ProxyError permanente).
+          # El absoluto del runner lo confirma la CI (regla 5).
+          # 3897 -> 3903 (ronda 7 de #203, 2026-10-06): mismo metodo, base del runner 3875 (e8d2cca) + delta local +28
+          # (e8d2cca 3876 -> rama 3904): test_catalogo_modelos_ejecutor +21 (RuntimeError: solo el cliente cerrado de
+          # httpx es fallo cierto, el real y otros) y test_despachador_aviso_freno_simulado +7 (recordatorio con
+          # RuntimeError y log de lectura una vez por incidente y por clave). El runner confirma el absoluto.
+          # 3903 -> 3906 (ronda 8 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +31 (e8d2cca 3876 ->
+          # rama 3907): test_catalogo_modelos_ejecutor +21 (igual que la ronda 7) y test_despachador_aviso_freno_simulado
+          # +10 (enfriamiento ilegible falla cerrado, «aviso N» y hora de inicio; M6 reescrita sin el 0). Frontend sin
+          # cambio: 1392 medido. El runner confirma el absoluto.
+          # 3906 -> 3910 (ronda 9 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +35 (e8d2cca 3876 ->
+          # rama 3911): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14 (M7 el desconocido
+          # cuenta para N, zona de la plataforma con el host en UTC, validacion de JAX_ZONA_HORARIA). El runner confirma.
           # 3836 -> 3847 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +11 con DB, ninguna
           #   cambia el conteo de las existentes: 5 puras (test_despachador_clave_idempotencia.py) + 6 en
           #   test_proyectos_documentos_despachador.py (clave en el encabezado; el corte entre el 202 y
@@ -3667,7 +3691,7 @@ jobs:
           #   ciclo cortado retoma en su ventana). El EXPLAIN con duenos excluidos se reemplaza por el de la consulta real
           #   con cursor sobre 50k filas (mismo conteo). MEDIDO sobre la rama, mismo comando del job: 3871 passed, 1 skipped,
           #   0 failed (3867 de la ronda 3 + 4). Piso = base + delta; el runner tiene la ultima palabra.
-          PISO_PASSED = 3877
+          PISO_PASSED = 3910
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4757,6 +4781,19 @@ jobs:
       # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
       # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
       # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
+      # 2361 -> 2394 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO LOCAL con JAX_CI_NO_DB=1
+      # CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master 303006f = 2361 passed;
+      # rama e8d2cca = 2394 passed (el job sin DB de e8d2cca paso con ese piso). En la ronda 5 el local con DB dio +1 sobre
+      # el runner; el sin DB no se midio en el runner para ese SHA.
+      # 2394 -> 2416 (ronda 6 de #203, 2026-10-06): +22 puras = base 2394 + delta local medido sobre e8d2cca (2394) y la
+      # rama (2416): test_catalogo_modelos_ejecutor +17 y test_despachador_aviso_freno_simulado +5. Local: 2416 passed /
+      # 1483 skipped. El absoluto del runner lo confirma la CI (regla 5).
+      # 2416 -> 2422 (ronda 7 de #203, 2026-10-06): base 2394 + delta local +28 (e8d2cca 2394 -> rama 2422, local
+      # 1483 skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +7. El runner confirma.
+      # 2422 -> 2425 (ronda 8 de #203, 2026-10-06): base 2394 + delta local +31 (e8d2cca 2394 -> rama 2425, local 1483
+      # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +10. El runner confirma.
+      # 2425 -> 2429 (ronda 9 de #203, 2026-10-06): base 2394 + delta local +35 (e8d2cca 2394 -> rama 2429, local 1483
+      # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14. El runner confirma.
       # 2361 -> 2366 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +5 puras
       #   (tests/test_despachador_clave_idempotencia.py, ninguna pide `client`). Las 6 de despacho con
       #   `client` (test_proyectos_documentos_despachador.py) se saltan sin DB. MEDIDO con JAX_CI_NO_DB=1 sobre
@@ -4770,7 +4807,7 @@ jobs:
       #   tiene la ultima palabra.
       # 2370 -> 2372 (ronda 4 de #210): +2 puras (el contrato no se lee de /srv/jax-prod; el rojo dice la version de jax).
       #   MEDIDO con JAX_CI_NO_DB=1 sobre la rama, jax en el head de #366: 2372 passed / 1500 skipped / 0 failed.
-      JAX_CI_MIN_PASSED: "2372"
+      JAX_CI_MIN_PASSED: "2429"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

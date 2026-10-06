@@ -60,6 +60,17 @@ def test_nombre_del_sistema_sin_espacios_alrededor_ni_control_ni_largo_de_mas():
             nombre(texto)
 
 
+def test_enfriamiento_del_freno_acepta_rango_configurable_en_axioma_config():
+    definir = ajustes.DEFINICIONES[ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S]
+    assert definir.interpretar("60") == 60
+    assert definir.interpretar("3600") == 3600
+    assert definir.interpretar(str(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX)) == \
+        ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX
+    for texto in ("0", "59", "-1", str(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX + 1), "01", "1.5"):
+        with pytest.raises(ajustes.ValorInvalido):
+            definir.interpretar(texto)
+
+
 def test_ttl_del_entorno_falla_fuerte_si_no_es_positivo_y_finito():
     assert ajustes.ttl_desde_entorno("30") == 30.0
     for texto in ("", "abc", "0", "-5", "nan", "inf"):
@@ -156,6 +167,10 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "proyectos.documentos.max_archivos_lote": {"min": 1, "max": 1000},
         "proyectos.documentos.max_bytes_lote": {"min": 1048576, "max": 10737418240},
         "proyectos.documentos.rutas_por_trabajo": {"min": 1, "max": 50},
+        "proyectos.documentos.freno_incertidumbre_enfriamiento_s": {
+            "min": 60, "max": 604800},
+        "proyectos.documentos.freno_incertidumbre_reintento_s": {
+            "min": 1, "max": 604800},
         # Subidas simultaneas de documentos (E2a ronda final, MAJOR-4): por usuario y en
         # todo el servicio; el 429 sale antes de leer el cuerpo.
         "proyectos.documentos.subidas_por_usuario": {"min": 1, "max": 10},
@@ -218,6 +233,8 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
         "proyectos.documentos.max_archivos_lote": 250,
         "proyectos.documentos.max_bytes_lote": 1073741824,
         "proyectos.documentos.rutas_por_trabajo": 50,
+        "proyectos.documentos.freno_incertidumbre_enfriamiento_s": 3600,
+        "proyectos.documentos.freno_incertidumbre_reintento_s": 60,
         "proyectos.documentos.subidas_por_usuario": 2,
         "proyectos.documentos.subidas_globales": 4,
         "proyectos.documentos.reprocesar_por_usuario": 1,
@@ -237,13 +254,45 @@ def test_valor_invalido_es_un_error_y_no_un_default(client, ajustes_en_db):
     assert client.portal.call(_error_de, "session_timeout_min") == ("session_timeout_min", "invalido")
 
 
+PREFIJO_RELLENO = "zz_explain_relleno_"
+
+
 def test_explain_de_la_consulta_real_va_por_primary(client, ajustes_en_db):
+    """`axioma_config` es una tabla que crece: el plan se mide con un volumen realista (al menos 10 veces
+    las claves consultadas), no con el minimo de la fixture, donde el optimizador prefiere recorrerla
+    entera (type=ALL) y el EXPLAIN mediria el tamano de la fixture y no la consulta. El relleno usa claves
+    que no estan en CLAVES y se borra siempre."""
+    from tests.identidades import sql
+
     ajustes_en_db.poner(**ajustes_en_db.validos)
-    filas, columnas = client.portal.call(_explain)
-    plan = dict(zip(columnas, filas[0]))
-    assert plan["key"] == "PRIMARY", plan
-    extra = plan.get("Extra") or ""
-    assert "filesort" not in extra and "temporary" not in extra, plan
+    objetivo = 10 * len(ajustes.CLAVES)
+    client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",))
+    try:
+        existentes = client.portal.call(sql, "SELECT COUNT(*) FROM axioma_config", (), True)[0][0]
+        faltan = max(objetivo - existentes, 0) + 1
+        for i in range(faltan):
+            clave = f"{PREFIJO_RELLENO}{i:05d}"
+            assert clave not in ajustes.CLAVES
+            client.portal.call(sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+                               (clave, "relleno"))
+        client.portal.call(sql, "ANALYZE TABLE axioma_config", (), True)  # estadisticas al dia, no las del azar
+        sembradas = client.portal.call(
+            sql, "SELECT COUNT(*) FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",), True)[0][0]
+        total = client.portal.call(sql, "SELECT COUNT(*) FROM axioma_config", (), True)[0][0]
+        assert sembradas == faltan, "el relleno no se inserto completo"
+        assert total >= objetivo, (total, objetivo)
+
+        filas, columnas = client.portal.call(_explain)
+        plan = dict(zip(columnas, filas[0]))
+        assert plan["key"] == "PRIMARY", plan
+        assert plan["type"] in ("range", "eq_ref", "const"), plan
+        extra = plan.get("Extra") or ""
+        assert "filesort" not in extra and "temporary" not in extra, plan
+    finally:
+        client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",))
+        restos = client.portal.call(
+            sql, "SELECT COUNT(*) FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",), True)[0][0]
+        assert restos == 0, "el relleno quedo en la tabla"
 
 
 # Chequeo al arrancar (revisión final, ruling R16, 2026-09-17): bajar
@@ -280,6 +329,8 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     ("proyectos.documentos.subidas_globales", ["0", "51"]),
     ("proyectos.documentos.reprocesar_por_usuario", ["0", "5", "01"]),
     ("proyectos.documentos.reprocesar_globales", ["0", "5"]),
+    ("proyectos.documentos.freno_incertidumbre_reintento_s", ["0", "604801", "01", "-1", "1.5"]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", ["0", "59", "-1", "604801", "01", "1.5"]),
 ])
 def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
     for malo in malos:
@@ -296,6 +347,8 @@ def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db,
     ("proyectos.documentos.subidas_globales", [1, 50]),
     ("proyectos.documentos.reprocesar_por_usuario", [1, 4]),
     ("proyectos.documentos.reprocesar_globales", [1, 4]),
+    ("proyectos.documentos.freno_incertidumbre_reintento_s", [1, 604800]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", [60, 604800]),
 ])
 def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
     for borde in bordes:
