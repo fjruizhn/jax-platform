@@ -22,8 +22,8 @@ El arnés local detectó `JAX_DB_PORT=3308`, puerto de la instancia de producci�
 - La ruta de subida encola el original en `project_documents` y avisa al despachador sin esperar al trabajo de LAS MANOS.
 - La cola y su sondeo HTTP del procesador corren en el despachador existente; este cambio no llama OCR dentro del turno de chat.
 - Las pruebas sin DB no demuestran latencia ni integración real del despachador.
-- Verificación local completa sin DB: backend `2362 passed, 1479 skipped`; frontend `1390 passed, 0 failed`. Los tests que abren MariaDB se omitieron por `JAX_CI_NO_DB=1`.
-- Delta de piso medido en worktrees limpios contra `origin/master d283d90`: backend `+4` pasadas (`test_adjuntos_upload.py` 15→17 y dos pruebas unitarias de estado); frontend `+6` (`FileAttachment.test.jsx`, cinco checks locales preexistentes conservados y uno nuevo de OCR).
+- Verificación local completa sin DB: backend `2363 passed, 1479 skipped`; frontend `1392 passed, 0 failed`. Los tests que abren MariaDB se omitieron por `JAX_CI_NO_DB=1`.
+- Delta de piso medido contra `origin/master d283d90`: backend `+5` pasadas (dos casos de upload sin DB, dos lecturas unitarias de estado y una comprobación del sufijo PDF); frontend `1389→1392` (`+3`: un estado OCR y dos casos del envío de chat/autorización). El test `FileAttachment` preexistente ya estaba versionado en `origin/master`.
 
 ## Para completar la medición
 
@@ -37,9 +37,9 @@ Repetir el escenario con el job de CI que levanta MariaDB desechable o en un hos
 
 **Decisión técnica:** se reutiliza el dispatcher existente, que ya llama el API vigente de LAS MANOS; no se crea una tarea efímera en FastAPI ni se espera OCR dentro de la petición. La suba de chat no crea un adjunto de texto que el modelo pudiera confundir con extracción real. La decisión procede del alcance E3 del encargo, no de una nueva decisión de negocio.
 
-**Pruebas:** backend completo en modo aislado sin DB: 2362 pasadas / 1479 omitidas; frontend: 1390 pasadas / 0 fallidas. Pruebas focales tras los últimos cambios: 27 pasadas / 9 omitidas, más 43 Vitest pasadas. Los dos casos que prueban admisión real en la cola y aislamiento HTTP requieren MariaDB y no se ejecutaron aquí. Los pisos subieron backend +4 y frontend +6 respecto a worktree limpio `origin/master d283d90`.
+**Pruebas:** backend completo en modo aislado sin DB: 2363 pasadas / 1479 omitidas / 3 warnings; frontend: 1392 pasadas / 0 fallidas. Prueba focal backend de sufijo PDF: 1 pasada / 121 omitidas por el filtro; prueba focal frontend del compositor: 23 pasadas. Los casos de admisión real en la cola y aislamiento HTTP requieren MariaDB y no se ejecutaron aquí. Los pisos suben backend +5 y frontend +3 respecto a `origin/master d283d90`.
 
-**Pendiente:** cargar el escenario de 20 usuarios en MariaDB desechable, medir y registrar p95 con LAS MANOS real o simulada, correr pruebas DB de cola/autorización y cerrar hallazgos de auditoría. No se integró ni desplegó.
+**Pendiente:** cargar el escenario de 20 usuarios en MariaDB desechable, medir y registrar p95 con LAS MANOS real o simulada, correr pruebas DB de cola/autorización y obtener auditoría adversarial aprobada del SHA final. El primer veredicto rechazó `8b1883d`; sus hallazgos de bloqueo de turno, contexto de proyecto, traducción de autorización, tipo PDF y procedencia del piso se corrigieron en el trabajo posterior. No se integró ni desplegó.
 
 **Alternativas descartadas:** no conectar el test harness al puerto 3308, porque es producción; no autorizar el opt-in que el harness ofrece; no usar un mock para atribuirle un p95 real. Las tres decisiones evitan mezclar un ensayo con operación real o convertir una simulación en evidencia falsa.
 

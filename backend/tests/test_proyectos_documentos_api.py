@@ -145,6 +145,13 @@ def _en_disco(workspace: Path) -> list[Path]:
     return sorted(p for p in raiz.rglob("*") if p.is_file()) if raiz.exists() else []
 
 
+def test_pdf_confirmado_por_contenido_se_guarda_con_sufijo_pdf():
+    from api.proyectos_documentos import _nombre_de_almacenamiento
+
+    assert _nombre_de_almacenamiento("estado.docx", "estado.docx", "pdf") == "estado.pdf"
+    assert _nombre_de_almacenamiento("estado.docx", "estado.docx", None) == "estado.docx"
+
+
 # ------------------------------------------------------------------ subir
 
 def test_contributor_sube_y_queda_en_cola(ent, workspace):
@@ -184,7 +191,9 @@ def test_pdf_escaneado_desde_chat_se_encola_y_expone_su_estado(ent, workspace, t
     adjuntos.mkdir(mode=0o700)
     monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
     usuario = AuthUser(user_id=str(ent._id("dueno")), tenant_id=ent.tenant, role="operator")
-    archivo = UploadFile(io.BytesIO(pdf_con_texto(["", ""])), filename="estado.pdf")
+    # El tipo lo verificó el contenido de los bytes; el nombre de usuario puede
+    # tener un sufijo engañoso y no debe cambiar la ruta del extractor.
+    archivo = UploadFile(io.BytesIO(pdf_con_texto(["", ""])), filename="estado.docx")
     resultado = asyncio.run(upload_mod.upload_file(file=archivo, user=usuario, project_id=proyecto.id))
 
     assert resultado["tipo"] == "pdf_procesando"
@@ -192,6 +201,8 @@ def test_pdf_escaneado_desde_chat_se_encola_y_expone_su_estado(ent, workspace, t
     assert resultado["document_id"] == ent.filas(proyecto)[0][0]
     assert ent.filas(proyecto)[0][5] == "en_cola"
     assert [p.name for p in _en_disco(workspace)] == ["estado.pdf"]
+    assert ent.filas(proyecto)[0][1] == "estado.docx"
+    assert ent.filas(proyecto)[0][4] == "pdf"
     assert list(adjuntos.rglob("*.dato")) == []
 
 

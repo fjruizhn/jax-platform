@@ -237,7 +237,7 @@ export default {
       : d?.estado === 'estado_no_disponible' ? 'No se pudo consultar el estado. Revisa Documentos del proyecto.'
       : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Documento en la cola de procesamiento (${d.estado}).`
       : `Estado del documento: ${d?.estado || 'desconocido'}.`,
-    pdf_procesando_no_adjuntable: () => 'El PDF escaneado se guardó en Documentos del proyecto, pero el chat todavía no puede leer su resultado. Revisa su estado en el proyecto.',
+    pdf_procesando_no_adjuntable: (d) => `El PDF escaneado está en Documentos${d?.proyecto ? ` de ${d.proyecto}` : ' del proyecto'} y no se adjuntará a este turno. El mensaje se enviará sin el contenido del PDF.`,
     // Frente B (2026-09-17): 423 de chat, imagen y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',
     // Límite global de profundidad JSON (2026-09-17): 422 de cualquier

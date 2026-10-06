@@ -230,7 +230,7 @@ export default {
       : d?.estado === 'estado_no_disponible' ? 'The status could not be checked. Review the project Documents tab.'
       : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Document is in the processing queue (${d.estado}).`
       : `Document status: ${d?.estado || 'unknown'}.`,
-    pdf_procesando_no_adjuntable: () => 'The scanned PDF was saved in the project Documents tab, but chat cannot read its result yet. Check its status in the project.',
+    pdf_procesando_no_adjuntable: (d) => `The scanned PDF is in Documents${d?.proyecto ? ` for ${d.proyecto}` : ' for the project'} and will not be attached to this chat turn. Your message will be sent without the PDF contents.`,
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',
     // Límite global de profundidad JSON (2026-09-17): 422 de cualquier

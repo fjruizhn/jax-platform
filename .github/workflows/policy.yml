@@ -1119,12 +1119,11 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            // 1384 -> 1390 (2026-10-06, E3 respaldo chat): +6 en FileAttachment.test.jsx, incluidos
-            //   los cinco checks locales preexistentes que estaban sin versionar y se conservaron,
-            //   más el anuncio del resultado OCR real. A/B limpio origin/master d283d90 -> rama:
-            //   1384/0/1384 -> 1390/0/1390, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1390) {
-              console.error("PISO ROTO: se esperaban 1390 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1392 (2026-10-06, E3 respaldo chat): +3: estado OCR real en FileAttachment,
+            //   el turno de chat sigue sin adjuntar contenido pendiente y el rechazo de proyecto
+            //   conserva su traducción. Medido sobre origin/master d283d90: 1389/0/1389 -> 1392/0/1392.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1392) {
+              console.error("PISO ROTO: se esperaban 1392 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -4724,11 +4723,11 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      # 2358 -> 2362 (2026-10-06, E3 respaldo chat): +4 tests puros sin DB.
+      # 2358 -> 2363 (2026-10-06, E3 respaldo chat): +5 tests puros sin DB.
       #   Delta medido con JAX_CI_NO_DB=1 sobre origin/master d283d90: test_adjuntos_upload.py 15 -> 17
-      #   passed, y test_proyectos_documentos_estado_unit.py 0 -> 2 passed. Las pruebas DB-required
-      #   de cola y aislamiento siguen omitidas en este runner y no suman.
-      JAX_CI_MIN_PASSED: "2362"
+      #   passed, test_proyectos_documentos_estado_unit.py 0 -> 2 y la comprobación del sufijo PDF suma 1.
+      #   Las pruebas DB-required de cola y aislamiento siguen omitidas en este runner y no suman.
+      JAX_CI_MIN_PASSED: "2363"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

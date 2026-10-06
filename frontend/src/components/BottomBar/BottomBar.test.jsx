@@ -112,6 +112,16 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.adjunto_tipo_no_permitido(), type: 'error' }))
   })
 
+  it('un rechazo de autorización del proyecto muestra el texto de Documentos', async () => {
+    api.post.mockRejectedValueOnce({ response: { status: 403, data: { detail: { code: 'papel_insuficiente' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({
+      message: es.proyectos.documentos.errores.papel_insuficiente, type: 'error',
+    }))
+  })
+
   // Kill switch en la subida (ruling del principal 2026-09-17): 423 con detail
   // de texto, el mismo código que el resto de la Mesa. Nunca el código crudo.
   it('un 423 del kill switch en el upload se muestra traducido, no queda adjunto', async () => {
@@ -137,6 +147,24 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
       message: 'describí', facet: 'hipatia', origin: 'web',
       adjuntos: [{ id: 'img-id-1' }],
     }])
+  })
+
+  it('envía el turno de texto sin esperar al OCR y sin fingir que el PDF ya es adjunto de chat', async () => {
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } }).mockResolvedValueOnce({ data: { facet: 'hipatia', response: 'Lo reviso.', timestamp: 't' } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await screen.findByText(/procesamiento/i)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Resume el estado financiero' } })
+    fireEvent.click(screen.getByRole('button', { name: es.send }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
+    expect(api.post.mock.calls[1][0]).toBe('/chat')
+    expect(api.post.mock.calls[1][1].message).toBe('Resume el estado financiero')
+    expect(api.post.mock.calls[1][1]).not.toHaveProperty('adjuntos')
+    expect(useJaxStore.getState().messages.find((message) => message.facet === 'user')?.attachment).toBeNull()
   })
 
   it('la vista previa de la imagen subida usa un object URL local del compositor', async () => {

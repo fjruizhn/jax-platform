@@ -173,7 +173,8 @@ async def _recibir_lote(request: Request, project_id: int, *, user: AuthUser, wo
 
 
 async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspace: Path, max_archivo: int,
-                        max_archivos: int, max_lote: int, incluir_id_duplicado: bool = False) -> dict:
+                        max_archivos: int, max_lote: int, incluir_id_duplicado: bool = False,
+                        tipo_verificado: str | None = None) -> dict:
     pool = await get_pool()
     lote = _nuevo_lote()
     carpeta: almacen.CarpetaLote | None = None
@@ -189,11 +190,14 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 ignorados.append({"nombre": "", "motivo": "nombre_invalido"})
                 continue
             nombre = almacen.nombre_para_mostrar(parte.filename)
-            tipo = tipos.tipo_de(parte.filename)
+            if tipo_verificado not in (None, "pdf"):
+                raise ValueError("tipo_verificado solo admite el PDF validado por contenido")
+            tipo = tipo_verificado or tipos.tipo_de(parte.filename)
             if tipo is None:
                 ignorados.append({"nombre": nombre, "motivo": "tipo_no_admitido"})
                 continue
-            seguro = almacen.nombre_seguro(parte.filename, usados)
+            nombre_archivo = _nombre_de_almacenamiento(parte.filename, nombre, tipo_verificado)
+            seguro = almacen.nombre_seguro(nombre_archivo, usados)
             if tipos.tipo_de(seguro) != tipo:
                 ignorados.append({"nombre": nombre, "motivo": "nombre_invalido"})
                 continue
@@ -307,6 +311,13 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
 
 
+def _nombre_de_almacenamiento(nombre_subido: str, nombre_mostrado: str, tipo_verificado: str | None) -> str:
+    """Conserva el sufijo del formato validado por contenido para el extractor."""
+    if tipo_verificado == "pdf":
+        return f"{Path(nombre_mostrado).stem}.pdf"
+    return nombre_subido
+
+
 async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, user: AuthUser,
                                  bytes_: int, max_bytes: int) -> dict:
     """Admite un PDF escaneado en la misma cola durable que la biblioteca del proyecto.
@@ -329,7 +340,7 @@ async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, us
         parte = UploadFile(filename=nombre, file=stream)
         respuesta = await _guardar_lote([parte], proyecto=proyecto, user=user, workspace=workspace,
                                         max_archivo=max_archivo, max_archivos=1, max_lote=max_archivo,
-                                        incluir_id_duplicado=True)
+                                        incluir_id_duplicado=True, tipo_verificado="pdf")
     finally:
         await asyncio.to_thread(stream.close)
     if respuesta["aceptados"]:

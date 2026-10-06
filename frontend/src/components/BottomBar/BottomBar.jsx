@@ -190,9 +190,16 @@ function BottomBar() {
       if (attachmentPreviewUrlRef.current) URL.revokeObjectURL(attachmentPreviewUrlRef.current)
       const previewUrl = data.tipo === 'imagen' ? URL.createObjectURL(file) : null
       attachmentPreviewUrlRef.current = previewUrl
-      setAttachment({ ...data, archivo: file, previewUrl })
+      setAttachment({ ...data, archivo: file, previewUrl, proyecto_nombre: proyectoActivo?.nombre || null })
     } catch (err) {
-      addToast({ message: textoDeErrorDeMesa(t, err, t.attachError), type: 'error' })
+      const codigo = codigoDe(err)
+      const textoMesa = codigo && Object.hasOwn(t.erroresMesa, codigo)
+        ? textoDeErrorDeMesa(t, err, t.attachError)
+        : null
+      const textoProyecto = codigo && Object.hasOwn(t.proyectos?.documentos?.errores || {}, codigo)
+        ? t.proyectos.documentos.errores[codigo]
+        : null
+      addToast({ message: textoMesa || textoProyecto || t.attachError, type: 'error' })
     } finally {
       setUploading(false)
     }
@@ -210,10 +217,10 @@ function BottomBar() {
     const text = input.trim()
     if (!text || sending || imagenSinSoporte) return
 
-    if (attachment?.tipo === 'pdf_procesando') {
-      addToast({ message: t.erroresMesa.pdf_procesando_no_adjuntable(), type: 'info' })
-      return
-    }
+    const pdfPendiente = attachment?.tipo === 'pdf_procesando'
+    if (pdfPendiente) addToast({
+      message: t.erroresMesa.pdf_procesando_no_adjuntable({ proyecto: attachment.proyecto_nombre }), type: 'info',
+    })
 
     if (mode === 'pipeline') {
       setPipelineObjective(text)
@@ -239,7 +246,7 @@ function BottomBar() {
       id: Date.now().toString(),
       facet: 'user',
       content: text,
-      attachment: mode === 'chat' && attachment ? vistaDeAdjunto(attachment) : null,
+      attachment: mode === 'chat' && attachment && !pdfPendiente ? vistaDeAdjunto(attachment) : null,
       timestamp: new Date().toISOString(),
     })
 
@@ -255,7 +262,9 @@ function BottomBar() {
       const chatBody = { message: text, facet: activeFacet, origin: 'web' }
       // E1/T9: project_id solo si hay proyecto elegido; la clave no va en «Personal».
       if (proyectoActivo) chatBody.project_id = proyectoActivo.id
-      if (attachment) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
+      // El documento en cola aún no tiene texto que el modelo pueda leer.
+      // El turno de chat sale de inmediato, sin esperar ni enviar una referencia inválida.
+      if (attachment && !pdfPendiente) chatBody.adjuntos = [cuerpoDeAdjunto(attachment)]
       const { data } = await api.post('/chat', chatBody)
       const governed = data.governed_plain === true
       addMessage({
@@ -273,7 +282,7 @@ function BottomBar() {
       // El mensaje del usuario ya se armó con vistaDeAdjunto() más arriba,
       // que le dio su PROPIO object URL (adjuntos.js) -- el del compositor
       // ya no lo necesita nadie.
-      descartarAdjuntoComposer()
+      if (!pdfPendiente) descartarAdjuntoComposer()
     } catch (err) {
       if (codigoDe(err) === 'project_scope_denied') {
         // El proyecto ya no es accesible: vuelve a «Personal», avisa y NO
