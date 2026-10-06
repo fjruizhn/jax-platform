@@ -15,6 +15,10 @@ from typing import Mapping
 from .state import JAXEngineState, engine_state, las_manos_health_source_configuration
 
 
+# Version del puente runtime-status de JAX contra la que esta revisado este adaptador.
+RUNTIME_STATUS_API_VERSION_ESPERADA = "f2-e.runtime-status.4"
+
+
 class RuntimeStatusBridgeUnavailable(RuntimeError):
     """The configured JAX checkout does not expose the pinned F2-B bridge."""
 
@@ -37,8 +41,11 @@ def _jax_runtime_status_bridge():
     loaded_path = Path(module.__file__).resolve()
     if not loaded_path.is_relative_to(root_path):
         raise RuntimeStatusBridgeUnavailable("loaded runtime-status bridge is outside configured JAX")
-    if getattr(module, "RUNTIME_STATUS_API_VERSION", None) != "f2-e.runtime-status.4":
-        raise RuntimeStatusBridgeUnavailable("unsupported JAX runtime-status bridge version")
+    encontrada = getattr(module, "RUNTIME_STATUS_API_VERSION", None)
+    if encontrada != RUNTIME_STATUS_API_VERSION_ESPERADA:
+        raise RuntimeStatusBridgeUnavailable(
+            "unsupported JAX runtime-status bridge version: platform expects "
+            f"{RUNTIME_STATUS_API_VERSION_ESPERADA!r}, JAX at {root_path} exposes {encontrada!r}")
     return module
 
 

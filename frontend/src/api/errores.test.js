@@ -25,6 +25,22 @@ describe('textoDeErrorDeMesa (A-51)', () => {
     expect(textoDeErrorDeMesa(en, err('pipeline_id_invalido'), en.errorPipeline)).toBe(en.erroresMesa.pipeline_id_invalido({}))
   })
 
+  // 2026-10-05: el 503 del ciclo de vida de salida (par plataforma/jax incompatible o
+  // F2-D caído) y el de memoria B9 caían al genérico «No se pudo conectar con la
+  // faceta», que miente: el servidor SÍ respondió. Cada uno dice lo que pasó.
+  it.each([['OUTPUT_LIFECYCLE_UNAVAILABLE'], ['MEMORY_UNAVAILABLE']])(
+    '%s tiene texto propio, honesto, en es y en en',
+    (code) => {
+      for (const d of [es, en]) {
+        const texto = textoDeErrorDeMesa(d, err({ code }), d.errorFacet)
+        expect(texto).toBe(d.erroresMesa[code]({}))
+        expect(texto).not.toBe(d.errorFacet)
+        expect(texto).not.toMatch(/conectar|connect/i)
+        expect(texto).not.toContain(code)
+      }
+    },
+  )
+
   // T16 (auditoria MINOR-8): Hyde no conversa por el chat; el servidor rechaza con un
   // codigo y la Mesa lo traduce y orienta al Ejecutor (modo Codigo), en los dos idiomas.
   it('hyde_no_conversa_en_chat orienta al Ejecutor solo si el servidor declara ejecutor:true', () => {

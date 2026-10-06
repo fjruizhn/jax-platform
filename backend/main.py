@@ -56,6 +56,29 @@ _cred_handler.setFormatter(logging.Formatter("%(levelname)s credential_resolver:
 _cred_logger.addHandler(_cred_handler)
 _cred_logger.propagate = False
 
+
+# El par plataforma/jax roto (2026-10-05) dejo 100 % de los chats caidos con el journal
+# vacio: estos loggers fallan cerrado y NUNCA se veian. Mismo mecanismo que credential_resolver
+# (uvicorn --log-level warning no deja handler en la raiz), con una diferencia: aqui se
+# MANTIENE propagate=True. La raiz no tiene handler en produccion (no se duplica la linea) y
+# los tests de caplog, que cuelgan de la raiz, siguen viendo estos registros.
+for _nombre, _nivel in (
+    ("api.governed_chat", logging.WARNING),
+    ("api.chat", logging.WARNING),
+    ("api.governed_pipeline_list", logging.WARNING),
+    ("par_jax", logging.INFO),
+):
+    # El nivel va SOLO en el handler (el logger queda NOTSET): asi el journal ve WARNING+ y los
+    # tests de privacidad con caplog en DEBUG (test_adjuntos_chat_endpoint.py) siguen viendo
+    # todo lo que el modulo registra, tambien INFO/DEBUG.
+    _lg = logging.getLogger(_nombre)
+    if _nombre == "par_jax":
+        _lg.setLevel(logging.INFO)  # «par compatible» al arrancar: sin texto de usuario
+    _h = logging.StreamHandler()
+    _h.setLevel(_nivel)
+    _h.setFormatter(logging.Formatter(f"%(levelname)s {_nombre}: %(message)s"))
+    _lg.addHandler(_h)
+
 from app_version import leer_version
 import ajustes
 from adjuntos import limites as limites_de_adjuntos
@@ -119,6 +142,8 @@ from api.admin import (
     pipelines_ocultos_router,
 )
 
+from par_jax import verificar_par_jax
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +157,10 @@ async def lifespan(app: FastAPI):
     # SP3 del Ejecutor (2026-09-17): sin directorio del carril la Mesa no puede tomar su
     # prioridad sobre el Ejecutor. Mismo criterio que JAX_OLLAMA_URL: no arranca.
     _raiz_del_carril()
+    # 2026-10-05: el par plataforma/jax es un limite exacto. Si el jax configurado no es el
+    # que esta plataforma reviso, el servicio no arranca (systemd: failed) en vez de dejar
+    # caer cada chat con un 503 generico. Antes de adjuntos y base: es config, no I/O.
+    verificar_par_jax()
     # Frente D (2026-09-16): sin límites de adjuntos configurados no se
     # arranca. Antes que la base: es config, no depende de nada. Por atributo
     # del módulo (no `from ... import`) para que el test lo pueda sustituir.

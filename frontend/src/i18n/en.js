@@ -147,6 +147,9 @@ export default {
     faceta_desconocida: (d) => `The facet "${d.facet}" does not exist.`,
     proveedor_error_http: () => 'The provider could not complete the request.',
     faceta_error: () => 'The chat service could not respond.',
+    // 2026-10-05: the server answered 503; this is not a connection problem on the user's side.
+    OUTPUT_LIFECYCLE_UNAVAILABLE: () => 'The server could not prepare the response safely and withheld it. Try again in a few minutes; if it persists, tell the administrator.',
+    MEMORY_UNAVAILABLE: () => 'System memory is unavailable right now, so the request could not be answered. Try again in a few minutes; if it persists, tell the administrator.',
     credencial_no_disponible: (d) => `There is no valid credential configured for ${d.provider}.`,
     imagen_error_http: (d) => `The image service returned error ${d.status}.`,
     imagen_error: () => 'The image could not be generated.',
