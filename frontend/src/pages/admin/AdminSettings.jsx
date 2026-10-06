@@ -20,6 +20,7 @@ const ETIQUETAS = {
   system_name: 'adminSettingsSystemName',
   pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
   'jacobs.tope_devoluciones': 'adminSettingsTopeDevoluciones',
+  'ejecutor.c2_edad_max_s': 'adminSettingsC2EdadMax',
 }
 
 const CLASE_ETIQUETA = 'block text-xs font-semibold text-texto-suave uppercase tracking-wider mb-1'
@@ -148,6 +149,9 @@ export default function AdminSettings() {
         <CampoNumero id="ajuste-tope-devoluciones" etiqueta={t.adminSettingsTopeDevoluciones} ayuda={t.adminSettingsTopeDevolucionesAyuda}
           valor={config['jacobs.tope_devoluciones']} limite={limites['jacobs.tope_devoluciones']}
           onChange={v => set('jacobs.tope_devoluciones', v)} />
+        <CampoNumero id="ajuste-c2-edad-max" etiqueta={t.adminSettingsC2EdadMax} ayuda={t.adminSettingsC2EdadMaxAyuda}
+          valor={config['ejecutor.c2_edad_max_s']} limite={limites['ejecutor.c2_edad_max_s']}
+          onChange={v => set('ejecutor.c2_edad_max_s', v)} />
 
         {error && (
           <AlertaError className="text-sm">{textoDeError(t, error)}</AlertaError>

@@ -868,6 +868,8 @@ export default {
   adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
   adminSettingsTopeDevoluciones: 'Arbiter send-backs',
   adminSettingsTopeDevolucionesAyuda: 'How many times the arbiter may send a pipeline back to be redone. Once exhausted with an unresolved objection, the pipeline ends as disputed and needs your decision. 0 does not turn it off: the arbiter still objects, but the first objection ends the pipeline.',
+  adminSettingsC2EdadMax: 'Maximum backup age for the Executor (s)',
+  adminSettingsC2EdadMaxAyuda: 'Seconds a backup may be and still count as current for the Executor. The C2 design uses 108000 (30 h): with 86400 (24 h) the Executor is left without a current backup between one backup run and the next.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 
