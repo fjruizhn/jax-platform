@@ -258,6 +258,11 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 # Rechazo DEFINITIVO del INSERT: nada se inserto, el archivo sobra.
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 raise _rechazo_definitivo(exc, lote, aceptados, ignorados) from None
+            except HTTPException:
+                # El freno puede activarse despues de escribir el archivo pero antes
+                # del INSERT. Es un rechazo definitivo, no un resultado incierto.
+                await asyncio.to_thread(carpeta.borrar, seguro)
+                raise
             except BaseException as exc:
                 # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
                 # COMMIT): la fila pudo quedar escrita. NO se toca el disco -- borrar el

@@ -548,21 +548,25 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
         return documento["document_id"], inicio
 
     with ThreadPoolExecutor(max_workers=20) as executor:
+        # El cleanup queda registrado antes de cualquier upload concurrente: si
+        # uno falla a mitad, no quedan filas de esta prueba en MariaDB.
+        request.addfinalizer(lambda project_id=proyecto.id: client.portal.call(
+            sql, "DELETE FROM project_documents WHERE project_id=%s", (project_id,)))
         filas = list(executor.map(usuario, range(20)))
-    for document_id, _ in filas:
-        request.addfinalizer(lambda document_id=document_id: client.portal.call(
-            sql, "DELETE FROM project_documents WHERE id=%s", (document_id,)))
 
     pool = client.portal.call(get_pool)
     client.portal.call(despachador.ciclo, pool)  # POST durable real, LAS MANOS aceptó cada trabajo
     pendientes = {document_id: inicio for document_id, inicio in filas}
     duraciones = []
+    estados_terminales = []
     deadline = time.perf_counter() + max_p95_ms / 1000
     while pendientes and time.perf_counter() < deadline:
         for document_id, inicio in list(pendientes.items()):
             response = client.get(f"/api/proyectos/{proyecto.id}/documentos/{document_id}", headers=entorno.dueno)
             assert response.status_code == 200, response.text
-            if response.json()["estado"] in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
+            estado = response.json()["estado"]
+            if estado in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
+                estados_terminales.append(estado)
                 duraciones.append((time.perf_counter() - inicio) * 1000)
                 del pendientes[document_id]
         if pendientes:
@@ -574,6 +578,9 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
     print(f"E3_LOAD users=20 pages={limites.max_paginas} upload_bytes={max_bytes} dispatched={len(trabajos)} "
           f"p95_ms={p95:.1f} max_ms={max(duraciones):.1f} threshold_ms={max_p95_ms}", flush=True)
     assert p95 <= max_p95_ms, f"E3 p95 {p95:.1f} ms supera el tope CI de {max_p95_ms} ms"
+    assert len(trabajos) == 20, f"E3 despachó {len(trabajos)} de 20 PDFs"
+    assert len(estados_terminales) == 20 and all(e == "listo" for e in estados_terminales), \
+        f"E3 no completó los 20 PDFs: {estados_terminales}"
     assert not pendientes, f"E3 excedió el tope antes de estado terminal: {sorted(pendientes)}"
 
 
@@ -587,6 +594,26 @@ def test_upload_pdf_escaneado_revalida_autorizacion_antes_de_escribir(
     """Las cinco denegaciones deben ocurrir dentro de la entrada nueva del chat."""
     from tests.test_proyectos_documentos_api import Entorno
     from tests.adjuntos_muestras import pdf_con_texto
+    from api import proyectos_documentos as api_documentos
+
+    llamadas_papel = []
+    original_con_papel = api_documentos._con_papel
+    async def con_papel_spy(*args, **kwargs):
+        llamadas_papel.append((args[1], kwargs.get("escribe"), kwargs.get("activo")))
+        return await original_con_papel(*args, **kwargs)
+    monkeypatch.setattr(api_documentos, "_con_papel", con_papel_spy)
+
+    escrituras = []
+    original_abrir = api_documentos.almacen.abrir_carpeta_lote
+    def abrir_spy(*args, **kwargs):
+        escrituras.append("abrir")
+        return original_abrir(*args, **kwargs)
+    monkeypatch.setattr(api_documentos.almacen, "abrir_carpeta_lote", abrir_spy)
+    original_stream = api_documentos.almacen.escribir_streaming
+    async def stream_spy(*args, **kwargs):
+        escrituras.append("stream")
+        return await original_stream(*args, **kwargs)
+    monkeypatch.setattr(api_documentos.almacen, "escribir_streaming", stream_spy)
 
     workspace = tmp_path / "workspace"
     (workspace / "proyectos").mkdir(parents=True)
@@ -617,4 +644,43 @@ def test_upload_pdf_escaneado_revalida_autorizacion_antes_de_escribir(
         data={"project_id": str(target_id)},
         files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
     assert response.status_code == esperado, response.text
+    assert llamadas_papel == [(target_id, True, True)], llamadas_papel
+    assert escrituras == [], escrituras
     assert list((workspace / "proyectos").iterdir()) == [], "una solicitud denegada escribió en el workspace"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatch, tmp_path):
+    """Un freno activado tras escribir no debe dejar archivo huérfano ni ocultarse como 500."""
+    from fastapi import HTTPException
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+    from api import proyectos_documentos as api_documentos
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+    proyecto = Entorno(client).proyecto()
+
+    llamadas = 0
+    def freno():
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas == 4:
+            raise HTTPException(status_code=423, detail="kill_switch_activo")
+    monkeypatch.setattr(api_documentos, "exigir_freno_suelto", freno)
+
+    async def insertar_spy(*args, **kwargs):
+        pytest.fail("repo.insertar no debe ejecutarse después de activarse el freno")
+    monkeypatch.setattr(api_documentos.repo, "insertar", insertar_spy)
+    response = client.post("/api/chat/upload", headers=Entorno(client).dueno,
+        data={"project_id": str(proyecto.id)},
+        files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
+
+    assert llamadas == 4
+    assert response.status_code == 423, response.text
+    assert list((workspace / "proyectos").rglob("*")) == [], "el freno dejó un archivo sin fila"
