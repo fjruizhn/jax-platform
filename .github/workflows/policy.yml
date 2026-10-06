@@ -1119,10 +1119,12 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
+            // 1392 -> 1393 (ronda 9 de #203, 2026-10-06): +1 AdminSettings.test.jsx (la ayuda del enfriamiento muestra el
+            //   minimo de `limites`). Medido con `npx vitest run`: 1393/0/1393, 113 archivos.
             // 1389 -> 1392 (Codex, ronda 2 de #203, 2026-10-06): +3 AdminSettings.test.jsx
             //   para enfriamiento configurable. Medido con `npx vitest run`: 1392/0/1392, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1392) {
-              console.error("PISO ROTO: se esperaban 1392 tests de vitest CORRIDOS y 0 fallidos.");
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1393) {
+              console.error("PISO ROTO: se esperaban 1393 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3656,7 +3658,10 @@ jobs:
           # rama 3907): test_catalogo_modelos_ejecutor +21 (igual que la ronda 7) y test_despachador_aviso_freno_simulado
           # +10 (enfriamiento ilegible falla cerrado, «aviso N» y hora de inicio; M6 reescrita sin el 0). Frontend sin
           # cambio: 1392 medido. El runner confirma el absoluto.
-          PISO_PASSED = 3906
+          # 3906 -> 3910 (ronda 9 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +35 (e8d2cca 3876 ->
+          # rama 3911): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14 (M7 el desconocido
+          # cuenta para N, zona de la plataforma con el host en UTC, validacion de JAX_ZONA_HORARIA). El runner confirma.
+          PISO_PASSED = 3910
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4757,7 +4762,9 @@ jobs:
       # 1483 skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +7. El runner confirma.
       # 2422 -> 2425 (ronda 8 de #203, 2026-10-06): base 2394 + delta local +31 (e8d2cca 2394 -> rama 2425, local 1483
       # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +10. El runner confirma.
-      JAX_CI_MIN_PASSED: "2425"
+      # 2425 -> 2429 (ronda 9 de #203, 2026-10-06): base 2394 + delta local +35 (e8d2cca 2394 -> rama 2429, local 1483
+      # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14. El runner confirma.
+      JAX_CI_MIN_PASSED: "2429"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
