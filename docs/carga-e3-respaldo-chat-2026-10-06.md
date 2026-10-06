@@ -1,13 +1,28 @@
 # E3 · respaldo de PDF escaneado en el chat
 
 **Fecha:** 2026-10-06
-**Estado:** revisión 2 en curso (2026-10-06). El reporte de carga anterior se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
+**Estado:** revisión 2 implementada y CI verde en el SHA de código `539b16baab8581b595f6f8ec4965b27b84d33b21` (2026-10-06). La medición real de LAS MANOS queda pendiente para la ventana indicada abajo. El reporte de carga anterior se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
 
 ## Corrección del registro (2026-10-06)
 
-La medición histórica de 721.1 ms del POST de chat no corresponde al nuevo criterio E3. La prueba de esta ronda mide 20 subidas concurrentes al máximo configurado de páginas y bytes, chat concurrente, despacho durable y sondeo hasta estado terminal; `JAX_E3_P95_MAX_MS=25000` hace fallar el job si el p95 supera el tope. El tope es menor que 60 s. Un segundo paso del workflow inyecta `time.sleep(3)` en la función async y solo pasa si el test falla específicamente con `E3 p95`; esa demostración está pendiente de la corrida CI de esta rama.
+La medición histórica de 721.1 ms del POST de chat no corresponde al nuevo criterio E3. La prueba de esta ronda mide 20 subidas concurrentes al máximo configurado de páginas y bytes, chat concurrente, despacho durable y sondeo hasta estado terminal; `JAX_E3_P95_MAX_MS=25000` hace fallar el job si el p95 supera el tope. Un segundo paso del workflow inyecta `time.sleep(3)` en la función async y solo se considera una demostración válida si el fallo es específicamente la aserción de p95.
 
-Primeros resultados de CI del SHA `18c4364` (policy run 37484684852): E3 normal pasó a `p95=max=1891.9 ms`, 20 usuarios, 20 páginas, 10 MiB por upload y 20 dispatches. El job con DB también pasó la suite completa, incluidas las cinco denegaciones de autorización y el piso 3844. La prueba de mutación no es válida aún: el `sleep(3)` al inicio de `encolar_pdf_desde_chat` llenó el pool OCR de un worker y recibió `503 adjuntos_reintentar` antes de medir latencia. La siguiente corrida sube solo para el paso mutante el pool al máximo permitido (8 workers) y el timeout a su máximo permitido (60 s), para separar bloqueo del event loop de saturación OCR; su resultado sigue pendiente.
+El primer resultado normal de CI del SHA `18c4364` (policy run 37484684852) fue `p95=max=1891.9 ms`. Su corrida mutante no fue válida: el `sleep(3)` al inicio de `encolar_pdf_desde_chat` llenó el pool OCR de un worker y devolvió `503 adjuntos_reintentar` antes de medir latencia. Por ello, el paso mutante fija solo para esa corrida 8 workers (máximo permitido) y 60 s de timeout (máximo permitido), para separar bloqueo del event loop de saturación OCR.
+
+Resultado final policy run [37485909427](https://github.com/fjruizhn/jax-platform/actions/runs/37485909427), SHA `539b16baab8581b595f6f8ec4965b27b84d33b21`: todos los jobs requeridos pasaron; E3 normal dio `p95=1917.0 ms`, `max=1918.5 ms` (20 usuarios, 20 páginas, 10 MiB por upload, 20 dispatches; tope p95 25,000 ms); el mutante produjo `E3 p95 61398.1 ms supera el tope CI de 25000 ms` y el paso verificador confirmó ese motivo. El job DB midió `3844 passed, 2 skipped, 0 failed`; el no-DB, `2364 passed, 1482 skipped, 0 failed`; frontend, `1397 passed, 0 failed` en 113 archivos.
+
+## Cierre del informe de auditoría (2026-10-06)
+
+| Hallazgo | Cierre | Evidencia en el SHA `539b16b` |
+|---|---|---|
+| Major · E3 no medía upload→terminal ni detectaba `sleep(3)` | 20 subidas válidas al máximo de páginas/bytes, chat, despacho durable y sondeo terminal; p95 con tope de CI y mutante ejecutado en configuración OCR acotada válida | Policy run 37485909427: `p95=1917.0 ms`, `max=1918.5 ms`; mutante falló por p95 a `61398.1 ms` sobre `25000 ms`; wrapper del mutante pasó al verificar la causa exacta |
+| Minor 1 · códigos internos OCR visibles | Causa y estado se resuelven por catálogos i18n; código desconocido usa causa genérica | Tests `FileAttachment`; frontend `1397/1397` |
+| Minor 2 · sondeo sin reintentos ni límite | Reintento ante error transitorio, backoff creciente y tope total configurable con estado honesto al agotar | Tests `BottomBar`; frontend `1397/1397` |
+| Minor 3 · selector bloqueado tras estado terminal | Se desbloquea en estados finales y muestra instrucción localizada | Tests `BottomBar` y `FileAttachment`; frontend `1397/1397` |
+| Minor 4 · el freno no se revalidaba en la entrada nueva | Se revisa antes de autorización/escritura desde chat y antes de las fases disco/DB del lote | Test unitario del freno; job DB `3844 passed` |
+| Minor 5 · faltaban denegaciones de autorización del nuevo punto de entrada | Pruebas de otro tenant, sin membresía, VIEWER, archivado e inexistente; verifican que workspace no recibe escrituras | Cinco casos parametrizados pasaron en job DB; `3844 passed, 2 skipped, 0 failed` |
+
+Los floors medidos quedan en frontend 1397, backend no-DB 2364 y backend con DB 3844; no se redujeron. La medición E3 representa el runner efímero de CI con el borde HTTP de LAS MANOS simulado; no representa OCR real ni una medición de producción.
 
 La integración E3 y los cinco casos DB de autorización todavía no se ejecutan localmente: en Hall9000 pytest cerró antes de conectarse porque `3308` está protegido como puerto de producción, Docker no permite usar el daemon y no hay `mariadbd` local. El job `backend-tests-con-db` usa MariaDB efímera y quedó como ejecutor de esos casos. No se habilitó `JAX_TEST_DB_PERMITIR_INSTANCIA_DE_PRODUCCION` y no se consultó ni modificó `jax_memory`.
 
@@ -42,8 +57,7 @@ Medición: GitHub Actions run [37454479696](https://github.com/fjruizhn/jax-plat
 
 ## Pendientes vigentes
 
-1. Obtener las corridas positiva y mutante de la revisión 2 en el job CI efímero y registrar sus números aquí. Responsable: Codex, 2026-10-06, después del push de esta rama.
-2. Medir OCR real de LAS MANOS según la ventana y responsable indicados arriba. El resultado histórico de CI no reemplaza esta medición.
+1. Medir OCR real de LAS MANOS según la ventana y responsable indicados arriba. La evidencia de CI no reemplaza esta medición.
 
 ## Registro de trabajo y traspaso
 
@@ -78,3 +92,5 @@ Medición: GitHub Actions run [37454479696](https://github.com/fjruizhn/jax-plat
 **Decisiones y alternativas:** usar `project_documents` y su dispatcher proviene de la arquitectura del proyecto verificada por el arquitecto Tier 3. No llamar LAS MANOS directamente ni usar una tarea efímera proviene del contrato vigente de cola. No presentar un p95 simulado y no conectarse al puerto 3308 provienen del encargo y de la regla de carpintero. El selector se bloquea mientras se sube porque la admisión duradera ocurre antes del POST del turno, y habilitar el cambio permitiría dos contextos distintos.
 
 **Cierre:** la medición de carga y la auditoría adversarial del SHA `c2b7e1d` concluyeron. Se mantiene PR #208 en borrador hasta que CI termine verde sobre el head final. No integrar ni desplegar desde esta sesión. El checkout principal y producción permanecen intactos.
+
+**Cierre de ronda 2 (2026-10-06):** los hallazgos del informe de auditoría `1 MAJOR, 5 MINOR` se cerraron en la rama `feat/e3-respaldo-chat`. El push policy y el evento pull_request quedaron verdes sobre el SHA de código `539b16baab8581b595f6f8ec4965b27b84d33b21` (PR #208); ver tabla y resultados anteriores de esta revisión. Esto actualiza el pendiente anterior sobre CI. El OCR de LAS MANOS real continúa como pendiente fechado y asignado a Fernando; no se ejecutó producción ni se integró a `main`.
