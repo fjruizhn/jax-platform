@@ -62,11 +62,11 @@ def test_nombre_del_sistema_sin_espacios_alrededor_ni_control_ni_largo_de_mas():
 
 def test_enfriamiento_del_freno_acepta_rango_configurable_en_axioma_config():
     definir = ajustes.DEFINICIONES[ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S]
-    assert definir.interpretar("0") == 0
+    assert definir.interpretar("60") == 60
     assert definir.interpretar("3600") == 3600
     assert definir.interpretar(str(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX)) == \
         ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX
-    for texto in ("-1", str(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX + 1), "01", "1.5"):
+    for texto in ("0", "59", "-1", str(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX + 1), "01", "1.5"):
         with pytest.raises(ajustes.ValorInvalido):
             definir.interpretar(texto)
 
@@ -168,7 +168,7 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "proyectos.documentos.max_bytes_lote": {"min": 1048576, "max": 10737418240},
         "proyectos.documentos.rutas_por_trabajo": {"min": 1, "max": 50},
         "proyectos.documentos.freno_incertidumbre_enfriamiento_s": {
-            "min": 0, "max": 604800},
+            "min": 60, "max": 604800},
         "proyectos.documentos.freno_incertidumbre_reintento_s": {
             "min": 1, "max": 604800},
         # Subidas simultaneas de documentos (E2a ronda final, MAJOR-4): por usuario y en
@@ -330,7 +330,7 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     ("proyectos.documentos.reprocesar_por_usuario", ["0", "5", "01"]),
     ("proyectos.documentos.reprocesar_globales", ["0", "5"]),
     ("proyectos.documentos.freno_incertidumbre_reintento_s", ["0", "604801", "01", "-1", "1.5"]),
-    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", ["-1", "604801", "01", "1.5"]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", ["0", "59", "-1", "604801", "01", "1.5"]),
 ])
 def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
     for malo in malos:
@@ -348,7 +348,7 @@ def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db,
     ("proyectos.documentos.reprocesar_por_usuario", [1, 4]),
     ("proyectos.documentos.reprocesar_globales", [1, 4]),
     ("proyectos.documentos.freno_incertidumbre_reintento_s", [1, 604800]),
-    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", [0, 604800]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", [60, 604800]),
 ])
 def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
     for borde in bordes:

@@ -872,7 +872,7 @@ export default {
   adminSettingsC2EdadMax: 'Maximum backup age for the Executor (s)',
   adminSettingsC2EdadMaxAyuda: 'Seconds a backup may be and still count as current for the Executor. The C2 design uses 108000 (30 h): with 86400 (24 h) the Executor is left without a current backup between one backup run and the next.',
   adminSettingsFrenoIncertidumbreEnfriamiento: 'Uncertainty alert cooldown (s)',
-  adminSettingsFrenoIncertidumbreEnfriamientoAyuda: 'Minimum time between alerts when the brake clears and activates again. 0 disables the cooldown.',
+  adminSettingsFrenoIncertidumbreEnfriamientoAyuda: 'Minimum time between alerts while the brake stays active, and between incidents that repeat. Minimum 60 s.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 

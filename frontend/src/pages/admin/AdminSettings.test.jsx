@@ -388,7 +388,7 @@ describe('AdminSettings -- enfriamiento del freno de incertidumbre (#203)', () =
   const CLAVE = 'proyectos.documentos.freno_incertidumbre_enfriamiento_s'
   const CON_FRENO = { data: {
     config: [{ key: 'system_name', value: 'Axioma' }, { key: CLAVE, value: '3600' }],
-    limites: { ...LIMITES, [CLAVE]: { min: 0, max: 604800 } },
+    limites: { ...LIMITES, [CLAVE]: { min: 60, max: 604800 } },
   } }
 
   it('el campo toma el valor y los límites del servidor', async () => {
@@ -396,7 +396,7 @@ describe('AdminSettings -- enfriamiento del freno de incertidumbre (#203)', () =
     renderSettings()
     const campo = await screen.findByLabelText(es.adminSettingsFrenoIncertidumbreEnfriamiento)
     expect(campo).toHaveValue(3600)
-    expect(campo).toHaveAttribute('min', '0')
+    expect(campo).toHaveAttribute('min', '60')
     expect(campo).toHaveAttribute('max', '604800')
   })
 
@@ -418,7 +418,7 @@ describe('AdminSettings -- enfriamiento del freno de incertidumbre (#203)', () =
       expect(en[clave], `en.${clave}`).toBeTruthy()
       expect(es[clave]).not.toBe(en[clave])
     }
-    expect(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('0')
-    expect(en.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('0')
+    expect(es.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('60')
+    expect(en.adminSettingsFrenoIncertidumbreEnfriamientoAyuda).toContain('60')
   })
 })

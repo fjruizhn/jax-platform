@@ -1039,7 +1039,7 @@ async def test_freno_histeresis_no_rearma_al_bajar_uno_bajo_umbral(monkeypatch):
     reloj = [1000.0]
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
     monkeypatch.setattr(despachador, "_enviar_aviso_freno_incertidumbre", enviar)
-    monkeypatch.setattr(despachador.ajustes, "valor", _ajuste_con_enfriamiento(0))
+    monkeypatch.setattr(despachador.ajustes, "valor", _ajuste_con_enfriamiento(60))
     monkeypatch.setattr(despachador, "_freno_incertidumbre_activo", False)
     monkeypatch.setattr(despachador, "_ultimo_aviso_freno_incertidumbre", None)
     monkeypatch.setattr(despachador, "_aviso_freno_incertidumbre_pendiente", False)

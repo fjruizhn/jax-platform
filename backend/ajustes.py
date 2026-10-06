@@ -90,6 +90,9 @@ DOC_MAX_BYTES_LOTE = "proyectos.documentos.max_bytes_lote"
 DOC_RUTAS_POR_TRABAJO = "proyectos.documentos.rutas_por_trabajo"
 DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S = "proyectos.documentos.freno_incertidumbre_enfriamiento_s"
 DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX = 7 * 24 * 60 * 60
+# Minimo del enfriamiento: 60 s. No existe el 0 ("sin enfriamiento"): un valor 0 ya guardado se lee como ilegible y
+# el aviso falla cerrado (log de error, el freno sigue), nunca como "un aviso por ciclo".
+DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MIN = 60
 # Espera MINIMA tras un envio fallido del aviso (se duplica en cada fallo seguido, con tope en el
 # enfriamiento): evita un reintento por ciclo cuando la entrega es incierta (ReadTimeout).
 DOC_FRENO_INCERTIDUMBRE_REINTENTO_S = "proyectos.documentos.freno_incertidumbre_reintento_s"
@@ -231,8 +234,8 @@ DEFINICIONES: dict[str, Definicion] = {
     DOC_RUTAS_POR_TRABAJO: Definicion(_entero(1, DOC_RUTAS_POR_TRABAJO_MAX),
                                       {"min": 1, "max": DOC_RUTAS_POR_TRABAJO_MAX}),
     DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S: Definicion(
-        _entero(0, DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX),
-        {"min": 0, "max": DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX}),
+        _entero(DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MIN, DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX),
+        {"min": DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MIN, "max": DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX}),
     DOC_FRENO_INCERTIDUMBRE_REINTENTO_S: Definicion(
         _entero(1, DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX),
         {"min": 1, "max": DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S_MAX}),

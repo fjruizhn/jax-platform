@@ -930,7 +930,7 @@ export default {
   adminSettingsC2EdadMax: 'Edad máxima del respaldo para el Ejecutor (s)',
   adminSettingsC2EdadMaxAyuda: 'Segundos que un respaldo puede tener y seguir contando como vigente para el Ejecutor. El diseño de C2 usa 108000 (30 h): con 86400 (24 h) el Ejecutor queda sin respaldo vigente entre una corrida del respaldo y la siguiente.',
   adminSettingsFrenoIncertidumbreEnfriamiento: 'Enfriamiento del aviso de incertidumbre (s)',
-  adminSettingsFrenoIncertidumbreEnfriamientoAyuda: 'Tiempo mínimo entre avisos si el freno se desactiva y vuelve a activarse. 0 desactiva el enfriamiento.',
+  adminSettingsFrenoIncertidumbreEnfriamientoAyuda: 'Tiempo mínimo entre avisos mientras el freno siga activo, y entre incidentes que se repiten. Mínimo 60 s.',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 
