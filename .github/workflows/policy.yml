@@ -3618,7 +3618,7 @@ jobs:
           # 3757 -> 3785 (2026-10-05, fix/respuesta-final-y-cierre-por-inactividad): +28 puras (mismos dos
           # archivos que el piso sin DB; ninguna pide `client`). Delta MEDIDO por archivo (8 + 20 passed);
           # el absoluto con DB NO se midio aca: piso = base + delta, lo re-mide quien integre (regla 5).
-          PISO_PASSED = 3785
+          PISO_PASSED = 3792
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
