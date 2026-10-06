@@ -9,6 +9,7 @@ simbolos nuevos, asi se pueden correr tal cual contra el despachador de la ronda
 """
 import asyncio
 import logging
+import sys
 
 import httpx
 import pytest
@@ -164,6 +165,40 @@ async def test_http_500_es_fallo_cierto_y_reintenta_con_espera_creciente(monkeyp
     tiempos = await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
                              comportamiento=lambda n, t: "http_500", enfriamiento=3600, reintento=60)
     assert tiempos[:4] == [0.0, 60.0, 180.0, 420.0], tiempos
+
+
+async def test_una_excepcion_que_se_escapa_del_envio_es_fallo_cierto_con_espera_creciente(monkeypatch, caplog):
+    """Una excepcion que escapa de `_enviar_telegram_con_desenlace` ANTES de enviar (aqui, el import interno de
+    `redaccion` revienta) no rompe el ciclo y se trata como fallo cierto: espera creciente, nunca 'entregado'.
+    Mata el mutante que devuelve DESCONOCIDO (aviso dado por entregado, sin reintento) en ese `except`."""
+    monkeypatch.setitem(sys.modules, "redaccion", None)  # `from redaccion import ...` -> ImportError
+    with pytest.raises(ImportError):
+        await ejecutor._enviar_telegram_con_desenlace("hola")  # la excepcion SI escapa de la funcion
+    with caplog.at_level(logging.ERROR):
+        tiempos = await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
+                                 comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60)
+    assert tiempos == [], "no debia llegar a enviar nada"
+    assert despachador._fallos_aviso_freno_incertidumbre >= 4
+    assert "falló el envío del aviso de incertidumbre (ModuleNotFoundError)" in caplog.text
+
+
+async def test_la_excepcion_que_se_escapa_reintenta_con_espera_creciente_y_el_ciclo_sigue(monkeypatch):
+    async def revienta(_mensaje):
+        raise RuntimeError("fallo inesperado antes de enviar")
+
+    envios = []
+    reloj_ref = {}
+
+    async def contador(mensaje):
+        envios.append(reloj_ref["t"]())
+        await revienta(mensaje)
+
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", contador)
+    # el reloj de _simular es interno: se lee a traves del propio modulo parcheado dentro de la simulacion
+    reloj_ref["t"] = lambda: despachador._reloj() - 1000.0
+    await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
+                   comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60)
+    assert envios[:4] == [0.0, 60.0, 180.0, 420.0], envios
 
 
 # ------------------------------------------------------------------ el contador SI se reinicia
