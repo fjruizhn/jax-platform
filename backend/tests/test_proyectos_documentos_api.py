@@ -948,6 +948,30 @@ def test_con_el_freno_puesto_subir_ocultar_y_restaurar_responden_423(client, usu
     assert r.status_code == 202 and len(r.json()["aceptados"]) == 1
 
 
+def test_freno_a_medio_lote_informa_los_archivos_ya_aceptados(ent, monkeypatch, workspace):
+    from api import proyectos_documentos as api_documentos
+    from fastapi import HTTPException
+
+    proyecto = ent.proyecto()
+    llamadas = 0
+    def freno():
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas == 5:  # segundo archivo, antes de escribirlo
+            raise HTTPException(status_code=423, detail="kill_switch_activo")
+    monkeypatch.setattr(api_documentos, "exigir_freno_suelto", freno)
+
+    response = ent.subir(proyecto, ent.dueno,
+        [_parte("primero.pdf", "uno"), _parte("segundo.pdf", "dos")])
+
+    assert response.status_code == 423, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "kill_switch_activo"
+    assert len(detail["aceptados"]) == 1
+    assert ent.filas(proyecto)[0][0] == detail["aceptados"][0]["id"]
+    assert len(ent.filas(proyecto)) == 1
+
+
 # ---------------------------------------------- ocultar exige proyecto ACTIVE
 
 def test_ocultar_y_restaurar_en_proyecto_archivado_409(ent, workspace):

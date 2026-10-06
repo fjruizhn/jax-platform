@@ -262,6 +262,12 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 # El freno puede activarse despues de escribir el archivo pero antes
                 # del INSERT. Es un rechazo definitivo, no un resultado incierto.
                 await asyncio.to_thread(carpeta.borrar, seguro)
+                if aceptados:
+                    # En un lote con exitos previos el cliente debe conocerlos para
+                    # no reintentar ni perder referencias al resultado parcial.
+                    codigo = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
+                    raise _error(exc.status_code, str(codigo), lote=lote, aceptados=aceptados,
+                                 ignorados=ignorados) from None
                 raise
             except BaseException as exc:
                 # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
