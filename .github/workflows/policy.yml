@@ -1132,7 +1132,7 @@ jobs:
             //   project_id en el formData), FileAttachment.test.jsx 7 -> 16 (+9: sin «listo» mientras
             //   está en curso, estado traducido y «desconocido»). MEDICION LOCAL (hall9000, 2026-10-06,
             //   `npx vitest run` sobre la rama, sin variables de entorno -- el sondeo ya sale de
-            //   vitest.config.js): 1410/0/1410, 113 archivos. NO medido aún en el runner de CI.
+            //   vitest.config.js): 1410/0/1410, 113 archivos. CONFIRMADO en el runner: policy run 37502134709 (SHA 365adba).
             if (r.numFailedTests !== 0 || r.numPassedTests !== 1410) {
               console.error("PISO ROTO: se esperaban 1410 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
@@ -3688,8 +3688,11 @@ jobs:
           # 12.3.3 efímera en su propio netns, venv de pruebas con los extractores): 3854 passed / 1 skipped
           # (antes de estos cambios, mismo método, sobre b209f7de: 3848 / 1; CI midió 3847 / 2: la
           # diferencia de 1 es una prueba que el runner omite por entorno). Piso = 3854 - 1 = 3853;
-          # NO medido en el runner de CI: lo re-mide quien integre (regla 5).
-          PISO_PASSED = 3853
+          # Piso 3853 respetado en el runner: policy run 37502134709 (SHA 365adba).
+          # 3853 -> 3854 (cierre de los 3 MINOR de la auditoria sobre 365adba): +1 DB (cancelar la
+          # escritura del PDF del chat suelta el cupo). MEDICION LOCAL: 3855 passed / 1 skipped; piso =
+          # 3855 - 1 (el que el runner omite por entorno). Ese +1 NO esta medido en el runner (regla 5).
+          PISO_PASSED = 3854
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4780,7 +4783,7 @@ jobs:
       # 2364 -> 2364 (2026-10-06, E3 respaldo chat, cierre de la auditoría sobre b209f7de): las +6 pruebas
       # nuevas piden `client` (se saltean sin DB) y la de carga se reescribe 1 a 1: no suman aquí.
       # MEDICION LOCAL (hall9000, JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, env -i): 2364 passed /
-      # 1491 skipped (antes, sobre b209f7de: 2364 / 1485; +6 skipped = las +6 nuevas). NO medido en el runner.
+      # 1491 skipped (antes, sobre b209f7de: 2364 / 1485; +6 skipped = las +6 nuevas). CONFIRMADO en el runner: policy run 37502134709 (SHA 365adba) respeto el piso 2364.
       JAX_CI_MIN_PASSED: "2364"
     steps:
       - uses: actions/checkout@v4

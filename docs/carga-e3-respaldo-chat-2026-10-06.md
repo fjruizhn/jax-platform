@@ -1,7 +1,7 @@
 # E3 · respaldo de PDF escaneado en el chat
 
 **Fecha:** 2026-10-06
-**Estado:** ronda 3 implementada en la rama `feat/e3-respaldo-chat`; **sin auditoría aprobada**: la auditoría de escalón 3 sobre `b209f7de` dio **APROBADO CON CAMBIOS** (2 MAJOR, 5 MINOR; ningún BLOCK) y esta ronda los cierra, pero el SHA final exige una auditoría nueva, en otra invocación, antes de integrar. **CI del SHA final: [PENDIENTE: run de policy del SHA final; lo anota quien integre -- no se midió aquí].** La medición real de LAS MANOS queda pendiente para la ventana indicada abajo. El reporte de carga más antiguo se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
+**Estado:** ronda 3 implementada en la rama `feat/e3-respaldo-chat`. La auditoría de escalón 3 sobre `b209f7de` dio **APROBADO CON CAMBIOS** (2 MAJOR, 5 MINOR; ningún BLOCK) y la ronda 3 los cerró; la auditoría de escalón 3 sobre `365adba` dio **APROBADO** (veredicto comunicado por el coordinador; no es una aprobación de quien implementó) con tres MINOR que cierran los commits posteriores a `365adba` (cupo en el camino de error y de cancelación, límites conocidos de los topes y esta evidencia): esos commits **no están auditados**. **CI de `365adba`: policy run [37502134709](https://github.com/fjruizhn/jax-platform/actions/runs/37502134709)**, todos los jobs requeridos en verde: frontend 1410, backend sin DB 2364 y backend con DB (piso respetado), con el paso `Medir E3...` en verde y el paso `Comprobar que E3 rechaza el mutante sleep(0.5)` pasando porque el mutante cae en rojo, como corresponde. La medición real de LAS MANOS queda pendiente para la ventana indicada abajo. El reporte de carga más antiguo se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
 
 ## Corrección del registro (2026-10-06)
 
@@ -22,7 +22,22 @@ El primer resultado normal de CI del SHA `18c4364` (policy run 37484684852) fue 
 | p95 de subida | 32-60 ms | 59,9 ms | 1500 ms | x25: la base es de decenas de ms y manda el ruido absoluto del runner; sigue 6x por debajo del mutante |
 | p95 de turno de chat | 1021-1623 ms | 1623 ms | 5000 ms | x3: la base ya es de cola (100 turnos en ~2 s sobre un loop) |
 
-Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope 1500) y chat p95 3908 / 3713 / 2132 / 3577 ms en cuatro corridas (con subida 10110 ms en la última); la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat (5000 ms) no ve este mutante, a propósito: el bloqueo no está en la ruta del chat y esa cifra es cola; ese tope protege las regresiones de la ruta del chat. **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
+Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope 1500) y chat p95 3908 / 3713 / 2132 / 3577 ms en cuatro corridas (con subida 10110 ms en la última); la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat (5000 ms) no ve este mutante, a propósito: el bloqueo no está en la ruta del chat y esa cifra es cola. **Ese tope NO promete detectar un bloqueo pequeño en `chat()`: ver «Límites conocidos de los topes».** **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
+
+**Límites conocidos de los topes (declarados tras la auditoría de `365adba`):**
+
+- **Tope de chat (5000 ms): no ve bloqueos chicos por turno en `chat()`.** Según la auditoría, un `time.sleep` bloqueante en la ruta del chat de 0,02 s, 0,03 s o 0,05 s por turno **pasa** la prueba; con 0,1 s por turno la prueba cae, pero por el **tope de subida** (el loop bloqueado retrasa también las subidas), no por el de chat. El tope de chat solo atrapa regresiones grandes de esa ruta: la base ya es cola (1021-1623 ms con el mismo loop compartido por 100 turnos) y x3 sobre ella deja mucho espacio.
+
+  | Bloqueo por turno en `chat()` | ¿La prueba cae? | Por qué tope |
+  |---|---|---|
+  | 0,02 s | no | — |
+  | 0,03 s | no | — |
+  | 0,05 s | no | — |
+  | 0,1 s | sí | subida |
+
+- **Tope de subida (1500 ms): solo ve bloqueos del event loop.** Una espera no bloqueante por subida, por ejemplo `await asyncio.sleep(1.0)`, **pasa** con p95 de subida de 1048 ms (según la auditoría). Un retraso que no bloquea el loop (una consulta lenta, un acceso lento a disco en `to_thread`, un `await` de red) solo cae si supera los 1500 ms.
+- **El margen x25 del tope de subida no se midió contra el ruido del runner de CI**: se eligió porque la base local son decenas de ms y el ruido absoluto manda; el run 37502134709 pasó, y es una sola observación. Si el runner se vuelve ruidoso, el tope se re-mide, no se sube a ciegas.
+- Ninguno de los dos topes mide OCR real: el borde HTTP de LAS MANOS está simulado (`_OCR_SIMULADO_S`).
 
 | Hallazgo | Cierre | Evidencia local |
 |---|---|---|
@@ -32,13 +47,13 @@ Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso d
 | MINOR 4 · F7, F10, F9 sin prueba y falta `estados.desconocido` | Pruebas de `FileAttachment` (sin «listo» en `en_cola`/`pendiente`/`procesando`, estado traducido, «desconocido» traducido) y de `BottomBar` (`project_id` en el formData); `estados.desconocido` en es y en | F7, F10 y la clave faltante: rojo contra el mutante; F9: rojo sin el `append` |
 | MINOR 5 · M9, M11, M7 sin prueba | Un VIEWER no lee un documento oculto (404 aun para el dueño); duplicado desde el chat devuelve el documento canónico con su estado actual y el oculto da 409 sin revelar el id; `DOC_MAX_BYTES_ARCHIVO` menor que el tope del chat da 413 con el tope de proyectos | M9 (sin `AND oculto_at IS NULL`), M11 (sin camino de reuso, estado fijo, sin id del duplicado) y M7 (sin chequeo de bytes en `encolar`, sin el `min()` en `upload.py`): rojo en cada uno |
 | MINOR 6 · `encolar_pdf_desde_chat` no tomaba `cupo_de_subidas` | Toma el cupo de subidas simultáneas antes de tocar el disco y lo suelta en `finally` (429 `subidas_simultaneas`, ya traducido); pruebas con N=1 por usuario y global, con dos subidas realmente simultáneas | Contra `b209f7de` (sin cupo) las dos pruebas fallan (200 en vez de 429); sin el `soltar` fallan por cupo no liberado |
-| MINOR 7 · este informe | Se quitó «Auditoría escalón 3: APROBADO»; «Contexto fijado» corregido; la evidencia de CI del SHA final queda marcada como pendiente | Este documento |
+| MINOR 7 · este informe | Se quitó «Auditoría escalón 3: APROBADO»; «Contexto fijado» corregido; la evidencia de CI es el run 37502134709 (SHA `365adba`); lo posterior queda marcado como pendiente | Este documento |
 
 **Efecto de producción a notar:** con los valores sembrados (`subidas_por_usuario=2`, `subidas_globales=4`), una ráfaga de PDF escaneados por el chat ahora puede recibir 429 `subidas_simultaneas` (el área de proyectos ya se comportaba así). La prueba de carga sube el cupo al máximo con `ajustes_en_db` porque mide la latencia del loop, no el rechazo del cupo.
 
-**Pisos re-medidos (local; no medidos en el runner de CI):** frontend **1410/0/1410** (113 archivos; antes 1397); backend sin DB **2364 passed / 1491 skipped** (antes 2364 / 1485: las +6 nuevas piden `client`); backend con DB **3854 passed / 1 skipped** (antes, mismo método sobre `b209f7de`: 3848 / 1; CI midió 3847 / 2, la diferencia de 1 es una prueba que el runner omite por entorno), así que el piso con DB se fija en 3853. Los topes de `policy.yml` son 1410, 2364 y 3853; lo re-mide quien integre (regla 5).
+**Pisos:** medidos en local y **confirmados en el runner** para `365adba` (run 37502134709): frontend **1410/0/1410** (113 archivos; antes 1397); backend sin DB **2364 passed** (localmente 2364 / 1491 skipped; antes 2364 / 1485: las +6 nuevas piden `client`); backend con DB, piso **3853** respetado (localmente 3854 passed / 1 skipped; antes, mismo método sobre `b209f7de`: 3848 / 1, y CI midió 3847 / 2: la diferencia de 1 es una prueba que el runner omite por entorno). Después de `365adba` se agrega una prueba con DB (cancelación del PDF del chat): localmente **3855 passed / 1 skipped**, así que el piso con DB pasa a **3854**; **ese +1 no está medido en el runner**. Frontend y backend sin DB no cambian.
 
-**Pendiente de esta ronda:** (1) auditoría de escalón 3 del SHA final, en otra invocación; (2) policy run del SHA final: **[PENDIENTE: URL del run y resultado de los pasos `Medir E3...` y `Comprobar que E3 rechaza el mutante sleep(0.5)`]**; (3) integración por Fernando, porque el PR toca `.github/workflows/policy.yml`.
+**Pendiente de esta ronda:** (1) auditoría de escalón 3 de los commits posteriores a `365adba`, en otra invocación; (2) policy run del SHA final (el de `365adba` ya pasó, ver arriba) y re-medición del piso con DB (+1); (3) integración por Fernando, porque el PR toca `.github/workflows/policy.yml`.
 
 ## Cierre del informe de auditoría de la ronda 2 (histórico, SHA `65b9449`)
 
