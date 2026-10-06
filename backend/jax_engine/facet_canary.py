@@ -6,13 +6,12 @@ Durante los tres dias que estuvo roto nadie lo llamo. Un detector derivado
 del trafico real no habria detectado nada -- ver §1.3 del spec.
 
 COSTO: cada sonda es una llamada PAGA a un proveedor real. Ningun test
-puede ejecutarla; el loop no arranca bajo pytest (ver
-_running_under_pytest). Precedente: 2026-08-24, correr pytest disparo 11
+puede ejecutarla; el loop no arranca bajo pytest (ver `pytest_guard`).
+Precedente: 2026-08-24, correr pytest disparo 11
 dispatches reales a produccion."""
 import asyncio
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -31,6 +30,7 @@ from facet_health import (
 from facet_resolver import invalidate_facet_cache
 import kill_switch
 from redaccion import texto_de_error
+from pytest_guard import corriendo_bajo_pytest
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +167,6 @@ SQL_FACETAS_CON_BINDING_APROBADO = (
     "WHERE b.role = 'primary' AND b.approved_at IS NOT NULL "
     "AND b.approved_by IS NOT NULL AND f.status = 'active'"
 )
-
-
-def _running_under_pytest() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 
 
 _PUERTOS_POR_DEFECTO = {"http": 80, "https": 443}
@@ -473,7 +469,7 @@ async def probe_after_rebind(facet_key: str) -> str | None:
 
 
 async def start_facet_canary() -> None:
-    if _running_under_pytest():
+    if corriendo_bajo_pytest():
         logger.warning("facet_canary: no arranca bajo pytest (llamadas pagas)")
         return
     if CANARY_INTERVAL_SECONDS <= 0:

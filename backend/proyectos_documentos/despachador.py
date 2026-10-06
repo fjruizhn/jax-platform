@@ -64,6 +64,7 @@ from pathlib import Path
 import httpx
 
 import ajustes
+from pytest_guard import corriendo_bajo_pytest
 from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
@@ -567,10 +568,14 @@ async def ciclo(pool) -> None:
                 raise
 
 
-def despachar_ahora() -> None:
+def despachar_ahora(forzado: bool = False) -> None:
     """Programa un `ciclo` inmediato, sin esperarlo. Necesita el loop de la plataforma
     corriendo (se llama desde un handler). Si ya hay uno programado sin terminar, no
-    suma otro: lo que llegue despues sale en la vuelta del intervalo."""
+    suma otro: lo que llegue despues sale en la vuelta del intervalo. No arranca
+    bajo pytest salvo que un test lo pida explícitamente con `forzado=True`."""
+    if not forzado and corriendo_bajo_pytest():
+        logger.warning("proyectos_documentos: el aviso inmediato no arranca bajo pytest")
+        return
     if any(not t.done() for t in _avisos):
         return
     tarea = asyncio.get_running_loop().create_task(_ciclo_inmediato())
@@ -585,11 +590,6 @@ async def _ciclo_inmediato() -> None:
         logger.warning("proyectos_documentos: el ciclo inmediato fallo", exc_info=True)
 
 
-def _corriendo_bajo_pytest() -> bool:
-    import sys
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-
-
 async def start_despachador(forzado: bool = False):
     """Tarea de fondo del lifespan (corre al arrancar, despues duerme; nunca muere por un
     fallo). Intervalo: INTERVALO_SEGUNDOS.
@@ -600,7 +600,7 @@ async def start_despachador(forzado: bool = False):
     test_mapa_de_estados[parcial-parcial] quedaba 'pendiente' porque el ciclo de fondo
     tomaba el GET_LOCK del despacho y el ciclo del test volvia sin hacer nada).
     `forzado=True` es solo para el test que ejercita el loop."""
-    if not forzado and _corriendo_bajo_pytest():
+    if not forzado and corriendo_bajo_pytest():
         logger.warning("proyectos_documentos: el despachador no arranca bajo pytest")
         return
     while True:

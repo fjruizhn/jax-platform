@@ -73,8 +73,10 @@ from pathlib import Path
 
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import LimitesDeAdjuntosInvalidos
+from pytest_guard import corriendo_bajo_pytest
 
 logger = logging.getLogger(__name__)
+
 
 VARIABLE_DIRECTORIO = "JAX_ADJUNTOS_DIR"
 VARIABLE_TTL_HORAS = "JAX_ADJUNTOS_TTL_HORAS"
@@ -752,9 +754,13 @@ def borrar_de_usuario(directorio: Path, user_id: str) -> int:
     return borrados
 
 
-async def start_limpieza_de_adjuntos():
+async def start_limpieza_de_adjuntos(forzado: bool = False):
     """Tarea de fondo del lifespan (pasa al arrancar, después duerme; nunca muere
-    por un fallo). Intervalo: INTERVALO_DE_LIMPIEZA_SEGUNDOS."""
+    por un fallo). Intervalo: INTERVALO_DE_LIMPIEZA_SEGUNDOS. No arranca bajo
+    pytest salvo que un test lo pida explícitamente con `forzado=True`."""
+    if not forzado and corriendo_bajo_pytest():
+        logger.warning("adjuntos: la limpieza de fondo no arranca bajo pytest")
+        return
     while True:
         try:
             await asyncio.to_thread(limpiar, cargar_directorio())

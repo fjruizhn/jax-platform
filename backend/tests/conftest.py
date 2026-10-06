@@ -722,7 +722,7 @@ def _apply_facet_health_writer_stub(monkeypatch, ci_no_db: bool) -> bool:
 @pytest.fixture(autouse=True)
 def _facet_canary_no_real_dispatch(monkeypatch):
     """Ronda de correccion 1 de Task 4 (2026-08-27), Hallazgo 5: el guard
-    _running_under_pytest() de facet_canary.py solo cubre un punto de
+    corriendo_bajo_pytest() de pytest_guard.py solo cubre un punto de
     entrada de tres -- start_facet_canary(). probe_all() y probe_facet()
     son importables directo y hacen llamadas PAGAS sin ningun guard propio.
     El accidente real del 2026-08-24 (11 dispatches reales) no paso por

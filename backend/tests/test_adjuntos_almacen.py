@@ -266,8 +266,21 @@ def test_el_bucle_de_limpieza_corre_al_arrancar_y_sobrevive_a_un_fallo(directori
     monkeypatch.setattr(almacen, "limpiar", limpiar_falso)
     monkeypatch.setattr(almacen, "_dormir", sleep_falso)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(almacen.start_limpieza_de_adjuntos())
+        asyncio.run(almacen.start_limpieza_de_adjuntos(forzado=True))
     assert llamadas == [directorio, directorio]
+
+
+async def test_limpieza_de_adjuntos_no_arranca_bajo_pytest(directorio, monkeypatch, caplog):
+    llamadas = []
+    monkeypatch.setattr(almacen, "limpiar", lambda *_: llamadas.append("limpiar"))
+    monkeypatch.setattr(almacen, "corriendo_bajo_pytest", lambda: True)
+    monkeypatch.setattr(almacen, "_dormir", lambda *_: pytest.fail("el loop de limpieza no debe iniciar"))
+
+    with caplog.at_level("WARNING", logger=almacen.logger.name):
+        await almacen.start_limpieza_de_adjuntos()
+
+    assert llamadas == []
+    assert "pytest" in caplog.text
 
 
 # ---------------------------------------------------------- baja de usuario

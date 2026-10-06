@@ -3624,7 +3624,9 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          PISO_PASSED = 3830
+          # Ronda 2 #201 (guard compartido de pytest, 2026-10-06): base acumulada tras #199/#200 = 3835; +6 pruebas ejecutadas = 3841.
+          # Los seis casos son ejecutables con y sin DB; piso acumulado del tercer paso.
+          PISO_PASSED = 3841
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4707,7 +4709,9 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      JAX_CI_MIN_PASSED: "2358"
+      # Ronda 2 #201 (guard compartido de pytest, 2026-10-06): base acumulada tras #199/#200 = 2361; +6 pruebas ejecutadas = 2367.
+      # Piso acumulado del tercer paso tras integrar #199/#200.
+      JAX_CI_MIN_PASSED: "2367"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

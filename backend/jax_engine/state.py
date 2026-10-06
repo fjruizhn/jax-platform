@@ -10,6 +10,7 @@ from tiempo import utc_ahora
 import httpx
 import aviso_pipeline
 from http_client import get_http_client
+from pytest_guard import corriendo_bajo_pytest
 from credencial_las_manos import encabezados_las_manos
 from db.connection import get_pool
 from .schemas import (
@@ -424,8 +425,7 @@ class JAXEngineState:
         que reemplaza ese cliente contaba esa llamada de forma intermitente. Mismo
         contrato que start_reintento_de_uso y start_facet_canary; `forzado=True`
         solo para el test que ejercita el arranque."""
-        import sys
-        if not forzado and ("PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules):
+        if not forzado and corriendo_bajo_pytest():
             logger.warning("engine_state: las tareas de fondo no arrancan bajo pytest")
             return
         loop = asyncio.get_event_loop()

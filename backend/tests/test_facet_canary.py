@@ -240,7 +240,7 @@ def test_el_loop_NO_EJECUTA_NINGUNA_SONDA_bajo_pytest(monkeypatch):
     """Regla 3 del "Riesgo de costo".
 
     Prueba el EFECTO, no el detector: verificar que
-    _running_under_pytest() devuelve True probaria que la funcion sabe
+    corriendo_bajo_pytest() devuelve True probaria que la funcion sabe
     donde esta, no que el loop se abstiene. Lo que puede costar plata es
     que probe_all corra -- eso es lo que se asserta.
 
@@ -265,11 +265,12 @@ def test_el_loop_NO_EJECUTA_NINGUNA_SONDA_bajo_pytest(monkeypatch):
         "PAGAS a proveedores reales")
 
 
-def test_running_under_pytest_detecta_el_entorno():
+def test_corriendo_bajo_pytest_detecta_el_entorno():
     """Complemento del anterior: el detector en si. Por separado, para que
     quede claro cual de los dos prueba que -- si este pasa y el otro falla,
     el guard existe pero no se esta aplicando."""
-    assert facet_canary._running_under_pytest() is True
+    from pytest_guard import corriendo_bajo_pytest
+    assert corriendo_bajo_pytest() is True
 
 
 def test_intervalo_no_positivo_deshabilita_la_sonda_sin_silencio(monkeypatch, caplog):
@@ -279,11 +280,11 @@ def test_intervalo_no_positivo_deshabilita_la_sonda_sin_silencio(monkeypatch, ca
 
     El guard anti-pytest se prueba aparte (test_el_loop_NO_EJECUTA...) y
     corta ANTES de llegar a este chequeo bajo pytest real -- por eso acá
-    se parchea _running_under_pytest para poder ejercitar la rama de
+    se parchea el alias local corriendo_bajo_pytest para ejercitar la rama de
     abajo sin que el guard de arriba la tape. probe_all sigue espiado
     (y con timeout) por si el apagado no funcionara y el loop entrara
     igual: que este test falle legible, no que se cuelgue."""
-    monkeypatch.setattr(facet_canary, "_running_under_pytest", lambda: False)
+    monkeypatch.setattr(facet_canary, "corriendo_bajo_pytest", lambda: False)
     monkeypatch.setattr(facet_canary, "CANARY_INTERVAL_SECONDS", 0)
 
     llamadas = []

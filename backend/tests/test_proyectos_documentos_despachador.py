@@ -1006,6 +1006,23 @@ def test_una_razon_del_ocr_con_codigo_fuera_de_las_causas_cae_al_generico(monkey
 # ver tests/test_state_tareas_de_fondo_bajo_pytest.py.)
 # Mismo contrato que start_reintento_de_uso y start_facet_canary.
 
+def test_despachar_ahora_no_programa_tareas_bajo_pytest(caplog):
+    with caplog.at_level(logging.WARNING, logger=despachador.logger.name):
+        despachador.despachar_ahora()
+    assert "pytest" in caplog.text
+
+
+async def test_despachar_ahora_forzado_programa_un_ciclo(monkeypatch):
+    ciclos = []
+
+    async def ciclo_falso():
+        ciclos.append("ciclo")
+
+    monkeypatch.setattr(despachador, "_ciclo_inmediato", ciclo_falso)
+    despachador.despachar_ahora(forzado=True)
+    await asyncio.sleep(0)
+    assert ciclos == ["ciclo"]
+
 async def test_start_despachador_no_arranca_bajo_pytest(monkeypatch, caplog):
     ciclos = []
 
