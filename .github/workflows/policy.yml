@@ -3637,7 +3637,15 @@ jobs:
           #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
           #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
           #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
-          PISO_PASSED = 3836
+          # 3836 -> 3847 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +11 con DB, ninguna
+          #   cambia el conteo de las existentes: 5 puras (test_despachador_clave_idempotencia.py) + 6 en
+          #   test_proyectos_documentos_despachador.py (clave en el encabezado; el corte entre el 202 y
+          #   marcar_despachadas con reinicio produce UN solo trabajo, y su control negativo; un reencolado cambia
+          #   la clave; 409 y 422 de clave no marcan error). Vistas en rojo contra el despachador viejo (11 failed).
+          #   MEDIDO sobre la rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3848 passed, 1 skipped,
+          #   0 failed (sin la falla local de extractores que otras rondas anotaron: aqui esa maquina los tiene).
+          #   El piso es base + delta. El runner tiene la ultima palabra (regla 5).
+          PISO_PASSED = 3847
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4727,7 +4735,12 @@ jobs:
       # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
       # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
       # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2361"
+      # 2361 -> 2366 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +5 puras
+      #   (tests/test_despachador_clave_idempotencia.py, ninguna pide `client`). Las 6 de despacho con
+      #   `client` (test_proyectos_documentos_despachador.py) se saltan sin DB. MEDIDO con JAX_CI_NO_DB=1 sobre
+      #   la rama (jax en el worktree de la rama hermana, CI=true GITHUB_ACTIONS=true, MariaDB 12.3.3 efimera
+      #   propia en su netns): 2366 passed / 1483 skipped / 0 failed. El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2366"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

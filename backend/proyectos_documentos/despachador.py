@@ -44,7 +44,10 @@ RIESGOS ACEPTADOS (decision del controlador, 2026-10-03):
     re-despachan durante VENTANA_DE_INCERTIDUMBRE_SEGUNDOS (registro en memoria del proceso: un
     reinicio lo olvida). Si aun asi se despacha dos veces, el duplicado procesa los mismos
     archivos de forma atomica y su resultado se ignora (la fila ya esta atada a otro job_id).
-    La solucion completa seria una clave idempotente en LAS MANOS (mejora futura).
+    La solucion completa -- una clave idempotente -- YA ESTA (2026-10-06): cada POST lleva `Idempotency-Key`
+    derivada de las filas (`clave_de_idempotencia`), igual tras un reinicio, y LAS MANOS devuelve el MISMO trabajo
+    para una clave ya vista. La ventana en memoria sigue ahi solo para no martillar a LAS MANOS; ya no es lo
+    que evita el duplicado. Una LAS MANOS anterior a esa version ignora el encabezado: queda el riesgo de arriba.
   - Corte de la conexion que sostiene el `GET_LOCK` a mitad de ciclo: el servidor suelta el
     lock y otro despachador podria entrar mientras este sigue; mismo desenlace que arriba
     (trabajo duplicado cuyo resultado se ignora), no perdida de datos.
@@ -52,7 +55,9 @@ RIESGOS ACEPTADOS (decision del controlador, 2026-10-03):
 from __future__ import annotations
 
 import asyncio
+import datetime
 import errno
+import hashlib
 import logging
 import os
 import re
@@ -139,6 +144,11 @@ CAUSAS_DE_ERROR = frozenset({
     "ocr_tiempo_excedido",     # el OCR tardo mas que su plazo
     "ocr_sin_memoria",         # el OCR se quedo sin memoria
 })
+# Codigos de LAS MANOS que hablan de la CLAVE de idempotencia, no del documento (409 la misma clave con otro
+# pedido; 422 formato). Nunca convierten documentos sanos en `error`: las filas siguen en_cola.
+CODIGOS_DE_IDEMPOTENCIA = frozenset({"idempotency_key_reuse", "idempotency_key_invalida"})
+ENCABEZADO_DE_IDEMPOTENCIA = "Idempotency-Key"
+PREFIJO_DE_CLAVE = "jxp-doc-v1-"
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
 
@@ -385,6 +395,29 @@ async def _sincronizar(pool) -> None:
 
 # ---------------------------------------------------------------- despacho
 
+def _fecha_estable(valor: object) -> str:
+    return valor.isoformat(timespec="microseconds") if isinstance(valor, datetime.datetime) else str(valor)
+
+
+def clave_de_idempotencia(project_uuid: str, filas: list[dict]) -> str:
+    """La `Idempotency-Key` de un envio a LAS MANOS (funcion pura). Se deriva SOLO de las filas, asi que es la
+    MISMA en un reenvio despues de un reinicio, cuando la memoria del proceso (`_en_incertidumbre`) ya se perdio:
+    el proyecto y, por fila, `id` + `sha256` del documento, su `ruta_entrada` y `updated_at`.
+
+    `updated_at` es el INTENTO LOGICO: cambia con cada UPDATE de la fila, y una fila que vuelve a `en_cola`
+    (reprocesar, re-subida) pasa por un UPDATE. Sin eso, un reprocesado reusaria la clave del trabajo viejo y LAS
+    MANOS devolveria ese trabajo ya terminado: el documento no se volveria a procesar nunca. Equivocarse hacia
+    «la clave cambia» solo cuesta un OCR duplicado; hacia «no cambia», un documento sin procesar.
+
+    Las filas van ordenadas por id (el orden no importa) y cada campo lleva separador y largo, para que dos
+    combinaciones distintas nunca den el mismo texto."""
+    lineas = [f"proyecto={len(project_uuid)}:{project_uuid}"]
+    for fila in sorted(filas, key=lambda f: f["id"]):
+        campos = (str(fila["id"]), str(fila["sha256"]), str(fila["ruta_entrada"]), _fecha_estable(fila["actualizado_at"]))
+        lineas.append("|".join(f"{len(c)}:{c}" for c in campos))
+    return PREFIJO_DE_CLAVE + hashlib.sha256("\n".join(lineas).encode("utf-8", "backslashreplace")).hexdigest()
+
+
 def _codigo_de(respuesta) -> str:
     try:
         detalle = respuesta.json().get("detail")
@@ -412,7 +445,9 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         respuesta = await cliente.post(
             f"{LAS_MANOS_URL}/procesamiento/trabajos",
             json={"project_uuid": project_uuid, "rutas": [f["ruta_entrada"] for f in trozo]},
-            headers=encabezados_procesamiento(contexto), timeout=TIMEOUT_HTTP_SEGUNDOS)
+            headers={**encabezados_procesamiento(contexto),
+                     ENCABEZADO_DE_IDEMPOTENCIA: clave_de_idempotencia(project_uuid, trozo)},
+            timeout=TIMEOUT_HTTP_SEGUNDOS)
     except ERRORES_DE_DESENLACE_INCIERTO:  # fail-soft: el pedido pudo llegar; las filas siguen en_cola pero no se re-despachan durante la ventana, para no duplicar el trabajo
         hasta = _reloj() + VENTANA_DE_INCERTIDUMBRE_SEGUNDOS
         for i in ids:
@@ -456,6 +491,12 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         logger.error("proyectos_documentos: LAS MANOS no tiene los extractores del trozo (proyecto %s, %s fila(s)); "
                      "siguen en_cola, con el resto de su grupo, y se sigue con los demas grupos", project_uuid, len(ids))
         return "saltar_grupo"
+    if estado in (409, 422) and _codigo_de(respuesta) in CODIGOS_DE_IDEMPOTENCIA:
+        # La clave la deriva este codigo de las filas: que LAS MANOS la rechace es un defecto de contrato o
+        # de version entre las dos, no del documento. Nunca lo convierte en `error`; queda en_cola y el log lo dice.
+        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia del trozo (%s, %s; proyecto %s, "
+                     "%s fila(s)); siguen en_cola", estado, _codigo_de(respuesta), project_uuid, len(ids))
+        return "cortar"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.

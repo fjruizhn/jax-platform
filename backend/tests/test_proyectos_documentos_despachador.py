@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 
 import httpx
@@ -35,6 +36,10 @@ class LasManosFalsa:
         self.demora = 0.0
         self.sin_credencial = 0
         self.consultas = []                   # job_id de cada GET
+        self.claves = []                      # `Idempotency-Key` de cada POST de ESTE proyecto (None si no vino)
+        self.idempotente = False              # True: cumple el contrato de LAS MANOS (misma clave -> mismo trabajo)
+        self.trabajos_creados = []            # job_id de cada trabajo NUEVO que esta falsa creo
+        self._por_clave = {}
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.headers.get(credencial_las_manos.ENCABEZADO) != CREDENCIAL:
@@ -46,12 +51,21 @@ class LasManosFalsa:
             if self.demora:
                 await asyncio.sleep(self.demora)
             self.posts.append(cuerpo)
+            clave = request.headers.get("Idempotency-Key")
+            self.claves.append(clave)
             if self.post_respuestas:
                 siguiente = self.post_respuestas.pop(0)
                 if isinstance(siguiente, Exception):
                     raise siguiente
                 return httpx.Response(siguiente[0], json=siguiente[1])
-            return httpx.Response(202, json={"job_id": f"job-{uuid.uuid4().hex}"})
+            if self.idempotente and clave in self._por_clave:
+                return httpx.Response(202, json={"job_id": self._por_clave[clave], "estado": "running"},
+                                      headers={"Idempotent-Replayed": "true"})
+            job_id = f"job-{uuid.uuid4().hex}"
+            self.trabajos_creados.append(job_id)
+            if self.idempotente and clave is not None:
+                self._por_clave[clave] = job_id
+            return httpx.Response(202, json={"job_id": job_id})
         job_id = request.url.path.rsplit("/", 1)[-1]
         if job_id in self.estados:
             self.consultas.append(job_id)
@@ -1042,3 +1056,92 @@ async def test_start_despachador_forzado_corre_un_ciclo_y_se_cancela_limpio(monk
         tarea.cancel()
         with pytest.raises(asyncio.CancelledError):
             await tarea
+
+
+# ------------------------------------------------------------------ idempotencia del despacho (auditoria de E3)
+
+def test_el_post_lleva_una_clave_de_idempotencia_en_el_encabezado(e):
+    e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.ciclo()
+    assert len(e.las_manos.claves) == 1
+    clave = e.las_manos.claves[0]
+    assert clave and re.fullmatch(r"[A-Za-z0-9._:\-]{16,128}", clave), clave   # el formato que LAS MANOS acepta
+
+
+def test_cortar_entre_el_202_y_marcar_despachadas_y_reiniciar_produce_un_solo_trabajo(e, monkeypatch):
+    """EL RIESGO DE LA AUDITORIA: LAS MANOS acepto (202) y el proceso murio antes de atar las filas al job_id.
+    Al reiniciar, la memoria del proceso (`_en_incertidumbre`) esta vacia y las filas siguen `en_cola`: el
+    reenvio lleva la MISMA clave y LAS MANOS (que cumple el contrato) devuelve el MISMO trabajo."""
+    e.las_manos.idempotente = True
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(3)]
+
+    async def cortado(*a, **k):
+        raise RuntimeError("el proceso murio justo despues del 202")
+    real = despachador.repo.marcar_despachadas
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", cortado)
+    with pytest.raises(RuntimeError):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 3          # nada quedo atado
+    assert len(e.las_manos.trabajos_creados) == 1
+
+    # REINICIO: memoria del proceso vacia, codigo normal.
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", real)
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+
+    assert len(e.las_manos.posts) == 2 and e.las_manos.claves[0] == e.las_manos.claves[1]
+    assert len(e.las_manos.trabajos_creados) == 1, "el reenvio no debe crear un segundo trabajo (OCR duplicado)"
+    filas = [e.fila(i) for i in ids]
+    assert {f[0] for f in filas} == {"pendiente"} and {f[1] for f in filas} == {e.las_manos.trabajos_creados[0]}
+
+
+def test_sin_la_clave_estable_el_mismo_corte_si_duplica_el_trabajo(e, monkeypatch):
+    """Control negativo del test anterior: con una clave que cambia en cada envio (el comportamiento de antes)
+    el mismo corte deja DOS trabajos en LAS MANOS. Si este test dejara de fallar sin la clave, el de arriba
+    no probaria nada."""
+    e.las_manos.idempotente = True
+    e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    monkeypatch.setattr(despachador, "clave_de_idempotencia", lambda *a, **k: f"jxp-doc-v1-{uuid.uuid4().hex}")
+
+    async def cortado(*a, **k):
+        raise RuntimeError("el proceso murio justo despues del 202")
+    real = despachador.repo.marcar_despachadas
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", cortado)
+    with pytest.raises(RuntimeError):
+        e.ciclo()
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", real)
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+    assert len(e.las_manos.trabajos_creados) == 2
+
+
+def test_un_reencolado_es_otro_intento_logico_y_cambia_la_clave(e):
+    """Una fila que termino (error) y vuelve a `en_cola` (reprocesar / re-subida) es OTRO intento: con la
+    misma clave LAS MANOS devolveria el trabajo viejo ya terminado y el documento nunca se reprocesaria."""
+    e.las_manos.idempotente = True
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.ciclo()
+    primero = e.las_manos.trabajos_creados[0]
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='procesamiento_fallido' "
+                              "WHERE id=%s", (doc,))
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='en_cola', job_id=NULL, error=NULL "
+                              "WHERE id=%s", (doc,))                       # lo que hace repo.reprocesar
+    e.ciclo()
+    assert e.las_manos.claves[0] != e.las_manos.claves[1]
+    assert len(e.las_manos.trabajos_creados) == 2 and e.fila(doc)[1] == e.las_manos.trabajos_creados[1] != primero
+
+
+def test_409_de_clave_reusada_no_convierte_documentos_sanos_en_error(e, caplog):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2          # no es culpa del documento
+    assert any("idempotency_key_reuse" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+def test_422_de_clave_invalida_tampoco_marca_error(e):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(422, {"detail": {"code": "idempotency_key_invalida"}})]
+    e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2

@@ -69,7 +69,7 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
         condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
-        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
+        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
         "FROM project_documents d "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
@@ -369,8 +369,11 @@ async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = f
             ids = sorted(excluir_ids)
             await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids)), (*ids, limite))
             filas = await cur.fetchall()
+    # `sha256` y `actualizado_at` son lo que el despachador usa para la clave de idempotencia del envio
+    # (`despachador.clave_de_idempotencia`): `updated_at` se mueve con CADA UPDATE de la fila, asi que
+    # marca el intento logico (insertar, re-subir o reprocesar la dejan en_cola con otro `updated_at`).
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
-             "owner": _owner(f[4], f[5], f[1])} for f in filas]
+             "owner": _owner(f[4], f[5], f[1]), "sha256": f[6], "actualizado_at": f[7]} for f in filas]
 
 
 async def marcar_despachadas(pool, *, ids: list[int], job_id: str,
