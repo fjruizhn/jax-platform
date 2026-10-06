@@ -73,6 +73,13 @@ def _error(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra}, headers=cabeceras)
 
 
+def _rechazo_parcial(exc: HTTPException, lote: str, aceptados: list[dict], ignorados: list[dict]) -> HTTPException:
+    """Conserva el rechazo original y agrega los resultados ya confirmados del lote."""
+    detalle = dict(exc.detail) if isinstance(exc.detail, dict) else {"code": exc.detail}
+    detalle.update(lote=lote, aceptados=aceptados, ignorados=ignorados)
+    return HTTPException(status_code=exc.status_code, detail=detalle, headers=exc.headers)
+
+
 def _puede_escribir(papel: str) -> bool:
     """La decision de B9, no una tabla propia: quien tiene la capacidad
     `memory:project:write` en `MariaDBScopeAuthorityResolver._project_roles` (hoy CONTRIBUTOR,
@@ -247,9 +254,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 # Esta guarda corre antes de crear el archivo actual. Si el lote
                 # ya acepto otros, incluirlos en la respuesta para el cliente.
                 if aceptados:
-                    codigo = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
-                    raise _error(exc.status_code, str(codigo), lote=lote, aceptados=aceptados,
-                                 ignorados=ignorados) from None
+                    raise _rechazo_parcial(exc, lote, aceptados, ignorados) from None
                 raise
             except BaseException:
                 usados.discard(seguro)
@@ -273,9 +278,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 if aceptados:
                     # En un lote con exitos previos el cliente debe conocerlos para
                     # no reintentar ni perder referencias al resultado parcial.
-                    codigo = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
-                    raise _error(exc.status_code, str(codigo), lote=lote, aceptados=aceptados,
-                                 ignorados=ignorados) from None
+                    raise _rechazo_parcial(exc, lote, aceptados, ignorados) from None
                 raise
             except BaseException as exc:
                 # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
