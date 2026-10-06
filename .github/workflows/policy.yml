@@ -3645,7 +3645,13 @@ jobs:
           #   MEDIDO sobre la rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3848 passed, 1 skipped,
           #   0 failed (sin la falla local de extractores que otras rondas anotaron: aqui esa maquina los tiene).
           #   El piso es base + delta. El runner tiene la ultima palabra (regla 5).
-          PISO_PASSED = 3847
+          # 3847 -> 3859 (ronda 2 de la auditoria de jax-platform#210): +12 con DB, ninguna cambia el conteo de
+          #   las existentes: 10 casos de la tabla de contrato de la falsa de LAS MANOS, 1 de que un 409 de clave
+          #   no frena a los demas proyectos y 1 de que ocultar/restaurar no cambia la clave (las dos vistas en
+          #   rojo contra el codigo de la ronda 1). Sin DB no suma (usan `client`): 2366 igual. MEDIDO sobre la
+          #   rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3860 passed, 1 skipped, 0 failed (+12 sobre los
+          #   3848 de la ronda 1); sin DB, 2366 passed / 1495 skipped. Piso = base + delta; el runner tiene la ultima palabra.
+          PISO_PASSED = 3859
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

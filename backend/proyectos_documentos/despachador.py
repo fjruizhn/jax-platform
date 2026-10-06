@@ -409,6 +409,14 @@ def clave_de_idempotencia(project_uuid: str, filas: list[dict]) -> str:
     MANOS devolveria ese trabajo ya terminado: el documento no se volveria a procesar nunca. Equivocarse hacia
     «la clave cambia» solo cuesta un OCR duplicado; hacia «no cambia», un documento sin procesar.
 
+    ESTABLE ante ocultar/restaurar: esas dos operaciones asignan `updated_at = updated_at` (repositorio.ocultar /
+    restaurar) y no lo mueven. Un contador de intentos haria falta una columna nueva en `project_documents`, que es
+    DDL de jax (migracion 006a): no se hizo; `updated_at` protegido cubre lo mismo sin migrar.
+
+    LIMITE DECLARADO: la clave cubre el CONJUNTO de filas del trozo. Si entre el 202 y el reinicio cambia la
+    composicion del trozo (llegaron filas nuevas al ultimo trozo parcial, o se re-encolo otra), la clave cambia
+    y ese trozo se duplica. Nadie puede evitarlo sin una clave POR DOCUMENTO, que exige que LAS MANOS acepte y deduplique por archivo.
+
     Las filas van ordenadas por id (el orden no importa) y cada campo lleva separador y largo, para que dos
     combinaciones distintas nunca den el mismo texto."""
     lineas = [f"proyecto={len(project_uuid)}:{project_uuid}"]
@@ -494,9 +502,12 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
     if estado in (409, 422) and _codigo_de(respuesta) in CODIGOS_DE_IDEMPOTENCIA:
         # La clave la deriva este codigo de las filas: que LAS MANOS la rechace es un defecto de contrato o
         # de version entre las dos, no del documento. Nunca lo convierte en `error`; queda en_cola y el log lo dice.
-        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia del trozo (%s, %s; proyecto %s, "
-                     "%s fila(s)); siguen en_cola", estado, _codigo_de(respuesta), project_uuid, len(ids))
-        return "cortar"
+        # Es un problema de ESTE trozo (su proyecto): se salta el proyecto y los demas siguen despachando, como con
+        # el 422 `proyecto_no_activo`. Cortar la vuelta frenaria a todos los tenants por una clave de uno.
+        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia (%s, %s); se salta el proyecto %s "
+                     "en esta vuelta: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola", estado,
+                     _codigo_de(respuesta), project_uuid, len(ids), ids[0], ids[-1])
+        return "saltar_proyecto"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.

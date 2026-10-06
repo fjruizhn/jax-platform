@@ -341,18 +341,24 @@ async def _actualizar_de_proyecto(pool, actualiza: str, args: tuple, project_id:
         return existe
 
 
+# Ocultar y restaurar NO son un intento nuevo de procesamiento: asignan `updated_at = updated_at` para que el
+# ON UPDATE CURRENT_TIMESTAMP no lo mueva. `updated_at` es parte de la clave de idempotencia del envio a LAS MANOS
+# (`despachador.clave_de_idempotencia`); si se moviera aqui, ocultar y restaurar una fila en_cola entre el 202 y
+# un reinicio cambiaria la clave y duplicaria el OCR. Un UPDATE nuevo que olvide esto solo cambia la clave de mas
+# (un OCR duplicado), nunca de menos.
 async def ocultar(pool, *, project_id: int, documento_id: int, user_id: int) -> bool:
     return await _actualizar_de_proyecto(
         pool,
         "UPDATE project_documents SET oculto_at = COALESCE(oculto_at, CURRENT_TIMESTAMP(6)), "
-        "oculto_por = COALESCE(oculto_por, %s) WHERE id = %s AND project_id = %s",
+        "oculto_por = COALESCE(oculto_por, %s), updated_at = updated_at WHERE id = %s AND project_id = %s",
         (user_id,), project_id, documento_id)
 
 
 async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
     return await _actualizar_de_proyecto(
         pool,
-        "UPDATE project_documents SET oculto_at = NULL, oculto_por = NULL WHERE id = %s AND project_id = %s",
+        "UPDATE project_documents SET oculto_at = NULL, oculto_por = NULL, updated_at = updated_at "
+        "WHERE id = %s AND project_id = %s",
         (), project_id, documento_id)
 
 

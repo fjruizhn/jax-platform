@@ -25,6 +25,34 @@ P = "/api/proyectos"
 CREDENCIAL = "c" * credencial_las_manos.LARGO_MINIMO
 
 
+# Contrato de idempotencia de LAS MANOS, COPIADO de jax: las_manos/_procesamiento_idempotencia_db_test.py
+# (CONTRATO_IDEMPOTENCIA, probado alli contra la ruta real con MariaDB). Cada fila: (estado del trabajo que ya tiene
+# esa clave o None, el pedido es el mismo, resultado). Si se cambia una tabla, se cambia la otra. La falsa de abajo
+# la cumple, y `test_la_falsa_de_las_manos_cumple_el_contrato_compartido` lo comprueba.
+CONTRATO_IDEMPOTENCIA = (
+    (None, True, "crea"),
+    ("pending", True, "mismo"),
+    ("running", True, "mismo"),
+    ("cancelling", True, "mismo"),
+    ("completed", True, "mismo"),
+    ("failed", True, "crea"),
+    ("cancelled", True, "crea"),
+    ("pending", False, "conflicto"),
+    ("failed", False, "conflicto"),
+    ("completed", False, "conflicto"),
+)
+ESTADOS_QUE_SE_REINTENTAN = frozenset({"failed", "cancelled", "rejected"})
+
+
+def decision_del_contrato(estado_previo, mismo_pedido):
+    """La regla del contrato, escrita una vez: la usa la falsa y la verifica la tabla."""
+    if estado_previo is None:
+        return "crea"
+    if not mismo_pedido:
+        return "conflicto"
+    return "crea" if estado_previo in ESTADOS_QUE_SE_REINTENTAN else "mismo"
+
+
 class LasManosFalsa:
     """Registra los POST de un proyecto y responde lo que la prueba decida."""
 
@@ -39,7 +67,8 @@ class LasManosFalsa:
         self.claves = []                      # `Idempotency-Key` de cada POST de ESTE proyecto (None si no vino)
         self.idempotente = False              # True: cumple el contrato de LAS MANOS (misma clave -> mismo trabajo)
         self.trabajos_creados = []            # job_id de cada trabajo NUEVO que esta falsa creo
-        self._por_clave = {}
+        self._por_clave = {}                  # clave -> (job_id, huella del pedido)
+        self.estado_de_trabajo = {}           # job_id -> estado del trabajo que esta falsa creo
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.headers.get(credencial_las_manos.ENCABEZADO) != CREDENCIAL:
@@ -58,13 +87,20 @@ class LasManosFalsa:
                 if isinstance(siguiente, Exception):
                     raise siguiente
                 return httpx.Response(siguiente[0], json=siguiente[1])
+            huella = json.dumps(sorted(cuerpo["rutas"]))
             if self.idempotente and clave in self._por_clave:
-                return httpx.Response(202, json={"job_id": self._por_clave[clave], "estado": "running"},
-                                      headers={"Idempotent-Replayed": "true"})
+                previo_id, previo_huella = self._por_clave[clave]
+                resultado = decision_del_contrato(self.estado_de_trabajo[previo_id], previo_huella == huella)
+                if resultado == "conflicto":
+                    return httpx.Response(409, json={"detail": {"code": "idempotency_key_reuse"}})
+                if resultado == "mismo":
+                    return httpx.Response(202, json={"job_id": previo_id, "estado": self.estado_de_trabajo[previo_id]},
+                                          headers={"Idempotent-Replayed": "true"})
             job_id = f"job-{uuid.uuid4().hex}"
             self.trabajos_creados.append(job_id)
+            self.estado_de_trabajo[job_id] = "pending"
             if self.idempotente and clave is not None:
-                self._por_clave[clave] = job_id
+                self._por_clave[clave] = (job_id, huella)
             return httpx.Response(202, json={"job_id": job_id})
         job_id = request.url.path.rsplit("/", 1)[-1]
         if job_id in self.estados:
@@ -1145,3 +1181,60 @@ def test_422_de_clave_invalida_tampoco_marca_error(e):
     e.las_manos.post_respuestas = [(422, {"detail": {"code": "idempotency_key_invalida"}})]
     e.ciclo()
     assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+
+
+@pytest.mark.parametrize("previo,mismo,esperado", CONTRATO_IDEMPOTENCIA)
+def test_la_falsa_de_las_manos_cumple_el_contrato_compartido(e, previo, mismo, esperado):
+    """La falsa se comporta como la ruta real de LAS MANOS (misma tabla que su prueba de contrato en jax)."""
+    falsa = e.las_manos
+    falsa.idempotente = True
+
+    def post(rutas):
+        req = httpx.Request("POST", "http://las-manos/procesamiento/trabajos", headers={"Idempotency-Key": "k" * 20},
+                            json={"project_uuid": e.uuid, "rutas": rutas})
+        return e.client.portal.call(falsa, req)
+    viejo = None
+    if previo is not None:
+        viejo = post(["a.pdf"]).json()["job_id"]
+        falsa.estado_de_trabajo[viejo] = previo
+    r = post(["a.pdf"] if mismo else ["otro.pdf"])
+    if esperado == "conflicto":
+        assert r.status_code == 409
+    elif esperado == "mismo":
+        assert r.status_code == 202 and r.json()["job_id"] == viejo
+    else:
+        assert r.status_code == 202 and r.json()["job_id"] != viejo
+
+
+def test_un_409_de_clave_en_un_proyecto_no_frena_a_los_demas(e, caplog):
+    """El 409 de la clave salta ESE proyecto; el otro (otro tenant/proyecto) sigue despachando en la misma vuelta."""
+    mi = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    otro_id, otro_uuid = e.proyecto()
+    otro = _insertar(e.client, otro_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{otro_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(mi)[:2] == ("en_cola", None)                       # el trozo con clave rechazada no se toco
+    assert e.fila(otro)[0] == "pendiente"                            # el otro proyecto salio en la misma vuelta
+    msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert e.uuid in msg and "se salta el proyecto" in msg and "idempotency_key_reuse" in msg
+
+
+def test_ocultar_y_restaurar_una_fila_en_cola_no_cambia_su_clave(e):
+    """Ocultar y restaurar no son un intento nuevo: la clave sigue igual. Un reencolado de verdad si la cambia."""
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+
+    def clave():
+        filas = [f for f in _con_pool(e.client, lambda pool: repo.tomar_en_cola(pool, limite=100000))
+                 if f["id"] == doc]
+        return despachador.clave_de_idempotencia(e.uuid, filas)
+    antes = clave()
+    assert _con_pool(e.client, lambda pool: repo.ocultar(pool, project_id=e.project_id, documento_id=doc,
+                                                         user_id=e.usuario)) is True
+    assert clave() == antes
+    assert _con_pool(e.client, lambda pool: repo.restaurar(pool, project_id=e.project_id, documento_id=doc)) is True
+    assert clave() == antes
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='procesamiento_fallido' WHERE id=%s", (doc,))
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='en_cola', job_id=NULL, error=NULL WHERE id=%s", (doc,))
+    assert clave() != antes
