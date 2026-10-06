@@ -1363,7 +1363,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=2d2eed34bbb638511aeacf7d93e34622dccbfa56
+          PIN=48647f288dac448d8c765f58713bbb70ff915a5a
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -3691,7 +3691,11 @@ jobs:
           #   ciclo cortado retoma en su ventana). El EXPLAIN con duenos excluidos se reemplaza por el de la consulta real
           #   con cursor sobre 50k filas (mismo conteo). MEDIDO sobre la rama, mismo comando del job: 3871 passed, 1 skipped,
           #   0 failed (3867 de la ronda 3 + 4). Piso = base + delta; el runner tiene la ultima palabra.
-          PISO_PASSED = 3910
+          # 3910 -> 3955 (ronda 6 de #210, mezcla con master 39b3ef2 = #203): REGLA 5, base del runner 3910 + delta local +45
+          #   (master 39b3ef2 local 3911 -> mezcla 3956, mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA):
+          #   las pruebas de idempotencia/cursor/despacho de #210 (el EXPLAIN con volumen, la tabla de contrato, los saltos de
+          #   trozo, el aviso de clave desconocida, el cruce freno x cursor x salto). El runner confirma el absoluto.
+          PISO_PASSED = 3955
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4807,7 +4811,10 @@ jobs:
       #   tiene la ultima palabra.
       # 2370 -> 2372 (ronda 4 de #210): +2 puras (el contrato no se lee de /srv/jax-prod; el rojo dice la version de jax).
       #   MEDIDO con JAX_CI_NO_DB=1 sobre la rama, jax en el head de #366: 2372 passed / 1500 skipped / 0 failed.
-      JAX_CI_MIN_PASSED: "2429"
+      # 2429 -> 2440 (ronda 6 de #210, mezcla con master 39b3ef2): REGLA 5, base del runner 2429 + delta local +11 (master
+      #   2429 -> mezcla 2440, JAX_CI_NO_DB=1, 1483 -> 1517 skipped): las pruebas puras de #210 (clave de idempotencia, contrato
+      #   y su deriva con jax). Frontend sin cambio (1393 de master). El runner confirma el absoluto.
+      JAX_CI_MIN_PASSED: "2440"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4830,7 +4837,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=2d2eed34bbb638511aeacf7d93e34622dccbfa56
+          PIN=48647f288dac448d8c765f58713bbb70ff915a5a
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

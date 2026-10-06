@@ -55,7 +55,6 @@ RIESGOS ACEPTADOS (decision del controlador, 2026-10-03):
 from __future__ import annotations
 
 import asyncio
-import datetime
 import errno
 import hashlib
 import logging
@@ -89,6 +88,14 @@ LIMITE_DE_FILAS_POR_CICLO = 1000
 # Cursor de la cola (`d.id > ultimo`): donde retoma el despacho tras un ciclo cortado. 0 = desde el principio.
 # En memoria de este proceso: un reinicio vuelve a empezar desde 0, que solo cuesta releer.
 _cursor_de_cola = 0
+# Primer id del trozo con que corto el ULTIMO ciclo cortado (None si no hubo). Si el mismo trozo corta dos ciclos
+# seguidos, el segundo lo SALTA y sigue con la cola: un trozo trabado por un error de SU proyecto (un 5xx por sus
+# archivos) no puede frenar para siempre a los demas. Un corte global (429, caida) recorta igual el ciclo.
+_trozo_cortado: int | None = None
+# Claves DESCONOCIDAS ya vistas: hash corto -> [ultimo log, repeticiones omitidas desde entonces, avisada por Telegram].
+# En memoria de este proceso (un reinicio vuelve a avisar una vez); acotada.
+_claves_desconocidas: dict[str, list] = {}
+MAXIMO_CLAVES_DESCONOCIDAS = 1000
 
 # El nombre de GET_LOCK es global al SERVIDOR de MariaDB: lleva la base para que dos bases en
 # el mismo servidor (otra instancia, una suite de pruebas) no se frenen entre si.
@@ -159,6 +166,8 @@ CODIGO_ESTADO_DESCONOCIDO = "idempotencia_estado_desconocido"
 CODIGO_NO_DISPONIBLE = "procesamiento_no_disponible"
 ENCABEZADO_DE_IDEMPOTENCIA = "Idempotency-Key"
 PREFIJO_DE_CLAVE = "jxp-doc-v1-"
+# El runbook vive en el repo de jax, no en este.
+RUNBOOK_CLAVE_DESCONOCIDA = "jax:docs/runbooks/idempotencia-clave-desconocida.md"
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
 _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
 
@@ -462,7 +471,7 @@ def abreviar_clave(clave: str) -> str:
 
 
 def _fecha_estable(valor: object) -> str:
-    return valor.isoformat(timespec="microseconds") if isinstance(valor, datetime.datetime) else str(valor)
+    return valor.isoformat(timespec="microseconds") if isinstance(valor, datetime) else str(valor)
 
 
 def clave_de_idempotencia(project_uuid: str, filas: list[dict]) -> str:
@@ -511,7 +520,7 @@ def _detalle_en_texto(respuesta) -> str:
 
 
 async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict]) -> str:
-    """'seguir' | 'saltar_grupo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
+    """'seguir' | 'saltar_trozo' | 'saltar_grupo' | 'saltar_proyecto' | 'cortar'. Las filas solo cambian de estado cuando la
     respuesta es definitiva (202 o un 4xx que no es de reintento)."""
     ids = [f["id"] for f in trozo]
     clave = clave_de_idempotencia(project_uuid, trozo)
@@ -568,13 +577,10 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         return "saltar_grupo"
     if estado == 503 and _codigo_de(respuesta) == CODIGO_ESTADO_DESCONOCIDO:
         # Una clave confirmada cuyo trabajo el almacen de LAS MANOS ya no conoce: LAS MANOS no la retoma (podria duplicar
-        # un trabajo vivo) y contesta lo mismo hasta que la purga la borre (7 dias) o alguien la resuelva a mano. Cortar
-        # la vuelta frenaria a TODOS los tenants cada 10 s por un solo proyecto: se salta ESE proyecto, como el 409.
-        logger.error("proyectos_documentos: LAS MANOS no conoce el trabajo de la clave %s (estado DESCONOCIDO); se salta "
-                     "el proyecto %s: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola; ver "
-                     "docs/runbooks/idempotencia-clave-desconocida.md", abreviar_clave(clave), project_uuid, len(ids),
-                     ids[0], ids[-1])
-        return "saltar_proyecto"
+        # un trabajo vivo) y contesta lo mismo hasta que la purga la borre (7 dias como minimo) o alguien la resuelva a
+        # mano. Cortar la vuelta frenaria a TODOS los tenants cada 10 s por una sola clave: se salta SOLO ese trozo.
+        await _registrar_clave_desconocida(abreviar_clave(clave), project_uuid, ids)
+        return "saltar_trozo"
     if estado == 503 and _codigo_de(respuesta) == CODIGO_NO_DISPONIBLE:
         # El almacen de trabajos de LAS MANOS perdio la integridad: es global y transitorio; no se despacha nada mas en
         # esta vuelta (cortar), y la vuelta siguiente reintenta.
@@ -585,12 +591,12 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
     if estado in (409, 422) and _codigo_de(respuesta) in CODIGOS_DE_IDEMPOTENCIA:
         # La clave la deriva este codigo de las filas: que LAS MANOS la rechace es un defecto de contrato o
         # de version entre las dos, no del documento. Nunca lo convierte en `error`; queda en_cola y el log lo dice.
-        # Es un problema de ESTE trozo (su proyecto): se salta el proyecto y los demas siguen despachando, como con
-        # el 422 `proyecto_no_activo`. Cortar la vuelta frenaria a todos los tenants por una clave de uno.
-        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia %s (%s, %s); se salta el proyecto %s "
-                     "en esta vuelta: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola",
+        # Es un problema de la clave de ESTE trozo: se salta SOLO ese trozo y siguen los demas, del mismo proyecto o de
+        # otros. Cortar la vuelta frenaria a todos los tenants por una clave de uno.
+        logger.error("proyectos_documentos: LAS MANOS rechazo la clave de idempotencia %s (%s, %s); se salta el trozo del "
+                     "proyecto %s en esta vuelta: %s fila(s) (ids %s..%s) sin despachar, siguen en_cola",
                      abreviar_clave(clave), estado, _codigo_de(respuesta), project_uuid, len(ids), ids[0], ids[-1])
-        return "saltar_proyecto"
+        return "saltar_trozo"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
         # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
@@ -601,6 +607,61 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
                  project_uuid, estado, _codigo_de(respuesta))
     await repo.marcar_error_en_cola(pool, ids=ids, error="http_4xx", owner=contexto)
     return "seguir"
+
+
+def _programar_aviso_clave_desconocida(clave_corta: str, project_uuid: str, filas: int) -> None:
+    """Telegram por el MISMO canal y las MISMAS tareas que el aviso del freno de incertidumbre (#203): una tarea
+    propia para que un canal lento no alargue el ciclo, y la cancela el mismo cierre del despachador."""
+    tarea = asyncio.get_running_loop().create_task(_entregar_aviso_clave_desconocida(clave_corta, project_uuid, filas))
+    _avisos_freno_incertidumbre.add(tarea)
+    tarea.add_done_callback(_avisos_freno_incertidumbre.discard)
+
+
+async def _entregar_aviso_clave_desconocida(clave_corta: str, project_uuid: str, filas: int) -> None:
+    mensaje = (f"⚠️ JAX: la clave de idempotencia {clave_corta} esta en estado DESCONOCIDO: LAS MANOS no conoce su trabajo y "
+               f"no la retoma. El proyecto {project_uuid} tiene {filas} fila(s) sin despachar en ese trozo; el resto sigue. "
+               f"Se resuelve a mano: {RUNBOOK_CLAVE_DESCONOCIDA}")
+    try:
+        desenlace = await _enviar_telegram_con_desenlace(mensaje)
+    except Exception as exc:  # fail-soft: un aviso roto no puede frenar el despachador; se reintenta al vencer el enfriamiento
+        logger.error("proyectos_documentos: fallo el aviso de clave desconocida %s (%s)", clave_corta, type(exc).__name__)
+        return
+    registro = _claves_desconocidas.get(clave_corta)
+    if registro is not None and desenlace is not Desenlace.FALLO_CIERTO:
+        registro[2] = True                       # ENTREGADO o DESCONOCIDO (corte tras enviar): no se repite
+    elif desenlace is Desenlace.FALLO_CIERTO:
+        logger.error("proyectos_documentos: Telegram no entrego el aviso de la clave desconocida %s; se reintenta al "
+                     "vencer el enfriamiento", clave_corta)
+
+
+async def _registrar_clave_desconocida(clave_corta: str, project_uuid: str, ids: list[int]) -> None:
+    """Una clave DESCONOCIDA dura hasta la purga (7 dias como minimo): un ERROR cada 10 s no sirve a nadie. Se loguea
+    ERROR la primera vez y luego una vez por enfriamiento (con las repeticiones omitidas), y se avisa por Telegram UNA vez
+    por clave (se repite solo si no se pudo entregar)."""
+    ahora = _reloj()
+    registro = _claves_desconocidas.get(clave_corta)
+    try:
+        enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
+    except Exception:  # fail-soft: sin el ajuste solo se pierde la repeticion periodica; la primera vez se loguea y avisa igual
+        enfriamiento = None
+    if registro is None:
+        if len(_claves_desconocidas) >= MAXIMO_CLAVES_DESCONOCIDAS:
+            _claves_desconocidas.pop(next(iter(_claves_desconocidas)))
+        registro = _claves_desconocidas[clave_corta] = [ahora, 0, False]
+        debe_loguear, debe_avisar = True, True
+    elif enfriamiento is not None and ahora - registro[0] >= enfriamiento:
+        debe_loguear, debe_avisar = True, not registro[2]
+    else:
+        registro[1] += 1
+        return
+    omitidas, registro[0], registro[1] = registro[1], ahora, 0
+    if debe_loguear:
+        logger.error("proyectos_documentos: LAS MANOS no conoce el trabajo de la clave %s (estado DESCONOCIDO, %s repeticion(es) "
+                     "omitida(s) desde el ultimo aviso); se salta el trozo del proyecto %s: %s fila(s) (ids %s..%s) sin "
+                     "despachar, siguen en_cola; resolverla a mano: %s", clave_corta, omitidas, project_uuid, len(ids),
+                     ids[0], ids[-1], RUNBOOK_CLAVE_DESCONOCIDA)
+    if debe_avisar:
+        _programar_aviso_clave_desconocida(clave_corta, project_uuid, len(ids))
 
 
 def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
@@ -619,11 +680,12 @@ async def _despachar(pool) -> None:
     la ventana siguiente es la de los `id` que siguen, asi 1.000 pdf atascados en los ids bajos (MAJOR-N2) o 1.000
     filas de un proyecto rechazado no llenan la ventana para siempre y los demas salen en el mismo ciclo. Se
     recorre hasta el final de la cola (una ventana con menos filas que el limite) y el cursor vuelve a 0; si el
-    ciclo se corta (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada, asi la
-    vuelta siguiente la retoma desde ahi (salvo que el corte sea en la primera ventana de un ciclo que arranco con
-    cursor > 0: entonces vuelve a 0, para que ninguna fila quede sin leerse con cortes sostenidos). No hay listas de exclusion de proyectos ni tope de pasadas: una consulta
-    por ventana, por indice, y la cola finita."""
-    global _cursor_de_cola
+    ciclo se corta (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada y la vuelta
+    siguiente la retoma desde ahi; si el MISMO trozo corta dos ciclos seguidos, el segundo lo salta (ver
+    `_trozo_cortado`) y la cola sigue, asi que un trozo trabado por un error de su proyecto no frena a los demas. Con el
+    freno de incertidumbre activo el ciclo no llega aca y el cursor no se toca. No hay listas de exclusion de
+    proyectos ni tope de pasadas: una consulta por ventana, por indice, y la cola finita."""
+    global _cursor_de_cola, _trozo_cortado
     global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
     global _ultima_actividad_freno_incertidumbre, _pausa_previa_al_incidente, _clave_de_lectura_logueada
@@ -694,18 +756,15 @@ async def _despachar(pool) -> None:
             _supresion_freno_incertidumbre_registrada = True
         return
     saltados: set[tuple[str, object]] = set()
-    cursor = inicio_del_ciclo = _cursor_de_cola
+    cursor = _cursor_de_cola
     while True:
         accion, ultimo, cuantas = await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados, cursor)
         if accion == "cortar":
-            # La ventana cortada se retoma desde su inicio; PERO si el corte fue en la PRIMERA ventana de un ciclo que
-            # arranco con el cursor > 0, el siguiente ciclo empieza en 0: con cortes sostenidos en la misma ventana, el
-            # cursor nunca volveria a 0 y las filas de ids bajos (viejas, o re-encoladas) no se leerian jamas. Asi toda
-            # fila se lee al menos cada DOS ciclos que corten.
-            _cursor_de_cola = 0 if (cursor == inicio_del_ciclo and inicio_del_ciclo > 0) else cursor
+            _cursor_de_cola = cursor                 # la ventana cortada se retoma desde su inicio
             return
         if cuantas < LIMITE_DE_FILAS_POR_CICLO:      # ventana incompleta: se llego al final de la cola
             _cursor_de_cola = 0
+            _trozo_cortado = None                    # recorrida entera sin cortar: nada que recordar
             return
         cursor = ultimo
 
@@ -766,6 +825,7 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
                               despues_de_id: int) -> tuple[str | None, int, int]:
     """Una ventana de la cola (las filas con `id` > `despues_de_id`). Devuelve (accion, ultimo id visto, filas
     leidas); accion es 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
+    global _trozo_cortado
     por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
     # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
@@ -791,9 +851,21 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
         if clase in frenadas or (project_uuid, contexto) in saltados:
             continue
         for i in range(0, len(filas), por_trabajo):
-            accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
+            trozo = filas[i:i + por_trabajo]
+            accion = await _despachar_trozo(pool, project_uuid, contexto, trozo)
             if accion == "cortar":
+                if trozo[0]["id"] == _trozo_cortado:
+                    # El MISMO trozo corto el ciclo anterior tambien: se salta y la cola sigue (sus filas quedan en_cola
+                    # y vuelven a intentarse en el ciclo siguiente). Un corte global (429, caida) corta igual en el trozo
+                    # que sigue; un error de SU proyecto (5xx por sus archivos) ya no frena a los demas.
+                    _trozo_cortado = None
+                    logger.warning("proyectos_documentos: el trozo del proyecto %s (ids %s..%s) corto dos ciclos seguidos; "
+                                   "se salta en este y la cola sigue", project_uuid, trozo[0]["id"], trozo[-1]["id"])
+                    continue
+                _trozo_cortado = trozo[0]["id"]
                 return "cortar", ultimo, len(leidas)
+            if accion == "saltar_trozo":
+                continue                                    # solo este trozo: los demas del proyecto siguen
             if accion == "saltar_grupo":
                 frenadas.add(clase)                         # la clase entera, en todos los proyectos, hasta el fin del ciclo
                 break
