@@ -3632,7 +3632,12 @@ jobs:
           #   faltan los extractores de requirements-archivos.txt en esa maquina; en el runner estan). Esa
           #   falla compensa el skip de entorno que el runner si tiene, asi que passed local == passed esperado.
           #   El runner tiene la ultima palabra (regla 5).
-          PISO_PASSED = 3835
+          # 3835 -> 3836 (ronda 3 de #200, MINOR del rol): +1 con DB, con `client`
+          #   (test_approve_deja_intacto_el_binding_fallback_en_db_real). Las otras dos pruebas tocadas
+          #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
+          #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
+          #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
+          PISO_PASSED = 3836
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4719,6 +4724,9 @@ jobs:
       # 2360 -> 2361 (ronda 2 de #200, 2026-10-06): +1 prueba sin DB. MEDIDO con JAX_CI_NO_DB=1, mismo comando
       # que este job (jax en el pin 0604754, CI=true GITHUB_ACTIONS=true): master 46accbe 2360 passed / 1475
       # skipped / 0 failed -> rama rebasada 2361 passed / 1476 skipped / 0 failed. El runner tiene la ultima palabra.
+      # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
+      # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
+      # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
       JAX_CI_MIN_PASSED: "2361"
     steps:
       - uses: actions/checkout@v4
