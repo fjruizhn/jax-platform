@@ -3624,8 +3624,8 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          # Ronda 2 #199 (contrato atómico, 2026-10-06): base medida por #205 = 3830; +3 pruebas con DB = 3833.
-          # Dos pruebas son puras y una requiere client; piso acumulado del primer paso.
+          # Ronda 2 #200 (identidad del binding, 2026-10-06): base acumulada tras #199 = 3832; +1 prueba con DB = 3833.
+          # Piso acumulado con DB para el segundo paso de la secuencia #199 → #200 → #201.
           PISO_PASSED = 3833
           MAX_SKIPS = 1
 
@@ -4709,9 +4709,9 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      # Ronda 2 #199 (contrato atómico, 2026-10-06): base medida por #205 = 2358; +2 pruebas sin DB = 2360.
-      # Piso acumulado sin DB para el primer paso de la secuencia #199 → #200 → #201.
-      JAX_CI_MIN_PASSED: "2360"
+      # Ronda 2 #200 (identidad del binding, 2026-10-06): base acumulada tras #199 = 2360; +1 prueba sin DB = 2361.
+      # Piso acumulado sin DB para el segundo paso de la secuencia #199 → #200 → #201.
+      JAX_CI_MIN_PASSED: "2361"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
