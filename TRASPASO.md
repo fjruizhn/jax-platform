@@ -7,5 +7,6 @@
 - Cambios: Telegram por `_enviar_telegram`; eliminar `LoadCredential`/subprocess; histeresis rearma en cero y enfriamiento configurable; cancelar envíos al apagar; prueba no-bloqueante que detecta un `await`; UI/i18n de configuración; pisos y corrección de historia.
 - Pruebas ya corridas: backend focal 70 passed/116 skipped; suite backend sin DB 2361 passed/1476 skipped/3 warnings; frontend completo 1392/0/1392; scanner `test_no_fail_open_except.py` 16 passed. La DB desechable solo corre en Actions.
 - Commit publicado: `5cf20d915696fc67dbb20cec5c123aed74c612a0`; PR #203 actualizado con `--force-with-lease`, sin integrar.
-- CI actual del SHA: run `37449882979`; `frontend-tests` reveló el antiguo piso 1389, se midió 1392 y ya se corrigió el piso en el siguiente cambio. Jobs backend con DB y sin DB siguen corriendo; aún no fijar su conteo absoluto sin los logs de CI.
-- Siguiente: commit/push de piso frontend, dejar que el nuevo run del SHA exacto termine, leer los conteos reales con y sin DB y ajustar pisos si hace falta; confirmar diff limpio y reportar PR/SHA/pruebas/pisos. No integrar.
+- CI SHA `e5c1f94`: frontend 1392 pasó; backend sin DB pasó con 2361; DB midió 3834 passed y 1 failed porque `test_migracion_ajustes` no esperaba la nueva clave. La expectativa fue corregida y el piso DB se puso en 3835 (3834 + el test ahora aprobado).
+- Estado actual: expectativa de migración y piso DB corregidos sin commit; último resultado completo disponible es el run `37450237345` sobre `e5c1f94`.
+- Siguiente: verificar diff, commit/push, esperar CI verde del SHA exacto, confirmar DB en 3835 y sin DB 2361; reportar PR/SHA/pruebas/pisos. No integrar.

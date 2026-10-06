@@ -21,7 +21,9 @@ El freno solo se rearma cuando el contador de incertidumbre llega a cero. El int
 - Mutante que esperaba directamente el envío: la prueba de no bloqueo falló como se esperaba antes de restaurar la tarea independiente.
 - `frontend/src/pages/admin/AdminSettings.test.jsx`: 35 pasaron.
 - `tests/test_no_fail_open_except.py`: 16 pasaron.
-- Piso sin DB medido: 2358 → 2361. Piso con DB propuesto: 3830 → 3833; queda pendiente de confirmar por el runner aislado del PR.
+- Piso sin DB medido localmente: 2358 → 2361; CI también pasó el job sin DB en SHA `e5c1f94`.
+- El job aislado con DB en SHA `e5c1f94` contó 3834 pasadas y una fallida: la prueba de migración no incluía la clave nueva en su expectativa. Se corrigió esa expectativa. El piso queda en 3835, pendiente de confirmación verde sobre el SHA corregido.
+- Frontend completo: 1392/0/1392; el piso anterior 1389 se subió a 1392.
 
 ## Pendiente
 
