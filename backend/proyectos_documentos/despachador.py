@@ -151,6 +151,9 @@ _avisos: set[asyncio.Task] = set()
 _avisos_freno_incertidumbre: set[asyncio.Task] = set()
 _freno_incertidumbre_activo = False
 _ultimo_aviso_freno_incertidumbre: float | None = None
+_aviso_freno_incertidumbre_pendiente = False
+_supresion_freno_incertidumbre_registrada = False
+_aviso_freno_incidente_entregado = False
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -487,7 +490,8 @@ async def _despachar(pool) -> None:
     el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
     1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
-    global _freno_incertidumbre_activo, _ultimo_aviso_freno_incertidumbre
+    global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
+    global _aviso_freno_incidente_entregado
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -500,22 +504,33 @@ async def _despachar(pool) -> None:
     freno_activo = len(_en_incertidumbre) >= 2 * por_trabajo
     if not _en_incertidumbre:
         _freno_incertidumbre_activo = False
+        _supresion_freno_incertidumbre_registrada = False
+        _aviso_freno_incidente_entregado = False
     if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
                        "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
                        len(_en_incertidumbre), 2 * por_trabajo)
         if not _freno_incertidumbre_activo:
             _freno_incertidumbre_activo = True
-            try:
-                enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
-            except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
-                logger.error("proyectos_documentos: no se pudo leer el enfriamiento del aviso (%s); "
-                             "Telegram no se programa", type(exc).__name__)
-                return
-            if (_ultimo_aviso_freno_incertidumbre is None
-                    or ahora - _ultimo_aviso_freno_incertidumbre >= enfriamiento):
-                _ultimo_aviso_freno_incertidumbre = ahora
-                _programar_aviso_freno_incertidumbre(len(_en_incertidumbre), 2 * por_trabajo)
+            _aviso_freno_incidente_entregado = False
+        if _aviso_freno_incertidumbre_pendiente:
+            return
+        if _aviso_freno_incidente_entregado:
+            return
+        try:
+            enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
+        except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
+            logger.error("proyectos_documentos: no se pudo leer el enfriamiento del aviso (%s); "
+                         "se reintentará en el próximo ciclo", type(exc).__name__)
+            return
+        if (_ultimo_aviso_freno_incertidumbre is None
+                or ahora - _ultimo_aviso_freno_incertidumbre >= enfriamiento):
+            _supresion_freno_incertidumbre_registrada = False
+            _programar_aviso_freno_incertidumbre(len(_en_incertidumbre), 2 * por_trabajo)
+        elif not _supresion_freno_incertidumbre_registrada:
+            logger.warning("proyectos_documentos: aviso de incertidumbre suprimido por enfriamiento; "
+                           "el freno sigue activo y se reintentará al vencer")
+            _supresion_freno_incertidumbre_registrada = True
         return
     saltados: set[tuple[str, object]] = set()
     for _pasada in range(len(tipos.CLASES) + 1):
@@ -528,12 +543,26 @@ async def _despachar(pool) -> None:
 
 def _programar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
     """Encola Telegram en su propia tarea: un canal lento no alarga el ciclo del despachador."""
-    tarea = asyncio.get_running_loop().create_task(_enviar_aviso_freno_incertidumbre(cantidad, umbral))
+    global _aviso_freno_incertidumbre_pendiente
+    _aviso_freno_incertidumbre_pendiente = True
+    tarea = asyncio.get_running_loop().create_task(_entregar_aviso_freno_incertidumbre(cantidad, umbral))
     _avisos_freno_incertidumbre.add(tarea)
     tarea.add_done_callback(_avisos_freno_incertidumbre.discard)
 
 
-async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
+async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
+    """Confirma el enfriamiento solo tras entrega; un fallo queda listo para reintento."""
+    global _ultimo_aviso_freno_incertidumbre, _aviso_freno_incertidumbre_pendiente
+    global _aviso_freno_incidente_entregado
+    try:
+        if await _enviar_aviso_freno_incertidumbre(cantidad, umbral):
+            _ultimo_aviso_freno_incertidumbre = _reloj()
+            _aviso_freno_incidente_entregado = True
+    finally:
+        _aviso_freno_incertidumbre_pendiente = False
+
+
+async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> bool:
     """Envío best-effort por el canal compartido; nunca manipula ni registra credenciales."""
     mensaje = ("⚠️ JAX: freno de incertidumbre activo\n"
                f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
@@ -543,10 +572,11 @@ async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
         entregado = await _enviar_telegram(mensaje)
     except Exception as exc:  # fail-soft: un aviso ausente o roto no puede frenar el despachador
         logger.error("proyectos_documentos: falló el envío del aviso de incertidumbre (%s)", type(exc).__name__)
-        return
+        return False
     if not entregado:
         logger.error("proyectos_documentos: Telegram no confirmó la entrega del aviso de incertidumbre; "
                      "revisar credenciales y el motivo registrado por catalogo_modelos_ejecutor")
+    return bool(entregado)
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
