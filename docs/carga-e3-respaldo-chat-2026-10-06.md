@@ -15,14 +15,14 @@ El primer resultado normal de CI del SHA `18c4364` (policy run 37484684852) fue 
 
 **Cómo se midió (local, hall9000, no CI):** MariaDB `mariadb:12.3.3` efímera propia (nombre único, `--rm`; nunca el `3308` ni `jax_memory`), con las pruebas dentro del espacio de red de su contenedor (así LAS MANOS real, `7777`, y Ollama, `11434`, son inalcanzables por construcción), venv de pruebas con los extractores y el clon de jax en el pin de CI `0604754`. El OCR real no se mide aquí.
 
-**Línea base de la prueba de carga (6 corridas sin mutante, 20 usuarios x 5 turnos, 20 PDF de 20 páginas y 10 MiB):**
+**Línea base de la prueba de carga (12 corridas sin mutante, 20 usuarios x 5 turnos, 20 PDF de 20 páginas y 10 MiB):**
 
 | Medida | Rango | Peor corrida | Tope | Margen declarado |
 |---|---:|---:|---:|---|
-| p95 de subida | 35-59 ms | 59,4 ms | 1500 ms | x25: la base es de decenas de ms y manda el ruido absoluto del runner; sigue 6x por debajo del mutante |
-| p95 de turno de chat | 1021-1255 ms | 1255 ms | 4000 ms | x3: la base ya es de cola (100 turnos en ~2 s sobre un loop) |
+| p95 de subida | 32-60 ms | 59,9 ms | 1500 ms | x25: la base es de decenas de ms y manda el ruido absoluto del runner; sigue 6x por debajo del mutante |
+| p95 de turno de chat | 1021-1623 ms | 1623 ms | 5000 ms | x3: la base ya es de cola (100 turnos en ~2 s sobre un loop) |
 
-Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope 1500) y chat p95 3908 / 3713 / 2132 ms en tres corridas; la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat solo lo ve a veces (el bloqueo no está en su ruta): protege las regresiones de la ruta del chat. **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
+Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope 1500) y chat p95 3908 / 3713 / 2132 / 3577 ms en cuatro corridas (con subida 10110 ms en la última); la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat (5000 ms) no ve este mutante, a propósito: el bloqueo no está en la ruta del chat y esa cifra es cola; ese tope protege las regresiones de la ruta del chat. **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
 
 | Hallazgo | Cierre | Evidencia local |
 |---|---|---|

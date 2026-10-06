@@ -456,7 +456,7 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
 
 # Topes de la prueba de carga E3 (ver el comentario dentro de la prueba y el informe).
 TOPE_SUBIDA_MS = 1500
-TOPE_CHAT_MS = 4000
+TOPE_CHAT_MS = 5000
 _ESCALONADO_S = 0.05    # separación entre la llegada de un usuario y la del siguiente
 _SONDEO_S = 0.1         # pausa entre vueltas de despacho + sondeo
 _OCR_SIMULADO_S = 3.0  # lo que tarda el OCR remoto simulado: el PDF sigue en proceso mientras se chatea
@@ -493,18 +493,18 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     from adjuntos.limites import cargar_limites
 
     usuarios, turnos = 20, 5
-    # LÍNEA BASE medida (hall9000, MariaDB 12.3.3 efímera, 2026-10-06, 6 corridas sin
+    # LÍNEA BASE medida (hall9000, MariaDB 12.3.3 efímera, 2026-10-06, 12 corridas sin
     # mutante; ver docs/carga-e3-respaldo-chat-2026-10-06.md):
-    #   subida p95  35-59 ms   (peor corrida: 59,4 ms)
-    #   chat   p95  1021-1255 ms (peor corrida: 1255 ms; es cola: 100 turnos en ~2 s sobre un loop)
+    #   subida p95  32-60 ms   (peor corrida: 59,9 ms)
+    #   chat   p95  1021-1623 ms (peor corrida: 1623 ms; es cola: 100 turnos en ~2 s sobre un loop)
     # TOPES = peor base medida x margen declarado:
     #   subida: 60 ms x 25 = 1500 ms. La base es de decenas de ms, donde el ruido ABSOLUTO del
     #           runner (disco, CPU compartida) manda; un x3 (180 ms) se rompería con ruido.
     #           Sigue 6x por debajo de lo que da un `time.sleep(0.5)` en la ruta (~10000 ms).
-    #   chat:   1255 ms x 3 = 3800 -> 4000 ms. La base ya es de cola, no de ruido absoluto.
+    #   chat:   1623 ms x 3 = 4870 -> 5000 ms. La base ya es de cola, no de ruido absoluto.
     # El `time.sleep(0.5)` bloqueante en `encolar_pdf_desde_chat` (mutante del job de CI)
-    # da subida p95 ~9500-10000 ms y chat p95 2100-3900 ms: la subida lo atrapa siempre; el chat,
-    # que no es el sitio del bloqueo, solo a veces (sirve para un bloqueo en la ruta del chat).
+    # da subida p95 ~9800-10100 ms (siempre rojo) y chat p95 2100-3900 ms (bajo su tope de 5000): el bloqueo
+    # no está en la ruta del chat y esa cifra es cola; el tope de chat guarda las regresiones de SU ruta.
     tope_subida_ms = int(os.getenv("JAX_E3_SUBIDA_P95_MAX_MS", str(TOPE_SUBIDA_MS)))
     tope_chat_ms = int(os.getenv("JAX_E3_CHAT_P95_MAX_MS", str(TOPE_CHAT_MS)))
     mutante_s = float(os.getenv("JAX_E3_MUTANT_SLEEP_S", "0"))

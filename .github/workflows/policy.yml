@@ -1455,11 +1455,11 @@ jobs:
         # el despacho y el sondeo reales, con MariaDB/workspace reales. Solo se simula
         # el servicio OCR remoto. Se mide por separado el p95 de CADA subida y el p95 de
         # CADA turno de chat. Topes = peor línea base medida en hall9000 (2026-10-06,
-        # subida 59,4 ms, chat 1255 ms) x margen declarado: subida x25 = 1500 ms (la
-        # base es de decenas de ms: manda el ruido absoluto del runner), chat x3 -> 4000 ms.
+        # subida 59,9 ms, chat 1623 ms; 12 corridas) x margen declarado: subida x25 = 1500 ms (la
+        # base es de decenas de ms: manda el ruido absoluto del runner), chat x3 -> 5000 ms.
         env:
           JAX_E3_SUBIDA_P95_MAX_MS: '1500'
-          JAX_E3_CHAT_P95_MAX_MS: '4000'
+          JAX_E3_CHAT_P95_MAX_MS: '5000'
         run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
 
       - name: Comprobar que E3 rechaza el mutante sleep(0.5)
@@ -1470,7 +1470,7 @@ jobs:
         # como prueba del mutante (el grep de abajo exige el mensaje del tope).
         env:
           JAX_E3_SUBIDA_P95_MAX_MS: '1500'
-          JAX_E3_CHAT_P95_MAX_MS: '4000'
+          JAX_E3_CHAT_P95_MAX_MS: '5000'
           JAX_E3_MUTANT_SLEEP_S: '0.5'
           JAX_ADJUNTO_PDF_PROCESOS: '8'
           JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS: '60'
