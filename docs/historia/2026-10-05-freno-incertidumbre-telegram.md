@@ -14,6 +14,8 @@ El despachador usa `_enviar_telegram` de `backend/catalogo_modelos_ejecutor.py`,
 
 El freno solo se rearma cuando el contador de incertidumbre llega a cero. El intervalo de enfriamiento se configura en `axioma_config` y aparece en administración. Los envíos quedan en tareas independientes; al detener el despachador se cancelan y esperan antes de salir. Si Telegram no confirma, el log registra un error sin credenciales.
 
+El envío distingue tres desenlaces (`Desenlace` en `catalogo_modelos_ejecutor.py`): entregado, fallo cierto (sin credenciales, conexión rechazada antes de enviar, respuesta HTTP de error) y desconocido (ReadTimeout o corte después de enviar). Un desconocido cuenta como entregado para el incidente y no se reintenta: un duplicado es peor que perderlo, y el siguiente incidente, pasado el enfriamiento, vuelve a avisar. Un fallo cierto reintenta con espera creciente (1x, 2x, 4x el mínimo, con tope en el mayor entre enfriamiento y mínimo). El contador de fallos solo se reinicia tras una entrega confirmada o tras una pausa de un enfriamiento completo entre incidentes; no al terminar cada incidente. `_enviar_telegram` conserva su contrato booleano para los demás llamadores.
+
 ## Verificación
 
 - `backend/tests/test_ajustes.py backend/tests/test_proyectos_documentos_despachador.py` con `JAX_CI_NO_DB=1`: 70 pasaron, 116 omitidas por requerir DB.
