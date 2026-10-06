@@ -474,7 +474,7 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
 
     Qué se mide (latencia POR PETICIÓN, no el tiempo de pared del lote):
       - p95 de cada subida `POST /api/chat/upload` (20 PDF al tope, concurrentes);
-      - p95 de cada turno `POST /api/chat` (3 por usuario, 60 en total), medidos
+      - p95 de cada turno `POST /api/chat` (5 por usuario, 100 en total), medidos
         aparte, mientras el hilo principal corre `despachador.ciclo` (despacho y
         sondeo reales) y consulta el estado de cada documento.
     Un bloqueo del event loop en la ruta de subida (p. ej. `time.sleep` dentro de
@@ -504,7 +504,7 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     #   chat:   1623 ms x 3 = 4870 -> 5000 ms. La base ya es de cola, no de ruido absoluto.
     # El `time.sleep(0.5)` bloqueante en `encolar_pdf_desde_chat` (mutante del job de CI)
     # da subida p95 ~9800-10100 ms (siempre rojo) y chat p95 2100-3900 ms (bajo su tope de 5000): el bloqueo
-    # no está en la ruta del chat y esa cifra es cola; el tope de chat guarda las regresiones de SU ruta.
+    # no está en la ruta del chat y esa cifra es cola; el tope de chat solo ve regresiones GRANDES de su ruta (ver «Límites conocidos de los topes» en el informe).
     tope_subida_ms = int(os.getenv("JAX_E3_SUBIDA_P95_MAX_MS", str(TOPE_SUBIDA_MS)))
     tope_chat_ms = int(os.getenv("JAX_E3_CHAT_P95_MAX_MS", str(TOPE_CHAT_MS)))
     mutante_s = float(os.getenv("JAX_E3_MUTANT_SLEEP_S", "0"))
