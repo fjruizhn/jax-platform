@@ -60,7 +60,7 @@ describe('AdminSettings -- el botón mientras guarda (ronda final M8)', () => {
 
 describe('AdminSettings -- los errores del guardado se ven', () => {
   it('los textos existen en los dos idiomas', () => {
-    for (const clave of ['config_clave_reservada', 'config_collation_desconocida', 'adminSettingsSaveError', 'adminSettingsLoadError']) {
+    for (const clave of ['config_clave_reservada', 'config_clave_invalida', 'config_collation_desconocida', 'adminSettingsSaveError', 'adminSettingsLoadError']) {
       expect(es[clave], `es.${clave}`).toBeTruthy()
       expect(en[clave], `en.${clave}`).toBeTruthy()
     }
@@ -333,5 +333,53 @@ describe('AdminSettings -- tope de devoluciones del árbitro (2026-09-20)', () =
     // dice, alguien va a poner 0 creyendo que desactiva el arbitro.
     expect(es.adminSettingsTopeDevolucionesAyuda.toLowerCase()).toContain('0')
     expect(en.adminSettingsTopeDevolucionesAyuda.toLowerCase()).toContain('0')
+  })
+})
+
+describe('AdminSettings -- edad máxima del respaldo de C2 (2026-10-06)', () => {
+  // La clave existía en axioma_config (sembrada con 86400) pero no en la pantalla:
+  // el superadmin no podía llevarla a 108000 (30 h, el diseño de C2).
+  const CLAVE = 'ejecutor.c2_edad_max_s'
+  const CON_C2 = { data: {
+    config: [{ key: 'system_name', value: 'Axioma' }, { key: CLAVE, value: '86400' }],
+    limites: { ...LIMITES, [CLAVE]: { min: 3600, max: 604800 } },
+  } }
+
+  it('el campo aparece con el valor y toma mínimo y máximo del servidor', async () => {
+    api.get.mockResolvedValue(CON_C2)
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsC2EdadMax)
+    expect(campo).toHaveValue(86400)
+    expect(campo).toHaveAttribute('min', '3600')
+    expect(campo).toHaveAttribute('max', '604800')
+  })
+
+  it('el valor editado se envía con su clave', async () => {
+    api.get.mockResolvedValue(CON_C2)
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSettings()
+    const campo = await screen.findByLabelText(es.adminSettingsC2EdadMax)
+    fireEvent.change(campo, { target: { value: '108000' } })
+    await guardar()
+    await waitFor(() => expect(api.put).toHaveBeenCalled())
+    expect(api.put.mock.calls[0][1]).toContainEqual({ key: CLAVE, value: '108000' })
+  })
+
+  it('un valor fuera de rango se nombra con la etiqueta del campo, no con la clave técnica', async () => {
+    api.get.mockResolvedValue(CON_C2)
+    api.put.mockRejectedValue(rechazo(400, { code: 'config_valor_invalido', clave: CLAVE }))
+    renderSettings()
+    await guardar()
+    expect(await screen.findByRole('alert')).toHaveTextContent(es.config_valor_invalido(es.adminSettingsC2EdadMax))
+  })
+
+  it('la etiqueta y la ayuda existen en los dos idiomas, difieren, y la ayuda dice 108000', () => {
+    for (const clave of ['adminSettingsC2EdadMax', 'adminSettingsC2EdadMaxAyuda']) {
+      expect(es[clave], `es.${clave}`).toBeTruthy()
+      expect(en[clave], `en.${clave}`).toBeTruthy()
+      expect(es[clave]).not.toBe(en[clave])
+    }
+    expect(es.adminSettingsC2EdadMaxAyuda).toContain('108000')
+    expect(en.adminSettingsC2EdadMaxAyuda).toContain('108000')
   })
 })

@@ -913,6 +913,7 @@ export default {
   adminSettingsSaveError: 'No se pudo guardar la configuración.',
   adminSettingsLoadError: 'No se pudo cargar la configuración.',
   config_clave_reservada: 'Una de las claves está reservada y no se puede cambiar desde esta pantalla. No se guardó nada.',
+  config_clave_invalida: 'Una de las claves no es válida (tiene espacios al principio o al final). No se guardó nada.',
   config_collation_desconocida: 'La base no permitió verificar las claves reservadas, así que no se guardó nada.',
   config_valor_invalido: (campo) => `El valor de "${campo}" está fuera de lo permitido. No se guardó nada.`,
   adminSettingsLang: 'Idioma por defecto',
@@ -926,6 +927,8 @@ export default {
   adminSettingsConfirmarUsdAyuda: 'Por encima de este costo máximo, o con un paso sin precio, se pide confirmación antes de correr. 0 = confirmar siempre.',
   adminSettingsTopeDevoluciones: 'Devoluciones del árbitro',
   adminSettingsTopeDevolucionesAyuda: 'Cuántas veces puede el árbitro devolver un pipeline para que se rehaga. Al agotarlo con una objeción sin resolver, el pipeline termina con objeción y requiere tu decisión. 0 no lo apaga: el árbitro sigue objetando, pero la primera objeción termina el pipeline.',
+  adminSettingsC2EdadMax: 'Edad máxima del respaldo para el Ejecutor (s)',
+  adminSettingsC2EdadMaxAyuda: 'Segundos que un respaldo puede tener y seguir contando como vigente para el Ejecutor. El diseño de C2 usa 108000 (30 h): con 86400 (24 h) el Ejecutor queda sin respaldo vigente entre una corrida del respaldo y la siguiente.',
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 

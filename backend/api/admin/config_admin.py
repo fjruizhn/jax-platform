@@ -39,6 +39,9 @@ from config_defaults import DEFAULT_CONFIG  # noqa: E402
 # (el ON DUPLICATE KEY la pisaría en claro). GET y PUT deciden con la MISMA
 # regla, la de la base (_reservadas_para_la_base).
 PREFIJO_RESERVADO = "smtp."
+# Largo de la columna axioma_config.config_key (VARCHAR(100)): una clave más larga se
+# rechaza acá y no llega a la base (donde, sin modo estricto, se truncaría).
+CLAVE_MAX_LARGO = 100
 
 
 @router.get("/config")
@@ -84,16 +87,20 @@ async def _ajustes_para_la_base(cur, claves: list[str]) -> dict[str, str]:
     """{clave pedida: clave de ajuste que la base considera IGUAL}. Misma
     autoridad que _reservadas_para_la_base: la collation de la columna decide
     la colisión de la PRIMARY KEY, así que "MAX_PIPELINES" o "máx_pipelines"
-    escribirían la fila max_pipelines y tienen que validarse como tal."""
+    escribirían la fila max_pipelines y tienen que validarse como tal.
+    Se empareja con `=` y NO con WEIGHT_STRING: la collation es PAD SPACE, la
+    PRIMARY KEY ignora los espacios finales y WEIGHT_STRING no, así que
+    "max_pipelines " escribía la fila real sin validarse (auditoría de #205)."""
     if not claves:
         return {}
     collation = await _collation(cur)
     pedidas = " UNION ALL ".join(["SELECT %s AS k"] * len(claves))
-    conocidas = " UNION ALL ".join(["SELECT %s AS a"] * len(ajustes.CLAVES))
+    validables = (*ajustes.CLAVES, *ajustes.CLAVES_SOLO_ADMINISTRADAS)
+    conocidas = " UNION ALL ".join(["SELECT %s AS a"] * len(validables))
     await cur.execute(
         f"SELECT p.k, c.a FROM ({pedidas}) p JOIN ({conocidas}) c "
-        f"ON WEIGHT_STRING(p.k COLLATE {collation}) = WEIGHT_STRING(c.a COLLATE {collation})",
-        (*claves, *ajustes.CLAVES),
+        f"ON p.k COLLATE {collation} = c.a COLLATE {collation}",
+        (*claves, *validables),
     )
     return {pedida: conocida for pedida, conocida in await cur.fetchall()}
 
@@ -134,6 +141,10 @@ async def update_config(items: List[ConfigItem], request: Request,
         raise HTTPException(status_code=400, detail="config_clave_reservada")
     if not items:
         return {"ok": True}
+    # Una clave con espacios en los bordes no es una clave de esta pantalla: la PK
+    # la igualaría a la fila real (PAD SPACE). Se rechaza antes de tocar la base.
+    if any(item.key != item.key.strip() or len(item.key) > CLAVE_MAX_LARGO for item in items):
+        raise HTTPException(status_code=400, detail="config_clave_invalida")
     # Todo en UNA transacción (2026-09-18): el cambio y su auditoría, o
     # ninguno. Si el INSERT de config_audit falla, el UPDATE se revierte con
     # él -- fail-closed, sin try/except que lo tape. Las guardas de abajo

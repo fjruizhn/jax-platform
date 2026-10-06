@@ -146,6 +146,8 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         # estado fail-closed de store.get_tope_devoluciones(). El maximo 5 es una
         # baranda de ajustes.py, no un numero del spec.
         "jacobs.tope_devoluciones": {"min": 0, "max": 5},
+        # Edad maxima del respaldo para C2 (1 h a 7 dias): la lee el repo jax, no este servicio.
+        "ejecutor.c2_edad_max_s": {"min": 3600, "max": 604800},
         "system_name": {"max_largo": 60},
         "pipeline_confirmar_usd": {"min": "0", "max": "999999.99", "decimales": 2},
         # Topes de documentos de proyecto (E2a T5): los valores del spec de Fernando

@@ -855,6 +855,7 @@ export default {
   adminSettingsSaveError: 'The configuration could not be saved.',
   adminSettingsLoadError: 'The configuration could not be loaded.',
   config_clave_reservada: 'One of the keys is reserved and cannot be changed from this screen. Nothing was saved.',
+  config_clave_invalida: 'One of the keys is not valid (it has leading or trailing spaces). Nothing was saved.',
   config_collation_desconocida: 'The database could not verify the reserved keys, so nothing was saved.',
   config_valor_invalido: (campo) => `The value of "${campo}" is outside the allowed range. Nothing was saved.`,
   adminSettingsLang: 'Default language',
@@ -868,6 +869,8 @@ export default {
   adminSettingsConfirmarUsdAyuda: 'Above this maximum cost, or with a step without price, confirmation is required before running. 0 = always confirm.',
   adminSettingsTopeDevoluciones: 'Arbiter send-backs',
   adminSettingsTopeDevolucionesAyuda: 'How many times the arbiter may send a pipeline back to be redone. Once exhausted with an unresolved objection, the pipeline ends as disputed and needs your decision. 0 does not turn it off: the arbiter still objects, but the first objection ends the pipeline.',
+  adminSettingsC2EdadMax: 'Maximum backup age for the Executor (s)',
+  adminSettingsC2EdadMaxAyuda: 'Seconds a backup may be and still count as current for the Executor. The C2 design uses 108000 (30 h): with 86400 (24 h) the Executor is left without a current backup between one backup run and the next.',
   adminSettingsDark: 'Dark',
   adminSettingsLight: 'Light',
 

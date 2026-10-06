@@ -70,6 +70,17 @@ CONFIRMAR_USD = "pipeline_confirmar_usd"
 # `get_tope_devoluciones()` cuando falta la fila -- el árbitro puede objetar
 # pero no devuelve, y la primera objeción termina el pipeline en `disputed`.
 TOPE_DEVOLUCIONES = "jacobs.tope_devoluciones"
+# Edad máxima, en segundos, de un respaldo para que C2 lo dé por vigente (Ejecutor
+# de Contratos). La siembra db/migrations.py::_ejecutor_reglas_v1 con 86400 y la
+# LEE el repo jax por SQL directo (ejecutor/contratos/exportar.py: entero > 0), no
+# por este módulo: acá sólo se administra y se acota. El diseño de C2 pide 30 h
+# (108000): con 24 h el Ejecutor queda sin respaldo vigente entre una corrida del
+# respaldo y la siguiente. El valor de diseño de C2 es 108000 (30 h). El mínimo (1 h) y el
+# máximo (7 días) son la baranda TÉCNICA de esta rama para que un valor absurdo no se
+# guarde; el techo lo decide Fernando, y si hace falta otro se cambia acá con su motivo.
+C2_EDAD_MAX_S = "ejecutor.c2_edad_max_s"
+C2_EDAD_MAX_S_MIN = 3600
+C2_EDAD_MAX_S_MAX = 7 * 86400
 # Topes de la subida de documentos de un proyecto (Proyectos E2a, T5; Fernando,
 # 2026-09-25: 100 MB por archivo, 250 archivos o 1 GB por lote). Los valores
 # iniciales los siembra db/migrations.py::_proyectos_documentos_topes_v1.
@@ -90,6 +101,13 @@ DOC_REPROCESAR_GLOBALES = "proyectos.documentos.reprocesar_globales"
 CLAVES = (SESION, MAX_PIPELINES, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONES,
           DOC_MAX_BYTES_ARCHIVO, DOC_MAX_ARCHIVOS_LOTE, DOC_MAX_BYTES_LOTE, DOC_RUTAS_POR_TRABAJO,
           DOC_SUBIDAS_POR_USUARIO, DOC_SUBIDAS_GLOBALES, DOC_REPROCESAR_POR_USUARIO, DOC_REPROCESAR_GLOBALES)
+# Claves que esta pantalla administra y valida pero que ESTE servicio no lee (las lee el
+# repo jax por SQL directo). Quedan fuera de CLAVES a propósito: CLAVES arma la consulta
+# única del caché de lectura, y sumar una clave que nadie lee acá (a) la haría "ilegible"
+# en el arranque si falta la fila y (b) con 15 claves sobre una tabla de ~25 filas el
+# optimizador prefiere recorrer la tabla entera (EXPLAIN: type ALL) y el control
+# `test_explain_de_la_consulta_real_va_por_primary` falla.
+CLAVES_SOLO_ADMINISTRADAS = (C2_EDAD_MAX_S,)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -134,6 +152,10 @@ CONSULTA = (
 
 class ValorInvalido(ValueError):
     pass
+
+
+class ClaveNoLeida(LookupError):
+    """`valor()` no lee esta clave: se administra acá pero la lee otro servicio."""
 
 
 class AjusteIlegible(Exception):
@@ -195,6 +217,8 @@ DEFINICIONES: dict[str, Definicion] = {
                                            "decimales": CONFIRMAR_USD_DECIMALES}),
     TOPE_DEVOLUCIONES: Definicion(_entero(0, TOPE_DEVOLUCIONES_MAX),
                                   {"min": 0, "max": TOPE_DEVOLUCIONES_MAX}),
+    C2_EDAD_MAX_S: Definicion(_entero(C2_EDAD_MAX_S_MIN, C2_EDAD_MAX_S_MAX),
+                              {"min": C2_EDAD_MAX_S_MIN, "max": C2_EDAD_MAX_S_MAX}),
     DOC_MAX_BYTES_ARCHIVO: Definicion(_entero(MIB, 2 * GIB), {"min": MIB, "max": 2 * GIB}),
     DOC_MAX_ARCHIVOS_LOTE: Definicion(_entero(1, 1000), {"min": 1, "max": 1000}),
     DOC_MAX_BYTES_LOTE: Definicion(_entero(MIB, 10 * GIB), {"min": MIB, "max": 10 * GIB}),
@@ -289,6 +313,8 @@ def invalidar() -> None:
 
 
 async def valor(clave: str) -> int | str | Decimal:
+    if clave in CLAVES_SOLO_ADMINISTRADAS:
+        raise ClaveNoLeida(f"{clave}: se administra en este servicio pero la lee otro; no está en el caché")
     filas = await _cache.filas()
     if clave not in filas:
         raise AjusteIlegible(clave, "ausente")
