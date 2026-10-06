@@ -740,6 +740,21 @@ async def _require_pipeline_exists(pipeline_id: str) -> None:
         raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
 
 
+async def _require_pipeline_tenant(pipeline_id: str, user: AuthUser) -> None:
+    """Keep superadmin hide/restore inside the tenant in the authenticated session."""
+    _validar_uuid_o_400(pipeline_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM jacobs_pipelines WHERE pipeline_id = %s AND tenant_id = %s",
+                (pipeline_id, str(user.tenant_id)),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
+
+
 # Fix round 1, Ruling 13(a) (2026-09-22): trae status Y descartado_por, no
 # sólo descartado_por -- el 403 de recover_pipeline sólo tiene sentido
 # cuando el pipeline ESTÁ discarded por otro. `descartado_por` NULL (nunca
@@ -1297,21 +1312,15 @@ async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_curren
 
 @router.post("/{pipeline_id}/hide")
 async def hide_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
-    # Sin _require_pipeline_owner/_require_pipeline_exists antes: superadmin
-    # ya es la única guardia (spec §4), y un pipeline_id inexistente lo
-    # rechaza Jacobs con 404 pipeline_no_encontrado -- una consulta local de
-    # más acá no cambiaría el resultado (LAS CUATRO/cache). Sí se valida la
-    # FORMA (400 pipeline_id_invalido, fix round 1 Ruling 13(b)): eso no
-    # gasta una consulta, y es el mismo 400 explícito que ya dan los demás
-    # proxies para un id con forma rara -- antes hide/restore lo mandaban
-    # tal cual a Jacobs.
-    _validar_uuid_o_400(pipeline_id)
+    # Superadmin puede operar sobre otros usuarios del mismo tenant, nunca
+    # cruzar al tenant de otro superadmin.
+    await _require_pipeline_tenant(pipeline_id, user)
     return await _proxy_descarte(pipeline_id, "hide", user)
 
 
 @router.post("/{pipeline_id}/restore")
 async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
-    _validar_uuid_o_400(pipeline_id)
+    await _require_pipeline_tenant(pipeline_id, user)
     return await _proxy_descarte(pipeline_id, "restore", user)
 
 

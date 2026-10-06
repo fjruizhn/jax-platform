@@ -6,7 +6,7 @@ Qué se exige, y por qué cada cosa:
 
 - `SQL_DESCARTADOS_DEL_USUARIO` (y su variante por cursor) lleva
   `FORCE INDEX (idx_pipelines_descartados)`. Medido con descartados de 500
-  usuarios INTERCALADOS en el tiempo: con el índice global
+  usuarios INTERCALADOS en el tiempo dentro del tenant: con el índice por tenant/status/fecha
   `idx_pipelines_ocultos` el usuario con 3 descartados lee 55.004 filas
   (p95 55-63 ms) en vez de 4 (0,12-0,18 ms). El plan elegido sin hint
   alternaba entre los dos (jax-platform#157). El control es estructural (el
@@ -34,7 +34,7 @@ from api import pipelines as mod
 from tests.identidades import _tenant_db_id, cabeceras, sql, uid
 from tests.test_pipelines_descarte import _explain_y_handler_read, _insertar_pipelines_bulk
 
-TENANT = "descarte-cursor-t1"
+TENANT = "876004"
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ def test_el_cursor_del_usuario_da_las_mismas_paginas_que_offset_con_empates_y_nu
         client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (tenant_real,))
 
 
-def test_el_cursor_del_admin_da_las_mismas_paginas_que_offset(client, client_superadmin):
+def test_el_cursor_del_admin_da_las_mismas_paginas_que_offset(client):
     base = time.time() - 20_000
     fechas = [base + (i // 2) for i in range(60)] + [None, None]
     filas = []
@@ -173,11 +173,13 @@ def test_el_cursor_del_admin_da_las_mismas_paginas_que_offset(client, client_sup
     try:
         client.portal.call(_insertar_pipelines_bulk, filas)
         todas = client.portal.call(
-            sql, "SELECT pipeline_id, descartado_at FROM jacobs_pipelines WHERE status='discarded'", (), True)
+            sql, "SELECT pipeline_id, descartado_at FROM jacobs_pipelines "
+            "WHERE tenant_id=%s AND status='discarded'", (TENANT,), True)
         esperado = [p for p, _d in sorted(todas, key=lambda r: (r[1] is not None, r[1] or 0.0, r[0]), reverse=True)]
         for limite in (5, 50):
-            por_offset, _ = _recorrer(client_superadmin, "/api/admin/pipelines/descartados", {}, limite, "offset")
-            por_cursor, _ = _recorrer(client_superadmin, "/api/admin/pipelines/descartados", {}, limite, "cursor")
+            headers = cabeceras(client, "descarte-cursor-admin", "superadmin", TENANT)
+            por_offset, _ = _recorrer(client, "/api/admin/pipelines/descartados", headers, limite, "offset")
+            por_cursor, _ = _recorrer(client, "/api/admin/pipelines/descartados", headers, limite, "cursor")
             assert por_offset == esperado, limite
             assert por_cursor == esperado, limite
     finally:
@@ -316,15 +318,15 @@ def test_pagina_profunda_por_cursor_lee_limite_mas_uno_en_la_vista_del_admin(cli
         esperado = [p for p, _d in sorted(todas, key=lambda r: (r[1] is not None, r[1] or 0.0, r[0]), reverse=True)]
         d_ancla = dict(todas)[esperado[799]]
         consulta, params = pag.consulta_y_parametros(
-            SQL_DESCARTADOS_ADMIN_BASE, (), LIMITE_MAX, 0, pag.codificar_cursor(d_ancla, esperado[799]))
+            SQL_DESCARTADOS_ADMIN_BASE, (TENANT,), LIMITE_MAX, 0, pag.codificar_cursor(d_ancla, esperado[799]))
         explain, handler, filas_leidas = client.portal.call(_explain_y_handler_read, consulta, params)
-        assert explain["key"] == "idx_pipelines_ocultos", explain
+        assert explain["key"] == "idx_pipelines_tenant_status_date", explain
         extra = (explain["Extra"] or "").lower()
         assert "filesort" not in extra and "temporary" not in extra, explain
         assert [f[0] for f in filas_leidas] == esperado[800:800 + LIMITE_MAX + 1]
         assert sum(handler.values()) <= LIMITE_MAX + 3, handler
         _e, handler_off, _f = client.portal.call(
-            _explain_y_handler_read, SQL_DESCARTADOS_ADMIN, (LIMITE_MAX + 1, 800))
+            _explain_y_handler_read, SQL_DESCARTADOS_ADMIN, (TENANT, LIMITE_MAX + 1, 800))
         assert sum(handler_off.values()) >= 800, handler_off
     finally:
         client.portal.call(sql, "DELETE FROM jacobs_pipelines WHERE tenant_id=%s", (TENANT,))

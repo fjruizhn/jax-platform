@@ -81,6 +81,7 @@ def test_el_rango_del_dia_sale_de_la_misma_fecha():
 def test_el_where_del_uso_es_un_rango_sin_funcion():
     # EXPLAIN no distingue DATE(col) de un rango en MariaDB >= 11.1: se fija el texto.
     assert "created_at >= %s AND created_at < %s" in dashboard.SQL_USO_DEL_DIA
+    assert "tenant_id = %s" in dashboard.SQL_USO_DEL_DIA
     assert "COALESCE(" in dashboard.SQL_USO_DEL_DIA
 
 
@@ -95,7 +96,7 @@ def test_el_where_del_uso_es_un_rango_sin_funcion():
 def test_el_filtro_de_sin_verificar_es_exactamente_el_de_memoria():
     assert "is_verified = 0" in dashboard.SQL_HECHOS_SIN_VERIFICAR
     assert "superseded_by IS NULL" in dashboard.SQL_HECHOS_SIN_VERIFICAR
-    assert "expires_at IS NULL OR expires_at > NOW()" in dashboard.SQL_HECHOS_SIN_VERIFICAR
+    assert "f.expires_at IS NULL OR f.expires_at > NOW()" in dashboard.SQL_HECHOS_SIN_VERIFICAR
 
 
 MARCA_SIN_VERIFICAR = "test-tablero-sin-verificar-"
@@ -107,20 +108,20 @@ async def _sembrar_tres_hechos_sin_verificar():
     filtro flojo (is_verified=0 a secas) los cuenta a los tres; el correcto
     sólo debe contar el activo."""
     superviviente = await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
-        "VALUES (UUID(), %s, 'technical', 1)",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, user_id) "
+        "VALUES (UUID(), %s, 'technical', 1, 1)",
         (MARCA_SIN_VERIFICAR + "superviviente",))
     activo = await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
-        "VALUES (UUID(), %s, 'technical', 0)",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, user_id) "
+        "VALUES (UUID(), %s, 'technical', 0, 1)",
         (MARCA_SIN_VERIFICAR + "activo",))
     fundido = await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, superseded_by) "
-        "VALUES (UUID(), %s, 'technical', 0, %s)",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, superseded_by, user_id) "
+        "VALUES (UUID(), %s, 'technical', 0, %s, 1)",
         (MARCA_SIN_VERIFICAR + "fundido", superviviente))
     vencido = await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, expires_at) "
-        "VALUES (UUID(), %s, 'technical', 0, '2020-01-01 00:00:00')",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, expires_at, user_id) "
+        "VALUES (UUID(), %s, 'technical', 0, '2020-01-01 00:00:00', 1)",
         (MARCA_SIN_VERIFICAR + "vencido",))
     return [superviviente, activo, fundido, vencido]
 
@@ -136,12 +137,12 @@ def test_sin_verificar_cuenta_solo_lo_pendiente_de_verdad(client):
     correcto sube en 1, no en 3. Control en el mismo test: el filtro flojo
     (is_verified=0 a secas) SÍ sube en 3 -- así se ve, contra el mismo dato,
     por qué la restricción existe."""
-    base_correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+    base_correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (1,), True)[0][0]
     base_flojo = client.portal.call(
         sql, "SELECT COUNT(*) FROM facts WHERE is_verified = 0", (), True)[0][0]
     ids = client.portal.call(_sembrar_tres_hechos_sin_verificar)
     try:
-        correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+        correcto = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (1,), True)[0][0]
         flojo = client.portal.call(
             sql, "SELECT COUNT(*) FROM facts WHERE is_verified = 0", (), True)[0][0]
         assert correcto - base_correcto == 1, "sólo el activo es trabajo pendiente de verdad"
@@ -167,8 +168,8 @@ async def _sembrar_hechos_verificados(n):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.executemany(
-                "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified) "
-                "VALUES (UUID(), %s, 'technical', 1)", filas)
+                "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, user_id) "
+                "VALUES (UUID(), %s, 'technical', 1, 1)", filas)
             await cur.execute("ANALYZE TABLE facts")
             await cur.fetchall()
 
@@ -183,10 +184,11 @@ def test_explain_de_sin_verificar_usa_el_indice_de_revision(client):
     client.portal.call(_borrar_hechos_verificados)
     try:
         client.portal.call(_sembrar_hechos_verificados, 3000)
-        (fila,) = client.portal.call(_explain, dashboard.SQL_HECHOS_SIN_VERIFICAR, ())
+        filas = client.portal.call(_explain, dashboard.SQL_HECHOS_SIN_VERIFICAR, (1,))
+        fila = next(f for f in filas if f["table"] == "f")
         assert fila["key"] == "idx_facts_revision", fila
         assert fila["type"] == "range", fila
-        assert "filesort" not in (fila["Extra"] or "") and "temporary" not in (fila["Extra"] or ""), fila
+        assert all("filesort" not in (f["Extra"] or "") and "temporary" not in (f["Extra"] or "") for f in filas), filas
     finally:
         client.portal.call(_borrar_hechos_verificados)
 
@@ -196,7 +198,7 @@ def test_el_tablero_trae_hechos_sin_verificar_como_entero(client, monkeypatch):
     resp = client.get("/api/admin/dashboard", headers=cabeceras(client, "tablero-sv", "superadmin"))
     assert resp.status_code == 200, resp.text
     s = resp.json()["stats"]
-    esperado = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (), True)[0][0]
+    esperado = client.portal.call(sql, dashboard.SQL_HECHOS_SIN_VERIFICAR, (1,), True)[0][0]
     assert s["facts_unverified"] == esperado
 
 
@@ -211,9 +213,9 @@ async def _explain(consulta, args):
 
 
 def test_explain_del_uso_del_dia_usa_el_indice_cubriente(client):
-    filas = client.portal.call(_explain, dashboard.SQL_USO_DEL_DIA, dashboard._rango_del_dia(date.today()))
+    filas = client.portal.call(_explain, dashboard.SQL_USO_DEL_DIA, (1, *dashboard._rango_del_dia(date.today())))
     (fila,) = filas
-    assert fila["key"] == "idx_axioma_usage_periodo", fila
+    assert fila["key"] == "idx_axioma_usage_tenant_periodo", fila
     assert fila["type"] == "range", fila
     assert "filesort" not in (fila["Extra"] or "") and "temporary" not in (fila["Extra"] or ""), fila
 
@@ -254,9 +256,9 @@ def _fallas_del_indice_con_prefijo_status(fila, primera_columna):
 
 
 def test_explain_de_pipelines_completados_va_por_un_indice_con_prefijo_status(client):
-    (fila,) = client.portal.call(_explain, dashboard.SQL_PIPELINES_COMPLETADOS, ())
+    (fila,) = client.portal.call(_explain, dashboard.SQL_PIPELINES_COMPLETADOS, ("1",))
     primera = client.portal.call(_primera_columna, "jacobs_pipelines", fila["key"])
-    assert _fallas_del_indice_con_prefijo_status(fila, primera) == [], fila
+    assert fila["type"] in ("ref", "range") and primera == "tenant_id", fila
 
 
 def test_el_predicado_de_prefijo_status_rechaza_una_fila_mala():
@@ -305,12 +307,12 @@ def test_existe_el_indice_de_locked_until(client):
 
 def test_explain_de_cuentas_bloqueadas_va_por_idx_jax_users_locked_until(client):
     """Task 15 R12(c): la consulta REAL del tablero, con 3.000 cuentas."""
-    assert "FROM jax_users WHERE locked_until > %s" in dashboard.SQL_CUENTAS_BLOQUEADAS
+    assert "WHERE tenant_id = %s AND locked_until > %s" in dashboard.SQL_CUENTAS_BLOQUEADAS
     client.portal.call(_borrar_cuentas)
     try:
         client.portal.call(_sembrar_cuentas, 3000)
-        (fila,) = client.portal.call(_explain, dashboard.SQL_CUENTAS_BLOQUEADAS, (datetime.now(),))
-        assert fila["key"] == "idx_jax_users_locked_until", fila
+        (fila,) = client.portal.call(_explain, dashboard.SQL_CUENTAS_BLOQUEADAS, (1, datetime.now()))
+        assert fila["key"] == "idx_jax_users_tenant_locked_until", fila
         assert fila["type"] == "range", fila
     finally:
         client.portal.call(_borrar_cuentas)

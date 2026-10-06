@@ -19,11 +19,14 @@ router = APIRouter(prefix="/api/admin")
 # en MariaDB >= 11.1; tests/test_tablero.py fija el texto del WHERE.
 SQL_USO_DEL_DIA = (
     "SELECT COUNT(*), COALESCE(SUM(request_type = 'imagen'), 0) FROM axioma_usage "
-    "WHERE created_at >= %s AND created_at < %s"
+    "FORCE INDEX (idx_axioma_usage_tenant_periodo) "
+    "WHERE tenant_id = %s AND created_at >= %s AND created_at < %s"
 )
 # A-35: la verdad de las llaves es `credential` (credential_resolver), no el
-# .env. Total = proveedores activos que usan api_key; configurados = los que
-# tienen al menos una credencial activa (idx_provider_state).
+# .env. `provider`/`credential` son catálogo y credenciales compartidas por
+# plataforma (docs/fase1-credenciales-diseno.md); por eso este KPI es global
+# por contrato. Total = proveedores activos que usan api_key; configurados =
+# los que tienen al menos una credencial activa (idx_provider_state).
 SQL_LLAVES = (
     "SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM credential c "
     "WHERE c.provider_id = p.id AND c.state = 'active')), 0) "
@@ -32,11 +35,17 @@ SQL_LLAVES = (
 # A-49: total de completados (spec: status='completed', sin ventana). Índice
 # con prefijo status (hoy idx_pipelines_status / idx_pipelines_ocultos),
 # creados por jax/jacobs/store.py::init_tables().
-SQL_PIPELINES_COMPLETADOS = "SELECT COUNT(*) FROM jacobs_pipelines WHERE status = 'completed'"
+SQL_PIPELINES_COMPLETADOS = (
+    "SELECT COUNT(*) FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "WHERE tenant_id = %s AND status = 'completed'"
+)
 # Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
 # Rango sobre idx_jax_users_locked_until (db/migrations.py::
 # _indice_de_cuentas_bloqueadas, DDL acotado; no esta en _INDEXES).
-SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s"
+SQL_CUENTAS_BLOQUEADAS = (
+    "SELECT COUNT(*) FROM jax_users FORCE INDEX (idx_jax_users_tenant_locked_until) "
+    "WHERE tenant_id = %s AND locked_until > %s"
+)
 # Restricción dura (2026-09-20, pedido de Fernando): mismo filtro EXACTO que
 # la pantalla de Memoria (api/admin/memoria.py::SQL_CONTAR, con
 # verificado=False, incluir_superados=False, incluir_vencidos=False) -- un
@@ -47,8 +56,10 @@ SQL_CUENTAS_BLOQUEADAS = "SELECT COUNT(*) FROM jax_users WHERE locked_until > %s
 # Índice idx_facts_revision (is_verified, expires_at, created_at) -- mismo
 # que usa SQL_CONTAR (jax_memory_schema.sql / jax/memory/migrations.py).
 SQL_HECHOS_SIN_VERIFICAR = (
-    "SELECT COUNT(*) FROM facts WHERE is_verified = 0 AND superseded_by IS NULL "
-    "AND (expires_at IS NULL OR expires_at > NOW())"
+    "SELECT COUNT(*) FROM facts f FORCE INDEX (idx_facts_revision) "
+    "JOIN jax_users u ON u.user_id = f.user_id "
+    "WHERE u.tenant_id = %s AND f.is_verified = 0 AND f.superseded_by IS NULL "
+    "AND (f.expires_at IS NULL OR f.expires_at > NOW())"
 )
 
 
@@ -109,17 +120,20 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_USO_DEL_DIA, _rango_del_dia(date.today()))
+            tenant_id = int(user.tenant_id)
+            await cur.execute(SQL_USO_DEL_DIA, (tenant_id, *_rango_del_dia(date.today())))
             messages_today, images_today = await cur.fetchone()
-            await cur.execute("SELECT COUNT(*) FROM jax_users WHERE status = 'active'")
+            await cur.execute(
+                "SELECT COUNT(*) FROM jax_users WHERE tenant_id = %s AND status = 'active'", (tenant_id,)
+            )
             (users_active,) = await cur.fetchone()
-            await cur.execute(SQL_CUENTAS_BLOQUEADAS, (utc_ahora(),))
+            await cur.execute(SQL_CUENTAS_BLOQUEADAS, (tenant_id, utc_ahora()))
             (users_locked,) = await cur.fetchone()
             await cur.execute(SQL_LLAVES)
             keys_total, keys_configured = await cur.fetchone()
-            await cur.execute(SQL_PIPELINES_COMPLETADOS)
+            await cur.execute(SQL_PIPELINES_COMPLETADOS, (str(user.tenant_id),))
             (pipelines_completed,) = await cur.fetchone()
-            await cur.execute(SQL_HECHOS_SIN_VERIFICAR)
+            await cur.execute(SQL_HECHOS_SIN_VERIFICAR, (tenant_id,))
             (facts_unverified,) = await cur.fetchone()
 
     mem = psutil.virtual_memory()

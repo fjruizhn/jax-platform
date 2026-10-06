@@ -454,7 +454,7 @@ def test_ocultos_de_un_no_superadmin_es_403(client):
     assert resp.status_code == 403, resp.text
 
 
-def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_superadmin):
+def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios_de_su_tenant(client):
     duenio_a = uid(client, "descarte-c9-duenio-a", "operator")
     duenio_b = uid(client, "descarte-c9-duenio-b", "operator")
     ahora = time.time()
@@ -468,7 +468,8 @@ def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_su
     client.portal.call(partial(_insertar_pipeline, pid_visible, duenio_a, TENANT, "discarded", ahora, ahora,
                        status_previo="aborted", descartado_por=duenio_a, descartado_at=ahora))
     try:
-        resp = client_superadmin.get("/api/admin/pipelines/ocultos")
+        resp = client.get("/api/admin/pipelines/ocultos",
+                          headers=cabeceras(client, "descarte-c9-superadmin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         cuerpo = resp.json()
         # Fix round 1, Ruling 13(d): "has_more", el mismo contrato de
@@ -800,10 +801,10 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
 def test_explain_ocultos_usa_idx_pipelines_ocultos(client):
     from api.admin.pipelines_ocultos import SQL_OCULTOS
 
-    filas = client.portal.call(sql, "EXPLAIN " + SQL_OCULTOS, (mod.LISTA_PIPELINES_MAX, 5), True)
+    filas = client.portal.call(sql, "EXPLAIN " + SQL_OCULTOS, (TENANT, mod.LISTA_PIPELINES_MAX, 5), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
-    assert clave == "idx_pipelines_ocultos", filas
+    assert clave == "idx_pipelines_tenant_status_date", filas
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 

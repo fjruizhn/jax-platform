@@ -57,12 +57,12 @@ def _explain(client, consulta, args):
 
 
 def test_historial_usa_el_indice_target_ts(client):
-    plan = _explain(client, user_audit.SQL_HISTORIAL, (123456789, 50))
-    tipo, clave, extra = plan["a"]
-    assert clave == "idx_user_admin_audit_target_ts", plan
+    plan = _explain(client, user_audit.SQL_HISTORIAL, (1, 1, 1, 50))
+    con_indice = [fila for fila in plan.values() if fila[1] == "idx_user_admin_audit_target_ts"]
+    assert con_indice, plan
+    tipo, clave, extra = con_indice[0]
     assert "filesort" not in extra and "temporary" not in extra, plan
-    tipo_u, clave_u, _ = plan["u"]
-    assert (tipo_u, clave_u) == ("eq_ref", "PRIMARY"), plan
+    assert any(tipo == "eq_ref" and clave == "PRIMARY" for tipo, clave, _ in plan.values()), plan
 
 
 def test_conteo_de_superadmins_usa_un_indice_de_superadmins_por_tenant(client):
