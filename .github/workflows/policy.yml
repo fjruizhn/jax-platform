@@ -3661,14 +3661,14 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          # 3838 -> 3846 (Codex, E3 ronda 2, 2026-10-06): +8 DB (5 autorizaciones del nuevo
-          # punto de entrada, 1 guarda de freno, 1 regresión antes del INSERT y 1 regresión
-          # del resultado parcial en lotes); el
+          # 3838 -> 3847 (Codex, E3 ronda 2, 2026-10-06): +9 DB (5 autorizaciones del nuevo
+          # punto de entrada, 1 guarda de freno, 1 regresión antes del INSERT y 2 escenarios
+          # de respuesta parcial en lotes); el
           # arnés E3 exige 20 dispatches y 20 estados listos y limpia filas aun con fallo parcial.
           # Se re-mide en backend-tests-con-db, que usa MariaDB desechable.
           # 3830 -> 3838 (Codex, E3 respaldo chat, 2026-10-06): CI 37454479696 sobre 30989bf midió
           # colectados=3840 passed=3838 skipped=2 failed=0; incluye admisión durable, estado y carga E3.
-          PISO_PASSED = 3846
+          PISO_PASSED = 3847
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "

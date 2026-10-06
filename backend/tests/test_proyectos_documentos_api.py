@@ -948,7 +948,9 @@ def test_con_el_freno_puesto_subir_ocultar_y_restaurar_responden_423(client, usu
     assert r.status_code == 202 and len(r.json()["aceptados"]) == 1
 
 
-def test_freno_a_medio_lote_informa_los_archivos_ya_aceptados(ent, monkeypatch, workspace):
+@pytest.mark.parametrize("llamada_freno", [5, 6], ids=["antes-de-escribir", "antes-del-insert"])
+def test_freno_a_medio_lote_informa_los_archivos_ya_aceptados(
+        llamada_freno, ent, monkeypatch, workspace):
     from api import proyectos_documentos as api_documentos
     from fastapi import HTTPException
 
@@ -957,7 +959,7 @@ def test_freno_a_medio_lote_informa_los_archivos_ya_aceptados(ent, monkeypatch, 
     def freno():
         nonlocal llamadas
         llamadas += 1
-        if llamadas == 5:  # segundo archivo, antes de escribirlo
+        if llamadas == llamada_freno:  # segundo archivo, antes de escribirlo o de insertar
             raise HTTPException(status_code=423, detail="kill_switch_activo")
     monkeypatch.setattr(api_documentos, "exigir_freno_suelto", freno)
 
@@ -970,6 +972,7 @@ def test_freno_a_medio_lote_informa_los_archivos_ya_aceptados(ent, monkeypatch, 
     assert len(detail["aceptados"]) == 1
     assert ent.filas(proyecto)[0][0] == detail["aceptados"][0]["id"]
     assert len(ent.filas(proyecto)) == 1
+    assert len([path for path in workspace.rglob("*") if path.is_file()]) == 1
 
 
 # ---------------------------------------------- ocultar exige proyecto ACTIVE
