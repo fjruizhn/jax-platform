@@ -55,8 +55,10 @@ subidas); R2 chat 5,7 + sondeo 2,8 (8,5); R4 chat 10,2 + sondeo 4,9 (15,2).
   ventana de despacho fue de 635 s (el último trabajo salió a los 635 s).
 - **OCR por archivo de 20 páginas:** p50 63 a 67 s, p95 65 a 71 s, o sea unos 3,3 s por página y por
   worker. Rendimiento sostenido: 4 workers ≈ 3,6 documentos de 20 páginas por minuto (≈ 1,2 páginas/s).
-  El último documento terminó a los 352 s (20 usuarios) y a los 698 s (40): crece proporcional a los usuarios,
-  ~17,5 s por documento al tope.
+  Con el reloj de LAS MANOS (desde que crea el primer trabajo, sin incluir la subida), el último documento
+  terminó a los 352,0 s (20 usuarios, R1) y a los 697,9 s (40, R4): crece proporcional a los usuarios,
+  ≈ 17,3 s por documento al tope. Con el reloj del usuario (desde la subida) son 366,1 s y 710,0 s
+  (≈ 17,2 s por documento); ese es el que vale para el criterio de «listo en 5 min» (punto 4 abajo).
 
 ### Recursos del gemelo (por segundo, sumando los procesos de cada clase)
 
@@ -105,8 +107,8 @@ blanco quedan `parcial` sin una sola palabra de texto: el estado no distingue «
    (50 ms de servicio ⇒ ≈ 17 turnos/s). Con un modelo real el tope sería mucho más bajo; no se midió.
 3. **La subida crece lineal:** ≈ 18 a 20 ms por subida simultánea de 10 MiB (p95 401 ms con 20, 730 ms con 40). Sin
    errores ni 429.
-4. **Lo que sí se degrada es el tiempo hasta tener el documento listo:** crece linealmente (≈ 17,5 s por documento
-   de 20 páginas) y es independiente del cupo. Con 20 simultáneos el último espera unos 6 min; con 40, unos 12 min.
+4. **Lo que sí se degrada es el tiempo hasta tener el documento listo:** crece linealmente (≈ 17,2 s por documento
+   de 20 páginas, reloj del usuario) y es independiente del cupo. Con 20 simultáneos el último espera unos 6 min; con 40, unos 12 min.
    Si el criterio es «un PDF escaneado de 20 páginas listo en menos de 5 min», el límite **estimado** es de unos 16
    documentos al tope subidos a la vez: es una extrapolación con el reloj del usuario (desde la subida hasta el último documento listo; máximos de R1 con 20 documentos, 366,1 s, y de R4 con 40, 710,0 s, en `res/*.json`): la recta es ≈ 17,2 s por documento más ≈ 22 s, así que 16 documentos dan ≈ 297 s y 17 dan ≈ 315 s; el margen bajo los 5 min es de unos 3 s. No es una
    medición: ninguna corrida tuvo 16 documentos (se corrió con 20 y con 40). Que en producción real, con menos de 4
