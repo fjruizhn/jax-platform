@@ -167,6 +167,64 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     expect(useJaxStore.getState().messages.find((message) => message.facet === 'user')?.attachment).toBeNull()
   })
 
+  it('reintenta un error transitorio de estado y desbloquea el selector cuando termina el OCR', async () => {
+    let consultas = 0
+    const tiemposDeConsulta = []
+    api.get.mockImplementation((url) => {
+      if (url === '/chat/adjuntos') return Promise.resolve({ data: POLITICA })
+      consultas++
+      tiemposDeConsulta.push(Date.now())
+      if (consultas === 1) return Promise.reject(new Error('red transitoria'))
+      return Promise.resolve({ data: { estado: consultas === 2 ? 'procesando' : 'listo' } })
+    })
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await screen.findByText(/cola de procesamiento/i)
+    const selector = screen.getByLabelText(es.proyectos.selectorChat.etiqueta)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Procesamiento completo/i), { timeout: 5000 })
+    expect(consultas).toBe(3)
+    expect(tiemposDeConsulta[2] - tiemposDeConsulta[1]).toBeGreaterThanOrEqual(
+      tiemposDeConsulta[1] - tiemposDeConsulta[0],
+    )
+    expect(selector).toBeEnabled()
+    expect(screen.getByText(es.erroresMesa.pdf_procesando_selector_libre)).toBeInTheDocument()
+  })
+
+  it('mantiene bloqueado el selector mientras el PDF siga activo', async () => {
+    api.get.mockImplementation((url) => url === '/chat/adjuntos'
+      ? Promise.resolve({ data: POLITICA })
+      : Promise.resolve({ data: { estado: 'procesando' } }))
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await screen.findByText(/cola de procesamiento/i)
+    await waitFor(() => expect(screen.getByLabelText(es.proyectos.selectorChat.etiqueta)).toBeDisabled())
+  })
+
+  it('al agotar el tiempo total declara que no pudo consultar y libera el selector', async () => {
+    api.get.mockImplementation((url) => url === '/chat/adjuntos'
+      ? Promise.resolve({ data: POLITICA })
+      : Promise.resolve({ data: { estado: 'procesando' } }))
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/No se pudo consultar el estado/i), { timeout: 5000 })
+    expect(screen.getByLabelText(es.proyectos.selectorChat.etiqueta)).toBeEnabled()
+  })
+
   it('la vista previa de la imagen subida usa un object URL local del compositor', async () => {
     api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
     const { container } = renderBar()

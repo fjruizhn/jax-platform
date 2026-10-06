@@ -30,8 +30,16 @@ export default function FileAttachment({ attachment, onRemove, uploading }) {
         {uploading && <div className="text-xs text-info">{t.attachUploading}</div>}
         {!uploading && attachment?.tipo === 'pdf_procesando' && (
           <div className="text-xs text-info" role="status" aria-live="polite">
-            {t.erroresMesa.pdf_procesando_estado({ estado: attachment.estado, error: attachment.error })}
+            {t.erroresMesa.pdf_procesando_estado({
+              ...attachment,
+              causa: t.proyectos.documentos.causas[attachment.error] || t.proyectos.documentos.causas.desconocida,
+              estado_texto: t.proyectos.documentos.estados[attachment.estado] || t.proyectos.documentos.estados.desconocido,
+            })}
           </div>
+        )}
+        {!uploading && attachment?.tipo === 'pdf_procesando'
+          && !['en_cola', 'pendiente', 'procesando'].includes(attachment.estado) && (
+          <div className="text-xs text-texto-suave">{t.erroresMesa.pdf_procesando_selector_libre}</div>
         )}
         {!uploading && attachment && attachment.tipo !== 'pdf_procesando' && <div className="text-xs text-exito">{t.attachReady}</div>}
         {!uploading && attachment?.recortado && <div className="text-xs text-aviso">{t.adjuntoRecortado}</div>}

@@ -47,3 +47,26 @@ def test_estado_no_revela_un_documento_de_otro_proyecto(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(api.estado(42, 9001, USUARIO))
     assert (error.value.status_code, error.value.detail) == (404, {"code": "documento_no_encontrado"})
+
+
+def test_encolar_desde_chat_vuelve_a_revisar_el_freno_antes_de_validar_y_escribir(monkeypatch, tmp_path):
+    llamadas = []
+
+    def freno():
+        llamadas.append("freno")
+        raise HTTPException(status_code=423, detail="kill_switch_activo")
+
+    async def con_papel(*args, **kwargs):
+        llamadas.append("autorizacion")
+        return {"id": 41, "uuid": "proyecto-uno", "papel": "OWNER", "estado": "ACTIVE"}
+
+    monkeypatch.setattr(api, "exigir_freno_suelto", freno)
+    monkeypatch.setattr(api, "_con_papel", con_papel)
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api.encolar_pdf_desde_chat(tmp_path / "escaneo.pdf", nombre="escaneo.pdf",
+                                               project_id=41, user=USUARIO, bytes_=100, max_bytes=1000))
+
+    assert (error.value.status_code, error.value.detail) == (423, "kill_switch_activo")
+    assert llamadas == ["freno"]
+    assert list(tmp_path.iterdir()) == []

@@ -20,6 +20,10 @@ import { avisoGobernadoDe } from '../../lib/textoGobernado'
 // Solo orden de despliegue — label viene de /api/state (display_name de la tabla
 // `facet`, Bloque C) y el token de color del store; no se duplican aca.
 const FACET_ORDER = ['jax_local', 'jekyll', 'hipatia', 'thot', 'kimi', 'hyde', 'ada']
+const positivo = (valor, defecto) => Number.isFinite(Number(valor)) && Number(valor) > 0 ? Number(valor) : defecto
+const POLL_INICIAL_MS = positivo(import.meta.env.VITE_CHAT_PDF_POLL_INITIAL_MS, 1000)
+const POLL_MAX_MS = Math.max(POLL_INICIAL_MS, positivo(import.meta.env.VITE_CHAT_PDF_POLL_MAX_MS, 8000))
+const POLL_TOPE_MS = Math.max(POLL_INICIAL_MS, positivo(import.meta.env.VITE_CHAT_PDF_POLL_TIMEOUT_MS, 120000))
 
 function BottomBar() {
   const facetsState = useJaxStore((s) => s.facets)
@@ -130,20 +134,39 @@ function BottomBar() {
   useEffect(() => {
     if (attachment?.tipo !== 'pdf_procesando' || !attachment.project_id || !attachment.document_id) return undefined
     let vivo = true
-    let timer
+    let timer, topeTimer
+    let agotado = false
+    const inicio = Date.now()
+    let intentos = 0
+    const activos = ['en_cola', 'pendiente', 'procesando']
+    const esperar = () => Math.min(POLL_INICIAL_MS * (2 ** intentos++), POLL_MAX_MS)
+    const programar = (siguiente) => {
+      const restante = POLL_TOPE_MS - (Date.now() - inicio)
+      if (restante <= 0) return agotar()
+      const espera = esperar()
+      timer = setTimeout(espera >= restante ? agotar : siguiente, Math.min(espera, restante))
+    }
+    const agotar = () => {
+      agotado = true
+      clearTimeout(timer)
+      if (vivo) setAttachment((actual) => actual?.document_id === attachment.document_id
+        ? { ...actual, estado: 'estado_no_disponible' } : actual)
+    }
+    topeTimer = setTimeout(agotar, POLL_TOPE_MS)
     const consultar = async () => {
       try {
         const { data } = await api.get(`/proyectos/${attachment.project_id}/documentos/${attachment.document_id}`)
-        if (vivo) setAttachment((actual) => actual?.document_id === attachment.document_id
+        if (vivo && !agotado) setAttachment((actual) => actual?.document_id === attachment.document_id
           ? { ...actual, estado: data.estado, error: data.error } : actual)
-        if (vivo && ['en_cola', 'pendiente', 'procesando'].includes(data.estado)) timer = setTimeout(consultar, 3000)
+        if (vivo && !agotado && activos.includes(data.estado)) {
+          programar(consultar)
+        } else clearTimeout(topeTimer)
       } catch {
-        if (vivo) setAttachment((actual) => actual?.document_id === attachment.document_id
-          ? { ...actual, estado: 'estado_no_disponible' } : actual)
+        if (vivo && !agotado) programar(consultar)
       }
     }
     consultar()
-    return () => { vivo = false; clearTimeout(timer) }
+    return () => { vivo = false; clearTimeout(timer); clearTimeout(topeTimer) }
   }, [attachment?.tipo, attachment?.project_id, attachment?.document_id])
 
   const MODES = [
@@ -384,7 +407,8 @@ function BottomBar() {
                 Chat y en Pipeline, con el botón de documentos; no en Ejecutor ni en Imagen. */}
             {m === 'chat' && (mode === 'chat' || mode === 'pipeline') && (
               <>
-                <SelectorDeProyecto bloqueado={uploading || attachment?.tipo === 'pdf_procesando'} />
+                <SelectorDeProyecto bloqueado={uploading || (attachment?.tipo === 'pdf_procesando'
+                  && ['en_cola', 'pendiente', 'procesando'].includes(attachment.estado))} />
                 <BotonDocumentos />
               </>
             )}

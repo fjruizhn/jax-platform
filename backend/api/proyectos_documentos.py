@@ -208,6 +208,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 except cuota.SinEspacio:
                     raise _error(507, "sin_espacio") from None
                 try:
+                    exigir_freno_suelto()
                     carpeta = await asyncio.to_thread(almacen.abrir_carpeta_lote, workspace, proyecto["uuid"], lote)
                 except almacen.RutaInsegura:
                     # Un enlace simbolico en proyectos/<uuid>/entrada/<lote>: el detalle va
@@ -224,6 +225,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
             restante = max_lote - bytes_lote
             usados.add(seguro)
             try:
+                exigir_freno_suelto()
                 escritos, sha256 = await almacen.escribir_streaming(parte, carpeta, seguro, min(max_archivo, restante))
             except almacen.DemasiadoGrande:
                 usados.discard(seguro)
@@ -247,6 +249,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
             bytes_lote += escritos
 
             try:
+                exigir_freno_suelto()
                 nuevo = await repo.insertar(
                     pool, project_id=proyecto["id"], sha256=sha256, nombre_original=nombre,
                     ruta_entrada=carpeta.ruta_relativa(seguro), bytes_=escritos, tipo=tipo,
@@ -325,6 +328,9 @@ async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, us
     La llamada sucede después de recibir y clasificar el adjunto; se vuelve a validar
     membresía/estado antes de tocar el workspace y el INSERT vuelve a cerrar la carrera.
     """
+    # El PDF pudo tardar en subirse y clasificarse; igual que la ruta de
+    # proyectos, revalidar el freno inmediatamente antes de tocar el disco.
+    exigir_freno_suelto()
     proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
     max_archivo = max_bytes
     if bytes_ > max_archivo:

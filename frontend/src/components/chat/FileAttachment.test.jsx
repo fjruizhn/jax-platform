@@ -43,6 +43,14 @@ describe('FileAttachment scanned PDF status', () => {
   it('announces the real OCR failure in the live status region', () => {
     pintar({ attachment: { tipo: 'pdf_procesando', nombre: 'scan.pdf', estado: 'error', error: 'ocr_sin_texto' } })
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
-    expect(screen.getByRole('status')).toHaveTextContent('LAS MANOS no encontró texto en este escaneo')
+    expect(screen.getByRole('status')).toHaveTextContent(es.proyectos.documentos.causas.ocr_sin_texto)
+    expect(screen.getByRole('status')).not.toHaveTextContent('ocr_sin_texto')
+    expect(screen.getByText(es.erroresMesa.pdf_procesando_selector_libre)).toBeInTheDocument()
+  })
+
+  it('never renders an unknown internal OCR error code', () => {
+    pintar({ attachment: { tipo: 'pdf_procesando', nombre: 'scan.pdf', estado: 'error', error: 'future_private_code' } })
+    expect(screen.getByRole('status')).toHaveTextContent(es.proyectos.documentos.causas.desconocida)
+    expect(screen.getByRole('status')).not.toHaveTextContent('future_private_code')
   })
 })

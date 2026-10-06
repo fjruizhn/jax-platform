@@ -224,12 +224,13 @@ export default {
     adjunto_demasiadas_paginas: (d) => `The PDF exceeds the configured limit of ${d?.max_paginas || 0} pages.`,
     pdf_procesando_estado: (d) => d?.estado === 'listo' ? 'Processing complete; the document is in the project Documents tab.'
       : d?.estado === 'parcial' ? 'Processing was partial; review the result in the project Documents tab.'
-      : d?.estado === 'error' ? (d?.error === 'ocr_sin_texto' ? 'LAS MANOS found no text in this scan. The document is in the project Documents tab.' : `Processing failed (${d?.error || 'no details'}). Review the project Documents tab.`)
+      : d?.estado === 'error' ? `Processing failed: ${d?.causa || 'unknown reason'}. Review the project Documents tab.`
       : d?.estado === 'sin_extractor' ? 'No extractor is available for this document type. It is in the project Documents tab.'
       : d?.estado === 'cancelado' ? 'Processing was cancelled. The document remains in the project Documents tab.'
       : d?.estado === 'estado_no_disponible' ? 'The status could not be checked. Review the project Documents tab.'
-      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Document is in the processing queue (${d.estado}).`
-      : `Document status: ${d?.estado || 'unknown'}.`,
+      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Document is in the processing queue (${d?.estado_texto || 'unknown'}).`
+      : `Document status: ${d?.estado_texto || 'unknown'}.`,
+    pdf_procesando_selector_libre: 'You can change projects now; the document remains in Project Documents.',
     pdf_procesando_no_adjuntable: (d) => `The scanned PDF is in Documents${d?.proyecto ? ` for ${d.proyecto}` : ' for the project'} and will not be attached to this chat turn. Your message will be sent without the PDF contents.`,
     // Frente B (2026-09-17): 423 from chat, image, command and pipelines with the brake on.
     kill_switch_activo: () => 'Kill switch active: JAX is stopped',

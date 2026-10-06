@@ -231,12 +231,13 @@ export default {
     adjunto_demasiadas_paginas: (d) => `El PDF supera el máximo configurado de ${d?.max_paginas || 0} páginas.`,
     pdf_procesando_estado: (d) => d?.estado === 'listo' ? 'Procesamiento completo; el documento está en Documentos del proyecto.'
       : d?.estado === 'parcial' ? 'Procesamiento parcial; revisa el resultado en Documentos del proyecto.'
-      : d?.estado === 'error' ? (d?.error === 'ocr_sin_texto' ? 'LAS MANOS no encontró texto en este escaneo. El documento está en Documentos del proyecto.' : `El procesamiento terminó con error (${d?.error || 'sin detalle'}). Revisa Documentos del proyecto.`)
+      : d?.estado === 'error' ? `El procesamiento terminó con error: ${d?.causa || 'sin detalle conocido'}. Revisa Documentos del proyecto.`
       : d?.estado === 'sin_extractor' ? 'No hay extractor para este tipo de documento. Está en Documentos del proyecto.'
       : d?.estado === 'cancelado' ? 'El procesamiento se canceló. El documento sigue en Documentos del proyecto.'
       : d?.estado === 'estado_no_disponible' ? 'No se pudo consultar el estado. Revisa Documentos del proyecto.'
-      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Documento en la cola de procesamiento (${d.estado}).`
-      : `Estado del documento: ${d?.estado || 'desconocido'}.`,
+      : ['en_cola', 'pendiente', 'procesando'].includes(d?.estado) ? `Documento en la cola de procesamiento (${d?.estado_texto || 'desconocido'}).`
+      : `Estado del documento: ${d?.estado_texto || 'desconocido'}.`,
+    pdf_procesando_selector_libre: 'Ya puedes cambiar de proyecto; el documento sigue en Documentos del proyecto.',
     pdf_procesando_no_adjuntable: (d) => `El PDF escaneado está en Documentos${d?.proyecto ? ` de ${d.proyecto}` : ' del proyecto'} y no se adjuntará a este turno. El mensaje se enviará sin el contenido del PDF.`,
     // Frente B (2026-09-17): 423 de chat, imagen y pipelines con el freno puesto.
     kill_switch_activo: () => 'Kill switch activo: JAX está detenido',

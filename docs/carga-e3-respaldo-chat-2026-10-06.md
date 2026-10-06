@@ -1,9 +1,19 @@
 # E3 · respaldo de PDF escaneado en el chat
 
 **Fecha:** 2026-10-06
-**Estado de carga:** medido en CI con MariaDB desechable, sin tocar producción.
+**Estado:** revisión 2 en curso (2026-10-06). El reporte de carga anterior se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
 
-## Intento y resultado
+## Corrección del registro (2026-10-06)
+
+La medición histórica de 721.1 ms del POST de chat no corresponde al nuevo criterio E3. La prueba de esta ronda mide 20 subidas concurrentes al máximo configurado de páginas y bytes, chat concurrente, despacho durable y sondeo hasta estado terminal; `JAX_E3_P95_MAX_MS=25000` hace fallar el job si el p95 supera el tope. El tope es menor que 60 s. Un segundo paso del workflow inyecta `time.sleep(3)` en la función async y solo pasa si el test falla específicamente con `E3 p95`; esa demostración está pendiente de la corrida CI de esta rama.
+
+La integración E3 y los cinco casos DB de autorización todavía no se ejecutan localmente: en Hall9000 pytest cerró antes de conectarse porque `3308` está protegido como puerto de producción, Docker no permite usar el daemon y no hay `mariadbd` local. El job `backend-tests-con-db` usa MariaDB efímera y quedó como ejecutor de esos casos. No se habilitó `JAX_TEST_DB_PERMITIR_INSTANCIA_DE_PRODUCCION` y no se consultó ni modificó `jax_memory`.
+
+Verificaciones de esta rama en Hall9000: frontend `1397 passed` (113 archivos); unidad backend de estado/freno `3 passed`; el PDF de muestra se parseó a 20 páginas y 10 MiB y produjo `PdfSinTexto`. La suite backend completa sin DB terminó `2362 passed, 1482 skipped, 2 failed`; los dos fallos son `test_processing_status_is_resolved_only_by_paired_jax_singleton` y `test_processing_status_without_authoritative_jsonl_is_unavailable`, porque el checkout local de JAX no contiene `procesamiento_routes`. CI clona el pin JAX exacto de su workflow. Esos fallos no son evidencia de resultado para el job CI.
+
+El OCR real de LAS MANOS no puede medirse en el job CI, que simula solo el borde HTTP remoto. **Pendiente para 2026-10-07; responsable: Fernando asigna operador y ventana de carga en el host LAS MANOS antes del GO de producción.** Registrar allí configuración efectiva, concurrencia, peticiones/s, p95 y máximo upload→terminal, latencia de chat y uso de CPU/memoria. Hasta que se mida, no se declara medido ni listo para GO de producción.
+
+## Intento y resultado (histórico, no acredita E3)
 
 La carga solicitada se ejecutó con 20 usuarios enviando turnos de chat mientras un PDF escaneado estaba admitido en la cola durable y el sondeo del dispatcher recibía `running`. La base MariaDB, las membresías, la admisión, la transición durable, el dispatcher y `/api/chat` fueron reales dentro del job de CI; LAS MANOS respondió con un cliente HTTP simulado que mantuvo el estado en proceso. El proveedor de chat simulado esperó 30 ms por petición. No se usó producción ni se simula que OCR terminó.
 
@@ -28,9 +38,10 @@ Medición: GitHub Actions run [37454479696](https://github.com/fjruizhn/jax-plat
 - Verificación local completa sin DB: backend `2363 passed, 1479 skipped`; frontend `1393 passed, 0 failed`. Los tests que abren MariaDB se omitieron por `JAX_CI_NO_DB=1`.
 - Delta de piso medido contra `origin/master d283d90`: backend `+5` pasadas (dos casos de upload sin DB, dos lecturas unitarias de estado y una comprobación del sufijo PDF); frontend `1389→1393` (`+4`: estado OCR, turno sin contenido OCR, traducción de autorización y selector bloqueado para conservar el proyecto). El test `FileAttachment` preexistente ya estaba versionado en `origin/master`.
 
-## Para completar la medición
+## Pendientes vigentes
 
-No queda pendiente la medición E3 solicitada. Si cambia el código del camino, el volumen de proyecto o la infraestructura, repetirla; el resultado actual describe el runner de CI con LAS MANOS y el proveedor simulados.
+1. Obtener las corridas positiva y mutante de la revisión 2 en el job CI efímero y registrar sus números aquí. Responsable: Codex, 2026-10-06, después del push de esta rama.
+2. Medir OCR real de LAS MANOS según la ventana y responsable indicados arriba. El resultado histórico de CI no reemplaza esta medición.
 
 ## Registro de trabajo y traspaso
 

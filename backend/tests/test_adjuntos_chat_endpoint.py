@@ -456,19 +456,26 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
 
 @pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
 def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, tmp_path, request):
-    """Mide 20 turnos mientras el dispatcher tiene un PDF en estado procesando.
+    """Mide E3 desde las subidas al tope hasta el estado terminal del sondeo real.
 
-    MariaDB, membresías, documento, transición durable y chat son reales dentro
-    del job efímero de CI. LAS MANOS responde con su contrato HTTP simulado y
-    mantiene abierta la consulta del estado hasta terminar la medición.
+    MariaDB, workspace, autorización, upload, despachador y endpoint de estado
+    son reales. Solo se sustituye LAS MANOS, servicio OCR remoto. El reloj
+    incluye las subidas concurrentes de PDFs escaneados al máximo configurado,
+    los chats de 20 usuarios, despacho y sondeo hasta el estado terminal.
     """
-    import asyncio
     import uuid
     from db.connection import get_pool
-    from proyectos_documentos import despachador, repositorio as repo
+    from proyectos_documentos import despachador
     from tests.adjuntos_muestras import pdf_con_texto
-    from tests.identidades import sql
     from tests.test_proyectos_documentos_api import Entorno
+    from tests.identidades import sql
+    import ajustes
+    from adjuntos.limites import cargar_limites
+
+    max_p95_ms = int(os.environ["JAX_E3_P95_MAX_MS"])
+    # sleep(3) bloquea el event loop de esta ruta async: 20 uploads serializados
+    # deben exceder el tope. El job ejecuta también el mutante explícitamente.
+    assert 0 < max_p95_ms < 20 * 3000
 
     workspace = tmp_path / "workspace"
     (workspace / "proyectos").mkdir(parents=True)
@@ -478,77 +485,134 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
     adjuntos.mkdir(mode=0o700)
     monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
 
+    limites = cargar_limites()
+    pdf_base = pdf_con_texto([""] * limites.max_paginas)
     entorno = Entorno(client)
     proyecto = entorno.proyecto()
-    response = client.post("/api/chat/upload", headers=entorno.dueno,
-                           data={"project_id": str(proyecto.id)},
-                           files={"file": ("escaneo.pdf", pdf_con_texto(["", ""]), "application/pdf")})
-    assert response.status_code == 200, response.text
-    uploaded = response.json()
-    assert uploaded["tipo"] == "pdf_procesando"
-    # La suite comparte la DB efímera entre tests; retirar la fila abierta al
-    # terminar para no contaminar aserciones de `trabajos_abiertos` posteriores.
-    request.addfinalizer(lambda: client.portal.call(
-        sql, "DELETE FROM project_documents WHERE id=%s", (uploaded["document_id"],)))
-
-    identidades = []
+    identidades = [entorno.miembro(proyecto, f"load-{n}", "CONTRIBUTOR") for n in range(20)]
+    max_bytes = min(limites.max_bytes, int(client.portal.call(ajustes.valor, ajustes.DOC_MAX_BYTES_ARCHIVO)))
+    assert max_bytes >= len(pdf_base)
+    payloads = []
     for n in range(20):
-        label = f"{entorno.tenant}-load-{n}"
-        user_headers = cabeceras(client, label, tenant_id=entorno.tenant)
-        user_id = uid(client, label, tenant_id=entorno.tenant)
-        email = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id=%s", (user_id,), True)[0][0]
-        invited = client.post(f"/api/proyectos/{proyecto.id}/miembros", headers=entorno.dueno,
-                              json={"email": email, "papel": "CONTRIBUTOR"})
-        assert invited.status_code == 201, invited.text
-        identidades.append(user_headers)
+        marca = f"e3-user-{n} ".encode()
+        relleno = max_bytes - len(pdf_base) - len(marca) - 3  # `% ` y salto de línea del comentario
+        assert relleno > 0
+        for _ in range(4):  # startxref crece de longitud al insertar el comentario
+            payload = pdf_con_texto([""] * limites.max_paginas, comentario=marca + b"x" * relleno)
+            diferencia = max_bytes - len(payload)
+            if diferencia == 0:
+                break
+            relleno += diferencia
+        assert len(payload) == max_bytes
+        payloads.append(payload)
 
+    trabajos = {}
     class _Accepted:
         status_code = 202
-        def json(self): return {"job_id": "e3-load-" + uuid.uuid4().hex}
-    class _DispatcherClient:
-        async def post(self, *args, **kwargs): return _Accepted()
-    async def dispatch_client(): return _DispatcherClient()
-    monkeypatch.setattr(despachador, "get_http_client", dispatch_client)
-
-    async def dispatch_pdf():
-        pool = await get_pool()
-        rows = await repo.tomar_en_cola(pool, limite=100)
-        row = next(item for item in rows if item["id"] == uploaded["document_id"])
-        await despachador._despachar_trozo(pool, row["project_uuid"], row["owner"], [row])
-        return pool, row
-    pool_db, row = client.portal.call(dispatch_pdf)
-    db_row = entorno.filas(proyecto)
-    job_id = next(item[7] for item in db_row if item[0] == uploaded["document_id"])
-    assert job_id and next(item[5] for item in db_row if item[0] == uploaded["document_id"]) == "pendiente"
+        def __init__(self, job_id): self.job_id = job_id
+        def json(self): return {"job_id": self.job_id}
+    class _Processing:
+        async def post(self, _url, **kwargs):
+            job_id = "e3-" + uuid.uuid4().hex
+            trabajos[job_id] = kwargs["json"]["rutas"][0]
+            return _Accepted(job_id)
+        async def get(self, url, **_kwargs):
+            job_id = url.rsplit("/", 1)[-1]
+            return type("Response", (), {"status_code": 200, "json": lambda self: {
+                "estado": "completed", "resultados": [{"archivo": trabajos[job_id], "estado": "ok"}]}})()
+    async def processing_client(): return _Processing()
+    monkeypatch.setattr(despachador, "get_http_client", processing_client)
+    monkeypatch.setattr(despachador, "despachar_ahora", lambda: None)
 
     _resolver(monkeypatch)
     grabador.delay_s = 0.03
-    consultando, liberar = threading.Event(), threading.Event()
-    class _ProcessingResponse:
-        status_code = 200
-        def json(self): return {"estado": "running", "resultados": []}
-    class _ProcessingClient:
-        async def get(self, *args, **kwargs):
-            consultando.set()
-            await asyncio.to_thread(liberar.wait, 30)
-            return _ProcessingResponse()
-    async def processing_client(): return _ProcessingClient()
-    monkeypatch.setattr(despachador, "get_http_client", processing_client)
-    future = client.portal.start_task_soon(despachador._sincronizar_trabajo, pool_db, job_id, row["owner"])
-    assert consultando.wait(10), "no comenzó el sondeo del documento en proceso"
+    if os.getenv("JAX_E3_MUTANT_SLEEP") == "1":
+        from api import proyectos_documentos as api_documentos
+        original_encolar = api_documentos.encolar_pdf_desde_chat
+        async def encolar_mutante(*args, **kwargs):
+            time.sleep(3)
+            return await original_encolar(*args, **kwargs)
+        monkeypatch.setattr(api_documentos, "encolar_pdf_desde_chat", encolar_mutante)
 
-    def turno(n):
+    def usuario(n):
         inicio = time.perf_counter()
-        response = client.post("/api/chat", json={"message": f"consulta {n}", "facet": "jax_local",
-                                                   "project_id": proyecto.id}, headers=identidades[n])
-        return response.status_code, (time.perf_counter() - inicio) * 1000, response.text
-    try:
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            resultados = list(executor.map(turno, range(20)))
-    finally:
-        liberar.set()
-    future.result(15)
-    assert all(status == 200 for status, _, _ in resultados), resultados
-    duraciones = sorted(ms for _, ms, _ in resultados)
-    p95 = duraciones[math.ceil(0.95 * len(duraciones)) - 1]
-    print(f"E3_LOAD users=20 pdf_state=processing p95_ms={p95:.1f} max_ms={duraciones[-1]:.1f}", flush=True)
+        response = client.post("/api/chat/upload", headers=identidades[n],
+            data={"project_id": str(proyecto.id)},
+            files={"file": (f"escaneo-{n}.pdf", payloads[n], "application/pdf")})
+        assert response.status_code == 200, response.text
+        documento = response.json()
+        assert documento["tipo"] == "pdf_procesando"
+        chat = client.post("/api/chat", headers=identidades[n], json={
+            "message": f"consulta {n}", "facet": "jax_local", "project_id": proyecto.id})
+        assert chat.status_code == 200, chat.text
+        return documento["document_id"], inicio
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        filas = list(executor.map(usuario, range(20)))
+    for document_id, _ in filas:
+        request.addfinalizer(lambda document_id=document_id: client.portal.call(
+            sql, "DELETE FROM project_documents WHERE id=%s", (document_id,)))
+
+    pool = client.portal.call(get_pool)
+    client.portal.call(despachador.ciclo, pool)  # POST durable real, LAS MANOS aceptó cada trabajo
+    pendientes = {document_id: inicio for document_id, inicio in filas}
+    duraciones = []
+    deadline = time.perf_counter() + max_p95_ms / 1000
+    while pendientes and time.perf_counter() < deadline:
+        for document_id, inicio in list(pendientes.items()):
+            response = client.get(f"/api/proyectos/{proyecto.id}/documentos/{document_id}", headers=entorno.dueno)
+            assert response.status_code == 200, response.text
+            if response.json()["estado"] in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
+                duraciones.append((time.perf_counter() - inicio) * 1000)
+                del pendientes[document_id]
+        if pendientes:
+            time.sleep(0.05)
+        client.portal.call(despachador.ciclo, pool)  # GET externo real + persistencia terminal
+    if pendientes:
+        duraciones.extend((time.perf_counter() - inicio) * 1000 for inicio in pendientes.values())
+    p95 = sorted(duraciones)[math.ceil(0.95 * len(duraciones)) - 1]
+    print(f"E3_LOAD users=20 pages={limites.max_paginas} upload_bytes={max_bytes} dispatched={len(trabajos)} "
+          f"p95_ms={p95:.1f} max_ms={max(duraciones):.1f} threshold_ms={max_p95_ms}", flush=True)
+    assert p95 <= max_p95_ms, f"E3 p95 {p95:.1f} ms supera el tope CI de {max_p95_ms} ms"
+    assert not pendientes, f"E3 excedió el tope antes de estado terminal: {sorted(pendientes)}"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+@pytest.mark.parametrize("caso,esperado", [
+    ("otro_tenant", 404), ("sin_membresia", 404), ("viewer", 403),
+    ("archivado", 409), ("inexistente", 404),
+])
+def test_upload_pdf_escaneado_revalida_autorizacion_antes_de_escribir(
+        caso, esperado, client, monkeypatch, tmp_path):
+    """Las cinco denegaciones deben ocurrir dentro de la entrada nueva del chat."""
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(tmp_path / "adjuntos"))
+
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+    if caso == "otro_tenant":
+        atacante = cabeceras(client, f"attacker-{time.time_ns()}", tenant_id=f"otro-{time.time_ns()}")
+        target_id = proyecto.id
+    elif caso == "sin_membresia":
+        atacante = entorno.usuario(f"sin-membresia-{time.time_ns()}")
+        target_id = proyecto.id
+    elif caso == "viewer":
+        atacante = entorno.miembro(proyecto, f"viewer-{time.time_ns()}", "VIEWER")
+        target_id = proyecto.id
+    elif caso == "archivado":
+        proyecto = entorno.proyecto(archivar=True)
+        atacante, target_id = entorno.dueno, proyecto.id
+    else:
+        atacante, target_id = entorno.dueno, proyecto.id + 9_000_000
+
+    response = client.post("/api/chat/upload", headers=atacante,
+        data={"project_id": str(target_id)},
+        files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
+    assert response.status_code == esperado, response.text
+    assert list((workspace / "proyectos").iterdir()) == [], "una solicitud denegada escribió en el workspace"
