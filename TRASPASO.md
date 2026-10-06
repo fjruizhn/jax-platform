@@ -22,8 +22,9 @@
 - PDF de 20 páginas validado con tamaño exacto de 10 MiB.
 - Backend completo sin DB: 2362 pasaron, 1482 omitidas, 2 fallaron porque el checkout JAX indicado por el entorno no contiene `procesamiento_routes`; CI trae su pin.
 - MariaDB de CI no está disponible localmente. No se habilitó conexión a `jax_memory` ni se usó la excepción de DB local.
-- E3 en CI con MariaDB y el mutante `sleep(3)` siguen pendientes de resultado.
+- E3 con MariaDB pasó; falta validar el mutante `sleep(3)` con la configuración aislada de pool del último cambio.
 - Primer run sobre `c6cb5a7` (policy 37483798706) encontró que el test E3 exige estar parametrizado también en la suite completa y que los casos de autorización deben crear su directorio de adjuntos para superar el guard de cuota. Correcciones en el árbol: p95 configurable con default 25000 ms y directorio temporal creado. CI debe revalidar.
+- En `18c4364`, E3 normal midió `p95=max=1891.9 ms` (20 × 20 páginas × 10 MiB, 20 dispatches). Los cinco casos de autorización y el piso DB pasaron en la suite completa. El paso dedicado de mutación no vale: el `sleep(3)` al inicio de encolar saturó el pool PDF de 1 proceso y dio `503 adjuntos_reintentar` antes de llegar a p95. La revisión actual fija 8 workers (máximo permitido) y timeout 60 s (máximo permitido) solo en la corrida mutante, para medir el bloqueo del event loop sin confundirlo con saturación del pool.
 - Contexto solicitado `/home/fruiz/jax-platform/CONTEXT.md` no existe en el checkout principal; tampoco hay `CLAUDE.md` en su raíz.
 
 ## Pendiente / siguiente paso

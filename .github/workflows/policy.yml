@@ -1453,11 +1453,14 @@ jobs:
         run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
 
       - name: Comprobar que E3 rechaza el mutante sleep(3)
-        # Inyecta el bloqueo dentro del endpoint async de encolado. El job debe
-        # ponerse rojo por superar p95; un fallo distinto no cuenta como prueba.
+        # Ocho workers y su timeout máximo válido aíslan el bloqueo del event
+        # loop del límite del pool OCR: el job debe fallar por superar p95;
+        # un 503 de cola saturada no cuenta como prueba del mutante.
         env:
           JAX_E3_P95_MAX_MS: '25000'
           JAX_E3_MUTANT_SLEEP: '1'
+          JAX_ADJUNTO_PDF_PROCESOS: '8'
+          JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS: '60'
         run: |
           set +e
           python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios >e3-mutante.log 2>&1
