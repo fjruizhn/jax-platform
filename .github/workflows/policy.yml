@@ -3624,9 +3624,9 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          # Ronda 2 #199 (contrato atómico, 2026-10-06): base medida por #205 = 3830; +2 pruebas con DB = 3832.
-          # Piso acumulado con DB para el primer paso de la secuencia #199 → #200 → #201.
-          PISO_PASSED = 3832
+          # Ronda 2 #199 (contrato atómico, 2026-10-06): base medida por #205 = 3830; +3 pruebas con DB = 3833.
+          # Dos pruebas son puras y una requiere client; piso acumulado del primer paso.
+          PISO_PASSED = 3833
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
