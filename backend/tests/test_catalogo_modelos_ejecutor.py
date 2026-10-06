@@ -558,6 +558,11 @@ def _casos_de_desenlace():
         pytest.param(dict(excepcion=httpx.LocalProtocolError("cabecera invalida")), D.FALLO_CIERTO, id="local-proto"),
         pytest.param(dict(excepcion=RuntimeError("Cannot send a request, as the client has been closed.")),
                      D.FALLO_CIERTO, id="cliente-cerrado"),
+        # Cualquier OTRO RuntimeError (o subclase) pudo haber salido: desconocido, la opcion conservadora.
+        pytest.param(dict(excepcion=RuntimeError("fallo interno del transporte")), D.DESCONOCIDO, id="runtime-otro"),
+        pytest.param(dict(excepcion=NotImplementedError("x")), D.DESCONOCIDO, id="runtime-subclase"),
+        pytest.param(dict(excepcion=RuntimeError("Cannot reopen a client instance, once it has been closed.")),
+                     D.DESCONOCIDO, id="runtime-reopen"),
         pytest.param(dict(excepcion=httpx.WriteError("cortado")), D.FALLO_CIERTO, id="write-error"),
         pytest.param(dict(excepcion=httpx.WriteTimeout("t")), D.FALLO_CIERTO, id="write-timeout"),
         pytest.param(dict(excepcion=httpx.PoolTimeout("t")), D.FALLO_CIERTO, id="pool-timeout"),
@@ -584,6 +589,23 @@ def test_enviar_telegram_distingue_entregado_fallo_cierto_y_desconocido(monkeypa
     con_desenlace, como_bool = _desenlace_de(monkeypatch, **kwargs)
     assert con_desenlace is esperado
     assert como_bool is (esperado is ejecutor.Desenlace.ENTREGADO)
+
+
+def test_el_cliente_cerrado_real_de_httpx_es_fallo_cierto(monkeypatch):
+    """El RuntimeError lo lanza httpx de verdad (httpx/_client.py:1616, `AsyncClient.send`): si cambia su mensaje,
+    esta prueba lo dice en vez de dejar que el aviso pase a 'desconocido' en silencio."""
+    import httpx
+
+    monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+    monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    cerrado = httpx.AsyncClient()
+    _correr_async(cerrado.aclose())
+    original = http_client._client
+    http_client._client = cerrado
+    try:
+        assert _correr_async(ejecutor._enviar_telegram_con_desenlace("hola")) is ejecutor.Desenlace.FALLO_CIERTO
+    finally:
+        http_client._client = original
 
 
 def test_sin_cliente_http_es_fallo_cierto(monkeypatch):

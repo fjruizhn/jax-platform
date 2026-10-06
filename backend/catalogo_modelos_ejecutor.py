@@ -302,15 +302,24 @@ def _fallo_antes_de_enviar(e: Exception) -> bool:
     ConnectTimeout, PoolTimeout, conexion rechazada), la peticion no llego a armarse o a salir (ProxyError,
     UnsupportedProtocol, LocalProtocolError, RuntimeError de un cliente cerrado) o se corto la ESCRITURA
     (WriteError, WriteTimeout: un cuerpo incompleto no lo procesa Telegram). Todo lo demas (ReadTimeout, ReadError,
-    RemoteProtocolError, errores desconocidos) pudo haber entregado el mensaje. `httpx` se importa aca adentro,
+    RemoteProtocolError, cualquier otro RuntimeError, errores desconocidos) pudo haber entregado el mensaje. `httpx` se importa aca adentro,
     como `http_client`: un .venv roto se reporta como fallo del envio, no tumba el modulo."""
     import httpx
 
     return isinstance(e, (
         httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError,
-        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError, RuntimeError,
+        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError,
         httpx.WriteError, httpx.WriteTimeout,
-    ))
+    )) or _es_cliente_cerrado(e)
+
+
+# httpx no tiene una subclase para esto: `AsyncClient.send` lanza un RuntimeError a secas con este mensaje
+# (httpx/_client.py:1616 en la 0.28.1 instalada; el cliente sincrono, :901). Se reconoce por el mensaje.
+_MENSAJE_CLIENTE_CERRADO = "Cannot send a request, as the client has been closed"
+
+
+def _es_cliente_cerrado(e: Exception) -> bool:
+    return type(e) is RuntimeError and str(e).startswith(_MENSAJE_CLIENTE_CERRADO)
 
 
 # Un 504/524 de gateway equivale a un ReadTimeout: el proxy se rindio esperando a Telegram, que pudo haber entregado.
