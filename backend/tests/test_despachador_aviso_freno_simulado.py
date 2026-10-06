@@ -30,6 +30,8 @@ _ESTADO_INICIAL = {
     "_ultima_actividad_freno_incertidumbre": None,
     "_pausa_previa_al_incidente": None,
     "_clave_de_lectura_logueada": None,
+    "_avisos_del_incidente": 0,
+    "_inicio_incidente_civil": None,
 }
 
 
@@ -53,9 +55,11 @@ class _Telegram:
         self.reloj = reloj
         self.comportamiento = comportamiento
         self.tiempos = []  # segundos desde el inicio de la simulacion, uno por POST
+        self.textos = []  # el texto de cada aviso
 
     async def post(self, url, **kwargs):
         n = len(self.tiempos) + 1
+        self.textos.append(kwargs["data"]["text"])
         self.tiempos.append(self.reloj[0] - self.reloj[1])
         que = self.comportamiento(n, self.tiempos[-1])
         if que == "ok":
@@ -78,7 +82,8 @@ async def _esperar_avisos():
         await asyncio.gather(*tuple(despachador._avisos_freno_incertidumbre))
 
 
-async def _simular(monkeypatch, *, duracion_s, hay_incidente, comportamiento, enfriamiento, reintento, tick_s=10):
+async def _simular(monkeypatch, *, duracion_s, hay_incidente, comportamiento, enfriamiento, reintento, tick_s=10,
+                   textos=None):
     """Corre `_despachar` cada `tick_s` segundos falsos. `hay_incidente(t)` dice si en ese segundo hay 100 filas
     en incertidumbre (se llenan juntas y vencen juntas). Devuelve los segundos de cada POST a Telegram."""
     for nombre, valor in _ESTADO_INICIAL.items():
@@ -118,6 +123,8 @@ async def _simular(monkeypatch, *, duracion_s, hay_incidente, comportamiento, en
         http_client._client = original
         despachador._en_incertidumbre.clear()
         await _esperar_avisos()
+    if textos is not None:
+        textos.extend(telegram.textos)
     return telegram.tiempos
 
 
@@ -264,10 +271,36 @@ async def test_la_entrega_confirmada_tambien_recuerda_cada_enfriamiento(monkeypa
     assert tiempos == [0.0, 3600.0, 7200.0, 10800.0, 14400.0, 18000.0], tiempos
 
 
-async def test_sin_enfriamiento_hay_un_aviso_por_incidente_no_recordatorios(monkeypatch):
-    tiempos = await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
-                             comportamiento=lambda n, t: "ok", enfriamiento=0, reintento=60)
-    assert tiempos == [0.0], tiempos
+async def test_un_enfriamiento_ilegible_incluido_el_cero_falla_cerrado_sin_enviar(monkeypatch):
+    """El 0 ya no existe (minimo 60 s): un 0 guardado se lee como ilegible (ajustes.valor lanza AjusteIlegible) y el
+    aviso NO sale, ni un aviso por ciclo ni uno solo; el freno sigue cerrado."""
+    for nombre, valor in _ESTADO_INICIAL.items():
+        monkeypatch.setattr(despachador, nombre, valor, raising=False)
+
+    async def leer(clave):
+        if clave == ajustes.DOC_RUTAS_POR_TRABAJO:
+            return 50
+        if clave == ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S:
+            return ajustes.DEFINICIONES[clave].interpretar("0")  # lanza ValorInvalido como la lectura real
+        return 60
+
+    monkeypatch.setattr(despachador.ajustes, "valor", leer)
+    monkeypatch.setattr(despachador, "_pasada_de_despacho", _pasada_vacia)
+    enviados = []
+
+    async def no_debe_enviar(*_a, **_k):
+        enviados.append(1)
+        return Desenlace.ENTREGADO
+
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", no_debe_enviar)
+    despachador._en_incertidumbre.update({10**24 + i: despachador._reloj() + 10**6 for i in range(100)})
+    try:
+        for _ in range(30):
+            await despachador._despachar(None)
+            await _esperar_avisos()
+    finally:
+        despachador._en_incertidumbre.clear()
+    assert enviados == []
 
 
 async def test_proxy_error_permanente_reintenta_y_nunca_se_calla(monkeypatch):
@@ -300,14 +333,14 @@ async def test_la_espera_tiene_tope_en_el_enfriamiento(monkeypatch):
     assert tiempos[-1] >= 8 * 3600 - 3700, "dejo de reintentar antes de terminar el incidente"
 
 
-async def test_con_enfriamiento_cero_la_espera_minima_sigue_rigiendo(monkeypatch):
-    """Mata M6 (tope solo `enfriamiento`, sin el `max`): con enfriamiento 0 el tope daria espera 0 y se reenviaria
-    en CADA ciclo. La espera nunca baja del reintento minimo (60 s)."""
+async def test_con_reintento_mayor_que_el_enfriamiento_la_espera_minima_sigue_rigiendo(monkeypatch):
+    """Mata M6 (tope solo `enfriamiento`, sin el `max`): con el enfriamiento en su minimo (60 s) y un reintento de
+    600 s, el tope daria 60 s y se reenviaria 10 veces mas seguido. La espera nunca baja del reintento minimo."""
     tiempos = await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
-                             comportamiento=lambda n, t: "connect_error", enfriamiento=0, reintento=60)
-    assert len(tiempos) >= 20, "dejo de reintentar"
-    assert all(h >= 60 for h in _huecos(tiempos)), _huecos(tiempos)
-    assert len(tiempos) <= 61, len(tiempos)
+                             comportamiento=lambda n, t: "connect_error", enfriamiento=60, reintento=600)
+    assert len(tiempos) >= 4, "dejo de reintentar"
+    assert all(h >= 600 for h in _huecos(tiempos)), _huecos(tiempos)
+    assert len(tiempos) <= 7, len(tiempos)
 
 
 # ------------------------------------------------------------------ el log de lectura nombra la clave real
@@ -389,3 +422,49 @@ async def test_la_lectura_rota_se_loguea_una_vez_por_incidente_y_por_clave(monke
     finally:
         despachador._en_incertidumbre.clear()
         await _esperar_avisos()
+
+
+def _horas_que_avanzan(monkeypatch):
+    """`_hora_civil` falsa que avanza 7 minutos en cada llamada: si el texto la recalculara por aviso, la hora de
+    inicio cambiaria de un aviso al siguiente."""
+    from datetime import datetime, timedelta, timezone
+    llamadas = []
+
+    def hora():
+        llamadas.append(1)
+        return datetime(2026, 10, 6, 10, 5, tzinfo=timezone.utc) + timedelta(minutes=7 * (len(llamadas) - 1))
+
+    monkeypatch.setattr(despachador, "_hora_civil", hora)
+    return llamadas
+
+
+async def test_el_recordatorio_dice_aviso_2_con_la_misma_hora_de_inicio(monkeypatch):
+    """El recordatorio se distingue: «aviso N» sube con cada aviso del incidente y «activo desde HH:MM» es la hora en
+    que empezo el incidente sin pausa, la misma en todos sus avisos."""
+    _horas_que_avanzan(monkeypatch)
+    textos = []
+    await _simular(monkeypatch, duracion_s=3 * 3600, hay_incidente=_siempre,
+                   comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60, textos=textos)
+    assert len(textos) == 3, textos
+    assert "aviso 1, activo desde 10:05" in textos[0], textos[0]
+    assert "aviso 2, activo desde 10:05" in textos[1], textos[1]
+    assert "aviso 3, activo desde 10:05" in textos[2], textos[2]
+
+
+async def test_un_reintento_tras_fallo_cierto_conserva_el_numero_de_aviso(monkeypatch):
+    """Un envio que fallo de verdad no cuenta como aviso dado: su reintento sigue siendo el «aviso 1»."""
+    _horas_que_avanzan(monkeypatch)
+    textos = []
+    await _simular(monkeypatch, duracion_s=600, hay_incidente=_siempre,
+                   comportamiento=lambda n, t: "connect_error" if n < 3 else "ok",
+                   enfriamiento=3600, reintento=60, textos=textos)
+    assert len(textos) == 3 and all("aviso 1," in t for t in textos), textos
+
+
+async def test_un_incidente_nuevo_reinicia_el_numero_y_la_hora_de_inicio(monkeypatch):
+    _horas_que_avanzan(monkeypatch)
+    textos = []
+    await _simular(monkeypatch, duracion_s=1200, hay_incidente=lambda t: t < 100 or 700 <= t < 800,
+                   comportamiento=lambda n, t: "ok", enfriamiento=600, reintento=10, textos=textos)
+    assert len(textos) == 2, textos
+    assert "aviso 1, activo desde 10:05" in textos[0] and "aviso 1, activo desde 10:12" in textos[1], textos

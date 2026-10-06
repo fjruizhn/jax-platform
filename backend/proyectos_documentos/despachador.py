@@ -59,6 +59,7 @@ import re
 import stat
 import time
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -145,6 +146,11 @@ _RUTA_ABSOLUTA = re.compile(r"(?<![\w.~-])/(?:[^\s'\"/]+/)+([^\s'\"/]*)")
 
 _dormir = asyncio.sleep
 _reloj = time.monotonic
+
+
+def _hora_civil() -> datetime:
+    """Hora local con zona del servidor, solo para el texto del aviso (el reloj de los plazos es `_reloj`)."""
+    return datetime.now().astimezone()
 # id de fila -> hasta cuando (segun `_reloj`) no se re-despacha. En memoria de ESTE proceso.
 _en_incertidumbre: dict[int, float] = {}
 _avisos: set[asyncio.Task] = set()
@@ -166,6 +172,10 @@ _pausa_previa_al_incidente: float | None = None
 # Clave de ajuste cuya lectura fallo y ya se logueo en este incidente: el error se emite una vez por incidente (o
 # cuando cambia la clave que falla), no en cada ciclo del despachador.
 _clave_de_lectura_logueada: str | None = None
+# Para que cada aviso del incidente se distinga: cuantos avisos del incidente ya se dieron por entregados (confirmados
+# o desconocidos) y a que hora civil empezo el incidente sin pausa.
+_avisos_del_incidente = 0
+_inicio_incidente_civil: datetime | None = None
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -505,6 +515,7 @@ async def _despachar(pool) -> None:
     global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
     global _ultima_actividad_freno_incertidumbre, _pausa_previa_al_incidente, _clave_de_lectura_logueada
+    global _avisos_del_incidente, _inicio_incidente_civil
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -528,6 +539,8 @@ async def _despachar(pool) -> None:
             _freno_incertidumbre_activo = True
             _aviso_freno_incidente_entregado = False
             _clave_de_lectura_logueada = None
+            _avisos_del_incidente = 0
+            _inicio_incidente_civil = _hora_civil()
             _pausa_previa_al_incidente = (None if _ultima_actividad_freno_incertidumbre is None
                                           else ahora - _ultima_actividad_freno_incertidumbre)
         _ultima_actividad_freno_incertidumbre = ahora
@@ -547,8 +560,6 @@ async def _despachar(pool) -> None:
                              "se reintentará en cada ciclo (este error no se repite en este incidente)",
                              clave_fallida, type(exc).__name__)
             return
-        if _aviso_freno_incidente_entregado and enfriamiento == 0:
-            return  # sin enfriamiento no hay recordatorio: un aviso por incidente
         if (_fallos_aviso_freno_incertidumbre and _pausa_previa_al_incidente is not None
                 and _pausa_previa_al_incidente >= enfriamiento):
             _fallos_aviso_freno_incertidumbre = 0  # paso un enfriamiento completo sin incidente
@@ -591,7 +602,7 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
     """Confirma el enfriamiento solo tras entrega; un fallo queda listo para reintento."""
     global _ultimo_aviso_freno_incertidumbre, _aviso_freno_incertidumbre_pendiente
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
-    global _ultimo_fallo_aviso_freno_incertidumbre
+    global _ultimo_fallo_aviso_freno_incertidumbre, _avisos_del_incidente
     try:
         desenlace = await _enviar_aviso_freno_incertidumbre(cantidad, umbral)
         if desenlace is Desenlace.FALLO_CIERTO:
@@ -604,6 +615,7 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
             # confirmada: con el freno continuo nunca hay silencio. Solo la entrega CONFIRMADA reinicia el contador.
             _ultimo_aviso_freno_incertidumbre = _reloj()
             _aviso_freno_incidente_entregado = True
+            _avisos_del_incidente += 1
             if desenlace is Desenlace.ENTREGADO:
                 _fallos_aviso_freno_incertidumbre = 0
     finally:
@@ -612,7 +624,8 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
 
 async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Desenlace:
     """Envío best-effort por el canal compartido; nunca manipula ni registra credenciales."""
-    mensaje = ("⚠️ JAX: freno de incertidumbre activo\n"
+    desde = _inicio_incidente_civil.strftime("%H:%M") if _inicio_incidente_civil is not None else "--:--"
+    mensaje = (f"⚠️ JAX: freno de incertidumbre activo (aviso {_avisos_del_incidente + 1}, activo desde {desde})\n"
                f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
                f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "
                "Revisar si LAS MANOS está cortando las conexiones.")
