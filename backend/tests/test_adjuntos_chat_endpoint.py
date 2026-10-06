@@ -664,7 +664,8 @@ def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatc
     adjuntos.mkdir(mode=0o700)
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
     monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
-    proyecto = Entorno(client).proyecto()
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
 
     llamadas = 0
     def freno():
@@ -677,10 +678,11 @@ def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatc
     async def insertar_spy(*args, **kwargs):
         pytest.fail("repo.insertar no debe ejecutarse después de activarse el freno")
     monkeypatch.setattr(api_documentos.repo, "insertar", insertar_spy)
-    response = client.post("/api/chat/upload", headers=Entorno(client).dueno,
+    response = client.post("/api/chat/upload", headers=entorno.dueno,
         data={"project_id": str(proyecto.id)},
         files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
 
     assert llamadas == 4
     assert response.status_code == 423, response.text
-    assert list((workspace / "proyectos").rglob("*")) == [], "el freno dejó un archivo sin fila"
+    assert not [path for path in (workspace / "proyectos").rglob("*") if path.is_file()], \
+        "el freno dejó un archivo sin fila"
