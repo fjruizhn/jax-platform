@@ -1119,8 +1119,10 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1389) {
-              console.error("PISO ROTO: se esperaban 1389 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1392 (Codex, ronda 2 de #203, 2026-10-06): +3 AdminSettings.test.jsx
+            //   para enfriamiento configurable. Medido con `npx vitest run`: 1392/0/1392, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1392) {
+              console.error("PISO ROTO: se esperaban 1392 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
