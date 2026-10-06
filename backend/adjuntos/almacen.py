@@ -67,19 +67,16 @@ import os
 import re
 import secrets
 import stat
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from adjuntos.errores import AdjuntoRechazado
 from adjuntos.limites import LimitesDeAdjuntosInvalidos
+from pytest_guard import corriendo_bajo_pytest
 
 logger = logging.getLogger(__name__)
 
-
-def _corriendo_bajo_pytest() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 
 VARIABLE_DIRECTORIO = "JAX_ADJUNTOS_DIR"
 VARIABLE_TTL_HORAS = "JAX_ADJUNTOS_TTL_HORAS"
@@ -761,7 +758,7 @@ async def start_limpieza_de_adjuntos(forzado: bool = False):
     """Tarea de fondo del lifespan (pasa al arrancar, después duerme; nunca muere
     por un fallo). Intervalo: INTERVALO_DE_LIMPIEZA_SEGUNDOS. No arranca bajo
     pytest salvo que un test lo pida explícitamente con `forzado=True`."""
-    if not forzado and _corriendo_bajo_pytest():
+    if not forzado and corriendo_bajo_pytest():
         logger.warning("adjuntos: la limpieza de fondo no arranca bajo pytest")
         return
     while True:

@@ -273,7 +273,7 @@ def test_el_bucle_de_limpieza_corre_al_arrancar_y_sobrevive_a_un_fallo(directori
 async def test_limpieza_de_adjuntos_no_arranca_bajo_pytest(directorio, monkeypatch, caplog):
     llamadas = []
     monkeypatch.setattr(almacen, "limpiar", lambda *_: llamadas.append("limpiar"))
-    monkeypatch.setattr(almacen, "_corriendo_bajo_pytest", lambda: True)
+    monkeypatch.setattr(almacen, "corriendo_bajo_pytest", lambda: True)
     monkeypatch.setattr(almacen, "_dormir", lambda *_: pytest.fail("el loop de limpieza no debe iniciar"))
 
     with caplog.at_level("WARNING", logger=almacen.logger.name):

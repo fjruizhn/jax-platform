@@ -39,6 +39,7 @@ from uso import cola
 # se leen junto con el contrato copiado al repo jax, y jax NO drena. El dato es
 # de la plataforma.
 from api.admin.usage import marcar_reintento, marcar_rechazada
+from pytest_guard import corriendo_bajo_pytest
 
 LOGGER = "uso.reintento"
 logger = logging.getLogger(LOGGER)
@@ -439,11 +440,6 @@ async def drenar(limite: int | None = None) -> dict:
     return resumen
 
 
-def _corriendo_bajo_pytest() -> bool:
-    import sys
-    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
-
-
 async def start_reintento_de_uso(forzado: bool = False) -> None:
     """El loop de fondo. Mismo patrón que los demás loops de fondo del lifespan.
 
@@ -455,7 +451,7 @@ async def start_reintento_de_uso(forzado: bool = False) -> None:
     `jax_memory_test` mientras corren los tests es ruido no determinista.
     `forzado=True` es sólo para el test que ejercita el loop.
     """
-    if not forzado and _corriendo_bajo_pytest():
+    if not forzado and corriendo_bajo_pytest():
         logger.warning("reintento de uso: no arranca bajo pytest")
         return
     while True:
