@@ -32,4 +32,13 @@ Va en `/etc/jax/.env` (opcional: sin la variable rige 30). Un valor ilegible o
 
 `idx_conversations_open (ended_at, started_at)` y
 `idx_messages_conversation_turn (conversation_id, turn_number, id)`.
-Pendiente de verificar con `EXPLAIN` sobre una MariaDB desechable (ver informe de la rama).
+Verificado con `EXPLAIN` (Mr. Hyde, 2026-10-05) sobre una MariaDB 12.3.3 desechable, sin red, con el
+volcado de producción de esa noche (respaldo `jax-memory-pre-despliegue-conjunto-20261005T2058`):
+
+| id | tabla | tipo | clave | filas | Extra |
+|---|---|---|---|---|---|
+| 1 PRIMARY | conversations | range | `idx_conversations_open` | 13 | Using where; Using buffer |
+| 2 DEPENDENT SUBQUERY | messages | ref | `idx_messages_conversation_turn` | 2 | — |
+
+Sin `Using filesort` ni `Using temporary`. Con esos datos cerraría 9 conversaciones `axioma-web`;
+las 4 de `terminal` quedan fuera del filtro de origen.
