@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { path: 'pipelines-ocultos', labelKey: 'adminPipelinesOcultos', icon: '🙈' },
   { path: 'settings',  labelKey: 'adminSettings',  icon: '🔧' },
   { path: 'smtp',      labelKey: 'adminSmtp',      icon: '📧' },
+  { path: 'auditoria-descarte', labelKey: 'adminAuditoriaDescarte', icon: '📜' },
 ]
 
 export default function AdminSidebar() {

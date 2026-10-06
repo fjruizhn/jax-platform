@@ -1,7 +1,7 @@
 """Chequeo del arranque de los índices forzados (db/indices_forzados.py,
 2026-09-23).
 
-- La lista sale del CÓDIGO: los `FORCE INDEX` reales de backend/ (hoy tres)
+- La lista sale del CÓDIGO: los `FORCE INDEX` reales de backend/
   y nada de lo que sólo se menciona en comentarios o docstrings.
 - Con la base de la sesión SIN `idx_pipelines_descartados` hay un ERROR que
   lo nombra; con el índice, ninguno. Sin el índice, la vista Descartados da
@@ -32,9 +32,17 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("jacobs_pipelines", "idx_pipelines_visibles"),
         ("jacobs_pipelines", "idx_pipelines_descartados"),
         ("jacobs_events", "idx_events_pipeline_tipo"),
+        ("jacobs_events", "idx_events_auditoria_fecha"),
+        ("jacobs_events", "idx_events_pipeline_auditoria_fecha"),
+        ("jax_users", "idx_jax_users_tenant_role_status"),
     }, forzados
-    for donde in forzados.values():
-        assert all(d.startswith("api/pipelines.py:") for d in donde), donde
+    for (tabla, indice), donde in forzados.items():
+        prefijo = (
+            "api/admin/auditoria_descarte.py:"
+            if "auditoria" in indice or tabla == "jax_users"
+            else "api/pipelines.py:"
+        )
+        assert all(d.startswith(prefijo) for d in donde), (tabla, indice, donde)
 
 
 def test_comentarios_docstrings_y_tests_no_cuentan(tmp_path):

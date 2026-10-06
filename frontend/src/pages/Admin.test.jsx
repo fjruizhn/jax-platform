@@ -83,3 +83,11 @@ describe('Admin > ruta "pipelines-ocultos" (fix round 1, MINOR-7)', () => {
     expect(enlace).toHaveAttribute('href', '/admin/pipelines-ocultos')
   })
 })
+
+describe('Admin > ruta "auditoria-descarte"', () => {
+  it('muestra la auditoría dentro del shell y agrega su entrada al menú', async () => {
+    renderAdminBajoAdminStar('/admin/auditoria-descarte')
+    expect(await screen.findByRole('heading', { name: 'Auditoría de descartes de pipelines' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Auditoría de descartes/ })).toHaveAttribute('href', '/admin/auditoria-descarte')
+  })
+})

@@ -12,6 +12,7 @@ from .motors import router as admin_motors_router
 from .smtp import router as smtp_router
 from .kill_switch import router as kill_switch_router
 from .pipelines_ocultos import router as pipelines_ocultos_router
+from .auditoria_descarte import router as auditoria_descarte_router
 
 # facet_models_router (legacy, tabla `facet_models`) DESREGISTRADO el
 # 2026-08-10: desde Bloque C nadie invoca con facet_models (la fuente es
@@ -34,4 +35,5 @@ __all__ = [
     "smtp_router",
     "kill_switch_router",
     "pipelines_ocultos_router",
+    "auditoria_descarte_router",
 ]

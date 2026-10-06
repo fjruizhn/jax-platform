@@ -579,6 +579,18 @@ export default {
   adminMemoria: 'Memory',
   adminProyectos: 'Projects',
   adminPipelinesOcultos: 'Discarded and hidden pipelines',
+  adminAuditoriaDescarte: 'Discard audit',
+  adminAuditTitle: 'Pipeline discard audit',
+  adminAuditEvent: 'Event', adminAuditAllEvents: 'All events',
+  adminAuditPipelineId: 'Pipeline ID', adminAuditFrom: 'From', adminAuditTo: 'To',
+  adminAuditFilter: 'Filter', adminAuditDate: 'Date', adminAuditPipeline: 'Pipeline',
+  adminAuditActor: 'Actor', adminAuditTenant: 'Tenant', adminAuditNoTenant: 'No tenant', adminAuditUnknown: 'Unknown',
+  adminAuditWindow: 'Without date filters, results cover the last 30 days in the platform timezone.',
+  adminAuditCopyPipelineId: 'Copy ID', adminAuditCopied: 'Copied',
+  adminAuditEmpty: 'No events match these filters. Without dates, the search covers the last 30 days in the platform timezone.', adminAuditError: 'Could not load the audit log.',
+  adminAuditRetry: 'Retry', adminAuditMore: 'Load more', adminAuditLoading: 'Loading…',
+  adminAuditType_PIPELINE_DISCARDED: 'Discarded', adminAuditType_PIPELINE_RECOVERED: 'Recovered',
+  adminAuditType_PIPELINE_HIDDEN: 'Hidden', adminAuditType_PIPELINE_RESTORED: 'Restored',
   adminBack: (nombre) => `Back to ${nombre}`,
 
   // Admin dashboard
