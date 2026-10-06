@@ -19,6 +19,8 @@ finally. Nada de pytest.raises dentro de client.portal.call.
 import os
 import time
 
+import pytest
+
 from auth.jwt import create_access_token
 
 USER_ID = "1"  # jax_users.user_id real (FK de performed_by / decided_by)
@@ -157,6 +159,31 @@ def test_el_mensaje_de_422_es_el_del_validador_del_dispatch(client):
 def test_modelo_inexistente_es_404(client):
     resp = _declarar(client, 999999999, {"max_tokens_param": "max_tokens", "max_output_tokens": 4096})
     assert resp.status_code == 404, resp.text
+
+
+def test_fallo_real_al_insertar_auditoria_revierte_contrato(client, monkeypatch):
+    """La auditoría y el contrato son atómicos también ante error de MariaDB."""
+    import aiomysql
+    import api.admin.models as admin_models
+
+    model_id = "test-prl-auditoria-ip-larga"
+    client.portal.call(_borrar_auditoria_por_model_id, model_id)
+    ref = client.portal.call(_crear_fila, model_id)
+    # Emula el estado del modelo conocido en master y luego solicita otro
+    # contrato. El INSERT debe fallar por VARCHAR(45), dentro de MariaDB.
+    client.portal.call(_q,
+        "UPDATE model SET max_tokens_param='max_tokens', max_output_tokens=4096 WHERE id=%s",
+        (ref,), True)
+    monkeypatch.setattr(admin_models, "ip_de", lambda _request: "1" * 200)
+    try:
+        with pytest.raises(aiomysql.DataError):
+            _declarar(client, ref, {"max_tokens_param": "max_tokens", "max_output_tokens": 8192})
+
+        assert client.portal.call(_contrato, ref) == ("max_tokens", 4096)
+        assert client.portal.call(_auditoria, ref) == ()
+    finally:
+        monkeypatch.undo()
+        client.portal.call(_borrar_fila, ref)
 
 
 # ------------------------------------------------------------------ escritura ---
