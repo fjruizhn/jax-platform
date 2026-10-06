@@ -529,8 +529,6 @@ async def _despachar(pool) -> None:
         _ultima_actividad_freno_incertidumbre = ahora
         if _aviso_freno_incertidumbre_pendiente:
             return
-        if _aviso_freno_incidente_entregado:
-            return
         clave = ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S
         try:
             enfriamiento = await ajustes.valor(clave)
@@ -542,6 +540,8 @@ async def _despachar(pool) -> None:
             logger.error("proyectos_documentos: no se pudo leer el ajuste %s del aviso de incertidumbre (%s); "
                          "se reintentará en el próximo ciclo", clave_fallida, type(exc).__name__)
             return
+        if _aviso_freno_incidente_entregado and enfriamiento == 0:
+            return  # sin enfriamiento no hay recordatorio: un aviso por incidente
         if (_fallos_aviso_freno_incertidumbre and _pausa_previa_al_incidente is not None
                 and _pausa_previa_al_incidente >= enfriamiento):
             _fallos_aviso_freno_incertidumbre = 0  # paso un enfriamiento completo sin incidente
@@ -591,9 +591,10 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
             _fallos_aviso_freno_incertidumbre += 1
             _ultimo_fallo_aviso_freno_incertidumbre = _reloj()
         else:
-            # ENTREGADO, o DESCONOCIDO (ReadTimeout/corte despues de enviar): el aviso cuenta como entregado para
-            # este incidente y NO se reintenta -- un duplicado es peor que perderlo, y el siguiente incidente
-            # (pasado el enfriamiento) vuelve a avisar. Solo la entrega CONFIRMADA reinicia el contador.
+            # ENTREGADO, o DESCONOCIDO (ReadTimeout/corte despues de enviar): el aviso cuenta como entregado SOLO
+            # para el enfriamiento -- no se reintenta antes de que venza (un duplicado es peor que perderlo), pero
+            # si el incidente sigue activo el recordatorio se repite cada enfriamiento, igual que tras una entrega
+            # confirmada: con el freno continuo nunca hay silencio. Solo la entrega CONFIRMADA reinicia el contador.
             _ultimo_aviso_freno_incertidumbre = _reloj()
             _aviso_freno_incidente_entregado = True
             if desenlace is Desenlace.ENTREGADO:

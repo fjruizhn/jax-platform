@@ -65,6 +65,8 @@ class _Telegram:
             raise httpx.ConnectError("rechazada")
         if que == "http_500":
             return _Resp(500, {"ok": False})
+        if que == "proxy_error":
+            raise httpx.ProxyError("el proxy no responde")
         raise AssertionError(que)
 
 
@@ -210,10 +212,10 @@ async def test_la_entrega_confirmada_reinicia_el_contador(monkeypatch):
     def comportamiento(n, t):
         return {1: "connect_error", 2: "connect_error", 3: "ok", 4: "connect_error"}.get(n, "ok")
 
-    tiempos = await _simular(monkeypatch, duracion_s=700, hay_incidente=lambda t: t < 400 or 450 <= t < 650,
+    tiempos = await _simular(monkeypatch, duracion_s=300, hay_incidente=lambda t: t < 60 or 120 <= t < 250,
                              comportamiento=comportamiento, enfriamiento=100, reintento=10)
     assert tiempos[:3] == [0.0, 10.0, 30.0], tiempos  # A: fallo, fallo (+10), entregado (+20)
-    assert tiempos[3:5] == [450.0, 460.0], tiempos  # B: fallo y reintento tras 10 s
+    assert tiempos[3:5] == [130.0, 140.0], tiempos  # B (al vencer el enfriamiento): fallo y reintento tras 10 s
 
 
 async def test_un_enfriamiento_completo_sin_incidente_reinicia_el_contador(monkeypatch):
@@ -224,6 +226,55 @@ async def test_un_enfriamiento_completo_sin_incidente_reinicia_el_contador(monke
                              comportamiento=lambda n, t: "connect_error", enfriamiento=100, reintento=10)
     assert tiempos[:5] == [0.0, 10.0, 30.0, 70.0, 150.0], tiempos  # A: 10, 20, 40, 80
     assert tiempos[5:8] == [400.0, 410.0, 430.0], tiempos  # B desde cero: 10, 20
+
+
+async def test_el_desconocido_no_reinicia_el_contador_de_fallos(monkeypatch):
+    """Mata D2 (DESCONOCIDO tambien reinicia el contador): solo una entrega CONFIRMADA reinicia. Dos fallos ciertos y
+    un ReadTimeout en A (el contador sigue en 2); B empieza 60 s despues de A (menos que el enfriamiento) y su primer
+    envio falla: el contador pasa a 3 y el reintento llega a los 40 s (4x), no a los 10 s (1x) de un contador
+    reiniciado."""
+    def comportamiento(n, t):
+        return {1: "connect_error", 2: "connect_error", 3: "read_timeout", 4: "connect_error"}.get(n, "ok")
+
+    tiempos = await _simular(monkeypatch, duracion_s=300, hay_incidente=lambda t: t < 60 or 110 <= t < 250,
+                             comportamiento=comportamiento, enfriamiento=100, reintento=10)
+    assert tiempos[:3] == [0.0, 10.0, 30.0], tiempos
+    assert tiempos[3:5] == [130.0, 170.0], tiempos
+
+
+# ------------------------------------------------------------------ desconocido: nunca silencio con el freno activo
+
+async def test_read_timeout_con_el_freno_continuo_recuerda_cada_enfriamiento(monkeypatch):
+    """24 h con el freno activo sin pausa y ReadTimeout: el desconocido cuenta como entregado SOLO para el
+    enfriamiento. Entre 1 y 24 avisos, nunca menos de uno por enfriamiento, y el ultimo dentro del ultimo
+    enfriamiento: nada de un aviso y silencio por dias."""
+    tiempos = await _simular(monkeypatch, duracion_s=24 * 3600, hay_incidente=_siempre,
+                             comportamiento=lambda n, t: "read_timeout", enfriamiento=3600, reintento=60)
+    assert 1 <= len(tiempos) <= 24, (len(tiempos), tiempos)
+    assert all(3600 <= h <= 3600 + 10 for h in _huecos(tiempos)), _huecos(tiempos)
+    assert tiempos[-1] >= 24 * 3600 - 3600 - 10, tiempos[-3:]
+
+
+async def test_la_entrega_confirmada_tambien_recuerda_cada_enfriamiento(monkeypatch):
+    tiempos = await _simular(monkeypatch, duracion_s=6 * 3600, hay_incidente=_siempre,
+                             comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60)
+    assert tiempos == [0.0, 3600.0, 7200.0, 10800.0, 14400.0, 18000.0], tiempos
+
+
+async def test_sin_enfriamiento_hay_un_aviso_por_incidente_no_recordatorios(monkeypatch):
+    tiempos = await _simular(monkeypatch, duracion_s=3600, hay_incidente=_siempre,
+                             comportamiento=lambda n, t: "ok", enfriamiento=0, reintento=60)
+    assert tiempos == [0.0], tiempos
+
+
+async def test_proxy_error_permanente_reintenta_y_nunca_se_calla(monkeypatch):
+    """ProxyError es fallo cierto: espera creciente con tope en el enfriamiento y, 24 h despues, sigue reintentando."""
+    tiempos = await _simular(monkeypatch, duracion_s=24 * 3600, hay_incidente=_siempre,
+                             comportamiento=lambda n, t: "proxy_error", enfriamiento=3600, reintento=60)
+    assert tiempos[:4] == [0.0, 60.0, 180.0, 420.0], tiempos
+    assert max(_huecos(tiempos)) <= 3600 + 10, _huecos(tiempos)
+    assert tiempos[-1] >= 24 * 3600 - 3600 - 10, tiempos[-3:]
+    assert len(tiempos) >= 24, len(tiempos)
 
 
 # ------------------------------------------------------------------ topes de la espera
