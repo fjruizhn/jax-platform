@@ -1,7 +1,7 @@
 # E3 · respaldo de PDF escaneado en el chat
 
 **Fecha:** 2026-10-06
-**Estado:** revisión 2 implementada y CI verde en el SHA de código `539b16baab8581b595f6f8ec4965b27b84d33b21` (2026-10-06). La medición real de LAS MANOS queda pendiente para la ventana indicada abajo. El reporte de carga anterior se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
+**Estado:** revisión 2 implementada y CI verde en el SHA de código `65b9449fcfe5bdbc033469da3799fa938ed3a0f5` (2026-10-06). Auditoría escalón 3: APROBADO, sin hallazgos abiertos. La medición real de LAS MANOS queda pendiente para la ventana indicada abajo. El reporte de carga anterior se conserva como historia, pero su prueba fue declarada inválida para medir E3 por la auditoría: medía solo latencia de chat con un PDF pequeño ya en proceso, sin cronometrar subidas ni un estado terminal. No acredita el comportamiento de subida, despacho y sondeo hasta finalización.
 
 ## Corrección del registro (2026-10-06)
 
@@ -9,20 +9,20 @@ La medición histórica de 721.1 ms del POST de chat no corresponde al nuevo cri
 
 El primer resultado normal de CI del SHA `18c4364` (policy run 37484684852) fue `p95=max=1891.9 ms`. Su corrida mutante no fue válida: el `sleep(3)` al inicio de `encolar_pdf_desde_chat` llenó el pool OCR de un worker y devolvió `503 adjuntos_reintentar` antes de medir latencia. Por ello, el paso mutante fija solo para esa corrida 8 workers (máximo permitido) y 60 s de timeout (máximo permitido), para separar bloqueo del event loop de saturación OCR.
 
-Resultado final policy run [37485909427](https://github.com/fjruizhn/jax-platform/actions/runs/37485909427), SHA `539b16baab8581b595f6f8ec4965b27b84d33b21`: todos los jobs requeridos pasaron; E3 normal dio `p95=1917.0 ms`, `max=1918.5 ms` (20 usuarios, 20 páginas, 10 MiB por upload, 20 dispatches; tope p95 25,000 ms); el mutante produjo `E3 p95 61398.1 ms supera el tope CI de 25000 ms` y el paso verificador confirmó ese motivo. El job DB midió `3844 passed, 2 skipped, 0 failed`; el no-DB, `2364 passed, 1482 skipped, 0 failed`; frontend, `1397 passed, 0 failed` en 113 archivos.
+Resultado final policy run [37491432941](https://github.com/fjruizhn/jax-platform/actions/runs/37491432941), SHA `65b9449fcfe5bdbc033469da3799fa938ed3a0f5`: todos los jobs requeridos pasaron; E3 normal dio `p95=1308.5 ms`, `max=1309.7 ms` (20 usuarios, 20 páginas, 10 MiB por upload, 20 dispatches y estados `listo`; tope p95 25,000 ms); el mutante produjo `E3 p95 61448.8 ms supera el tope CI de 25000 ms` y el paso verificador confirmó ese motivo. El job DB midió `3847 passed, 2 skipped, 0 failed`; el no-DB, `2364 passed, 1482 skipped, 0 failed`; frontend, `1397 passed, 0 failed` en 113 archivos.
 
 ## Cierre del informe de auditoría (2026-10-06)
 
-| Hallazgo | Cierre | Evidencia en el SHA `539b16b` |
+| Hallazgo | Cierre | Evidencia en el SHA `65b9449` |
 |---|---|---|
 | Major · E3 no medía upload→terminal ni detectaba `sleep(3)` | 20 subidas válidas al máximo de páginas/bytes, chat, despacho durable y sondeo terminal; p95 con tope de CI y mutante ejecutado en configuración OCR acotada válida | Policy run 37485909427: `p95=1917.0 ms`, `max=1918.5 ms`; mutante falló por p95 a `61398.1 ms` sobre `25000 ms`; wrapper del mutante pasó al verificar la causa exacta |
 | Minor 1 · códigos internos OCR visibles | Causa y estado se resuelven por catálogos i18n; código desconocido usa causa genérica | Tests `FileAttachment`; frontend `1397/1397` |
 | Minor 2 · sondeo sin reintentos ni límite | Reintento ante error transitorio, backoff creciente y tope total configurable con estado honesto al agotar | Tests `BottomBar`; frontend `1397/1397` |
 | Minor 3 · selector bloqueado tras estado terminal | Se desbloquea en estados finales y muestra instrucción localizada | Tests `BottomBar` y `FileAttachment`; frontend `1397/1397` |
-| Minor 4 · el freno no se revalidaba en la entrada nueva | Se revisa antes de autorización/escritura desde chat y antes de las fases disco/DB del lote | Test unitario del freno; job DB `3844 passed` |
-| Minor 5 · faltaban denegaciones de autorización del nuevo punto de entrada | Pruebas de otro tenant, sin membresía, VIEWER, archivado e inexistente; verifican que workspace no recibe escrituras | Cinco casos parametrizados pasaron en job DB; `3844 passed, 2 skipped, 0 failed` |
+| Minor 4 · el freno no se revalidaba en la entrada nueva | Se revisa antes de autorización, carpeta, escritura e INSERT. Si para un lote después de aceptar archivos, el 423 incluye el resultado parcial; al fallar pre-INSERT elimina solo el archivo no registrado | Job DB `3847 passed`; dos escenarios parametrizados verifican una sola fila/archivo y el resultado parcial |
+| Minor 5 · faltaban denegaciones de autorización del nuevo punto de entrada | Pruebas de otro tenant, sin membresía, VIEWER, archivado e inexistente; espían autorización de escritura/estado activo y confirman que no se abre carpeta ni se transmite archivo | Cinco casos parametrizados pasaron en job DB; `3847 passed, 2 skipped, 0 failed` |
 
-Los floors medidos quedan en frontend 1397, backend no-DB 2364 y backend con DB 3844; no se redujeron. La medición E3 representa el runner efímero de CI con el borde HTTP de LAS MANOS simulado; no representa OCR real ni una medición de producción.
+Los floors medidos quedan en frontend 1397, backend no-DB 2364 y backend con DB 3847; no se redujeron. La medición E3 representa el runner efímero de CI con el borde HTTP de LAS MANOS simulado; no representa OCR real ni una medición de producción.
 
 La integración E3 y los cinco casos DB de autorización todavía no se ejecutan localmente: en Hall9000 pytest cerró antes de conectarse porque `3308` está protegido como puerto de producción, Docker no permite usar el daemon y no hay `mariadbd` local. El job `backend-tests-con-db` usa MariaDB efímera y quedó como ejecutor de esos casos. No se habilitó `JAX_TEST_DB_PERMITIR_INSTANCIA_DE_PRODUCCION` y no se consultó ni modificó `jax_memory`.
 
