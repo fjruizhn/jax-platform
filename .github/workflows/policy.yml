@@ -3648,7 +3648,11 @@ jobs:
           # proxy, escritura, gateway y 200 ilegible; sin cliente HTTP) y test_despachador_aviso_freno_simulado +5
           # (D2, recordatorio con ReadTimeout y con entrega confirmada, sin enfriamiento, ProxyError permanente).
           # El absoluto del runner lo confirma la CI (regla 5).
-          PISO_PASSED = 3897
+          # 3897 -> 3903 (ronda 7 de #203, 2026-10-06): mismo metodo, base del runner 3875 (e8d2cca) + delta local +28
+          # (e8d2cca 3876 -> rama 3904): test_catalogo_modelos_ejecutor +21 (RuntimeError: solo el cliente cerrado de
+          # httpx es fallo cierto, el real y otros) y test_despachador_aviso_freno_simulado +7 (recordatorio con
+          # RuntimeError y log de lectura una vez por incidente y por clave). El runner confirma el absoluto.
+          PISO_PASSED = 3903
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4745,7 +4749,9 @@ jobs:
       # 2394 -> 2416 (ronda 6 de #203, 2026-10-06): +22 puras = base 2394 + delta local medido sobre e8d2cca (2394) y la
       # rama (2416): test_catalogo_modelos_ejecutor +17 y test_despachador_aviso_freno_simulado +5. Local: 2416 passed /
       # 1483 skipped. El absoluto del runner lo confirma la CI (regla 5).
-      JAX_CI_MIN_PASSED: "2416"
+      # 2416 -> 2422 (ronda 7 de #203, 2026-10-06): base 2394 + delta local +28 (e8d2cca 2394 -> rama 2422, local
+      # 1483 skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +7. El runner confirma.
+      JAX_CI_MIN_PASSED: "2422"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
