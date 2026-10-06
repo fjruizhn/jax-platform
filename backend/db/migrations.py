@@ -3676,6 +3676,10 @@ TOPES_DOCUMENTOS_INICIALES = (
     ("proyectos.documentos.max_archivos_lote", "250"),
     ("proyectos.documentos.max_bytes_lote", "1073741824"),
     ("proyectos.documentos.rutas_por_trabajo", "50"),
+    # Freno de incertidumbre (#203): permite rearmar por cero y evita ráfagas por rebotes.
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", "3600"),
+    # Espera minima (s) tras un envio fallido del aviso; se duplica por fallo, con tope en el enfriamiento.
+    ("proyectos.documentos.freno_incertidumbre_reintento_s", "60"),
     # Ronda final de E2a (MAJOR-4, decision del controlador 2026-10-03): 2 subidas
     # simultaneas por usuario y 4 en todo el servicio.
     ("proyectos.documentos.subidas_por_usuario", "2"),

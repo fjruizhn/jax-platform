@@ -84,6 +84,7 @@ import logging
 import os
 import sys
 import time
+from enum import Enum
 from pathlib import Path
 
 logger = logging.getLogger("catalogo_modelos_ejecutor")
@@ -123,6 +124,14 @@ VENTANA_REAVISO_SEGUNDOS = 24 * 60 * 60
 #: ~4096 caracteres por mensaje; se deja margen y se recorta ANTES de ese
 #: límite real, nunca después.
 LIMITE_TELEGRAM = 4000
+
+
+class Desenlace(Enum):
+    """Resultado de un envio a Telegram. Tres, no dos: `False` mezclaba "no salio nada" con "salio y no
+    sabemos si llego" (un ReadTimeout), y quien decide reintentar necesita distinguirlos."""
+    ENTREGADO = "entregado"          # Telegram confirmo (200 + ok)
+    FALLO_CIERTO = "fallo_cierto"    # no llego: sin credenciales, conexion rechazada, o respuesta HTTP de error
+    DESCONOCIDO = "desconocido"      # pudo haber llegado: ReadTimeout, corte despues de enviar, 504/524, 200 ilegible
 
 #: MAJOR-2(c) (cuarta auditoría adversarial, 2026-09-28): un candado ocupado
 #: UNA vez no es alarmante (alguien más -- un click manual, u otro intento
@@ -288,7 +297,36 @@ def _mensaje_fallo_critico(motivo: str) -> str:
     return f"Catálogo de modelos: el vigilante falló al correr -- {motivo}"
 
 
-async def _enviar_telegram(mensaje: str) -> bool:
+def _fallo_antes_de_enviar(e: Exception) -> bool:
+    """True si la excepcion prueba que NADA procesable salio hacia Telegram: no se pudo conectar (ConnectError,
+    ConnectTimeout, PoolTimeout, conexion rechazada), la peticion no llego a armarse o a salir (ProxyError,
+    UnsupportedProtocol, LocalProtocolError, RuntimeError de un cliente cerrado) o se corto la ESCRITURA
+    (WriteError, WriteTimeout: un cuerpo incompleto no lo procesa Telegram). Todo lo demas (ReadTimeout, ReadError,
+    RemoteProtocolError, cualquier otro RuntimeError, errores desconocidos) pudo haber entregado el mensaje. `httpx` se importa aca adentro,
+    como `http_client`: un .venv roto se reporta como fallo del envio, no tumba el modulo."""
+    import httpx
+
+    return isinstance(e, (
+        httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError,
+        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError,
+        httpx.WriteError, httpx.WriteTimeout,
+    )) or _es_cliente_cerrado(e)
+
+
+# httpx no tiene una subclase para esto: `AsyncClient.send` lanza un RuntimeError a secas con este mensaje
+# (httpx/_client.py:1616 en la 0.28.1 instalada; el cliente sincrono, :901). Se reconoce por el mensaje.
+_MENSAJE_CLIENTE_CERRADO = "Cannot send a request, as the client has been closed"
+
+
+def _es_cliente_cerrado(e: Exception) -> bool:
+    return type(e) is RuntimeError and str(e).startswith(_MENSAJE_CLIENTE_CERRADO)
+
+
+# Un 504/524 de gateway equivale a un ReadTimeout: el proxy se rindio esperando a Telegram, que pudo haber entregado.
+_STATUS_DE_GATEWAY_DESCONOCIDO = frozenset({504, 524})
+
+
+async def _enviar_telegram_con_desenlace(mensaje: str) -> Desenlace:
     """Envío propio y mínimo. ANTES importaba
     `jacobs.reaper.send_telegram_alert` (repo `jax`) -- eso mete en
     `sys.path` un checkout entero de otro repo y arrastra
@@ -303,8 +341,11 @@ async def _enviar_telegram(mensaje: str) -> bool:
     `http_client`/`redaccion` se importan ACÁ ADENTRO (MAJOR-1, cuarta
     auditoría adversarial, 2026-09-28) -- ver el docstring del módulo.
 
-    Devuelve True SÓLO si Telegram confirmó la entrega (200 + body['ok']) --
-    nunca "se intentó mandar". `_avisar()` depende de este valor real para
+    Devuelve `Desenlace.ENTREGADO` SÓLO si Telegram confirmó la entrega (200 + body['ok']) --
+    nunca "se intentó mandar". `FALLO_CIERTO` = no llegó (sin credenciales, conexión rechazada antes de
+    enviar, respuesta HTTP de error o `ok` falso); `DESCONOCIDO` = pudo haber llegado (ReadTimeout, corte
+    después de enviar, 504/524 de gateway, 200 con cuerpo ilegible): reintentar duplicaría el aviso. `_enviar_telegram` es el
+    envoltorio booleano de siempre para quien solo necesita "¿confirmó?". `_avisar()` depende de este valor real para
     decidir si el dedupe avanza: antes se marcaba "avisado" aunque el envío
     fallara, y un Telegram caído dejaba el catálogo roto en silencio otras
     24h sin que nadie insistiera.
@@ -333,10 +374,18 @@ async def _enviar_telegram(mensaje: str) -> bool:
             f"catalogo_modelos_ejecutor: {TELEGRAM_TOKEN_ENV}/{TELEGRAM_CHAT_ID_ENV} "
             "no configurados, aviso suprimido"
         )
-        return False
+        return Desenlace.FALLO_CIERTO
 
     try:
         client = await get_http_client()
+    except Exception as e:  # fail-soft: sin cliente no se envio nada
+        logger.warning(
+            "catalogo_modelos_ejecutor: no hay cliente HTTP para Telegram: "
+            f"{texto_de_error(e, secretos=[token])}"
+        )
+        return Desenlace.FALLO_CIERTO
+
+    try:
         resp = await client.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             data={"chat_id": chat_id, "text": mensaje},
@@ -347,7 +396,17 @@ async def _enviar_telegram(mensaje: str) -> bool:
             "catalogo_modelos_ejecutor: fallo de red enviando a Telegram: "
             f"{texto_de_error(e, secretos=[token])}"
         )
-        return False
+        # Solo lo que ocurre ANTES de enviar es un fallo cierto; lo demas (ReadTimeout, WriteError, un corte
+        # a mitad de respuesta, un error desconocido) pudo haber entregado el mensaje.
+        if _fallo_antes_de_enviar(e):
+            return Desenlace.FALLO_CIERTO
+        return Desenlace.DESCONOCIDO
+
+    if resp.status_code in _STATUS_DE_GATEWAY_DESCONOCIDO:
+        logger.warning(
+            f"catalogo_modelos_ejecutor: Telegram no respondio a tiempo (gateway, status={resp.status_code})"
+        )
+        return Desenlace.DESCONOCIDO
 
     try:
         cuerpo = resp.json()
@@ -355,7 +414,9 @@ async def _enviar_telegram(mensaje: str) -> bool:
         logger.warning(
             f"catalogo_modelos_ejecutor: Telegram respondió algo no-JSON, status={resp.status_code}"
         )
-        return False
+        # 200 con cuerpo ilegible: Telegram aceptó la peticion y no sabemos si la entrego (un 200 nunca es fallo
+        # cierto); cualquier otro status con cuerpo no-JSON (p. ej. el HTML de un proxy en un 500) si lo es.
+        return Desenlace.DESCONOCIDO if resp.status_code == 200 else Desenlace.FALLO_CIERTO
 
     # `resp.json()` puede parsear bien y devolver algo que NO es un objeto
     # (una lista, un número) -- `.get("ok")` reventaría con AttributeError,
@@ -365,16 +426,22 @@ async def _enviar_telegram(mensaje: str) -> bool:
         logger.warning(
             f"catalogo_modelos_ejecutor: Telegram respondió un JSON que no es un objeto (status={resp.status_code})"
         )
-        return False
+        return Desenlace.DESCONOCIDO if resp.status_code == 200 else Desenlace.FALLO_CIERTO
 
     if resp.status_code == 200 and cuerpo.get("ok"):
-        return True
+        return Desenlace.ENTREGADO
 
     logger.warning(
         "catalogo_modelos_ejecutor: Telegram no confirmó la entrega "
         f"(status={resp.status_code} body={redactar_secretos(str(cuerpo), secretos=[token])})"
     )
-    return False
+    return Desenlace.FALLO_CIERTO
+
+
+async def _enviar_telegram(mensaje: str) -> bool:
+    """Contrato de siempre: True SOLO si Telegram confirmo la entrega. Quien necesite distinguir "no llego" de
+    "no sabemos" usa `_enviar_telegram_con_desenlace`."""
+    return await _enviar_telegram_con_desenlace(mensaje) is Desenlace.ENTREGADO
 
 
 async def _avisar(resultado: dict) -> str:

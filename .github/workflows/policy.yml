@@ -1135,8 +1135,15 @@ jobs:
             //   vitest.config.js): 1410/0/1410, 113 archivos. CONFIRMADO en el runner: policy run 37502134709 (SHA 365adba).
             // REBASE sobre origin/master 303006f (2026-10-06): master no cambia el conteo del frontend (1389 en master y
             //   en la base d283d90), asi que 1389 + 21 de E3 = 1410. MEDIDO sobre la mezcla: 1410/0/1410, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1410) {
-              console.error("PISO ROTO: se esperaban 1410 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1392 (Codex, ronda 2 de #203, 2026-10-06): +3 AdminSettings.test.jsx
+            //   para enfriamiento configurable. Medido con `npx vitest run`: 1392/0/1392, 113 archivos.
+            // 1392 -> 1393 (ronda 9 de #203, 2026-10-06): +1 AdminSettings.test.jsx (la ayuda del enfriamiento muestra el
+            //   minimo de `limites`). Medido con `npx vitest run`: 1393/0/1393, 113 archivos.
+            // REMEZCLA con origin/master 39b3ef2 (2026-10-06, regla 5): master trae #203 (+4 en AdminSettings.test.jsx,
+            //   piso del runner de master 1393). Base del runner de master 1393 + delta de E3 +21 = 1414.
+            //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1414) {
+              console.error("PISO ROTO: se esperaban 1414 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3713,7 +3720,31 @@ jobs:
           # distinto de 3306 y 3308; venv con los extractores; jax en el pin 0604754): 3861 passed / 1 skipped
           # (la rama E3 sola daba 3855). Piso = 3861 - 1 (el que el runner omite por
           # entorno) = 3860. NO medido en el runner (regla 5).
-          PISO_PASSED = 3860
+          # 3836 -> 3875 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO EN EL RUNNER, run
+          # 37498133766 sobre e8d2cca: colectados=3877 passed=3875 skipped=2 (1 de entorno y 1 SR2 gateado) failed=0.
+          # El local (venv-jxp-tests + mariadb:12.3.3 desechable) daba 3876: +1 sobre el runner, por un skip de
+          # entorno que el runner si saltea. Por eso el local NO fija el piso: el piso es base del runner + delta local.
+          # 3875 -> 3897 (ronda 6 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +22, medido con
+          # el mismo comando sobre e8d2cca (3876) y sobre la rama (3898): test_catalogo_modelos_ejecutor +17 (clasificar
+          # proxy, escritura, gateway y 200 ilegible; sin cliente HTTP) y test_despachador_aviso_freno_simulado +5
+          # (D2, recordatorio con ReadTimeout y con entrega confirmada, sin enfriamiento, ProxyError permanente).
+          # El absoluto del runner lo confirma la CI (regla 5).
+          # 3897 -> 3903 (ronda 7 de #203, 2026-10-06): mismo metodo, base del runner 3875 (e8d2cca) + delta local +28
+          # (e8d2cca 3876 -> rama 3904): test_catalogo_modelos_ejecutor +21 (RuntimeError: solo el cliente cerrado de
+          # httpx es fallo cierto, el real y otros) y test_despachador_aviso_freno_simulado +7 (recordatorio con
+          # RuntimeError y log de lectura una vez por incidente y por clave). El runner confirma el absoluto.
+          # 3903 -> 3906 (ronda 8 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +31 (e8d2cca 3876 ->
+          # rama 3907): test_catalogo_modelos_ejecutor +21 (igual que la ronda 7) y test_despachador_aviso_freno_simulado
+          # +10 (enfriamiento ilegible falla cerrado, «aviso N» y hora de inicio; M6 reescrita sin el 0). Frontend sin
+          # cambio: 1392 medido. El runner confirma el absoluto.
+          # 3906 -> 3910 (ronda 9 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +35 (e8d2cca 3876 ->
+          # rama 3911): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14 (M7 el desconocido
+          # cuenta para N, zona de la plataforma con el host en UTC, validacion de JAX_ZONA_HORARIA). El runner confirma.
+          # REMEZCLA con origin/master 39b3ef2 (regla 5): master trae #203 (piso del runner de master 3910). Delta de E3 = +24
+          # (3854 - 3830, ver arriba); base del runner de master 3910 + 24 = 3934. MEDIDO local sobre la mezcla (MariaDB 12.3.3
+          # efimera propia, en su netns; venv con los extractores; jax en el pin 0604754): 3935 passed / 1 skipped (el SR2 gateado); master solo daba 3911 local, 3910 en el runner; 3911 + 24 = 3935. Piso = medido - 1 (el skip de
+          # entorno que el runner omite). A confirmar en el runner.
+          PISO_PASSED = 3934
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4815,7 +4846,23 @@ jobs:
       # REBASE sobre origin/master 303006f (piso de master 2361): delta de E3 = 2364 - 2358 = +6; 2361 + 6 = 2367.
       # MEDIDO sobre la mezcla con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true (env -i): 2367 passed / 1495 skipped.
       # NO medido en el runner (regla 5).
-      JAX_CI_MIN_PASSED: "2367"
+      # 2361 -> 2394 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO LOCAL con JAX_CI_NO_DB=1
+      # CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master 303006f = 2361 passed;
+      # rama e8d2cca = 2394 passed (el job sin DB de e8d2cca paso con ese piso). En la ronda 5 el local con DB dio +1 sobre
+      # el runner; el sin DB no se midio en el runner para ese SHA.
+      # 2394 -> 2416 (ronda 6 de #203, 2026-10-06): +22 puras = base 2394 + delta local medido sobre e8d2cca (2394) y la
+      # rama (2416): test_catalogo_modelos_ejecutor +17 y test_despachador_aviso_freno_simulado +5. Local: 2416 passed /
+      # 1483 skipped. El absoluto del runner lo confirma la CI (regla 5).
+      # 2416 -> 2422 (ronda 7 de #203, 2026-10-06): base 2394 + delta local +28 (e8d2cca 2394 -> rama 2422, local
+      # 1483 skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +7. El runner confirma.
+      # 2422 -> 2425 (ronda 8 de #203, 2026-10-06): base 2394 + delta local +31 (e8d2cca 2394 -> rama 2425, local 1483
+      # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +10. El runner confirma.
+      # 2425 -> 2429 (ronda 9 de #203, 2026-10-06): base 2394 + delta local +35 (e8d2cca 2394 -> rama 2429, local 1483
+      # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14. El runner confirma.
+      # REMEZCLA con origin/master 39b3ef2 (regla 5): master trae #203 (piso del runner de master 2429). Delta de E3 = +6;
+      # base del runner de master 2429 + 6 = 2435. MEDIDO local sobre la mezcla con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true
+      # (env -i): 2435 passed / 1501 skipped (2429 + 6). A confirmar en el runner.
+      JAX_CI_MIN_PASSED: "2435"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

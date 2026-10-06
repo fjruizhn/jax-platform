@@ -941,6 +941,8 @@ export default {
   adminSettingsTopeDevolucionesAyuda: 'Cuántas veces puede el árbitro devolver un pipeline para que se rehaga. Al agotarlo con una objeción sin resolver, el pipeline termina con objeción y requiere tu decisión. 0 no lo apaga: el árbitro sigue objetando, pero la primera objeción termina el pipeline.',
   adminSettingsC2EdadMax: 'Edad máxima del respaldo para el Ejecutor (s)',
   adminSettingsC2EdadMaxAyuda: 'Segundos que un respaldo puede tener y seguir contando como vigente para el Ejecutor. El diseño de C2 usa 108000 (30 h): con 86400 (24 h) el Ejecutor queda sin respaldo vigente entre una corrida del respaldo y la siguiente.',
+  adminSettingsFrenoIncertidumbreEnfriamiento: 'Enfriamiento del aviso de incertidumbre (s)',
+  adminSettingsFrenoIncertidumbreEnfriamientoAyuda: (minimo) => `Tiempo mínimo entre avisos mientras el freno siga activo, y entre incidentes que se repiten. Mínimo ${minimo} s.`,
   adminSettingsDark: 'Oscuro',
   adminSettingsLight: 'Claro',
 
