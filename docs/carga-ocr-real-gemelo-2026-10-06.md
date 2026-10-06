@@ -16,7 +16,7 @@ cambian el esquema, el volumen o el hardware, hay que volver a medir.
 | Base | `mariadb:12.3.3` efímera, nombre único, `--rm`; base `jax_memory_test_ocrgem` |
 | Aislamiento | todo dentro del netns del contenedor (`nsenter --net`), sin ruta por defecto; 7777, 11434 y 3308 dieron conexión rechazada, también por `172.17.0.1` (se observó en la sesión y no se guardó la salida: no hay artefacto que lo respalde; solo quedan en los registros rechazos a 3306, que no es ninguno de esos puertos). Credenciales nuevas al azar en archivos 0600; `JACOBS_URL` y la URL de Ollama de LAS MANOS a puertos muertos; sin Telegram |
 | Chat | proveedor SIMULADO (no es Ollama) con demora fija de 50 ms; responde en un formato que la plataforma marca `contract_degraded`, pero recorre el mismo camino del turno. El chat de la Mesa toma un `flock` por llamada (carril), así que este proveedor lo serializa: tope de unos 17 turnos/s |
-| Topes de adjuntos | valores por defecto documentados en `docs/superpowers/specs/2026-09-17-frente-d-adjuntos-por-referencia.md` (10 MiB, 20 páginas, 8000 caracteres, 30 subidas/min por usuario, 1 subida y 1 proceso de PDF en proceso). NO se leyeron los `JAX_ADJUNTO_*` reales de `/etc/jax/.env` (la regla permitía solo `JAX_PROCESAMIENTO_*` y `OMP_THREAD_LIMIT`); el disco libre mínimo se bajó a 1 GiB porque `/tmp` es tmpfs |
+| Topes de adjuntos | valores por defecto documentados en `docs/superpowers/specs/2026-09-17-frente-d-adjuntos-por-referencia.md` (10 MiB, 20 páginas, 8000 caracteres, 30 subidas/min por usuario, 1 subida y 1 proceso de PDF en proceso). durante la corrida NO se leyeron los `JAX_ADJUNTO_*` reales de `/etc/jax/.env` (la regla permitía solo `JAX_PROCESAMIENTO_*` y `OMP_THREAD_LIMIT`). Después, el 2026-10-06 por la tarde, la sesión principal (con la ventana de Fernando abierta) leyó solo esas claves en producción: `MAX_BYTES=10485760`, `MAX_CHARS=8000`, `MAX_PAGINAS=20`, `MAX_POR_MENSAJE=1`, `IMAGENES_EN_PROCESO=1`, `SUBIDAS_EN_PROCESO=1`, `PDF_PROCESOS=1`, `PDF_TIMEOUT_SEGUNDOS=30`: coinciden con los topes usados en el gemelo; el disco libre mínimo se bajó a 1 GiB porque `/tmp` es tmpfs |
 | LAS MANOS (config) | en producción no hay `JAX_PROCESAMIENTO_*` ni `OMP_THREAD_LIMIT`: rigen los defaults (4 workers de OCR, 2 de E/S, 50 rutas por trabajo, OpenMP sin límite) |
 | Datos | estado financiero «Empresa Ficticia S.A.» con cifras al azar, 300 dpi, ruido e inclinación, PDF de solo imagen (JPEG DCT); `pdftotext` vacío en todos; 20 páginas y exactamente 10 485 760 bytes (el tope) por usuario, todos con sha distinto |
 | Usuarios | 20 (y 40 en una corrida de escalamiento); cada uno sube 1 PDF por `POST /api/chat/upload` con `project_id`, sondea `GET /api/proyectos/{p}/documentos/{d}` cada 1 a 8 s y, mientras tanto, manda turnos `POST /api/chat` con pausa de 1 a 3 s |
@@ -110,8 +110,8 @@ blanco quedan `parcial` sin una sola palabra de texto: el estado no distingue «
    Si el criterio es «un PDF escaneado de 20 páginas listo en menos de 5 min», el límite **estimado** es de unos 16
    documentos al tope subidos a la vez: es una extrapolación (300 s / 17,5 s por documento ≈ 17, redondeado a la baja a 16), no una
    medición; ninguna corrida tuvo 16 documentos (se corrió con 20 y con 40). Que en producción real, con menos de 4
-   subidas simultáneas, no haya cola, **no se midió**: no se leyeron los `JAX_ADJUNTO_*` de producción (ver
-   «Qué se midió» y «Límites»); es solo lo que se esperaría del despachador de 4 trabajos.
+   subidas simultáneas, no haya cola, **no se midió**: los `JAX_ADJUNTO_*` de producción coinciden con los del gemelo (ver «Qué se midió»), pero
+   no se corrió una carga con menos de 4 subidas; es solo lo que se esperaría del despachador de 4 trabajos.
 5. **Producción no se vio afectada:** `/health` del 7777 no se movió de su línea base y el corte nunca se disparó.
 
 ## Conclusiones sobre el cupo
