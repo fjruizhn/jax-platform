@@ -1360,7 +1360,7 @@ jobs:
         run: |
           # Exact dependency on the first PR of this pair: #360 adds these
           # two event indexes before this branch forces them in its read path.
-          PIN=bb91e3baf5d469412a0a0eb89968621c1bd961c2
+          PIN=9707871fdefee661e9a9f025cda2690547ec7934
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4738,7 +4738,7 @@ jobs:
         # by the platform integration.
         run: |
           # Keep no-DB source checks on the matching JAX PR head as well.
-          PIN=bb91e3baf5d469412a0a0eb89968621c1bd961c2
+          PIN=9707871fdefee661e9a9f025cda2690547ec7934
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

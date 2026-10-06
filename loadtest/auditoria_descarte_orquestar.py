@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -27,6 +28,8 @@ DB = dict(host="127.0.0.1", port=33316, user="jax_test", password="codex-test-db
 API_PORT = 18081
 URL = f"http://127.0.0.1:{API_PORT}/api/admin/auditoria-descarte"
 NIVELES = (1, 5, 10, 25, 50, 100)
+TENANTS_CARGA = 100
+EVENTOS_POR_TENANT = 2000
 
 
 def _guardas():
@@ -38,36 +41,73 @@ def _guardas():
         pass
 
 
-def _sembrar(pipeline_id: str, cantidad: int):
-    conn = pymysql.connect(**DB)
+def _sembrar():
+    conn = pymysql.connect(**{**DB, "autocommit": False})
+    pipeline_ids = []
+    user_ids = []
+    tenant_ids = []
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO jacobs_pipelines "
-                "(pipeline_id,name,invoked_by,mode,status,created_at,updated_at,user_id,tenant_id,owner_ack_at) "
-                "VALUES (%s,'carga auditoría','plataforma','supervised','discarded',%s,%s,'1','1',%s)",
-                (pipeline_id, time.time(), time.time(), time.time()),
-            )
             ahora = time.time()
-            for inicio in range(0, cantidad, 1000):
-                cur.executemany(
-                    "INSERT INTO jacobs_events (pipeline_id,step_id,event_type,payload,ts) "
-                    "VALUES (%s,NULL,%s,%s,%s)",
-                    [(pipeline_id,
-                      ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")[i % 4],
-                      '{"user_id":"load-test","motivo":"sembrado"}', ahora - i)
-                     for i in range(inicio, min(inicio + 1000, cantidad))],
+            # El tenant consultado conserva una muestra pequeña; 100 tenants
+            # ajenos concentran 200.000 eventos para medir el aislamiento real.
+            tenants = [(f"auditoria-carga-{uuid.uuid4().hex}",) for _ in range(TENANTS_CARGA)]
+            cur.executemany("INSERT INTO jax_tenants (name) VALUES (%s)", tenants)
+            tenant_inicio = int(cur.lastrowid)
+            tenant_ids = list(range(tenant_inicio, tenant_inicio + TENANTS_CARGA))
+            for tenant_id in tenant_ids:
+                email = f"auditoria-{uuid.uuid4().hex}@example.invalid"
+                cur.execute(
+                    "INSERT INTO jax_users (tenant_id,email,password_hash,role,status) "
+                    "VALUES (%s,%s,'loadtest-only','admin','active')",
+                    (tenant_id, email),
                 )
+                user_ids.append(int(cur.lastrowid))
+
+            cur.execute("UPDATE jax_users SET role='admin' WHERE user_id=1 AND tenant_id=1")
+            for i, (tenant_id, user_id) in enumerate([(1, 1), *zip(tenant_ids, user_ids)]):
+                pid = str(uuid.uuid4())
+                pipeline_ids.append(pid)
+                cur.execute(
+                    "INSERT INTO jacobs_pipelines "
+                    "(pipeline_id,name,invoked_by,mode,status,created_at,updated_at,user_id,tenant_id,owner_ack_at) "
+                    "VALUES (%s,'carga auditoría','plataforma','supervised','discarded',%s,%s,%s,%s,%s)",
+                    (pid, ahora, ahora, str(user_id), str(tenant_id), ahora),
+                )
+                cantidad = 50 if i == 0 else EVENTOS_POR_TENANT
+                for inicio in range(0, cantidad, 1000):
+                    cur.executemany(
+                        "INSERT INTO jacobs_events (pipeline_id,step_id,event_type,payload,ts) "
+                        "VALUES (%s,NULL,%s,%s,%s)",
+                        [(pid,
+                          ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")[j % 4],
+                          '{"user_id":"load-test","desde":"aborted","a":"discarded"}', ahora - j)
+                         for j in range(inicio, min(inicio + 1000, cantidad))],
+                    )
+        conn.commit()
+        return pipeline_ids, user_ids, tenant_ids
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def _limpiar(pipeline_id: str):
+def _limpiar(pipeline_ids, user_ids, tenant_ids):
     conn = pymysql.connect(**DB)
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM jacobs_events WHERE pipeline_id=%s", (pipeline_id,))
-            cur.execute("DELETE FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
+            if pipeline_ids:
+                marcas = ",".join(["%s"] * len(pipeline_ids))
+                cur.execute(f"DELETE FROM jacobs_events WHERE pipeline_id IN ({marcas})", pipeline_ids)
+                cur.execute(f"DELETE FROM jacobs_pipelines WHERE pipeline_id IN ({marcas})", pipeline_ids)
+            if user_ids:
+                marcas = ",".join(["%s"] * len(user_ids))
+                cur.execute(f"DELETE FROM jax_users WHERE user_id IN ({marcas})", user_ids)
+            if tenant_ids:
+                marcas = ",".join(["%s"] * len(tenant_ids))
+                cur.execute(f"DELETE FROM jax_tenants WHERE tenant_id IN ({marcas})", tenant_ids)
+            cur.execute("UPDATE jax_users SET role='superadmin' WHERE user_id=1 AND tenant_id=1")
     finally:
         conn.close()
 
@@ -77,8 +117,8 @@ def _entorno(tmp: Path):
     env.update({
         "JAX_DB_HOST": DB["host"], "JAX_DB_PORT": str(DB["port"]), "JAX_DB_USER": DB["user"],
         "JAX_DB_PASSWORD": DB["password"], "JAX_DB_NAME": DB["database"],
-        "JAX_REPO_PATH": "/home/fruiz/wt/jax-auditoria-descarte",
-        "JAX_CONFIG_PATH": "/home/fruiz/wt/jax-auditoria-descarte/config/config.toml",
+        "JAX_REPO_PATH": "/home/fruiz/wt/jax-auditoria-descarte-r2",
+        "JAX_CONFIG_PATH": "/home/fruiz/wt/jax-auditoria-descarte-r2/config/config.toml",
         "JAX_JWT_SECRET": secrets.token_urlsafe(48),
         "JAX_FACET_SEAL_PATH": str(tmp / "facet-seal"),
         "JAX_USAGE_SPOOL_DIR": str(tmp / "usage-spool"),
@@ -110,7 +150,7 @@ def _p95(values):
     return sorted(values)[max(0, int(len(values) * .95 + .999999) - 1)]
 
 
-async def _medir(token: str, concurrencia: int, n: int):
+async def _medir(token: str, concurrencia: int, n: int, params: dict):
     sem = asyncio.Semaphore(concurrencia)
     latencias, errores = [], []
     async with httpx.AsyncClient(timeout=20, limits=httpx.Limits(max_connections=concurrencia + 2)) as client:
@@ -118,7 +158,8 @@ async def _medir(token: str, concurrencia: int, n: int):
             async with sem:
                 inicio = time.perf_counter()
                 try:
-                    response = await client.get(URL, headers={"Authorization": f"Bearer {token}"})
+                    response = await client.get(URL, params=params,
+                                                headers={"Authorization": f"Bearer {token}"})
                     if response.status_code != 200:
                         errores.append(response.status_code)
                     else:
@@ -136,13 +177,13 @@ async def main():
     _guardas()
     tmp = Path("/tmp") / f"jxp-auditoria-{uuid.uuid4().hex}"
     tmp.mkdir(mode=0o700)
-    pipeline_id = str(uuid.uuid4())
-    print("sembrando 5.000 eventos en jax_memory_test", flush=True)
-    _sembrar(pipeline_id, 5000)
-    print("siembra completa; iniciando backend", flush=True)
-    env = _entorno(tmp)
+    pipeline_ids = user_ids = tenant_ids = []
     proceso = None
     try:
+        print(f"sembrando {TENANTS_CARGA} tenants ajenos × {EVENTOS_POR_TENANT:,} eventos y 50 del tenant consultado", flush=True)
+        pipeline_ids, user_ids, tenant_ids = _sembrar()
+        print("siembra completa; iniciando backend", flush=True)
+        env = _entorno(tmp)
         log = (tmp / "backend.log").open("w+")
         proceso = subprocess.Popen([sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
                                     "--port", str(API_PORT), "--log-level", "warning"],
@@ -167,12 +208,16 @@ async def main():
             raise RuntimeError(f"backend aislado no inició: {log.read()[-2000:]}")
 
         # Token con llave aleatoria exclusiva de este proceso y usuario semilla 1 (tenant 1).
-        token = jwt.encode({"user_id": "1", "tenant_id": "1", "role": "superadmin", "tv": 0,
+        token = jwt.encode({"user_id": "1", "tenant_id": "1", "role": "admin", "tv": 0,
                             "exp": int(time.time()) + 3600, "type": "access"},
                            env["JAX_JWT_SECRET"], algorithm="HS256")
-        print("tabla=jacobs_events; filas_sembradas=5000; endpoint=GET /api/admin/auditoria-descarte")
+        hasta = datetime.now().astimezone().date()
+        desde = (hasta - timedelta(days=366)).isoformat()
+        hasta = hasta.isoformat()
+        params = {"desde": desde, "hasta": hasta}  # ventana máxima, sin filtro de evento
+        print(f"tabla=jacobs_events; filas_ajenas={TENANTS_CARGA * EVENTOS_POR_TENANT}; filas_tenant=50; tenants={TENANTS_CARGA}; desde={desde}; hasta={hasta}; filtro_evento=ninguno")
         for c in NIVELES:
-            print(await _medir(token, c, min(2000, max(100, c * 20))))
+            print(await _medir(token, c, min(2000, max(100, c * 20)), params))
     finally:
         if proceso:
             proceso.terminate()
@@ -180,7 +225,8 @@ async def main():
                 proceso.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proceso.kill()
-        _limpiar(pipeline_id)
+        if pipeline_ids or user_ids or tenant_ids:
+            _limpiar(pipeline_ids, user_ids, tenant_ids)
 
 
 if __name__ == "__main__":

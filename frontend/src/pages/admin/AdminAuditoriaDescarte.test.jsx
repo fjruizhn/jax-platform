@@ -10,7 +10,7 @@ import { I18nProvider } from '../../i18n/index.jsx'
 
 const fila = {
   id: 14, pipeline_id: 'pipe-14', pipeline_name: 'proyecto de prueba',
-  event_type: 'PIPELINE_DISCARDED', actor: 'admin-1', motivo: 'duplicado', ts: 1791244800,
+  event_type: 'PIPELINE_DISCARDED', actor: 'admin-1', tenant_id: 7, ts: 1791244800,
 }
 
 function renderPantalla() {
@@ -24,12 +24,21 @@ beforeEach(() => {
 })
 
 describe('AdminAuditoriaDescarte', () => {
-  it('carga el registro y muestra fecha, evento, pipeline, actor y motivo', async () => {
+  it('carga el registro, muestra tenant e ID copiable y no enlaza a historial privado', async () => {
+    const escribirPortapapeles = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: escribirPortapapeles },
+    })
     renderPantalla()
     expect(await screen.findByText('proyecto de prueba')).toBeInTheDocument()
     expect(screen.getByText('admin-1')).toBeInTheDocument()
-    expect(screen.getByText('duplicado')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'proyecto de prueba' })).toHaveAttribute('href', '/historial/pipe-14')
+    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('pipe-14')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Copiar ID|Copy ID/ }))
+    await waitFor(() => expect(escribirPortapapeles).toHaveBeenCalledWith('pipe-14'))
+    expect(screen.queryByText('Motivo')).not.toBeInTheDocument()
   })
 
   it('manda filtros y cursor; cargar más agrega la página siguiente', async () => {

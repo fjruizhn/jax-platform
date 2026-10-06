@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { localeFor, useI18n } from '../../i18n/index.jsx'
 import api from '../../api/client'
 
@@ -14,6 +13,7 @@ export default function AdminAuditoriaDescarte() {
   const [hayMas, setHayMas] = useState(false)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(false)
+  const [copiado, setCopiado] = useState('')
   const epoch = useRef(0)
 
   function cargar({ mas = false, filtrosCarga = aplicados } = {}) {
@@ -42,6 +42,10 @@ export default function AdminAuditoriaDescarte() {
 
   function cambiar(key, value) { setFiltros((prev) => ({ ...prev, [key]: value })) }
   function aplicar(event) { event.preventDefault(); setAplicados({ ...filtros }) }
+  async function copiarPipeline(id) {
+    await navigator.clipboard.writeText(id)
+    setCopiado(id)
+  }
   const fecha = (ts) => new Date(ts * 1000).toLocaleString(localeFor(lang), { dateStyle: 'medium', timeStyle: 'short' })
 
   return (
@@ -75,17 +79,25 @@ export default function AdminAuditoriaDescarte() {
       {eventos.length > 0 && <div className="overflow-x-auto rounded border border-borde">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-superficie text-xs uppercase text-texto-tenue"><tr>
-            <th className="px-3 py-3">{t.adminAuditDate}</th><th className="px-3 py-3">{t.adminAuditEvent}</th><th className="px-3 py-3">{t.adminAuditPipeline}</th><th className="px-3 py-3">{t.adminAuditActor}</th><th className="px-3 py-3">{t.adminAuditReason}</th>
+            <th className="px-3 py-3">{t.adminAuditDate}</th><th className="px-3 py-3">{t.adminAuditEvent}</th><th className="px-3 py-3">{t.adminAuditTenant}</th><th className="px-3 py-3">{t.adminAuditPipeline}</th><th className="px-3 py-3">{t.adminAuditActor}</th>
           </tr></thead>
           <tbody className="divide-y divide-borde bg-fondo">{eventos.map((e) => <tr key={e.id}>
             <td className="whitespace-nowrap px-3 py-3 text-texto-suave">{fecha(e.ts)}</td>
             <td className="px-3 py-3 text-texto">{t[`adminAuditType_${e.event_type}`] || e.event_type}</td>
-            <td className="px-3 py-3"><Link className="text-acento-texto hover:underline" to={`/historial/${encodeURIComponent(e.pipeline_id)}`}>{e.pipeline_name || e.pipeline_id}</Link></td>
+            <td className="px-3 py-3 text-texto-suave">{e.tenant_id ?? t.adminAuditNoTenant}</td>
+            <td className="px-3 py-3 text-texto-suave">
+              {e.pipeline_name && e.pipeline_name !== e.pipeline_id && <span>{e.pipeline_name}</span>}
+              <div className="flex items-center gap-2"><code className="font-mono text-xs">{e.pipeline_id}</code>
+                <button type="button" onClick={() => copiarPipeline(e.pipeline_id)} className="text-acento-texto underline" aria-label={t.adminAuditCopyPipelineId}>
+                  {copiado === e.pipeline_id ? t.adminAuditCopied : t.adminAuditCopyPipelineId}
+                </button>
+              </div>
+            </td>
             <td className="px-3 py-3 text-texto-suave">{e.actor || t.adminAuditUnknown}</td>
-            <td className="px-3 py-3 text-texto-suave">{e.motivo || '—'}</td>
           </tr>)}</tbody>
         </table>
       </div>}
+      <p className="text-xs text-texto-tenue">{t.adminAuditWindow}</p>
       {hayMas && <div className="text-center"><button type="button" onClick={() => cargar({ mas: true })} disabled={cargando} className="rounded border border-borde bg-superficie px-4 py-2 text-sm text-texto hover:bg-fondo disabled:opacity-60">{cargando ? t.adminAuditLoading : t.adminAuditMore}</button></div>}
       {cargando && eventos.length === 0 && <p role="status" className="text-center text-sm text-texto-tenue">{t.adminAuditLoading}</p>}
     </section>
