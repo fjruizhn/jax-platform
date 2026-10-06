@@ -588,8 +588,9 @@ async def _despachar(pool) -> None:
             _fallos_aviso_freno_incertidumbre = 0  # paso un enfriamiento completo sin incidente
         _pausa_previa_al_incidente = None  # se evalua una vez por incidente, no en cada ciclo
         if _fallos_aviso_freno_incertidumbre and _ultimo_fallo_aviso_freno_incertidumbre is not None:
-            # Tras un fallo (entrega incierta) se espera 1x, 2x, 4x... el minimo, con tope en el enfriamiento
-            # (o en el minimo si el enfriamiento es menor): sin esto se reenvia en cada ciclo.
+            # Tras un fallo cierto se espera 1x, 2x, 4x... la base `reintento` (freno_incertidumbre_reintento_s,
+            # no el minimo del enfriamiento), con tope en el mayor entre enfriamiento y base: sin esto se
+            # reenvia en cada ciclo.
             espera = min(reintento * 2 ** min(_fallos_aviso_freno_incertidumbre - 1, 30),
                          max(enfriamiento, reintento))
             if ahora - _ultimo_fallo_aviso_freno_incertidumbre < espera:

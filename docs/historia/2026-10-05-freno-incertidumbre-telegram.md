@@ -1,6 +1,6 @@
 # Aviso Telegram al activar el freno de incertidumbre
 
-**Fecha:** 2026-10-06 (corrección de ronda 2)
+**Fecha:** 2026-10-06 (rondas 2 a 9)
 **Tipo:** HISTORIA
 **Quién decidió:** Fernando, encargo `jxp-freno-telegram-r2.md`; Codex implementó en la rama del PR #203.
 
@@ -27,8 +27,8 @@ El envío distingue tres desenlaces (`Desenlace` en `catalogo_modelos_ejecutor.p
 - `tests/test_no_fail_open_except.py`: 16 pasaron.
 - Piso sin DB medido localmente: 2358 → 2361; CI también pasó el job sin DB en SHA `e5c1f94`.
 - El primer job aislado con DB en SHA `e5c1f94` contó 3834 pasadas y una fallida: la prueba de migración no incluía la clave nueva en su expectativa. Se añadió la clave a la expectativa.
-- CI de la ronda 2 (SHA `205ce8a4e2d97013bc0dcaa3bf95ed234de52872`, run `37451121724`: 3835 pasadas con DB y 2361 sin DB; ambos jobs verdes. Frontend: 1392/0/1392. Se fijaron los pisos respectivos en esos valores.
-- Ronda 9 (fecha, hora y zona en el aviso; el desconocido cuenta para N; mínimo de la ayuda desde `limites`): los pisos se fijaron antes de correr la CI como base del runner en `e8d2cca` + 35 pruebas nuevas (3875+35 y 2394+35), y la CI del SHA `329b4dce89b06c2cfccf2237275cc746dd6c3022`, run `37525242051`, los confirmó leyendo el log: job con DB `colectados=3912 passed=3910 skipped=2 failed=0 errors=0`; job sin DB `2429 passed, 1483 skipped`; frontend 1393/0/1393 (comparación de igualdad). Rigen esos pisos, no los de la ronda 2.
+- CI de la ronda 2 (SHA `205ce8a4e2d97013bc0dcaa3bf95ed234de52872`, run `37451121724`): 3835 pasadas con DB y 2361 sin DB; ambos jobs verdes. Frontend: 1392/0/1392. Se fijaron los pisos respectivos en esos valores.
+- Ronda 9 (fecha, hora y zona en el aviso; el desconocido cuenta para N; mínimo de la ayuda desde `limites`): los pisos se fijaron antes de correr la CI como base del runner en `e8d2cca` + 35 pruebas nuevas (3875+35 y 2394+35), y la CI del SHA `329b4dce89b06c2cfccf2237275cc746dd6c3022`, run `37525242051`, los confirmó leyendo el log: job con DB `colectados=3912 passed=3910 skipped=2 skip_entorno_esperado=1 skip_sr2_gateado=1 skips_gateados=1 failed=0 errors=0` (un solo skip gateado: el job usó la DB); job sin DB `2429 passed, 1483 skipped`; frontend 1393/0/1393 (comparación de igualdad). Rigen esos pisos, no los de la ronda 2.
 
 ## Estado
 
