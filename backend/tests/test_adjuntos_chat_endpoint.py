@@ -472,7 +472,7 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
     import ajustes
     from adjuntos.limites import cargar_limites
 
-    max_p95_ms = int(os.environ["JAX_E3_P95_MAX_MS"])
+    max_p95_ms = int(os.getenv("JAX_E3_P95_MAX_MS", "25000"))
     # sleep(3) bloquea el event loop de esta ruta async: 20 uploads serializados
     # deben exceder el tope. El job ejecuta también el mutante explícitamente.
     assert 0 < max_p95_ms < 20 * 3000
@@ -591,8 +591,10 @@ def test_upload_pdf_escaneado_revalida_autorizacion_antes_de_escribir(
     workspace = tmp_path / "workspace"
     (workspace / "proyectos").mkdir(parents=True)
     os.chmod(workspace / "proyectos", 0o2770)
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
     monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
-    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(tmp_path / "adjuntos"))
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
 
     entorno = Entorno(client)
     proyecto = entorno.proyecto()

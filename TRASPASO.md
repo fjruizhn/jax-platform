@@ -23,6 +23,7 @@
 - Backend completo sin DB: 2362 pasaron, 1482 omitidas, 2 fallaron porque el checkout JAX indicado por el entorno no contiene `procesamiento_routes`; CI trae su pin.
 - MariaDB de CI no está disponible localmente. No se habilitó conexión a `jax_memory` ni se usó la excepción de DB local.
 - E3 en CI con MariaDB y el mutante `sleep(3)` siguen pendientes de resultado.
+- Primer run sobre `c6cb5a7` (policy 37483798706) encontró que el test E3 exige estar parametrizado también en la suite completa y que los casos de autorización deben crear su directorio de adjuntos para superar el guard de cuota. Correcciones en el árbol: p95 configurable con default 25000 ms y directorio temporal creado. CI debe revalidar.
 - Contexto solicitado `/home/fruiz/jax-platform/CONTEXT.md` no existe en el checkout principal; tampoco hay `CLAUDE.md` en su raíz.
 
 ## Pendiente / siguiente paso
