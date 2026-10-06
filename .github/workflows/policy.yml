@@ -1116,8 +1116,11 @@ jobs:
             //   del i18n). Medido con `npx vitest run` sobre la rama: 1370/0/1370, 112 archivos.
             // -> 1385 (2026-10-05, fix/par-jax-visible integra despues de #197, regla 5): suma de ambas ramas.
             //   Medido con `npx vitest run` sobre el merge: 1385/0/1385.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1385) {
-              console.error("PISO ROTO: se esperaban 1385 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
+            //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
+            //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1389) {
+              console.error("PISO ROTO: se esperaban 1389 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
