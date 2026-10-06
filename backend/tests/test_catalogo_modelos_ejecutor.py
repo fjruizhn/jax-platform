@@ -502,6 +502,52 @@ def test_enviar_telegram_devuelve_false_si_la_red_falla(monkeypatch):
     assert resultado is False
 
 
+def _desenlace_de(monkeypatch, respuesta=None, excepcion=None, con_entorno=True):
+    if con_entorno:
+        monkeypatch.setenv(ejecutor.TELEGRAM_TOKEN_ENV, "123456:token-de-prueba")
+        monkeypatch.setenv(ejecutor.TELEGRAM_CHAT_ID_ENV, "-100999")
+    else:
+        monkeypatch.delenv(ejecutor.TELEGRAM_TOKEN_ENV, raising=False)
+        monkeypatch.delenv(ejecutor.TELEGRAM_CHAT_ID_ENV, raising=False)
+    original = http_client._client
+    http_client._client = _FakePostClient(respuesta=respuesta, excepcion=excepcion)
+    try:
+        con_desenlace = _correr_async(ejecutor._enviar_telegram_con_desenlace("hola"))
+        como_bool = _correr_async(ejecutor._enviar_telegram("hola"))
+    finally:
+        http_client._client = original
+    return con_desenlace, como_bool
+
+
+def _casos_de_desenlace():
+    import httpx
+
+    D = ejecutor.Desenlace
+    return [
+        pytest.param(dict(respuesta=_FakePostResponse(200, {"ok": True})), D.ENTREGADO, id="200-ok"),
+        pytest.param(dict(respuesta=_FakePostResponse(200, {"ok": False})), D.FALLO_CIERTO, id="200-ok-falso"),
+        pytest.param(dict(respuesta=_FakePostResponse(400, {"ok": False})), D.FALLO_CIERTO, id="http-400"),
+        pytest.param(dict(respuesta=_FakePostResponse(502, {})), D.FALLO_CIERTO, id="http-502"),
+        pytest.param(dict(excepcion=httpx.ConnectError("refused")), D.FALLO_CIERTO, id="connect-error"),
+        pytest.param(dict(excepcion=httpx.ConnectTimeout("t")), D.FALLO_CIERTO, id="connect-timeout"),
+        pytest.param(dict(excepcion=ConnectionRefusedError("refused")), D.FALLO_CIERTO, id="refused"),
+        pytest.param(dict(excepcion=httpx.ReadTimeout("t")), D.DESCONOCIDO, id="read-timeout"),
+        pytest.param(dict(excepcion=httpx.ReadError("cortado")), D.DESCONOCIDO, id="read-error"),
+        pytest.param(dict(excepcion=httpx.RemoteProtocolError("cortado")), D.DESCONOCIDO, id="remote-protocol"),
+        pytest.param(dict(respuesta=_FakePostResponse(200, ["no", "objeto"])), D.DESCONOCIDO, id="200-no-objeto"),
+        pytest.param(dict(con_entorno=False), D.FALLO_CIERTO, id="sin-credenciales"),
+    ]
+
+
+@pytest.mark.parametrize("kwargs, esperado", _casos_de_desenlace())
+def test_enviar_telegram_distingue_entregado_fallo_cierto_y_desconocido(monkeypatch, kwargs, esperado):
+    """Tres desenlaces. `_enviar_telegram` (el contrato bool que usan los demas llamadores) solo es True
+    cuando Telegram confirmo: un desenlace desconocido NO cuenta como True para ellos."""
+    con_desenlace, como_bool = _desenlace_de(monkeypatch, **kwargs)
+    assert con_desenlace is esperado
+    assert como_bool is (esperado is ejecutor.Desenlace.ENTREGADO)
+
+
 def test_enviar_telegram_devuelve_false_sin_variables_de_entorno(monkeypatch):
     monkeypatch.delenv(ejecutor.TELEGRAM_TOKEN_ENV, raising=False)
     monkeypatch.delenv(ejecutor.TELEGRAM_CHAT_ID_ENV, raising=False)
