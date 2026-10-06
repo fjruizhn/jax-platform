@@ -509,7 +509,6 @@ async def _despachar(pool) -> None:
         _freno_incertidumbre_activo = False
         _supresion_freno_incertidumbre_registrada = False
         _aviso_freno_incidente_entregado = False
-        _fallos_aviso_freno_incertidumbre = 0
     if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
                        "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
