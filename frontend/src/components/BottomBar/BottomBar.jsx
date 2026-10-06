@@ -384,7 +384,7 @@ function BottomBar() {
                 Chat y en Pipeline, con el botón de documentos; no en Ejecutor ni en Imagen. */}
             {m === 'chat' && (mode === 'chat' || mode === 'pipeline') && (
               <>
-                <SelectorDeProyecto />
+                <SelectorDeProyecto bloqueado={uploading || attachment?.tipo === 'pdf_procesando'} />
                 <BotonDocumentos />
               </>
             )}

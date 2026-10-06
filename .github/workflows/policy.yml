@@ -1119,11 +1119,11 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            // 1389 -> 1392 (2026-10-06, E3 respaldo chat): +3: estado OCR real en FileAttachment,
-            //   el turno de chat sigue sin adjuntar contenido pendiente y el rechazo de proyecto
-            //   conserva su traducción. Medido sobre origin/master d283d90: 1389/0/1389 -> 1392/0/1392.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1392) {
-              console.error("PISO ROTO: se esperaban 1392 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1393 (2026-10-06, E3 respaldo chat): +4: estado OCR real, turno de chat sin
+            //   adjunto pendiente, traducción de rechazo de proyecto y bloqueo del selector durante carga/cola.
+            //   Medido sobre origin/master d283d90: 1389/0/1389 -> 1393/0/1393.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1393) {
+              console.error("PISO ROTO: se esperaban 1393 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
