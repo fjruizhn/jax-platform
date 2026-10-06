@@ -990,6 +990,7 @@ def test_freno_de_incertidumbre_rearma_en_cero_y_respeta_enfriamiento(e, monkeyp
 
     async def enviar(cantidad, umbral):
         envios.append((cantidad, umbral))
+        return True
 
     reloj = [1000.0]
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
