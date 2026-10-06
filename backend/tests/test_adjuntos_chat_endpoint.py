@@ -464,12 +464,10 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
     """
     import asyncio
     import uuid
-    from starlette.datastructures import UploadFile
-    from api import upload as upload_mod
     from db.connection import get_pool
     from proyectos_documentos import despachador, repositorio as repo
     from tests.adjuntos_muestras import pdf_con_texto
-    from tests.identidades import sql, _tenant_db_id
+    from tests.identidades import sql
     from tests.test_proyectos_documentos_api import Entorno
 
     workspace = tmp_path / "workspace"
@@ -482,11 +480,11 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
 
     entorno = Entorno(client)
     proyecto = entorno.proyecto()
-    dueno = AuthUser(user_id=str(entorno._id("dueno")),
-                     tenant_id=str(_tenant_db_id(entorno.tenant)), role="operator")
-    uploaded = client.portal.call(upload_mod.upload_file,
-        file=UploadFile(__import__("io").BytesIO(pdf_con_texto(["", ""])), filename="escaneo.pdf"),
-        user=dueno, project_id=proyecto.id)
+    response = client.post("/api/chat/upload", headers=entorno.dueno,
+                           data={"project_id": str(proyecto.id)},
+                           files={"file": ("escaneo.pdf", pdf_con_texto(["", ""]), "application/pdf")})
+    assert response.status_code == 200, response.text
+    uploaded = response.json()
     assert uploaded["tipo"] == "pdf_procesando"
 
     identidades = []
