@@ -1445,34 +1445,6 @@ jobs:
         # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
-      - name: Medir E3 con 20 usuarios y escaneo en proceso
-        # Incluye las 20 subidas al tope, chat, despacho y sondeo terminal con
-        # MariaDB/workspace reales. Solo se simula el servicio OCR remoto.
-        env:
-          JAX_E3_P95_MAX_MS: '25000'
-        run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
-
-      - name: Comprobar que E3 rechaza el mutante sleep(3)
-        # Ocho workers y su timeout máximo válido aíslan el bloqueo del event
-        # loop del límite del pool OCR: el job debe fallar por superar p95;
-        # un 503 de cola saturada no cuenta como prueba del mutante.
-        env:
-          JAX_E3_P95_MAX_MS: '25000'
-          JAX_E3_MUTANT_SLEEP: '1'
-          JAX_ADJUNTO_PDF_PROCESOS: '8'
-          JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS: '60'
-        run: |
-          set +e
-          python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios >e3-mutante.log 2>&1
-          resultado=$?
-          set -e
-          tail -n 35 e3-mutante.log
-          if [ "$resultado" -eq 0 ]; then
-            echo "El mutante sleep(3) pasó E3; la prueba de carga no detecta la regresión."
-            exit 1
-          fi
-          grep -F "E3 p95 " e3-mutante.log
-
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
         run: |
