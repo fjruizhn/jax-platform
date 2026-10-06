@@ -755,6 +755,7 @@ def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatc
     from tests.test_proyectos_documentos_api import Entorno
     from tests.adjuntos_muestras import pdf_con_texto
     from api import proyectos_documentos as api_documentos
+    from proyectos_documentos import cupo_de_subidas
 
     workspace = tmp_path / "workspace"
     (workspace / "proyectos").mkdir(parents=True)
@@ -785,3 +786,52 @@ def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatc
     assert response.status_code == 423, response.text
     assert not [path for path in (workspace / "proyectos").rglob("*") if path.is_file()], \
         "el freno dejó un archivo sin fila"
+    # El camino de error también suelta el cupo de subidas simultáneas.
+    assert cupo_de_subidas.en_uso() == (0, {}), "el 423 dejó el cupo tomado"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+def test_cancelar_la_escritura_del_pdf_del_chat_suelta_el_cupo_de_subidas(client, monkeypatch, tmp_path):
+    """Una cancelación (cliente que corta) en plena escritura no puede dejar el cupo tomado: con
+    N subidas así el area de proyectos y el chat quedarian en 429 `subidas_simultaneas` para siempre."""
+    import asyncio
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+    from tests.identidades import _tenant_db_id
+    from api import proyectos_documentos as api_documentos
+    from proyectos_documentos import cupo_de_subidas
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+    usuario = AuthUser(user_id=str(entorno._id("dueno")), tenant_id=str(_tenant_db_id(entorno.tenant)),
+                       role="operator")
+    pdf = tmp_path / "escaneo.pdf"
+    contenido = pdf_con_texto([""])
+    pdf.write_bytes(contenido)
+    assert cupo_de_subidas.en_uso() == (0, {})
+
+    async def escenario():
+        escribiendo = asyncio.Event()
+
+        async def retenida(*args, **kwargs):
+            escribiendo.set()
+            await asyncio.sleep(60)   # la cancelación llega mientras se escribe
+
+        monkeypatch.setattr(api_documentos.almacen, "escribir_streaming", retenida)
+        tarea = asyncio.create_task(api_documentos.encolar_pdf_desde_chat(
+            pdf, nombre="escaneo.pdf", project_id=proyecto.id, user=usuario,
+            bytes_=len(contenido), max_bytes=len(contenido) + 1024))
+        await asyncio.wait_for(escribiendo.wait(), 20)
+        durante = cupo_de_subidas.en_uso()
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        return durante, cupo_de_subidas.en_uso()
+
+    durante, despues = client.portal.call(escenario)
+    assert durante[0] == 1, "la escritura debia tener el cupo tomado"
+    assert despues == (0, {}), "la cancelación dejó el cupo tomado"
