@@ -34,7 +34,6 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("jacobs_events", "idx_events_pipeline_tipo"),
         ("jacobs_events", "idx_events_auditoria_fecha"),
         ("jacobs_events", "idx_events_pipeline_auditoria_fecha"),
-        ("jax_users", "idx_jax_users_tenant_role_status"),
     }, forzados
     for (tabla, indice), donde in forzados.items():
         prefijo = (

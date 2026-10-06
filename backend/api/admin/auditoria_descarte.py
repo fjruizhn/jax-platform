@@ -1,9 +1,4 @@
-"""Feed administrativo de los eventos de descarte de pipelines.
-
-Los cuatro eventos los escribe JAX en `jacobs_events` dentro de la misma
-transacción que cambia el estado. Esta ruta es de solo lectura: superadmin ve
-todos los tenants, incluidos pipelines sin tenant; admin consulta solo los suyos.
-"""
+"""Feed global de solo lectura de los eventos de descarte para superadmin."""
 from __future__ import annotations
 
 import base64
@@ -12,12 +7,12 @@ import json
 import math
 import os
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from auth.middleware import get_current_user
-from auth.models import AuthUser
+from auth.middleware import require_superadmin
 from db.connection import get_pool
 
 router = APIRouter(prefix="/api/admin")
@@ -33,12 +28,6 @@ TIPOS_EVENTO = (
 )
 
 
-def require_auditor(user: AuthUser = Depends(get_current_user)) -> AuthUser:
-    if user.role not in {"admin", "superadmin"}:
-        raise HTTPException(status_code=403, detail="Solo admin o superadmin")
-    return user
-
-
 # Cuatro consultas por tipo permiten que MariaDB recorra el índice en orden
 # sin ordenar ni materializar el conjunto combinado. Cada consulta trae
 # limite+1; el merge de Python queda acotado a 4*(limite+1) filas.
@@ -48,32 +37,17 @@ SQL_GLOBAL = (
     "LEFT JOIN jacobs_pipelines AS p FORCE INDEX (PRIMARY) ON p.pipeline_id=e.pipeline_id "
     "WHERE e.event_type=%s AND e.ts >= %s AND e.ts < %s "
 )
-SQL_POR_PIPELINE = (
-    "SELECT e.id, e.pipeline_id, e.event_type, e.payload, e.ts, p.name, p.tenant_id "
-    "FROM jacobs_events AS e FORCE INDEX (idx_events_pipeline_auditoria_fecha) "
-    "STRAIGHT_JOIN jacobs_pipelines AS p FORCE INDEX (PRIMARY) ON p.pipeline_id=e.pipeline_id "
-    "WHERE e.pipeline_id=%s AND e.event_type=%s AND p.tenant_id=%s "
-    "AND e.ts >= %s AND e.ts < %s "
-)
 SQL_PIPELINE_GLOBAL = (
     "SELECT e.id, e.pipeline_id, e.event_type, e.payload, e.ts, p.name, p.tenant_id "
     "FROM jacobs_events AS e FORCE INDEX (idx_events_pipeline_auditoria_fecha) "
     "LEFT JOIN jacobs_pipelines AS p FORCE INDEX (PRIMARY) ON p.pipeline_id=e.pipeline_id "
     "WHERE e.pipeline_id=%s AND e.event_type=%s AND e.ts >= %s AND e.ts < %s "
 )
-SQL_POR_TENANT = (
-    "SELECT e.id, e.pipeline_id, e.event_type, e.payload, e.ts, p.name, p.tenant_id "
-    "FROM jax_users AS u FORCE INDEX (idx_jax_users_tenant_role_status) "
-    "STRAIGHT_JOIN jacobs_pipelines AS p FORCE INDEX (idx_jacobs_pipelines_duenio) "
-    "ON p.user_id=CAST(u.user_id AS CHAR) AND p.tenant_id=CAST(u.tenant_id AS CHAR) "
-    "STRAIGHT_JOIN jacobs_events AS e FORCE INDEX (idx_events_pipeline_auditoria_fecha) "
-    "ON e.pipeline_id=p.pipeline_id "
-    "WHERE u.tenant_id=%s AND p.tenant_id=%s AND e.event_type=%s "
-    "AND e.ts >= %s AND e.ts < %s "
-)
 
 
+@lru_cache(maxsize=1)
 def _zona_plataforma():
+    """Cachea la zona por proceso; un reinicio toma cambios de TZ o /etc/localtime."""
     nombre = os.environ.get("TZ")
     if nombre:
         try:
@@ -112,7 +86,10 @@ def _rango_epoch(desde: date | None, hasta: date | None) -> tuple[float, float]:
     zona = _zona_plataforma()
     hoy_local = datetime.now(zona).date()
     fecha_hasta = hasta or hoy_local
-    fecha_desde = desde or (fecha_hasta - timedelta(days=30))
+    try:
+        fecha_desde = desde or (fecha_hasta - timedelta(days=30))
+    except OverflowError as exc:
+        raise HTTPException(status_code=422, detail="rango_fechas_invalido") from exc
     if fecha_desde > fecha_hasta:
         raise HTTPException(status_code=422, detail="rango_fechas_invalido")
     if (fecha_hasta - fecha_desde).days > _RANGO_MAX_DIAS:
@@ -135,7 +112,7 @@ def _payload(payload) -> dict:
     return datos if isinstance(datos, dict) else {}
 
 
-@router.get("/auditoria-descarte")
+@router.get("/auditoria-descarte", dependencies=[Depends(require_superadmin)])
 async def listar_auditoria_descarte(
     evento: str | None = Query(None, pattern="^(PIPELINE_DISCARDED|PIPELINE_RECOVERED|PIPELINE_HIDDEN|PIPELINE_RESTORED)$"),
     pipeline_id: str | None = Query(None, min_length=1, max_length=36),
@@ -143,9 +120,8 @@ async def listar_auditoria_descarte(
     hasta: date | None = Query(None),
     limite: int = Query(LIMITE_MAX, ge=1, le=LIMITE_MAX),
     cursor: str | None = Query(None, min_length=1, max_length=_CURSOR_MAX),
-    user: AuthUser = Depends(require_auditor),
 ):
-    """Superadmin ve todos los tenants; el camino futuro de admin se limita al suyo."""
+    """Superadmin consulta todos los tenants, incluidos pipelines sin tenant."""
     inicio, fin = _rango_epoch(desde, hasta)
     posicion = _decodificar_cursor(cursor)
     tipos = (evento,) if evento else TIPOS_EVENTO
@@ -154,18 +130,12 @@ async def listar_auditoria_descarte(
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             for tipo in tipos:
-                if pipeline_id and user.role == "superadmin":
+                if pipeline_id:
                     consulta = SQL_PIPELINE_GLOBAL
                     parametros: list = [pipeline_id, tipo, inicio, fin]
-                elif pipeline_id:
-                    consulta = SQL_POR_PIPELINE
-                    parametros = [pipeline_id, tipo, user.tenant_id, inicio, fin]
-                elif user.role == "superadmin":
+                else:
                     consulta = SQL_GLOBAL
                     parametros = [tipo, inicio, fin]
-                else:
-                    consulta = SQL_POR_TENANT
-                    parametros = [user.tenant_id, user.tenant_id, tipo, inicio, fin]
                 if posicion is not None:
                     ts_cursor, id_cursor = posicion
                     consulta += "AND (e.ts < %s OR (e.ts = %s AND e.id < %s)) "

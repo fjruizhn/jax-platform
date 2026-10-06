@@ -1360,7 +1360,7 @@ jobs:
         run: |
           # Exact dependency on the first PR of this pair: #360 adds these
           # two event indexes before this branch forces them in its read path.
-          PIN=9707871fdefee661e9a9f025cda2690547ec7934
+          PIN=bfdff28f3deaa46a06a352c6f881fee1291fc4b7
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -3628,11 +3628,11 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          # 3830 -> 3835 (Codex, 2026-10-06, auditoría global de descartes): delta exacto +5 comprobado
-          # en tests/test_admin_auditoria_descarte.py: cuatro pruebas con `client` y una prueba pura del cursor.
-          # El archivo nuevo dio 5/5 en la MariaDB temporal; la suite completa local no es un absoluto CI
-          # comparable porque /etc/jax/.env está bloqueado y el usuario temporal no reproduce su runner.
-          PISO_PASSED = 3835
+          # 3833 -> 3838 (Codex, 2026-10-06, auditoría global de descartes R3): absoluto medido en
+          # MariaDB temporal 12.3.3, con el bootstrap de este job y JAX exacto bfdff28f3deaa46a06a352c6f881fee1291fc4b7:
+          # backend-tests-con-db = 3838 passed / 1 skipped. La prueba tenant se retiró con ese camino;
+          # el nuevo borde de fecha no suma acá porque es puro. El piso queda en el total re-medido.
+          PISO_PASSED = 3838
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4715,9 +4715,10 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      # 2358 -> 2359 (Codex, 2026-10-06, auditoría global de descartes): +1 prueba pura de validación de cursor;
-      # medido con JAX_CI_NO_DB=1 y el SHA exacto del JAX#360 requerido por este PR: 2359 passed / 1478 skipped.
-      JAX_CI_MIN_PASSED: "2359"
+      # 2358 -> 2361 (Codex, 2026-10-06, auditoría global de descartes R3): absoluto re-medido con
+      # JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true y JAX#360 exacto bfdff28f3deaa46a06a352c6f881fee1291fc4b7;
+      # 2361 passed / 1481 skipped. Suma las pruebas puras de cursor, zona horaria y fecha mínima.
+      JAX_CI_MIN_PASSED: "2361"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4738,7 +4739,7 @@ jobs:
         # by the platform integration.
         run: |
           # Keep no-DB source checks on the matching JAX PR head as well.
-          PIN=9707871fdefee661e9a9f025cda2690547ec7934
+          PIN=bfdff28f3deaa46a06a352c6f881fee1291fc4b7
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

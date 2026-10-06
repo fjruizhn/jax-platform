@@ -1,11 +1,12 @@
-"""Carga HTTP local del feed de auditoría, aislada en jax_memory_test.
+"""Carga HTTP local del feed global, aislada en jax_memory_test.
 
-Ejecutar: python3 loadtest/auditoria_descarte_orquestar.py
-Usa exclusivamente 127.0.0.1:33316 (contenedor temporal), DB jax_memory_test,
-API 127.0.0.1:18081 y la identidad semilla 1 del esquema de pruebas.
+Ejecutar con JAX_REPO_PATH, JAX_LOADTEST_DB_PASSWORD y las demás variables
+JAX_LOADTEST_DB_* apuntando al contenedor temporal de 127.0.0.1:33316.
+El arnés solo usa jax_memory_test, el puerto API local 18081 y superadmin 1.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import secrets
@@ -23,20 +24,28 @@ from jose import jwt
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
-DB = dict(host="127.0.0.1", port=33316, user="jax_test", password="codex-test-db-only",
-          database="jax_memory_test", charset="utf8mb4", autocommit=True)
-API_PORT = 18081
+DB = dict(
+    host=os.environ.get("JAX_LOADTEST_DB_HOST", "127.0.0.1"),
+    port=int(os.environ.get("JAX_LOADTEST_DB_PORT", "33316")),
+    user=os.environ.get("JAX_LOADTEST_DB_USER", "jax_test"),
+    password=os.environ.get("JAX_LOADTEST_DB_PASSWORD", ""),
+    database=os.environ.get("JAX_LOADTEST_DB_NAME", "jax_memory_test"),
+    charset="utf8mb4",
+    autocommit=True,
+)
+API_PORT = int(os.environ.get("JAX_LOADTEST_API_PORT", "18081"))
 URL = f"http://127.0.0.1:{API_PORT}/api/admin/auditoria-descarte"
 NIVELES = (1, 5, 10, 25, 50, 100)
-TENANTS_CARGA = 100
-EVENTOS_POR_TENANT = 2000
+PIPELINES_CARGA = 100
+EVENTOS_POR_PIPELINE = 2000
 
 
 def _guardas():
-    if DB["database"] != "jax_memory_test" or DB["port"] in {3308, 3306}:
-        raise SystemExit("GUARD: destino de DB no es el MariaDB temporal de pruebas")
-    if DB["host"] != "127.0.0.1" or API_PORT in {8080, 7777}:
-        raise SystemExit("GUARD: host/puerto podría alcanzar un servicio de producción")
+    if (DB["database"] != "jax_memory_test" or DB["port"] != 33316
+            or DB["host"] != "127.0.0.1" or not DB["password"]):
+        raise SystemExit("GUARD: destino no es el MariaDB temporal loopback de 127.0.0.1:33316")
+    if API_PORT != 18081:
+        raise SystemExit("GUARD: API de carga debe usar el puerto loopback temporal 18081")
     with socket.create_connection((DB["host"], DB["port"]), timeout=2):
         pass
 
@@ -44,48 +53,29 @@ def _guardas():
 def _sembrar():
     conn = pymysql.connect(**{**DB, "autocommit": False})
     pipeline_ids = []
-    user_ids = []
-    tenant_ids = []
     try:
         with conn.cursor() as cur:
             ahora = time.time()
-            # El tenant consultado conserva una muestra pequeña; 100 tenants
-            # ajenos concentran 200.000 eventos para medir el aislamiento real.
-            tenants = [(f"auditoria-carga-{uuid.uuid4().hex}",) for _ in range(TENANTS_CARGA)]
-            cur.executemany("INSERT INTO jax_tenants (name) VALUES (%s)", tenants)
-            tenant_inicio = int(cur.lastrowid)
-            tenant_ids = list(range(tenant_inicio, tenant_inicio + TENANTS_CARGA))
-            for tenant_id in tenant_ids:
-                email = f"auditoria-{uuid.uuid4().hex}@example.invalid"
-                cur.execute(
-                    "INSERT INTO jax_users (tenant_id,email,password_hash,role,status) "
-                    "VALUES (%s,%s,'loadtest-only','admin','active')",
-                    (tenant_id, email),
-                )
-                user_ids.append(int(cur.lastrowid))
-
-            cur.execute("UPDATE jax_users SET role='admin' WHERE user_id=1 AND tenant_id=1")
-            for i, (tenant_id, user_id) in enumerate([(1, 1), *zip(tenant_ids, user_ids)]):
+            for _ in range(PIPELINES_CARGA):
                 pid = str(uuid.uuid4())
                 pipeline_ids.append(pid)
                 cur.execute(
                     "INSERT INTO jacobs_pipelines "
                     "(pipeline_id,name,invoked_by,mode,status,created_at,updated_at,user_id,tenant_id,owner_ack_at) "
-                    "VALUES (%s,'carga auditoría','plataforma','supervised','discarded',%s,%s,%s,%s,%s)",
-                    (pid, ahora, ahora, str(user_id), str(tenant_id), ahora),
+                    "VALUES (%s,'carga auditoría','plataforma','supervised','discarded',%s,%s,'1','1',%s)",
+                    (pid, ahora, ahora, ahora),
                 )
-                cantidad = 50 if i == 0 else EVENTOS_POR_TENANT
-                for inicio in range(0, cantidad, 1000):
+                for inicio in range(0, EVENTOS_POR_PIPELINE, 1000):
                     cur.executemany(
                         "INSERT INTO jacobs_events (pipeline_id,step_id,event_type,payload,ts) "
                         "VALUES (%s,NULL,%s,%s,%s)",
                         [(pid,
                           ("PIPELINE_DISCARDED", "PIPELINE_RECOVERED", "PIPELINE_HIDDEN", "PIPELINE_RESTORED")[j % 4],
                           '{"user_id":"load-test","desde":"aborted","a":"discarded"}', ahora - j)
-                         for j in range(inicio, min(inicio + 1000, cantidad))],
+                         for j in range(inicio, min(inicio + 1000, EVENTOS_POR_PIPELINE))],
                     )
         conn.commit()
-        return pipeline_ids, user_ids, tenant_ids
+        return pipeline_ids
     except Exception:
         conn.rollback()
         raise
@@ -93,7 +83,7 @@ def _sembrar():
         conn.close()
 
 
-def _limpiar(pipeline_ids, user_ids, tenant_ids):
+def _limpiar(pipeline_ids):
     conn = pymysql.connect(**DB)
     try:
         with conn.cursor() as cur:
@@ -101,24 +91,17 @@ def _limpiar(pipeline_ids, user_ids, tenant_ids):
                 marcas = ",".join(["%s"] * len(pipeline_ids))
                 cur.execute(f"DELETE FROM jacobs_events WHERE pipeline_id IN ({marcas})", pipeline_ids)
                 cur.execute(f"DELETE FROM jacobs_pipelines WHERE pipeline_id IN ({marcas})", pipeline_ids)
-            if user_ids:
-                marcas = ",".join(["%s"] * len(user_ids))
-                cur.execute(f"DELETE FROM jax_users WHERE user_id IN ({marcas})", user_ids)
-            if tenant_ids:
-                marcas = ",".join(["%s"] * len(tenant_ids))
-                cur.execute(f"DELETE FROM jax_tenants WHERE tenant_id IN ({marcas})", tenant_ids)
-            cur.execute("UPDATE jax_users SET role='superadmin' WHERE user_id=1 AND tenant_id=1")
     finally:
         conn.close()
 
 
-def _entorno(tmp: Path):
+def _entorno(tmp: Path, jax_repo_path: Path):
     env = dict(os.environ)
     env.update({
         "JAX_DB_HOST": DB["host"], "JAX_DB_PORT": str(DB["port"]), "JAX_DB_USER": DB["user"],
         "JAX_DB_PASSWORD": DB["password"], "JAX_DB_NAME": DB["database"],
-        "JAX_REPO_PATH": "/home/fruiz/wt/jax-auditoria-descarte-r2",
-        "JAX_CONFIG_PATH": "/home/fruiz/wt/jax-auditoria-descarte-r2/config/config.toml",
+        "JAX_REPO_PATH": str(jax_repo_path),
+        "JAX_CONFIG_PATH": str(jax_repo_path / "config" / "config.toml"),
         "JAX_JWT_SECRET": secrets.token_urlsafe(48),
         "JAX_FACET_SEAL_PATH": str(tmp / "facet-seal"),
         "JAX_USAGE_SPOOL_DIR": str(tmp / "usage-spool"),
@@ -174,16 +157,27 @@ async def _medir(token: str, concurrencia: int, n: int, params: dict):
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Mide el feed global con 200.000 eventos en DB desechable.")
+    parser.add_argument("--jax-repo", type=Path, default=os.environ.get("JAX_REPO_PATH"),
+                        help="checkout compatible de Jax (o variable JAX_REPO_PATH)")
+    args = parser.parse_args()
+    jax_repo_path = Path(args.jax_repo) if args.jax_repo is not None else None
+    if jax_repo_path is None or not (jax_repo_path / "config" / "config.toml").is_file():
+        raise SystemExit("Indica --jax-repo o JAX_REPO_PATH a un checkout compatible de Jax")
+    jax_sha = subprocess.check_output(
+        ["git", "-C", str(jax_repo_path), "rev-parse", "HEAD"], text=True,
+    ).strip()
     _guardas()
     tmp = Path("/tmp") / f"jxp-auditoria-{uuid.uuid4().hex}"
     tmp.mkdir(mode=0o700)
-    pipeline_ids = user_ids = tenant_ids = []
+    pipeline_ids = []
     proceso = None
     try:
-        print(f"sembrando {TENANTS_CARGA} tenants ajenos × {EVENTOS_POR_TENANT:,} eventos y 50 del tenant consultado", flush=True)
-        pipeline_ids, user_ids, tenant_ids = _sembrar()
+        print(f"sembrando {PIPELINES_CARGA} pipelines × {EVENTOS_POR_PIPELINE:,} eventos = "
+              f"{PIPELINES_CARGA * EVENTOS_POR_PIPELINE:,}; Jax SHA={jax_sha}", flush=True)
+        pipeline_ids = _sembrar()
         print("siembra completa; iniciando backend", flush=True)
-        env = _entorno(tmp)
+        env = _entorno(tmp, jax_repo_path.resolve())
         log = (tmp / "backend.log").open("w+")
         proceso = subprocess.Popen([sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1",
                                     "--port", str(API_PORT), "--log-level", "warning"],
@@ -207,15 +201,16 @@ async def main():
             log.seek(0)
             raise RuntimeError(f"backend aislado no inició: {log.read()[-2000:]}")
 
-        # Token con llave aleatoria exclusiva de este proceso y usuario semilla 1 (tenant 1).
-        token = jwt.encode({"user_id": "1", "tenant_id": "1", "role": "admin", "tv": 0,
+        # Token con llave aleatoria exclusiva de este proceso y superadmin semilla.
+        token = jwt.encode({"user_id": "1", "tenant_id": "1", "role": "superadmin", "tv": 0,
                             "exp": int(time.time()) + 3600, "type": "access"},
                            env["JAX_JWT_SECRET"], algorithm="HS256")
         hasta = datetime.now().astimezone().date()
         desde = (hasta - timedelta(days=366)).isoformat()
         hasta = hasta.isoformat()
         params = {"desde": desde, "hasta": hasta}  # ventana máxima, sin filtro de evento
-        print(f"tabla=jacobs_events; filas_ajenas={TENANTS_CARGA * EVENTOS_POR_TENANT}; filas_tenant=50; tenants={TENANTS_CARGA}; desde={desde}; hasta={hasta}; filtro_evento=ninguno")
+        print(f"tabla=jacobs_events; filas={PIPELINES_CARGA * EVENTOS_POR_PIPELINE}; "
+              f"tenants=1; desde={desde}; hasta={hasta}; filtro_evento=ninguno; pagina=50")
         for c in NIVELES:
             print(await _medir(token, c, min(2000, max(100, c * 20)), params))
     finally:
@@ -225,10 +220,9 @@ async def main():
                 proceso.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proceso.kill()
-        if pipeline_ids or user_ids or tenant_ids:
-            _limpiar(pipeline_ids, user_ids, tenant_ids)
+        if pipeline_ids:
+            _limpiar(pipeline_ids)
 
 
 if __name__ == "__main__":
-    _guardas()
     asyncio.run(main())

@@ -70,13 +70,31 @@ def test_cursor_auditoria_rechaza_payloads_malformados_sin_base_de_datos():
 def test_rango_fecha_usa_medianoche_de_la_zona_configurada(monkeypatch):
     from datetime import date, datetime
     from zoneinfo import ZoneInfo
+    from api.admin.auditoria_descarte import _rango_epoch, _zona_plataforma
+
+    _zona_plataforma.cache_clear()
+    monkeypatch.setenv("TZ", "America/Tegucigalpa")
+    try:
+        inicio, fin = _rango_epoch(date(2026, 10, 6), date(2026, 10, 6))
+        zona = ZoneInfo("America/Tegucigalpa")
+        assert _zona_plataforma() is _zona_plataforma()
+        assert datetime.fromtimestamp(inicio, zona).isoformat() == "2026-10-06T00:00:00-06:00"
+        assert datetime.fromtimestamp(fin, zona).isoformat() == "2026-10-07T00:00:00-06:00"
+    finally:
+        _zona_plataforma.cache_clear()
+
+
+def test_rango_hasta_minimo_sin_desde_se_rechaza_como_422():
+    from datetime import date
+    from fastapi import HTTPException
     from api.admin.auditoria_descarte import _rango_epoch
 
-    monkeypatch.setenv("TZ", "America/Tegucigalpa")
-    inicio, fin = _rango_epoch(date(2026, 10, 6), date(2026, 10, 6))
-    zona = ZoneInfo("America/Tegucigalpa")
-    assert datetime.fromtimestamp(inicio, zona).isoformat() == "2026-10-06T00:00:00-06:00"
-    assert datetime.fromtimestamp(fin, zona).isoformat() == "2026-10-07T00:00:00-06:00"
+    try:
+        _rango_epoch(None, date(1, 1, 30))
+    except HTTPException as exc:
+        assert exc.status_code == 422
+    else:
+        raise AssertionError("el rango bajo mínimo debe rechazarse con 422")
 
 
 def test_auditoria_descarte_exige_superadmin_y_no_expone_escrituras(client):
@@ -87,7 +105,7 @@ def test_auditoria_descarte_exige_superadmin_y_no_expone_escrituras(client):
     assert client.post(url, headers=_admin_headers(client)).status_code == 405
 
 
-def test_auditoria_descarte_pagina_filtra_tenant_y_devuelve_actor_motivo_y_pipeline(client):
+def test_auditoria_descarte_global_pagina_devuelve_eventos_de_todos_los_tenants(client):
     owner_a = uid(client, "auditoria-global-owner-a", "operator", tenant_id=TENANT)
     owner_b = uid(client, "auditoria-global-owner-b", "operator", tenant_id=OTRO_TENANT)
     pipeline_a, pipeline_b = str(uuid.uuid4()), str(uuid.uuid4())
@@ -148,37 +166,12 @@ def test_auditoria_descarte_valida_tipo_rango_de_fechas_y_tope(client):
     assert client.get(url, headers=headers, params={"desde": "2026-10-06", "hasta": "2026-10-01"}).status_code == 422
     assert client.get(url, headers=headers, params={"limite": 51}).status_code == 422
     assert client.get(url, headers=headers, params={"desde": "0001-01-01"}).status_code == 422
+    assert client.get(url, headers=headers, params={"hasta": "0001-01-30"}).status_code == 422
     assert client.get(url, headers=headers, params={"hasta": "9999-12-31"}).status_code == 422
 
 
-def test_camino_de_admin_limita_el_feed_a_su_tenant(client):
-    from api.admin.auditoria_descarte import require_auditor
-    from auth.models import AuthUser
-
-    owner_a = uid(client, "auditoria-admin-futuro-a", "operator", tenant_id=TENANT)
-    owner_b = uid(client, "auditoria-admin-futuro-b", "operator", tenant_id=OTRO_TENANT)
-    pipeline_a, pipeline_b = str(uuid.uuid4()), str(uuid.uuid4())
-    ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pipeline_a, owner_a, TENANT_DB, "discarded"))
-    client.portal.call(partial(_insertar_pipeline, pipeline_b, owner_b, OTRO_TENANT_DB, "discarded"))
-    client.portal.call(_insertar_evento, pipeline_a, "PIPELINE_DISCARDED", "actor-a", ahora)
-    client.portal.call(_insertar_evento, pipeline_b, "PIPELINE_DISCARDED", "actor-b", ahora + 1)
-    client.app.dependency_overrides[require_auditor] = lambda: AuthUser(
-        user_id=owner_a, tenant_id=TENANT_DB, role="admin")
-    try:
-        respuesta = client.get("/api/admin/auditoria-descarte", headers=cabeceras(
-            client, "auditoria-admin-futuro-token", "superadmin", tenant_id=TENANT))
-        assert respuesta.status_code == 200, respuesta.text
-        assert [e["pipeline_id"] for e in respuesta.json()["eventos"]] == [pipeline_a]
-    finally:
-        client.app.dependency_overrides.pop(require_auditor, None)
-        ids = [pipeline_a, pipeline_b]
-        client.portal.call(_borrar_eventos, ids)
-        client.portal.call(_borrar_pipelines, ids)
-
-
 def test_explain_consultas_reales_auditoria_usan_indices_sin_filesort(client):
-    from api.admin.auditoria_descarte import SQL_GLOBAL, SQL_POR_PIPELINE, SQL_POR_TENANT
+    from api.admin.auditoria_descarte import SQL_GLOBAL, SQL_PIPELINE_GLOBAL
 
     owner = uid(client, "auditoria-explain-owner", "operator", tenant_id=TENANT)
     pipeline_id = str(uuid.uuid4())
@@ -191,7 +184,7 @@ def test_explain_consultas_reales_auditoria_usan_indices_sin_filesort(client):
         variantes = (
             (SQL_GLOBAL, ("PIPELINE_DISCARDED", ahora - 2000, ahora + 10),
              "idx_events_auditoria_fecha"),
-            (SQL_POR_PIPELINE, (pipeline_id, "PIPELINE_DISCARDED", TENANT_DB, ahora - 2000, ahora + 10),
+            (SQL_PIPELINE_GLOBAL, (pipeline_id, "PIPELINE_DISCARDED", ahora - 2000, ahora + 10),
              "idx_events_pipeline_auditoria_fecha"),
         )
         consultas = []
@@ -209,17 +202,6 @@ def test_explain_consultas_reales_auditoria_usan_indices_sin_filesort(client):
             assert "filesort" not in extra and "temporary" not in extra, plan
             planes.append(plan)
         assert len(planes) == 4
-        plan_tenant = client.portal.call(
-            sql,
-            "EXPLAIN " + SQL_POR_TENANT + "ORDER BY e.ts DESC, e.id DESC LIMIT %s",
-            (TENANT_DB, TENANT_DB, "PIPELINE_DISCARDED", ahora - 2000, ahora + 10, 51),
-            True,
-        )
-        filas_tenant = [tuple(f) for f in plan_tenant]
-        por_alias = {f[2]: f for f in filas_tenant}
-        assert por_alias["u"][5] == "idx_jax_users_tenant_role_status", filas_tenant
-        assert por_alias["p"][5] == "idx_jacobs_pipelines_duenio", filas_tenant
-        assert por_alias["e"][5] == "idx_events_pipeline_auditoria_fecha", filas_tenant
     finally:
         client.portal.call(_borrar_eventos, [pipeline_id])
         client.portal.call(_borrar_pipelines, [pipeline_id])
