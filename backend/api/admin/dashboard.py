@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 
 from auth.middleware import require_superadmin
 from auth.models import AuthUser
+from api.admin.memoria import SQL_CONTAR as SQL_HECHOS_SIN_VERIFICAR
 from db.connection import get_pool
 from http_client import get_http_client
 from jax_engine.state import LAS_MANOS_URL
@@ -19,13 +20,10 @@ router = APIRouter(prefix="/api/admin")
 # en MariaDB >= 11.1; tests/test_tablero.py fija el texto del WHERE.
 SQL_USO_DEL_DIA = (
     "SELECT COUNT(*), COALESCE(SUM(request_type = 'imagen'), 0) FROM axioma_usage "
-    "FORCE INDEX (idx_axioma_usage_tenant_periodo) "
     "WHERE tenant_id = %s AND created_at >= %s AND created_at < %s"
 )
 # A-35: la verdad de las llaves es `credential` (credential_resolver), no el
-# .env. `provider`/`credential` son catálogo y credenciales compartidas por
-# plataforma (docs/fase1-credenciales-diseno.md); por eso este KPI es global
-# por contrato. Total = proveedores activos que usan api_key; configurados =
+# .env. Total = proveedores activos que usan api_key; configurados =
 # los que tienen al menos una credencial activa (idx_provider_state).
 SQL_LLAVES = (
     "SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM credential c "
@@ -36,31 +34,19 @@ SQL_LLAVES = (
 # con prefijo status (hoy idx_pipelines_status / idx_pipelines_ocultos),
 # creados por jax/jacobs/store.py::init_tables().
 SQL_PIPELINES_COMPLETADOS = (
-    "SELECT COUNT(*) FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "SELECT COUNT(*) FROM jacobs_pipelines "
     "WHERE tenant_id = %s AND status = 'completed'"
 )
 # Task 15 R12(c) (2026-09-16): la carga G midio `ALL` sobre jax_users.
 # Rango sobre idx_jax_users_locked_until (db/migrations.py::
 # _indice_de_cuentas_bloqueadas, DDL acotado; no esta en _INDEXES).
 SQL_CUENTAS_BLOQUEADAS = (
-    "SELECT COUNT(*) FROM jax_users FORCE INDEX (idx_jax_users_tenant_locked_until) "
+    "SELECT COUNT(*) FROM jax_users "
     "WHERE tenant_id = %s AND locked_until > %s"
 )
-# Restricción dura (2026-09-20, pedido de Fernando): mismo filtro EXACTO que
-# la pantalla de Memoria (api/admin/memoria.py::SQL_CONTAR, con
-# verificado=False, incluir_superados=False, incluir_vencidos=False) -- un
-# `is_verified = 0` a secas cuenta también lo fundido (superseded_by no
-# nulo: superado a propósito, no es pendiente) y lo vencido. Medido en
-# producción: el filtro flojo da 37, el pendiente real es 0.
-# tests/test_tablero.py ata el filtro con un test que siembra los tres casos.
-# Índice idx_facts_revision (is_verified, expires_at, created_at) -- mismo
-# que usa SQL_CONTAR (jax_memory_schema.sql / jax/memory/migrations.py).
-SQL_HECHOS_SIN_VERIFICAR = (
-    "SELECT COUNT(*) FROM facts f FORCE INDEX (idx_facts_revision) "
-    "JOIN jax_users u ON u.user_id = f.user_id "
-    "WHERE u.tenant_id = %s AND f.is_verified = 0 AND f.superseded_by IS NULL "
-    "AND (f.expires_at IS NULL OR f.expires_at > NOW())"
-)
+# SQL_HECHOS_SIN_VERIFICAR is the exact tenant-scoped SQL_CONTAR used by the
+# Memoria screen. Facts with a NULL user are attributed through their project
+# scope; globally unscoped facts are excluded in both places.
 
 
 def _rango_del_dia(dia: date) -> tuple[datetime, datetime]:
@@ -133,7 +119,7 @@ async def get_dashboard(user: AuthUser = Depends(require_superadmin)):
             keys_total, keys_configured = await cur.fetchone()
             await cur.execute(SQL_PIPELINES_COMPLETADOS, (str(user.tenant_id),))
             (pipelines_completed,) = await cur.fetchone()
-            await cur.execute(SQL_HECHOS_SIN_VERIFICAR, (tenant_id,))
+            await cur.execute(SQL_HECHOS_SIN_VERIFICAR, (False, False, False, False, tenant_id, tenant_id))
             (facts_unverified,) = await cur.fetchone()
 
     mem = psutil.virtual_memory()

@@ -1294,7 +1294,7 @@ async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_curren
     # transición (el `user_id` que este backend manda es el del pedido, no
     # el que queda registrado como dueño -- ownership no cambia con recover).
     if _es_superadmin(user):
-        await _require_pipeline_exists(pipeline_id)
+        await _require_pipeline_tenant(pipeline_id, user)
     else:
         await _require_pipeline_owner(pipeline_id, user)
         # Fix round 1, Ruling 13(a): el 403 es SÓLO "otro te lo ganó" --
@@ -1460,7 +1460,7 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
     # intencional -- es el punto de una auditoría, no una fuga. No se
     # redacta ni se reemplaza por un rol genérico.
     if _es_superadmin(user):
-        await _require_pipeline_exists(pipeline_id)
+        await _require_pipeline_tenant(pipeline_id, user)
     else:
         await _require_pipeline_owner(pipeline_id, user)
     pool = await get_pool()

@@ -2707,18 +2707,6 @@ async def _indice_de_usuarios_por_tenant(cur) -> None:
             cur, "jax_users", "idx_jax_users_tenant_user", DDL_INDICE_USUARIOS_TENANT_ORDEN)
 
 
-DDL_INDICE_PIPELINES_TENANT_ESTADO_FECHA = (
-    "ALTER TABLE jacobs_pipelines ADD INDEX idx_pipelines_tenant_status_date "
-    "(tenant_id, status, descartado_at, pipeline_id), ALGORITHM=INPLACE, LOCK=NONE"
-)
-
-
-async def _indice_de_pipelines_por_tenant(cur) -> None:
-    if not await _index_exists(cur, "jacobs_pipelines", "idx_pipelines_tenant_status_date"):
-        await _crear_indice_acotado(
-            cur, "jacobs_pipelines", "idx_pipelines_tenant_status_date", DDL_INDICE_PIPELINES_TENANT_ESTADO_FECHA)
-
-
 async def _indice_de_cuentas_bloqueadas(cur) -> None:
     """Idempotente: solo crea idx_jax_users_locked_until si falta."""
     if not await _index_exists(cur, "jax_users", "idx_jax_users_locked_until"):
@@ -3817,7 +3805,6 @@ async def run_migrations():
             await _indice_de_cuentas_bloqueadas(cur)
             await _indice_de_cuentas_bloqueadas_por_tenant(cur)
             await _indice_de_usuarios_por_tenant(cur)
-            await _indice_de_pipelines_por_tenant(cur)
             await _indice_de_uso_por_pipeline(cur)
             await _respaldo_de_uso(cur)
 

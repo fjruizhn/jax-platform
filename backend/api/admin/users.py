@@ -164,7 +164,7 @@ async def _sincronizar_membresias_admin_tenant(cur, *, actor_id: int, target_id:
 SQL_LISTA_USUARIOS = (
     "SELECT user_id, email, role, status, UNIX_TIMESTAMP(created_at), "
     "UNIX_TIMESTAMP(last_login), failed_attempts, locked_until "
-    "FROM jax_users FORCE INDEX (idx_jax_users_tenant_user) "
+    "FROM jax_users "
     "WHERE tenant_id = %s AND status <> 'deleted' ORDER BY user_id"
 )
 
@@ -179,7 +179,7 @@ SQL_LISTA_USUARIOS = (
 # tests/test_admin_usuarios_baja.py::test_lista_de_bajas_explain_sin_filesort_ni_temporal.
 SQL_LISTA_BAJAS = (
     "SELECT b.user_id, b.email, b.role, b.deleted_at, b.deleted_by, a.email AS deleted_by_email "
-    "FROM jax_users b FORCE INDEX (idx_jax_users_tenant_user) "
+    "FROM jax_users b "
     "LEFT JOIN jax_users a ON a.user_id = b.deleted_by AND a.tenant_id = b.tenant_id "
     "WHERE b.tenant_id = %s AND b.status = 'deleted' ORDER BY b.user_id"
 )

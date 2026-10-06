@@ -251,7 +251,11 @@ def test_agrupar_no_bloquea_el_event_loop():
     request. Con 116 es trivial; con 10.000 no. Se disena para el segundo
     caso: la funcion es async y no usa nada bloqueante."""
     import inspect
-    fuente = inspect.getsource(memoria.agrupar_por_tema)
+    # Lee la definición del módulo: el endpoint puede quedar temporalmente
+    # envuelto por instrumentación de tests anteriores en la suite completa.
+    modulo = inspect.getsource(memoria)
+    fuente = modulo.split("async def agrupar_por_tema", 1)[1].split(
+        '@router.get("/grupos")', 1)[0]
     assert "await" in fuente
     for bloqueante in ("time.sleep", "requests.", "subprocess.run"):
         assert bloqueante not in fuente

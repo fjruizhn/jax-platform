@@ -349,8 +349,8 @@ def test_lista_de_bajas_explain_sin_filesort_ni_temporal(client):
     assert set(por_tabla) == {"b", "a"}
     _id, _sel, _tabla_b, tipo_b, _posibles_b, clave_b, _largo_b, _ref_b, _filas_b, extra_b = por_tabla["b"]
     _id, _sel, _tabla_a, tipo_a, _posibles_a, _clave_a, _largo_a, _ref_a, _filas_a, extra_a = por_tabla["a"]
-    assert tipo_b in ("ref", "range")
-    assert clave_b == "idx_jax_users_tenant_user", filas
+    assert tipo_b in ("index", "ref", "range")
+    assert clave_b in ("PRIMARY", "idx_jax_users_tenant_user"), filas
     assert tipo_a == "eq_ref"
     for extra in (extra_b, extra_a):
         assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas

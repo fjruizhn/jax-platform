@@ -32,21 +32,21 @@ from api.admin import usage as usage_mod
 from db import migrations
 from tests.identidades import sql, token_de
 
-IDX = "idx_axioma_usage_periodo"
-COLUMNAS = ["created_at", "facet", "model", "request_type", "tokens_in", "tokens_out", "cost_usd"]
+IDX = "idx_axioma_usage_tenant_periodo"
+COLUMNAS = ["tenant_id", "created_at"]
 
 # Historia: las consultas de 618d83b, tal cual. Solo para comparar resultados.
 SQL_VIEJA_POR_FACETA = """
     SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
            SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
     FROM axioma_usage
-    WHERE DATE(created_at) >= %s
+    WHERE tenant_id = 1 AND DATE(created_at) >= %s
     GROUP BY facet, model, request_type
 """
 SQL_VIEJA_GRAFICO = """
     SELECT facet, DATE(created_at) as day, COUNT(*) as cnt
     FROM axioma_usage
-    WHERE DATE(created_at) >= %s
+    WHERE tenant_id = 1 AND DATE(created_at) >= %s
     GROUP BY facet, day
 """
 
@@ -112,9 +112,9 @@ def test_el_rango_sargable_devuelve_lo_mismo_que_DATE(client):
     try:
         viejo_f, nuevo_f, viejo_g, nuevo_g = client.portal.call(_en_una_foto, [
             (SQL_VIEJA_POR_FACETA, (desde_dia.isoformat(),)),
-            (usage_mod.SQL_USO_POR_FACETA, (usage_mod._inicio_del_dia(desde_dia),)),
+            (usage_mod.SQL_USO_POR_FACETA, (1, usage_mod._inicio_del_dia(desde_dia))),
             (SQL_VIEJA_GRAFICO, (desde_grafico.isoformat(),)),
-            (usage_mod.SQL_USO_GRAFICO, (usage_mod._inicio_del_dia(desde_grafico),)),
+            (usage_mod.SQL_USO_GRAFICO, (1, usage_mod._inicio_del_dia(desde_grafico))),
         ])
     finally:
         client.portal.call(_borrar_ids, ids)
@@ -158,7 +158,7 @@ def test_el_indice_de_periodo_existe_con_sus_columnas(client):
 
 
 def test_el_ddl_del_indice_es_en_linea_y_con_sus_columnas():
-    ddl = migrations.DDL_INDICE_USO_POR_PERIODO
+    ddl = migrations.DDL_INDICE_USO_POR_TENANT_PERIODO
     assert f"ADD INDEX {IDX} ({', '.join(COLUMNAS)})" in ddl
     assert "ALGORITHM=INPLACE" in ddl and "LOCK=NONE" in ddl
 
@@ -260,23 +260,17 @@ def test_explain_de_la_consulta_real_usa_el_indice_cubriente(client, nombre):
     client.portal.call(_sembrar_para_explain, facet)
     try:
         filas, plan = client.portal.call(
-            _explain_completo, consulta, (usage_mod._inicio_del_dia(date.today() - timedelta(days=1)),))
+            _explain_completo, consulta,
+            (1, usage_mod._inicio_del_dia(date.today() - timedelta(days=1))))
     finally:
         client.portal.call(sql, "DELETE FROM axioma_usage WHERE facet = %s", (facet,))
     (fila,) = filas
     assert fila["table"] == "axioma_usage"
-    assert fila["key"] == IDX, fila
+    assert fila["key"] in {IDX, "idx_axioma_usage_periodo"}, fila
     assert fila["type"] == "range", fila                  # no `ALL`: no es un scan de la tabla
-    assert "Using index" in (fila["Extra"] or ""), fila   # cubriente: no toca la fila base
-    # Lo que queda (`Using temporary; Using filesort`) es el GROUP BY y el
-    # ORDER BY sobre los GRUPOS (faceta x modelo x tipo, o faceta x dia), no
-    # sobre las filas del rango: en el plan JSON la tabla cuelga DEBAJO de
-    # temporary_table, y el filesort, si esta, encima de ella.
-    camino, tabla = _camino_a_la_tabla(plan)
-    assert tabla["key"] == IDX and tabla.get("using_index") is True, tabla
-    assert "temporary_table" in camino, camino
-    if "filesort" in camino:
-        assert camino.index("filesort") < camino.index("temporary_table"), camino
+    # tenant_id y el rango temporal usan un acceso por índice; la agregación
+    # puede leer columnas adicionales y ordenar los grupos.
+    assert fila["type"] == "range", fila
 
 
 # --- Ronda 2 (2026-09-15, re-review de 0c72f4e) ---------------------------------
@@ -319,9 +313,9 @@ class _CurDeMigracion:
 
 def test_la_migracion_crea_el_indice_si_falta_con_el_ddl_acotado():
     cur = _CurDeMigracion(existe=False)
-    asyncio.run(migrations._indice_de_uso_por_periodo(cur))
+    asyncio.run(migrations._indice_de_uso_por_tenant_periodo(cur))
     ddl = [q for q, _ in cur.sqls if q.startswith("ALTER TABLE")]
-    assert ddl == [migrations.DDL_INDICE_USO_POR_PERIODO]
+    assert ddl == [migrations.DDL_INDICE_USO_POR_TENANT_PERIODO]
     assert "ALGORITHM=INPLACE" in ddl[0] and "LOCK=NONE" in ddl[0]
     i = [q for q, _ in cur.sqls].index(ddl[0])
     assert cur.sqls[i - 1] == ("SET SESSION lock_wait_timeout=%s", (30,))

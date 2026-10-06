@@ -97,28 +97,33 @@ logger = logging.getLogger(__name__)
 # el volumen actual (116 hechos) es inofensivo. `SQL_LISTAR`/`ARGS_EJEMPLO`
 # protegen el camino caliente de verdad: la cola de revisión
 # (`verificado=False`, spec §1 -- "115 hechos esperan revisión").
+_FILTRO_CONTAR = (
+    "(%s IS NULL OR f.is_verified = %s) "
+    "AND (%s = 1 OR f.superseded_by IS NULL) "
+    "AND (%s = 1 OR f.expires_at IS NULL OR f.expires_at > NOW()) "
+    "AND (u.tenant_id = %s OR (f.user_id IS NULL AND ps.tenant_id = %s))"
+)
+
 SQL_LISTAR = (
-    "SELECT id, fact_text, fact_type, confidence, is_verified, verified_by, "
-    "verified_at, expires_at, "
-    "(expires_at IS NOT NULL AND expires_at <= NOW()) AS vencido, "
-    "created_at, source_message_id, source_facet, superseded_by "
-    "FROM facts "
-    "WHERE (%s IS NULL OR is_verified = %s) "
-    "AND (%s = 1 OR superseded_by IS NULL) "
-    "AND (%s = 1 OR expires_at IS NULL OR expires_at > NOW()) "
-    "ORDER BY expires_at DESC, created_at DESC "
+    "SELECT f.id, f.fact_text, f.fact_type, f.confidence, f.is_verified, f.verified_by, "
+    "f.verified_at, f.expires_at, "
+    "(f.expires_at IS NOT NULL AND f.expires_at <= NOW()) AS vencido, "
+    "f.created_at, f.source_message_id, f.source_facet, f.superseded_by "
+    "FROM facts f LEFT JOIN jax_users u ON u.user_id = f.user_id "
+    "LEFT JOIN jax_project_scope ps ON ps.project_id = f.project_id "
+    f"WHERE {_FILTRO_CONTAR} "
+    "ORDER BY f.expires_at DESC, f.created_at DESC "
     "LIMIT %s"
 )
 # verificado=False, incluir_superados=False, incluir_vencidos=False, limite=20:
 # la cola de revisión por defecto. test_memoria_indices.py corre EXPLAIN
 # sobre ESTA tupla exacta.
-ARGS_EJEMPLO = (False, False, False, False, 20)
+ARGS_EJEMPLO = (False, False, False, False, 1, 1, 20)
 
 SQL_CONTAR = (
-    "SELECT COUNT(*) FROM facts "
-    "WHERE (%s IS NULL OR is_verified = %s) "
-    "AND (%s = 1 OR superseded_by IS NULL) "
-    "AND (%s = 1 OR expires_at IS NULL OR expires_at > NOW())"
+    "SELECT COUNT(*) FROM facts f LEFT JOIN jax_users u ON u.user_id = f.user_id "
+    "LEFT JOIN jax_project_scope ps ON ps.project_id = f.project_id "
+    f"WHERE {_FILTRO_CONTAR}"
 )
 
 _COLUMNAS_LISTAR = (
@@ -169,9 +174,10 @@ async def listar_hechos(
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_LISTAR, (*base, limite))
+            tenant_id = int(user.tenant_id)
+            await cur.execute(SQL_LISTAR, (*base, tenant_id, tenant_id, limite))
             filas = await cur.fetchall()
-            await cur.execute(SQL_CONTAR, base)
+            await cur.execute(SQL_CONTAR, (*base, tenant_id, tenant_id))
             total = (await cur.fetchone())[0]
     return {"hechos": [_hecho_de_fila(f) for f in filas], "total": total}
 
@@ -240,9 +246,12 @@ async def aprobar_hechos(body: AprobarBody, user: AuthUser = Depends(require_sup
 
         marcadores = ", ".join(["%s"] * len(ids))
         await cur.execute(
-            f"SELECT id, superseded_by, expires_at FROM facts "
-            f"WHERE id IN ({marcadores}) FOR UPDATE",
-            ids,
+            f"SELECT f.id, f.superseded_by, f.expires_at FROM facts f "
+            f"LEFT JOIN jax_users u ON u.user_id = f.user_id "
+            f"LEFT JOIN jax_project_scope ps ON ps.project_id = f.project_id "
+            f"WHERE f.id IN ({marcadores}) AND (u.tenant_id = %s OR "
+            f"(f.user_id IS NULL AND ps.tenant_id = %s)) FOR UPDATE",
+            (*ids, int(user.tenant_id), int(user.tenant_id)),
         )
         filas = await cur.fetchall()
         superados_de = {fid: superseded_by for fid, superseded_by, _ in filas}
@@ -289,6 +298,8 @@ async def corregir_hecho(fact_id: int, body: CorregirBody,
     texto = body.texto.strip()
     if not texto:
         raise HTTPException(status_code=400, detail="texto_vacio")
+    if not await _hecho_del_tenant(fact_id, int(user.tenant_id)):
+        raise HTTPException(status_code=404, detail="hecho_no_encontrado")
     memoria = await _memoria_conectada()
     # El embedding se calcula ANTES de abrir la transacción (llamada HTTP a
     # Ollama, spec §4 async: nada bloqueante -- ni de más, ni adentro de un
@@ -305,9 +316,12 @@ async def corregir_hecho(fact_id: int, body: CorregirBody,
             raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
 
         await cur.execute(
-            "SELECT fact_type, confidence, user_id, project_id, importance, "
-            "superseded_by FROM facts WHERE id = %s FOR UPDATE",
-            (fact_id,),
+            "SELECT f.fact_type, f.confidence, f.user_id, f.project_id, f.importance, "
+            "f.superseded_by FROM facts f LEFT JOIN jax_users u ON u.user_id = f.user_id "
+            "LEFT JOIN jax_project_scope ps ON ps.project_id = f.project_id "
+            "WHERE f.id = %s AND (u.tenant_id = %s OR "
+            "(f.user_id IS NULL AND ps.tenant_id = %s)) FOR UPDATE",
+            (fact_id, int(user.tenant_id), int(user.tenant_id)),
         )
         vieja = await cur.fetchone()
         if vieja is None:
@@ -674,6 +688,8 @@ async def _hora_local_de_base(momento: datetime) -> datetime:
 @router.post("/hechos/{fact_id}/caducar")
 async def caducar_hecho(fact_id: int, body: CaducarBody,
                         user: AuthUser = Depends(require_superadmin)):
+    if not await _hecho_del_tenant(fact_id, int(user.tenant_id)):
+        raise HTTPException(status_code=404, detail="hecho_no_encontrado")
     memoria = await _memoria_conectada()
     expira = None
     if body.vence_at:
@@ -714,6 +730,24 @@ async def caducar_hecho(fact_id: int, body: CaducarBody,
     if not ok:
         raise HTTPException(status_code=404, detail="hecho_no_encontrado")
     return {"ok": True}
+
+
+async def _hecho_del_tenant(fact_id: int, tenant_id: int) -> bool:
+    """Resolve ownership by user, or by project for shared facts with NULL user."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT 1 FROM facts f LEFT JOIN jax_users u ON u.user_id = f.user_id "
+                    "LEFT JOIN jax_project_scope ps ON ps.project_id = f.project_id "
+                    "WHERE f.id = %s AND (u.tenant_id = %s OR "
+                    "(f.user_id IS NULL AND ps.tenant_id = %s))",
+                    (fact_id, tenant_id, tenant_id),
+                )
+                return await cur.fetchone() is not None
+    except (OSError, aiomysql.Error) as exc:
+        raise HTTPException(status_code=503, detail="memoria_no_disponible") from exc
 
 
 # --------------------------------------------------------------------------

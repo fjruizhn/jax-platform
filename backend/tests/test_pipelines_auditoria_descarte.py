@@ -254,7 +254,7 @@ def test_auditoria_de_un_pipeline_sin_eventos_de_descarte_es_lista_vacia(client)
 def test_auditoria_de_un_hidden_para_su_dueno_no_superadmin_es_404(client):
     duenio = uid(client, "auditoria-c4-duenio", "operator")
     pid = str(uuid.uuid4())
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "hidden",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "hidden",
                        status_previo="aborted", descartado_por=duenio, descartado_at=time.time()))
     try:
         resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
@@ -265,16 +265,17 @@ def test_auditoria_de_un_hidden_para_su_dueno_no_superadmin_es_404(client):
         client.portal.call(_borrar_pipelines, [pid])
 
 
-def test_auditoria_del_superadmin_sobre_el_pipeline_de_otro_es_200(client, client_superadmin):
-    duenio = uid(client, "auditoria-c5-duenio", "operator")
+def test_auditoria_del_superadmin_sobre_el_pipeline_de_otro_es_200(client):
+    duenio = uid(client, "auditoria-c5-duenio", "operator", TENANT)
     pid = str(uuid.uuid4())
     ahora = time.time()
-    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "hidden",
+    client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT_DB, "hidden",
                        status_previo="aborted", descartado_por=duenio, descartado_at=ahora))
     try:
         client.portal.call(_insertar_evento, pid, "PIPELINE_HIDDEN",
                            {"user_id": "superadmin-1", "desde": "discarded", "a": "hidden"}, ahora)
-        resp = client_superadmin.get(f"/api/pipelines/{pid}/auditoria-descarte")
+        resp = client.get(f"/api/pipelines/{pid}/auditoria-descarte",
+                          headers=cabeceras(client, "auditoria-c5-admin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         eventos = resp.json()["eventos"]
         assert [e["event_type"] for e in eventos] == ["PIPELINE_HIDDEN"]

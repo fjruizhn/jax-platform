@@ -28,7 +28,7 @@ LIMITE_MAX = 50
 # tenant_id no se puede omitir en un sistema con más de un tenant.
 SQL_OCULTOS = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "FROM jacobs_pipelines "
     "WHERE tenant_id = %s AND status='hidden' "
     "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
@@ -73,7 +73,7 @@ async def listar_ocultos(
 # y docs/carga-descartados-cursor-2026-09-23.md.
 SQL_DESCARTADOS_ADMIN_BASE = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "FROM jacobs_pipelines "
     "WHERE tenant_id = %s AND status='discarded' "
 )
 SQL_DESCARTADOS_ADMIN = SQL_DESCARTADOS_ADMIN_BASE + ORDEN + "LIMIT %s OFFSET %s"
@@ -88,7 +88,7 @@ async def listar_descartados_admin(
 ):
     exigir_cursor_sin_offset(cursor, offset)
     consulta, params = consulta_y_parametros(
-        SQL_DESCARTADOS_ADMIN_BASE, (int(user.tenant_id),), limite, offset, cursor,
+        SQL_DESCARTADOS_ADMIN_BASE, (str(user.tenant_id),), limite, offset, cursor,
     )
     pool = await get_pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
