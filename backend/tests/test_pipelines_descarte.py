@@ -241,7 +241,7 @@ def test_recover_doble_no_da_403_deja_pasar_a_jacobs_que_da_409(client, monkeypa
 # El superadmin no es dueño: _require_pipeline_owner lo rechazaría, así que
 # recover_pipeline tiene que ramificar y no pasar por esa guardia para él.
 # ---------------------------------------------------------------------------
-def test_recover_del_superadmin_sobre_el_descartado_de_otro_es_200(client, client_superadmin, monkeypatch):
+def test_recover_del_superadmin_sobre_el_descartado_de_otro_es_200(client, monkeypatch):
     duenio = uid(client, "descarte-c4-duenio", "operator")
     pid = str(uuid.uuid4())
     client.portal.call(partial(_insertar_pipeline, pid, duenio, TENANT, "discarded",
@@ -250,7 +250,8 @@ def test_recover_del_superadmin_sobre_el_descartado_de_otro_es_200(client, clien
         ("POST", f"/pipeline/{pid}/recover"): respuesta(200, {"pipeline_id": pid, "status": "aborted"}),
     })
     try:
-        resp = client_superadmin.post(f"/api/pipelines/{pid}/recover")
+        resp = client.post(f"/api/pipelines/{pid}/recover",
+                           headers=cabeceras(client, "descarte-c4-admin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"pipeline_id": pid, "status": "aborted"}
         [(metodo, ruta, _cuerpo)] = falso.llamadas
@@ -285,7 +286,7 @@ def test_hide_y_restore_de_un_no_superadmin_es_403(client, monkeypatch, accion):
 
 
 @pytest.mark.parametrize("accion", ["hide", "restore"])
-def test_hide_y_restore_del_superadmin_llaman_a_jacobs(client, client_superadmin, monkeypatch, accion):
+def test_hide_y_restore_del_superadmin_llaman_a_jacobs(client, monkeypatch, accion):
     operador = uid(client, "descarte-c5b-operador", "operator")
     pid = str(uuid.uuid4())
     client.portal.call(partial(_insertar_pipeline, pid, operador, TENANT,
@@ -295,7 +296,8 @@ def test_hide_y_restore_del_superadmin_llaman_a_jacobs(client, client_superadmin
         ("POST", f"/pipeline/{pid}/{accion}"): respuesta(200, {"pipeline_id": pid, "status": destino}),
     })
     try:
-        resp = client_superadmin.post(f"/api/pipelines/{pid}/{accion}")
+        resp = client.post(f"/api/pipelines/{pid}/{accion}",
+                           headers=cabeceras(client, "descarte-c5b-admin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"pipeline_id": pid, "status": destino}
     finally:
@@ -454,7 +456,7 @@ def test_ocultos_de_un_no_superadmin_es_403(client):
     assert resp.status_code == 403, resp.text
 
 
-def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_superadmin):
+def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios_de_su_tenant(client):
     duenio_a = uid(client, "descarte-c9-duenio-a", "operator")
     duenio_b = uid(client, "descarte-c9-duenio-b", "operator")
     ahora = time.time()
@@ -468,7 +470,8 @@ def test_ocultos_del_superadmin_trae_los_de_todos_los_usuarios(client, client_su
     client.portal.call(partial(_insertar_pipeline, pid_visible, duenio_a, TENANT, "discarded", ahora, ahora,
                        status_previo="aborted", descartado_por=duenio_a, descartado_at=ahora))
     try:
-        resp = client_superadmin.get("/api/admin/pipelines/ocultos")
+        resp = client.get("/api/admin/pipelines/ocultos",
+                          headers=cabeceras(client, "descarte-c9-superadmin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         cuerpo = resp.json()
         # Fix round 1, Ruling 13(d): "has_more", el mismo contrato de
@@ -797,13 +800,13 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
         client.portal.call(_borrar_pipelines, ids_ruido + ids_reales)
 
 
-def test_explain_ocultos_usa_idx_pipelines_ocultos(client):
+def test_explain_ocultos_usa_idx_pipelines_tenant_status_date(client):
     from api.admin.pipelines_ocultos import SQL_OCULTOS
 
-    filas = client.portal.call(sql, "EXPLAIN " + SQL_OCULTOS, (mod.LISTA_PIPELINES_MAX, 5), True)
+    filas = client.portal.call(sql, "EXPLAIN " + SQL_OCULTOS, (TENANT, mod.LISTA_PIPELINES_MAX, 5), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
-    assert clave == "idx_pipelines_ocultos", filas
+    assert clave == "idx_pipelines_tenant_status_date", filas
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 
@@ -829,7 +832,7 @@ async def _aplicar_transicion_en_la_base(pipeline_id, status):
     await sql("UPDATE jacobs_pipelines SET status=%s WHERE pipeline_id=%s", (status, pipeline_id))
 
 
-def test_axioma_usage_intacto_tras_ocultar(client, client_superadmin, monkeypatch):
+def test_axioma_usage_intacto_tras_ocultar(client, monkeypatch):
     duenio = uid(client, "descarte-c11-duenio", "operator")
     ahora = time.time()
     pid = str(uuid.uuid4())
@@ -844,7 +847,8 @@ def test_axioma_usage_intacto_tras_ocultar(client, client_superadmin, monkeypatc
         antes = client.portal.call(_suma_de_costo, pid)
         assert antes == pytest.approx(0.05)
 
-        resp = client_superadmin.post(f"/api/pipelines/{pid}/hide")
+        resp = client.post(f"/api/pipelines/{pid}/hide",
+                           headers=cabeceras(client, "descarte-c11-admin", "superadmin", tenant_id=TENANT))
         assert resp.status_code == 200, resp.text
         # Jacobs está simulado: la transición real la aplica Jacobs, acá se
         # replica en la base de test para verificar que OCULTAR no toca

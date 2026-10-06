@@ -295,14 +295,14 @@ SQL_USO_POR_FACETA = """
     SELECT facet, model, SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*), request_type,
            SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_requests
     FROM axioma_usage
-    WHERE created_at >= %s
+    WHERE tenant_id = %s AND created_at >= %s
     GROUP BY facet, model, request_type
     ORDER BY SUM(cost_usd) DESC
 """
 SQL_USO_GRAFICO = """
     SELECT facet, DATE(created_at) AS day, COUNT(*) AS cnt
     FROM axioma_usage
-    WHERE created_at >= %s
+    WHERE tenant_id = %s AND created_at >= %s
     GROUP BY facet, day
 """
 
@@ -324,11 +324,12 @@ async def get_usage(
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_USO_POR_FACETA, (_inicio_del_dia(since),))
+            tenant_id = int(user.tenant_id)
+            await cur.execute(SQL_USO_POR_FACETA, (tenant_id, _inicio_del_dia(since)))
             rows = await cur.fetchall()
 
             labels = [(date.today() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
-            await cur.execute(SQL_USO_GRAFICO, (_inicio_del_dia(date.today() - timedelta(days=7)),))
+            await cur.execute(SQL_USO_GRAFICO, (tenant_id, _inicio_del_dia(date.today() - timedelta(days=7))))
             chart_rows = await cur.fetchall()
 
     by_facet = [

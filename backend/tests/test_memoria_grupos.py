@@ -39,7 +39,7 @@ import pytest
 # cualquier otro que ya haya tocado api.chat.
 from api.admin import memoria  # noqa: E402
 from jax.memory.embedding_config import CONFIG as _EMBED  # noqa: E402
-from tests.identidades import sql  # noqa: E402
+from tests.identidades import cabeceras, sql  # noqa: E402
 from tests.identidades import uid  # noqa: E402
 
 _FIXTURE_EMBEDDINGS = pathlib.Path(__file__).parent / "fixtures" / \
@@ -251,7 +251,11 @@ def test_agrupar_no_bloquea_el_event_loop():
     request. Con 116 es trivial; con 10.000 no. Se disena para el segundo
     caso: la funcion es async y no usa nada bloqueante."""
     import inspect
-    fuente = inspect.getsource(memoria.agrupar_por_tema)
+    # Lee la definición del módulo: el endpoint puede quedar temporalmente
+    # envuelto por instrumentación de tests anteriores en la suite completa.
+    modulo = inspect.getsource(memoria)
+    fuente = modulo.split("async def agrupar_por_tema", 1)[1].split(
+        '@router.get("/grupos")', 1)[0]
     assert "await" in fuente
     for bloqueante in ("time.sleep", "requests.", "subprocess.run"):
         assert bloqueante not in fuente
@@ -290,7 +294,7 @@ def test_la_consulta_de_activos_sigue_usando_el_indice_tras_agregar_source_facet
     (Tercera vuelta: `source_fact_ids` SALIO de esta consulta -- ver
     test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico, mas abajo,
     para la consulta que la reemplaza.)"""
-    plan = client_superadmin.portal.call(_explain, memoria.SQL_ACTIVOS_CON_VECTOR, ())
+    plan = client_superadmin.portal.call(_explain, memoria.SQL_ACTIVOS_CON_VECTOR, ("1",))
     texto = " ".join(str(c) for fila in plan for c in fila)
     assert "idx_facts_active" in texto, f"no usa el indice de superseded_by: {texto}"
     assert "Using filesort" not in texto, f"ordena en memoria: {texto}"
@@ -326,6 +330,114 @@ def test_sql_vecinos_aplica_tenant_usuario_y_proyecto_antes_del_top_k():
     assert "LIMIT %s" in memoria.SQL_VECINOS
 
 
+def test_listar_grupos_solo_lee_el_tenant_y_excluye_hechos_globales(client_superadmin):
+    """M6 queda sin cambio: hechos user_id NULL y sin proyecto no se agrupan."""
+    tenant_a, tenant_b = "870101", "870102"
+    user_a = uid(client_superadmin, "grupos-tenant-a", "operator", tenant_a)
+    user_b = uid(client_superadmin, "grupos-tenant-b", "operator", tenant_b)
+    datos = json.loads(_FIXTURE_EMBEDDINGS.read_text(encoding="utf-8"))
+    embedding = datos["embeddings"][0]
+    fact_a = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "tenant A agrupamiento", embedding, "technical", user_a)
+    fact_b = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "tenant B agrupamiento", embedding, "technical", user_b)
+    fact_global = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "hecho global sin proyecto", embedding, "technical", None)
+    try:
+        headers = cabeceras(
+            client_superadmin, "grupos-admin-tenant-b", "superadmin", tenant_id=tenant_b)
+        response = client_superadmin.get("/api/admin/memoria/grupos", headers=headers)
+        assert response.status_code == 200, response.text
+        ids = {fact_id for grupo in response.json()["grupos"] for fact_id in grupo["hechos"]}
+        assert fact_b in ids
+        assert fact_a not in ids
+        assert fact_global not in ids
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM facts WHERE id IN (%s, %s, %s)",
+                                      (fact_a, fact_b, fact_global))
+        client_superadmin.portal.call(sql, "DELETE FROM jax_users WHERE user_id IN (%s, %s)",
+                                      (user_a, user_b))
+
+
+def test_citas_de_otro_tenant_no_alteran_clusters(client_superadmin):
+    """Una cadena de citas de B no puede separar dos casi duplicados de A."""
+    tenant_a, tenant_b = "870111", "870112"
+    user_a = uid(client_superadmin, "grupos-citas-tenant-a", "operator", tenant_a)
+    user_b = uid(client_superadmin, "grupos-citas-tenant-b", "operator", tenant_b)
+    datos = json.loads(_FIXTURE_EMBEDDINGS.read_text(encoding="utf-8"))
+    embedding = datos["embeddings"][0]
+    fact_a1 = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "A cita X", embedding, "technical", user_a)
+    fact_a2 = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "A hecho casi duplicado", embedding, "technical", user_a)
+    fact_b = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "B cita A2", embedding, "technical", user_b)
+    try:
+        client_superadmin.portal.call(
+            sql, "UPDATE facts SET source_fact_ids=%s WHERE id=%s", (f"[{fact_b}]", fact_a1))
+        client_superadmin.portal.call(
+            sql, "UPDATE facts SET source_fact_ids=%s WHERE id=%s", (f"[{fact_a2}]", fact_b))
+        headers = cabeceras(
+            client_superadmin, "grupos-citas-admin-a", "superadmin", tenant_id=tenant_a)
+        response = client_superadmin.get("/api/admin/memoria/grupos", headers=headers)
+        assert response.status_code == 200, response.text
+        clusters = [set(cluster["ids"])
+                    for grupo in response.json()["grupos"]
+                    for cluster in grupo["casi_duplicados"]]
+        assert any({fact_a1, fact_a2} <= cluster for cluster in clusters)
+    finally:
+        client_superadmin.portal.call(sql, "DELETE FROM facts WHERE id IN (%s, %s, %s)",
+                                      (fact_a1, fact_a2, fact_b))
+        client_superadmin.portal.call(sql, "DELETE FROM jax_users WHERE user_id IN (%s, %s)",
+                                      (user_a, user_b))
+
+
+def test_cierre_citas_incluye_fact_compartido_scoped_al_tenant(client_superadmin):
+    """Un hecho project-scoped con user_id NULL conserva la cadena tenant A."""
+    tenant_a = "870121"
+    user_a = uid(client_superadmin, "grupos-citas-project-tenant-a", "operator", tenant_a)
+    project_id = client_superadmin.portal.call(
+        sql, "INSERT INTO projects (project_uuid, name, status) VALUES (UUID(), %s, 'active')",
+        ("grupos-citas-project",))
+    client_superadmin.portal.call(
+        sql, "INSERT INTO jax_project_scope "
+        "(project_id, tenant_id, status, created_at, created_by, updated_at) "
+        "VALUES (%s, %s, 'ACTIVE', NOW(6), 'test', NOW(6))", (project_id, int(tenant_a)))
+    datos = json.loads(_FIXTURE_EMBEDDINGS.read_text(encoding="utf-8"))
+    embedding = datos["embeddings"][0]
+    fact_a1 = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "A cita compartido", embedding, "technical", user_a)
+    fact_shared = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "compartido con proyecto A", embedding, "technical", None,
+        project_id)
+    fact_a2 = client_superadmin.portal.call(
+        _crear_fact_con_embedding, "A hecho citado", embedding, "technical", user_a)
+    try:
+        client_superadmin.portal.call(
+            sql, "UPDATE facts SET source_fact_ids=%s WHERE id=%s",
+            (f"[{fact_shared}]", fact_a1))
+        client_superadmin.portal.call(
+            sql, "UPDATE facts SET source_fact_ids=%s WHERE id=%s",
+            (f"[{fact_a2}]", fact_shared))
+        headers = cabeceras(
+            client_superadmin, "grupos-citas-project-admin-a", "superadmin",
+            tenant_id=tenant_a)
+        response = client_superadmin.get("/api/admin/memoria/grupos", headers=headers)
+        assert response.status_code == 200, response.text
+        clusters = [set(cluster["ids"])
+                    for grupo in response.json()["grupos"]
+                    for cluster in grupo["casi_duplicados"]]
+        assert not any({fact_a1, fact_a2} <= cluster for cluster in clusters)
+    finally:
+        client_superadmin.portal.call(
+            sql, "DELETE FROM facts WHERE id IN (%s, %s, %s)",
+            (fact_a1, fact_shared, fact_a2))
+        client_superadmin.portal.call(sql, "DELETE FROM jax_project_scope WHERE project_id=%s",
+                                      (project_id,))
+        client_superadmin.portal.call(sql, "DELETE FROM projects WHERE id=%s", (project_id,))
+        client_superadmin.portal.call(sql, "DELETE FROM jax_users WHERE user_id=%s", (user_a,))
+
+
 @pytest.mark.parametrize("scope_ajeno", ("tenant", "user", "project"))
 def test_el_endpoint_no_descubre_vecinos_de_otro_scope(
         client_superadmin, scope_ajeno):
@@ -355,23 +467,16 @@ def test_el_endpoint_no_descubre_vecinos_de_otro_scope(
                                       (primero, segundo))
 
 
-def test_sql_citas_no_tiene_indice_util_pero_el_costo_es_chico(client_superadmin):
-    """MAJOR 1a (revision adversarial de jax-platform PR 146, tercera
-    vuelta): `SQL_CITAS` (`SELECT id, source_fact_ids FROM facts WHERE
-    source_fact_ids IS NOT NULL`) alimenta el cierre transitivo de citas.
-    `source_fact_ids` es `longtext` SIN indice (verificado con `SHOW INDEX
-    FROM facts` contra jax_memory_test) -- EXPLAIN tiene que dar `type=ALL`
-    (full scan), y esto NO es un defecto a esconder: se deja escrito acá, tal
-    como pide LAS CUATRO DEL RENDIMIENTO #1 ("buscar Using filesort/Using
-    temporary... y si hay trabajo, decirlo"). El costo absoluto se midió
-    aparte, con una base de carga que esta vez SÍ tenía filas con
-    `source_fact_ids` (14 % de 10.000 -- la primera medición de esta ronda
-    tenía CERO, MAJOR A): ver la sección "RONDA 4" de
-    docs/carga-memoria-146-2026-09-22.md."""
-    plan = client_superadmin.portal.call(_explain, memoria.SQL_CITAS, ())
+def test_sql_citas_se_resuelve_por_usuario_dentro_del_tenant(client_superadmin):
+    """La carga de citas aplica tenant; source_fact_ids no tiene índice.
+    `source_fact_ids` es `longtext` SIN índice. El filtro de tenant permite
+    que MariaDB empiece por `jax_users.tenant_id` y llegue a facts por
+    `idx_facts_user`, evitando el barrido global. EXPLAIN fija ese plan real.
+    """
+    assert "u.tenant_id = %s" in memoria.SQL_CITAS
+    plan = client_superadmin.portal.call(_explain, memoria.SQL_CITAS, ("1", "1"))
     texto = " ".join(str(c) for fila in plan for c in fila)
-    assert "ALL" in texto, (
-        f"se esperaba un full scan (sin indice util para source_fact_ids IS NOT NULL): {texto}")
+    assert "idx_facts_user" in texto, f"no acota citas por dueño/tenant: {texto}"
 
 
 # --- rendimiento del chequeo de casi-duplicados (2026-09-20) -------------------------------

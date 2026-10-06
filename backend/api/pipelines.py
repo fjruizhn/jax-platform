@@ -683,7 +683,7 @@ def _es_superadmin(user: AuthUser) -> bool:
 
 # Fix round 1, Ruling 13(b) (2026-09-22): un solo lugar valida la FORMA del
 # id (400 pipeline_id_invalido) -- lo usan los cuatro proxies, directo o vía
-# _require_pipeline_owner/_require_pipeline_exists. Antes de este fix,
+# _require_pipeline_owner/_require_pipeline_tenant. Antes de este fix,
 # hide/restore no lo llamaban y un id con forma rara (p. ej. `abc?x=1`)
 # llegaba tal cual a Jacobs -- funcionaba porque Jacobs también lo
 # rechazaba, pero con SU 404 genérico, no con el 400 explícito que el
@@ -724,17 +724,16 @@ async def _require_pipeline_owner(pipeline_id: str, user: AuthUser) -> str | Non
     return row[3]
 
 
-async def _require_pipeline_exists(pipeline_id: str) -> None:
-    """Como `_require_pipeline_owner`, pero SIN exigir dueño (spec
-    descartar-pipelines §4): "un superadmin que no es dueño no pasa
-    _require_pipeline_owner en recover" -- para el superadmin, recuperar
-    sólo exige que el pipeline exista; a quién pertenece lo decide
-    `_estado_de_descarte`/el rol, no esta función."""
+async def _require_pipeline_tenant(pipeline_id: str, user: AuthUser) -> None:
+    """Keep superadmin hide/restore inside the tenant in the authenticated session."""
     _validar_uuid_o_400(pipeline_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT 1 FROM jacobs_pipelines WHERE pipeline_id=%s", (pipeline_id,))
+            await cur.execute(
+                "SELECT 1 FROM jacobs_pipelines WHERE pipeline_id = %s AND tenant_id = %s",
+                (pipeline_id, str(user.tenant_id)),
+            )
             row = await cur.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="pipeline_no_encontrado")
@@ -1279,7 +1278,7 @@ async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_curren
     # transición (el `user_id` que este backend manda es el del pedido, no
     # el que queda registrado como dueño -- ownership no cambia con recover).
     if _es_superadmin(user):
-        await _require_pipeline_exists(pipeline_id)
+        await _require_pipeline_tenant(pipeline_id, user)
     else:
         await _require_pipeline_owner(pipeline_id, user)
         # Fix round 1, Ruling 13(a): el 403 es SÓLO "otro te lo ganó" --
@@ -1297,21 +1296,15 @@ async def recover_pipeline(pipeline_id: str, user: AuthUser = Depends(get_curren
 
 @router.post("/{pipeline_id}/hide")
 async def hide_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
-    # Sin _require_pipeline_owner/_require_pipeline_exists antes: superadmin
-    # ya es la única guardia (spec §4), y un pipeline_id inexistente lo
-    # rechaza Jacobs con 404 pipeline_no_encontrado -- una consulta local de
-    # más acá no cambiaría el resultado (LAS CUATRO/cache). Sí se valida la
-    # FORMA (400 pipeline_id_invalido, fix round 1 Ruling 13(b)): eso no
-    # gasta una consulta, y es el mismo 400 explícito que ya dan los demás
-    # proxies para un id con forma rara -- antes hide/restore lo mandaban
-    # tal cual a Jacobs.
-    _validar_uuid_o_400(pipeline_id)
+    # Superadmin puede operar sobre otros usuarios del mismo tenant, nunca
+    # cruzar al tenant de otro superadmin.
+    await _require_pipeline_tenant(pipeline_id, user)
     return await _proxy_descarte(pipeline_id, "hide", user)
 
 
 @router.post("/{pipeline_id}/restore")
 async def restore_pipeline(pipeline_id: str, user: AuthUser = Depends(require_superadmin)):
-    _validar_uuid_o_400(pipeline_id)
+    await _require_pipeline_tenant(pipeline_id, user)
     return await _proxy_descarte(pipeline_id, "restore", user)
 
 
@@ -1451,7 +1444,7 @@ async def auditoria_descarte(pipeline_id: str, user: AuthUser = Depends(get_curr
     # intencional -- es el punto de una auditoría, no una fuga. No se
     # redacta ni se reemplaza por un rol genérico.
     if _es_superadmin(user):
-        await _require_pipeline_exists(pipeline_id)
+        await _require_pipeline_tenant(pipeline_id, user)
     else:
         await _require_pipeline_owner(pipeline_id, user)
     pool = await get_pool()

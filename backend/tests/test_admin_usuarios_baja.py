@@ -265,7 +265,7 @@ def test_la_lista_sin_dados_de_baja_no_ordena_en_memoria(client):
     columna) y la lista devuelve casi todas las filas, así que el plan correcto
     es recorrer la PK en el orden del ORDER BY y filtrar: sin filesort ni
     temporal."""
-    filas = client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_USUARIOS, (), True)
+    filas = client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_USUARIOS, (1,), True)
     ((_id, _sel, tabla, _tipo, _posibles, _clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jax_users"
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
@@ -341,16 +341,16 @@ def test_lista_sin_el_parametro_bajas_no_cambia(client, usuarios):
 def test_lista_de_bajas_explain_sin_filesort_ni_temporal(client):
     """LAS CUATRO (indexing), EXPLAIN sobre la consulta REAL de
     SQL_LISTA_BAJAS: `b` (la fila dada de baja) recorre la PK en el orden del
-    ORDER BY -- igual que SQL_LISTA_USUARIOS, tabla chica y crece despacio,
-    aceptado por el plan -- y `a` (el actor, LEFT JOIN por PK) es eq_ref.
+    ORDER BY -- la lista del tenant usa idx_jax_users_tenant_user, y `a`
+    (el actor, LEFT JOIN por PK) es eq_ref.
     Ninguna de las dos filas usa filesort ni tabla temporal."""
-    filas = [tuple(f) for f in client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_BAJAS, (), True)]
+    filas = [tuple(f) for f in client.portal.call(sql, "EXPLAIN " + users_mod.SQL_LISTA_BAJAS, (1,), True)]
     por_tabla = {f[2]: f for f in filas}
     assert set(por_tabla) == {"b", "a"}
     _id, _sel, _tabla_b, tipo_b, _posibles_b, clave_b, _largo_b, _ref_b, _filas_b, extra_b = por_tabla["b"]
     _id, _sel, _tabla_a, tipo_a, _posibles_a, _clave_a, _largo_a, _ref_a, _filas_a, extra_a = por_tabla["a"]
-    assert tipo_b in ("ALL", "index", "ref")
-    assert clave_b == "PRIMARY", filas  # fix ronda 1: no basta el type, el plan tiene que usar la PK
+    assert tipo_b in ("index", "ref", "range")
+    assert clave_b in ("PRIMARY", "idx_jax_users_tenant_user"), filas
     assert tipo_a == "eq_ref"
     for extra in (extra_b, extra_a):
         assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas

@@ -2658,6 +2658,18 @@ async def _indice_de_uso_por_periodo(cur) -> None:
             cur, "axioma_usage", "idx_axioma_usage_periodo", DDL_INDICE_USO_POR_PERIODO)
 
 
+DDL_INDICE_USO_POR_TENANT_PERIODO = (
+    "ALTER TABLE axioma_usage ADD INDEX idx_axioma_usage_tenant_periodo (tenant_id, created_at), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _indice_de_uso_por_tenant_periodo(cur) -> None:
+    if not await _index_exists(cur, "axioma_usage", "idx_axioma_usage_tenant_periodo"):
+        await _crear_indice_acotado(
+            cur, "axioma_usage", "idx_axioma_usage_tenant_periodo", DDL_INDICE_USO_POR_TENANT_PERIODO)
+
+
 # Task 15 R12c (2026-09-16): el conteo de cuentas bloqueadas del tablero
 # (api/admin/dashboard.py::SQL_CUENTAS_BLOQUEADAS) era `ALL` sobre jax_users.
 # jax_users la lee CADA request autenticado (auth/middleware.py,
@@ -2670,6 +2682,29 @@ DDL_INDICE_CUENTAS_BLOQUEADAS = (
     "ALTER TABLE jax_users ADD INDEX idx_jax_users_locked_until (locked_until), "
     "ALGORITHM=INPLACE, LOCK=NONE"
 )
+
+DDL_INDICE_CUENTAS_BLOQUEADAS_TENANT = (
+    "ALTER TABLE jax_users ADD INDEX idx_jax_users_tenant_locked_until (tenant_id, locked_until), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _indice_de_cuentas_bloqueadas_por_tenant(cur) -> None:
+    if not await _index_exists(cur, "jax_users", "idx_jax_users_tenant_locked_until"):
+        await _crear_indice_acotado(
+            cur, "jax_users", "idx_jax_users_tenant_locked_until", DDL_INDICE_CUENTAS_BLOQUEADAS_TENANT)
+
+
+DDL_INDICE_USUARIOS_TENANT_ORDEN = (
+    "ALTER TABLE jax_users ADD INDEX idx_jax_users_tenant_user (tenant_id, user_id), "
+    "ALGORITHM=INPLACE, LOCK=NONE"
+)
+
+
+async def _indice_de_usuarios_por_tenant(cur) -> None:
+    if not await _index_exists(cur, "jax_users", "idx_jax_users_tenant_user"):
+        await _crear_indice_acotado(
+            cur, "jax_users", "idx_jax_users_tenant_user", DDL_INDICE_USUARIOS_TENANT_ORDEN)
 
 
 async def _indice_de_cuentas_bloqueadas(cur) -> None:
@@ -3770,7 +3805,10 @@ async def run_migrations():
                 if not await _index_exists(cur, table_name, index_name):
                     await cur.execute(ddl)
             await _indice_de_uso_por_periodo(cur)
+            await _indice_de_uso_por_tenant_periodo(cur)
             await _indice_de_cuentas_bloqueadas(cur)
+            await _indice_de_cuentas_bloqueadas_por_tenant(cur)
+            await _indice_de_usuarios_por_tenant(cur)
             await _indice_de_uso_por_pipeline(cur)
             await _respaldo_de_uso(cur)
 

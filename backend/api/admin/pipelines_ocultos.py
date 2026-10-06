@@ -1,11 +1,11 @@
 """Pipelines ocultos Y descartados (spec 2026-09-22-descartar-pipelines §4-5;
 GET /descartados agregado 2026-09-22 al cerrar los dos huecos de la revisión
-final): las dos vistas del superadmin sobre TODOS los usuarios, paginadas.
+final): las vistas paginadas de ocultos y descartados del tenant autenticado.
 
 "Un hidden no aparece en ninguna lista de su dueño: para él, ya no existe"
 (spec §4) -- /ocultos es la ÚNICA vista que los muestra, y sólo al
 superadmin. /descartados es su equivalente para 'discarded': el superadmin
-ya podía ocultar/restaurar el descartado de OTRO usuario (POST
+ya podía ocultar/restaurar el descartado de OTRO usuario del mismo tenant (POST
 /api/pipelines/{id}/hide, sin exigir dueño), pero no tenía forma de VERLO
 si no era el que lo había descartado -- GET /api/pipelines?estado=discarded
 filtra por el usuario del token. Sin esta vista, un superadmin que
@@ -24,9 +24,12 @@ router = APIRouter(prefix="/api/admin/pipelines")
 
 LIMITE_MAX = 50
 
+# La vista conserva el alcance de superadmin entre usuarios del MISMO tenant;
+# tenant_id no se puede omitir en un sistema con más de un tenant.
 SQL_OCULTOS = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines WHERE status='hidden' "
+    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "WHERE tenant_id = %s AND status='hidden' "
     "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
 
@@ -41,7 +44,7 @@ async def listar_ocultos(
     async with pool.acquire() as conn, conn.cursor() as cur:
         # limite+1 (LAS CUATRO/cache): sabe si hay página siguiente sin un
         # segundo COUNT(*), mismo patrón que list_pipelines (api/pipelines.py).
-        await cur.execute(SQL_OCULTOS, (limite + 1, offset))
+        await cur.execute(SQL_OCULTOS, (str(user.tenant_id), limite + 1, offset))
         filas = await cur.fetchall()
     campos = ("pipeline_id", "name", "user_id", "tenant_id", "descartado_por",
               "descartado_at", "created_at")
@@ -56,24 +59,20 @@ async def listar_ocultos(
 # 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
 # Pipelines, punto 1): el equivalente de SQL_OCULTOS para status='discarded'
 # -- MISMA forma (campos, paginación limite+1), sólo cambia el status del
-# WHERE. Reusa `idx_pipelines_ocultos` (status, descartado_at), NO
-# `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at):
-# ese índice sirve a la vista de descartados DEL DUEÑO
-# (SQL_DESCARTADOS_DEL_USUARIO, api/pipelines.py), que SÍ filtra por
-# user_id/tenant_id -- esta vista es de TODOS los usuarios, igual que
-# /ocultos, así que el índice que evita el filesort es el mismo que ya usa
-# su hermano. Verificado con EXPLAIN contra datos con forma de producción
-# (test_explain_descartados_admin_usa_idx_pipelines_ocultos_sin_filesort,
-# tests/test_pipelines_descartados_admin.py) -- ver el docstring de ese
-# archivo para la medición completa y por qué NO es el índice que menciona
-# el encargo original.
+# WHERE. Fuerza `idx_pipelines_tenant_status_date` (tenant_id, status,
+# descartado_at, pipeline_id): `idx_pipelines_ocultos` omite tenant_id y puede
+# recorrer descartados de todos los tenants. El otro índice,
+# `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at),
+# sirve a la vista del dueño. Verificado con EXPLAIN en los tests admin de
+# descartados y ocultos.
 #
 # 2026-09-23: orden TOTAL (descartado_at DESC, pipeline_id DESC) y
 # paginación por cursor además de offset -- ver api/paginacion_descartados.py
 # y docs/carga-descartados-cursor-2026-09-23.md.
 SQL_DESCARTADOS_ADMIN_BASE = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines WHERE status='discarded' "
+    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
+    "WHERE tenant_id = %s AND status='discarded' "
 )
 SQL_DESCARTADOS_ADMIN = SQL_DESCARTADOS_ADMIN_BASE + ORDEN + "LIMIT %s OFFSET %s"
 
@@ -86,7 +85,9 @@ async def listar_descartados_admin(
     user: AuthUser = Depends(require_superadmin),
 ):
     exigir_cursor_sin_offset(cursor, offset)
-    consulta, params = consulta_y_parametros(SQL_DESCARTADOS_ADMIN_BASE, (), limite, offset, cursor)
+    consulta, params = consulta_y_parametros(
+        SQL_DESCARTADOS_ADMIN_BASE, (str(user.tenant_id),), limite, offset, cursor,
+    )
     pool = await get_pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute(consulta, params)

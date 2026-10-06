@@ -31,10 +31,12 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
     assert set(forzados) == {
         ("jacobs_pipelines", "idx_pipelines_visibles"),
         ("jacobs_pipelines", "idx_pipelines_descartados"),
+        ("jacobs_pipelines", "idx_pipelines_tenant_status_date"),
         ("jacobs_events", "idx_events_pipeline_tipo"),
     }, forzados
     for donde in forzados.values():
-        assert all(d.startswith("api/pipelines.py:") for d in donde), donde
+        assert all(d.startswith(("api/pipelines.py:", "api/admin/pipelines_ocultos.py:"))
+                   for d in donde), donde
 
 
 def test_comentarios_docstrings_y_tests_no_cuentan(tmp_path):

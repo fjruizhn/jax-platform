@@ -15,8 +15,8 @@ from tests.identidades import sql
 
 async def _crear_fact(fact_text, fact_type="technical", is_verified=False, expires_at=None):
     return await sql(
-        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, expires_at) "
-        "VALUES (UUID(), %s, %s, %s, %s)",
+        "INSERT INTO facts (fact_uuid, fact_text, fact_type, is_verified, expires_at, user_id) "
+        "VALUES (UUID(), %s, %s, %s, %s, 1)",
         (fact_text, fact_type, is_verified, expires_at),
     )
 
@@ -33,6 +33,11 @@ async def _borrar_fact(fact_id):
     if nuevo_id:
         await sql("DELETE FROM facts WHERE id = %s", (nuevo_id,))
     await sql("DELETE FROM facts WHERE id = %s", (fact_id,))
+
+
+async def _id_fact(texto):
+    filas = await sql("SELECT id FROM facts WHERE fact_text = %s ORDER BY id DESC LIMIT 1", (texto,), True)
+    return filas[0][0]
 
 
 @pytest.fixture(autouse=True)
@@ -370,7 +375,8 @@ def test_caducar_con_la_base_caida_no_es_404_sobre_un_hecho_que_existe(
     assert memoria is not None, "la memoria no se conecto -- el test no probaria nada"
 
     monkeypatch.setattr(memoria, "expire_fact", AsyncMock(return_value=None))
-    r = client_superadmin.post("/api/admin/memoria/hechos/1/caducar", json={})
+    fid = client_superadmin.portal.call(_id_fact, "hecho de prueba memoria admin A")
+    r = client_superadmin.post(f"/api/admin/memoria/hechos/{fid}/caducar", json={})
     assert r.status_code == 503, (
         f"esperaba 503 (memoria_no_disponible), no {r.status_code}: un None "
         "de expire_fact es 'la base no respondio', y ANTES de este arreglo "
@@ -575,8 +581,9 @@ def test_caducar_si_no_se_puede_resolver_la_zona_horaria_es_503_y_no_toca_expire
     expire_fact_llamado = AsyncMock(return_value=True)
     monkeypatch.setattr(memoria, "expire_fact", expire_fact_llamado)
 
+    fid = client_superadmin.portal.call(_id_fact, "hecho de prueba memoria admin A")
     r = client_superadmin.post(
-        "/api/admin/memoria/hechos/1/caducar",
+        f"/api/admin/memoria/hechos/{fid}/caducar",
         json={"vence_at": datetime.now(timezone.utc).isoformat()})
     assert r.status_code == 503, r.text
     assert r.json()["detail"] == "memoria_no_disponible"

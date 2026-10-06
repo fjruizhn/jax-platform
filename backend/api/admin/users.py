@@ -164,7 +164,8 @@ async def _sincronizar_membresias_admin_tenant(cur, *, actor_id: int, target_id:
 SQL_LISTA_USUARIOS = (
     "SELECT user_id, email, role, status, UNIX_TIMESTAMP(created_at), "
     "UNIX_TIMESTAMP(last_login), failed_attempts, locked_until "
-    "FROM jax_users WHERE status <> 'deleted' ORDER BY user_id"
+    "FROM jax_users "
+    "WHERE tenant_id = %s AND status <> 'deleted' ORDER BY user_id"
 )
 
 # Historial de las bajas visible desde la UI (2026-09-15, Task 2, DEUDA U36).
@@ -178,8 +179,9 @@ SQL_LISTA_USUARIOS = (
 # tests/test_admin_usuarios_baja.py::test_lista_de_bajas_explain_sin_filesort_ni_temporal.
 SQL_LISTA_BAJAS = (
     "SELECT b.user_id, b.email, b.role, b.deleted_at, b.deleted_by, a.email AS deleted_by_email "
-    "FROM jax_users b LEFT JOIN jax_users a ON a.user_id = b.deleted_by "
-    "WHERE b.status = 'deleted' ORDER BY b.user_id"
+    "FROM jax_users b "
+    "LEFT JOIN jax_users a ON a.user_id = b.deleted_by AND a.tenant_id = b.tenant_id "
+    "WHERE b.tenant_id = %s AND b.status = 'deleted' ORDER BY b.user_id"
 )
 
 
@@ -198,7 +200,7 @@ async def list_users(bajas: bool = False, user: AuthUser = Depends(require_super
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             if bajas:
-                await cur.execute(SQL_LISTA_BAJAS)
+                await cur.execute(SQL_LISTA_BAJAS, (int(user.tenant_id),))
                 rows = await cur.fetchall()
                 return {
                     "users": [
@@ -214,7 +216,7 @@ async def list_users(bajas: bool = False, user: AuthUser = Depends(require_super
                     ]
                 }
             now = utc_ahora()
-            await cur.execute(SQL_LISTA_USUARIOS)
+            await cur.execute(SQL_LISTA_USUARIOS, (int(user.tenant_id),))
             rows = await cur.fetchall()
     return {
         "users": [
@@ -350,8 +352,8 @@ async def update_user(
         try:
             await cur.execute(
                 "UPDATE jax_users SET email = %s, role = %s, status = %s, "
-                "token_version = token_version + %s WHERE user_id = %s",
-                (nuevo_email, nuevo_rol, nuevo_estado, 1 if corta_sesiones else 0, user_id),
+                "token_version = token_version + %s WHERE user_id = %s AND tenant_id = %s",
+                (nuevo_email, nuevo_rol, nuevo_estado, 1 if corta_sesiones else 0, user_id, tenant_id),
             )
         except aiomysql.IntegrityError as e:
             if e.args and e.args[0] == ER_DUP_ENTRY:
@@ -385,8 +387,8 @@ async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(r
         if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute(
-            "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
-            (user_id,),
+            "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s AND tenant_id = %s",
+            (user_id, int(user.tenant_id)),
         )
         await user_audit.registrar(cur, int(user.user_id), user_id, "unlock", None, _ip(request))
     return {"ok": True}
@@ -399,7 +401,10 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
-        await cur.execute("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
+        await cur.execute(
+            "UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s AND tenant_id = %s",
+            (user_id, int(user.tenant_id)),
+        )
         await user_audit.registrar(cur, int(user.user_id), user_id, "sessions_revoked", None, _ip(request))
     # ...y las conexiones WS/SSE ya abiertas, tras el commit (como el PUT y la baja).
     await _cortar_conexiones(user_id)
@@ -408,8 +413,16 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
 
 @router.get("/users/{user_id}/audit")
 async def user_audit_history(user_id: int, user: AuthUser = Depends(require_superadmin)):
-    # Últimas 50, más nueva primero; por idx_user_admin_audit_target_ts.
-    return {"entries": await user_audit.historial(user_id)}
+    # Nunca consultar auditoría de un usuario fuera del tenant autenticado.
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM jax_users WHERE user_id = %s AND tenant_id = %s",
+            (user_id, int(user.tenant_id)),
+        )
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+    return {"entries": await user_audit.historial(user_id, tenant_id=int(user.tenant_id))}
 
 
 async def _borrar_enlace_no_entregado(token: str) -> None:
@@ -429,6 +442,7 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     recuperación pública (_crear_enlace_de_recuperacion + _send_reset_email),
     pero NO su envoltorio fail-soft: acá el admin ESPERA el envío (en un hilo)
     y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe."""
+    tenant_id = int(user.tenant_id)
     try:
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:
@@ -445,8 +459,9 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     # El envío va DESPUÉS del commit: nunca se retiene una fila durante SMTP.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         await cur.execute(
-            "SELECT email, status FROM jax_users WHERE user_id = %s AND status <> 'deleted' FOR UPDATE",
-            (user_id,),
+            "SELECT email, status FROM jax_users WHERE user_id = %s AND tenant_id = %s "
+            "AND status <> 'deleted' FOR UPDATE",
+            (user_id, tenant_id),
         )
         fila = await cur.fetchone()
         if fila is None:
@@ -556,8 +571,9 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
-            "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
-            (nuevo_hash, user_id),
+            "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL "
+            "WHERE user_id = %s AND tenant_id = %s",
+            (nuevo_hash, user_id, tenant_id),
         )
         await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
         # Sin detalle: ni la contraseña ni el hash salen de jax_users.
@@ -603,8 +619,9 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
         await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted", tenant_id)
         await cur.execute(
             "UPDATE jax_users SET status = 'deleted', deleted_at = %s, deleted_by = %s, email = %s, "
-            "token_version = token_version + 1, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
-            (ahora, actor_id, email_de_baja(email_actual, user_id, ahora.date()), user_id),
+            "token_version = token_version + 1, failed_attempts = 0, locked_until = NULL "
+            "WHERE user_id = %s AND tenant_id = %s",
+            (ahora, actor_id, email_de_baja(email_actual, user_id, ahora.date()), user_id, tenant_id),
         )
         # Ningún enlace de recuperación vivo sobrevive a la baja. Va DESPUÉS
         # de bloquear la fila del usuario (usuario -> token, el orden de
