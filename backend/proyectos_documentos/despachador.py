@@ -64,6 +64,7 @@ from pathlib import Path
 import httpx
 
 import ajustes
+from catalogo_modelos_ejecutor import _enviar_telegram
 from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
@@ -149,13 +150,7 @@ _en_incertidumbre: dict[int, float] = {}
 _avisos: set[asyncio.Task] = set()
 _avisos_freno_incertidumbre: set[asyncio.Task] = set()
 _freno_incertidumbre_activo = False
-
-_LIB_AVISAR = os.environ.get("LIB_AVISAR", "/opt/backup-scripts/lib/lib-avisar.sh")
-_DIRECTORIO_CREDENCIALES = os.environ.get("CREDENTIALS_DIRECTORY", "")
-_TELEGRAM_CREDS = os.environ.get(
-    "TELEGRAM_CREDS",
-    os.path.join(_DIRECTORIO_CREDENCIALES, "telegram.env") if _DIRECTORIO_CREDENCIALES
-    else "/etc/restic/telegram.env")
+_ultimo_aviso_freno_incertidumbre: float | None = None
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -492,7 +487,7 @@ async def _despachar(pool) -> None:
     el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
     1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
-    global _freno_incertidumbre_activo
+    global _freno_incertidumbre_activo, _ultimo_aviso_freno_incertidumbre
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -503,7 +498,7 @@ async def _despachar(pool) -> None:
     # `2 * rutas_por_trabajo` o mas, el ciclo NO despacha nada (falla cerrado) y la lista que se le pasa a la
     # consulta (`NOT IN`) queda acotada.
     freno_activo = len(_en_incertidumbre) >= 2 * por_trabajo
-    if not freno_activo:
+    if not _en_incertidumbre:
         _freno_incertidumbre_activo = False
     if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
@@ -511,7 +506,16 @@ async def _despachar(pool) -> None:
                        len(_en_incertidumbre), 2 * por_trabajo)
         if not _freno_incertidumbre_activo:
             _freno_incertidumbre_activo = True
-            _programar_aviso_freno_incertidumbre(len(_en_incertidumbre), 2 * por_trabajo)
+            try:
+                enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
+            except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
+                logger.error("proyectos_documentos: no se pudo leer el enfriamiento del aviso (%s); "
+                             "Telegram no se programa", type(exc).__name__)
+                return
+            if (_ultimo_aviso_freno_incertidumbre is None
+                    or ahora - _ultimo_aviso_freno_incertidumbre >= enfriamiento):
+                _ultimo_aviso_freno_incertidumbre = ahora
+                _programar_aviso_freno_incertidumbre(len(_en_incertidumbre), 2 * por_trabajo)
         return
     saltados: set[tuple[str, object]] = set()
     for _pasada in range(len(tipos.CLASES) + 1):
@@ -530,24 +534,19 @@ def _programar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
 
 
 async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
-    """Aviso best-effort por la librería compartida. Sus credenciales nunca pasan por argv ni por logs."""
-    script = 'source "$1" && avisar_seguro "$2" "$3"'
-    titulo = "⚠️ JAX: freno de incertidumbre activo"
-    cuerpo = (f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
-              f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "
-              "Revisar si LAS MANOS está cortando las conexiones.")
-    entorno = {"PATH": "/usr/bin:/bin"}
-    entorno["LIB_AVISAR"] = _LIB_AVISAR
-    entorno["TELEGRAM_CREDS"] = _TELEGRAM_CREDS
+    """Envío best-effort por el canal compartido; nunca manipula ni registra credenciales."""
+    mensaje = ("⚠️ JAX: freno de incertidumbre activo\n"
+               f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
+               f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "
+               "Revisar si LAS MANOS está cortando las conexiones.")
     try:
-        proceso = await asyncio.create_subprocess_exec(
-            "/bin/bash", "-c", script, "lib-avisar", _LIB_AVISAR, titulo, cuerpo,
-            env=entorno, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        codigo = await proceso.wait()
-        if codigo:
-            logger.warning("proyectos_documentos: lib-avisar terminó con estado %s", codigo)
+        entregado = await _enviar_telegram(mensaje)
     except Exception as exc:  # fail-soft: un aviso ausente o roto no puede frenar el despachador
-        logger.warning("proyectos_documentos: no se pudo ejecutar lib-avisar (%s)", type(exc).__name__)
+        logger.error("proyectos_documentos: falló el envío del aviso de incertidumbre (%s)", type(exc).__name__)
+        return
+    if not entregado:
+        logger.error("proyectos_documentos: Telegram no confirmó la entrega del aviso de incertidumbre; "
+                     "revisar credenciales y el motivo registrado por catalogo_modelos_ejecutor")
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
@@ -647,10 +646,23 @@ async def start_despachador(forzado: bool = False):
     if not forzado and _corriendo_bajo_pytest():
         logger.warning("proyectos_documentos: el despachador no arranca bajo pytest")
         return
-    while True:
-        try:
-            await ciclo(await get_pool())
-        except Exception:  # fail-soft: loop de despacho en background, mismo patron que start_limpieza_de_adjuntos -- nunca debe tumbar el proceso; las filas siguen en_cola y el proximo ciclo reintenta
-            logger.warning("proyectos_documentos: el despachador fallo, se reintenta en el proximo ciclo",
-                           exc_info=True)
-        await _dormir(INTERVALO_SEGUNDOS)
+    try:
+        while True:
+            try:
+                await ciclo(await get_pool())
+            except Exception:  # fail-soft: loop de despacho en background, mismo patron que start_limpieza_de_adjuntos -- nunca debe tumbar el proceso; las filas siguen en_cola y el proximo ciclo reintenta
+                logger.warning("proyectos_documentos: el despachador fallo, se reintenta en el proximo ciclo",
+                               exc_info=True)
+            await _dormir(INTERVALO_SEGUNDOS)
+    finally:
+        await _cancelar_avisos_freno_incertidumbre()
+
+
+async def _cancelar_avisos_freno_incertidumbre() -> None:
+    """Cancela y espera los envíos al apagar el despachador; no deja tareas huérfanas."""
+    tareas = tuple(_avisos_freno_incertidumbre)
+    for tarea in tareas:
+        if not tarea.done():
+            tarea.cancel()
+    if tareas:
+        await asyncio.gather(*tareas, return_exceptions=True)
