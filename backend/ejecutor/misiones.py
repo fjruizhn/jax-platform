@@ -58,6 +58,11 @@ LIMITE_DE_LISTA = 100
 
 SQL_MAQUINAS = ("SELECT nombre, rol, con_datos_de_clientes, activo FROM ejecutor_host ORDER BY nombre")
 SQL_COMPUERTA = "SELECT config_value FROM axioma_config WHERE config_key = %s"
+SQL_PROVEEDOR_FACETA_CONFIGURADA = (
+    "SELECT p.id, p.is_local FROM axioma_config c "
+    "JOIN facet_binding b ON b.facet_key = c.config_value AND b.role = 'primary' "
+    "JOIN provider p ON p.id = b.provider_id WHERE c.config_key = %s"
+)
 # ¿El auditor local (`ejecutor.auditor_faceta_local`) está bindeado a un proveedor
 # REALMENTE local? Mira `provider.is_local`, nunca el nombre de la faceta: un
 # 'auditor_local' bindeado por error a un proveedor de nube no debe abrir esta puerta. Sin
@@ -180,13 +185,33 @@ async def maquinas() -> list[dict]:
     # usar es local de verdad. La compuerta NO se borra: sigue gobernando el caso que de
     # verdad importa (auditor local mal bindeado a un proveedor de nube).
     cubierto = abierta or await _auditor_local_disponible()
+    solo_ordenes = await _solo_ordenes_nube_disponible()
     salida = []
     for nombre, rol, con_clientes, activo in filas:
         motivo = ("maquina_inactiva" if not activo
-                  else "maquina_con_datos_de_clientes" if con_clientes and not cubierto else None)
+                  else "maquina_con_datos_de_clientes" if con_clientes and not (cubierto or solo_ordenes) else None)
         salida.append({"nombre": nombre, "rol": rol, "con_datos_de_clientes": bool(con_clientes),
                        "activo": bool(activo), "elegible": motivo is None, "motivo_no_elegible": motivo})
     return salida
+
+
+async def _solo_ordenes_nube_disponible() -> bool:
+    """La excepción sólo habilita órdenes si auditor cloud está bindeado y distinto del cerebro,
+    salvo autorización explícita para compartir proveedor. Cada ausencia/caso inválido cierra.
+    """
+    flag = await _consultar(SQL_COMPUERTA, ("ejecutor.c5_auditor_nube_solo_ordenes",), una=True)
+    if not flag or flag[0] != "true":
+        return False
+    auditor = await _consultar(SQL_PROVEEDOR_FACETA_CONFIGURADA, ("ejecutor.auditor_faceta",), una=True)
+    if not auditor or auditor[1]:
+        return False
+    cerebro = await _consultar(SQL_PROVEEDOR_FACETA_CONFIGURADA, ("ejecutor.cerebro_faceta",), una=True)
+    if not cerebro:
+        return False
+    if auditor[0] == cerebro[0]:
+        misma = await _consultar(SQL_COMPUERTA, ("ejecutor.c5_auditor_admite_mismo_proveedor",), una=True)
+        return bool(misma and misma[0] == "true")
+    return True
 
 
 async def _compuerta() -> str:

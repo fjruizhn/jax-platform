@@ -152,6 +152,15 @@ export default function AdminSettings() {
         <CampoNumero id="ajuste-c2-edad-max" etiqueta={t.adminSettingsC2EdadMax} ayuda={t.adminSettingsC2EdadMaxAyuda}
           valor={config['ejecutor.c2_edad_max_s']} limite={limites['ejecutor.c2_edad_max_s']}
           onChange={v => set('ejecutor.c2_edad_max_s', v)} />
+        <div className="rounded-lg border border-borde-control p-3">
+          <label htmlFor="ajuste-c5-solo-ordenes" className="flex items-center gap-2 text-sm font-semibold text-texto">
+            <input id="ajuste-c5-solo-ordenes" type="checkbox"
+              checked={config['ejecutor.c5_auditor_nube_solo_ordenes'] === 'true'}
+              onChange={e => set('ejecutor.c5_auditor_nube_solo_ordenes', e.target.checked ? 'true' : 'false')} />
+            {t.adminSettingsC5SoloOrdenes}
+          </label>
+          <p className={CLASE_AYUDA}>{t.adminSettingsC5SoloOrdenesAyuda}</p>
+        </div>
 
         {error && (
           <AlertaError className="text-sm">{textoDeError(t, error)}</AlertaError>
