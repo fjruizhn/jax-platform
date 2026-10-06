@@ -13,6 +13,7 @@
 - Se añadió `test_carga_e3_20_usuarios_con_pdf_en_proceso`: MariaDB, proyecto, membresías, cola durable, dispatcher y `/api/chat` corren en la base efímera de CI; LAS MANOS conserva el estado `running` durante los turnos. El test imprime p95 y máximo.
 - El nuevo paso focal de CI vuelve a ejecutar la medición con `-s` para que el número quede visible en el log. Aún no hay p95; falta CI del SHA actual.
 - Primera corrida DB del SHA `8ba8445` llegó a `3837 passed, 2 skipped` y falló en el test de carga antes de medir: `BlockingPortal.call` no admite argumentos nombrados. La subida se cambió a POST autenticado por `/api/chat/upload`; espera nueva corrida.
+- Segunda corrida DB ejecutó los 20 turnos pero dejó la fila durable con job simulado abierto. Falló después en `test_despacho_resultado_y_trabajo_perdido`, que comparte esa DB y esperaba encontrar solo sus propios jobs. Se agregó limpieza de la fila E3 al final del test para aislar los datos.
 - El job genérico `loadtest-tests` no mide este E3.
 
 ## Siguiente

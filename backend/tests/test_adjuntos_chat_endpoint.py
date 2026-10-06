@@ -455,7 +455,7 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
 
 
 @pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
-def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, tmp_path):
+def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, tmp_path, request):
     """Mide 20 turnos mientras el dispatcher tiene un PDF en estado procesando.
 
     MariaDB, membresías, documento, transición durable y chat son reales dentro
@@ -486,6 +486,10 @@ def test_carga_e3_20_usuarios_con_pdf_en_proceso(client, grabador, monkeypatch, 
     assert response.status_code == 200, response.text
     uploaded = response.json()
     assert uploaded["tipo"] == "pdf_procesando"
+    # La suite comparte la DB efímera entre tests; retirar la fila abierta al
+    # terminar para no contaminar aserciones de `trabajos_abiertos` posteriores.
+    request.addfinalizer(lambda: client.portal.call(
+        sql, "DELETE FROM project_documents WHERE id=%s", (uploaded["document_id"],)))
 
     identidades = []
     for n in range(20):
