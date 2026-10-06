@@ -3639,15 +3639,16 @@ jobs:
           #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
           #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
           #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
-          # 3836 -> 3876 (Hyde, ronda 5 de #203 rebasada sobre master 303006f, 2026-10-06): MEDIDO LOCAL con el
-          # venv de pruebas (requirements + requirements-archivos del pin, como la CI) y mariadb:12.3.3
-          # desechable: master 303006f = 3837 passed / 1 skipped / 0 failed; esta rama = 3876 / 1 / 0.
-          # Delta +39 por archivo: test_ajustes +5 (EXPLAIN con relleno y sus bordes: 4 de bordes + la prueba
-          # del enfriamiento), test_catalogo_modelos_ejecutor +12 (desenlaces de Telegram),
-          # test_despachador_aviso_freno_simulado +13 (archivo nuevo), test_main_despachador_lifespan +2,
-          # test_proyectos_documentos_despachador +7. El absoluto del runner lo confirma la CI (regla 5);
-          # master local da 3837 contra su piso de 3836.
-          PISO_PASSED = 3876
+          # 3836 -> 3875 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO EN EL RUNNER, run
+          # 37498133766 sobre e8d2cca: colectados=3877 passed=3875 skipped=2 (1 de entorno y 1 SR2 gateado) failed=0.
+          # El local (venv-jxp-tests + mariadb:12.3.3 desechable) daba 3876: +1 sobre el runner, por un skip de
+          # entorno que el runner si saltea. Por eso el local NO fija el piso: el piso es base del runner + delta local.
+          # 3875 -> 3897 (ronda 6 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +22, medido con
+          # el mismo comando sobre e8d2cca (3876) y sobre la rama (3898): test_catalogo_modelos_ejecutor +17 (clasificar
+          # proxy, escritura, gateway y 200 ilegible; sin cliente HTTP) y test_despachador_aviso_freno_simulado +5
+          # (D2, recordatorio con ReadTimeout y con entrega confirmada, sin enfriamiento, ProxyError permanente).
+          # El absoluto del runner lo confirma la CI (regla 5).
+          PISO_PASSED = 3897
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4737,13 +4738,14 @@ jobs:
       # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
       # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
       # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
-      # 2361 -> 2394 (Hyde, ronda 5 de #203 rebasada sobre master 303006f, 2026-10-06): MEDIDO LOCAL con
-      # JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master
-      # 303006f = 2361 passed / 1477 skipped; esta rama = 2394 passed / 1483 skipped. Delta +33 puras por
-      # archivo: test_ajustes +1, test_catalogo_modelos_ejecutor +12, test_despachador_aviso_freno_simulado +13,
-      # test_main_despachador_lifespan +2, test_proyectos_documentos_despachador +5. Los +6 skipped son
-      # pruebas con `client`. El absoluto del runner lo confirma la CI (regla 5).
-      JAX_CI_MIN_PASSED: "2394"
+      # 2361 -> 2394 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO LOCAL con JAX_CI_NO_DB=1
+      # CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master 303006f = 2361 passed;
+      # rama e8d2cca = 2394 passed (el job sin DB de e8d2cca paso con ese piso). En la ronda 5 el local con DB dio +1 sobre
+      # el runner; el sin DB no se midio en el runner para ese SHA.
+      # 2394 -> 2416 (ronda 6 de #203, 2026-10-06): +22 puras = base 2394 + delta local medido sobre e8d2cca (2394) y la
+      # rama (2416): test_catalogo_modelos_ejecutor +17 y test_despachador_aviso_freno_simulado +5. Local: 2416 passed /
+      # 1483 skipped. El absoluto del runner lo confirma la CI (regla 5).
+      JAX_CI_MIN_PASSED: "2416"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
