@@ -75,13 +75,18 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
         condiciones.append("d.id > %s")
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
-        # Plan medido con 50k filas (95% `listo`, 5% en_cola) y 300 usuarios: `d` por idx_project_documents_despacho,
-        # sin `Using temporary` ni `Using filesort`; `p`, `s` y `u` por clave. Se probo `STRAIGHT_JOIN` y se REVIRTIO:
-        # con esa siembra el optimizador ya elige ese plan (neutral). Con una siembra irreal (TODAS en cola) arranca
-        # por jax_project_scope y ordena con temporary+filesort, y la pista lo llevaba a PRIMARY: ninguna aplica a
-        # la distribucion real. Ver el test de EXPLAIN del despachador.
-        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
-        "FROM project_documents d "
+        # PLAN FORZADO, con medicion (2026-10-06; MariaDB 12.3.3, 20 proyectos, 300 usuarios, recorrido COMPLETO de la cola por
+        # ventanas de 1000, segundos; actual -> con STRAIGHT_JOIN + FORCE INDEX):
+        #     50k filas, 5% en cola:   0,32 ->   0,01     200k filas, 5% en cola:     3,96 ->   0,04
+        #     50k filas, 100% en cola: 15,62 ->  0,18     200k filas, 100% en cola: 276,71 ->   0,71
+        # Sin la pista el optimizador arranca por `projects`/`jax_project_scope`, une `d` por su FK y ordena con
+        # `Using temporary; Using filesort` EN CADA VENTANA: recorrido cuadratico con la cola llena. Con ella, `d` va
+        # primero por idx_project_documents_despacho (estado, job_id, id), que ya entrega las filas en el orden de
+        # `ORDER BY d.id` y deja el cursor `d.id > ?` como rango; `p`, `s` y `u` se resuelven por clave. (Probados por
+        # separado: cualquiera de las dos pistas arregla el 100%; FORCE INDEX solo evita ademas que a veces recorra
+        # PRIMARY. Se dejan las dos: el plan no depende de las estadisticas.) Test: EXPLAIN y tiempo en 50k/200k.
+        "SELECT STRAIGHT_JOIN d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
+        "FROM project_documents d FORCE INDEX (idx_project_documents_despacho) "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
         "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "

@@ -150,6 +150,10 @@ CAUSAS_DE_ERROR = frozenset({
 # Codigos de LAS MANOS que hablan de la CLAVE de idempotencia, no del documento (409 la misma clave con otro
 # pedido; 422 formato). Nunca convierten documentos sanos en `error`: las filas siguen en_cola.
 CODIGOS_DE_IDEMPOTENCIA = frozenset({"idempotency_key_reuse", "idempotency_key_invalida"})
+# 503 de la idempotencia de LAS MANOS: DESCONOCIDO es de UNA clave (permanente hasta la purga: se salta ese proyecto);
+# NO_DISPONIBLE es global (el almacen de trabajos perdio la integridad: se corta la vuelta, es transitorio).
+CODIGO_ESTADO_DESCONOCIDO = "idempotencia_estado_desconocido"
+CODIGO_NO_DISPONIBLE = "procesamiento_no_disponible"
 ENCABEZADO_DE_IDEMPOTENCIA = "Idempotency-Key"
 PREFIJO_DE_CLAVE = "jxp-doc-v1-"
 # Una ruta absoluta que no es del workspace: se deja solo su ultimo tramo.
@@ -510,6 +514,22 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
         logger.error("proyectos_documentos: LAS MANOS no tiene los extractores del trozo (proyecto %s, %s fila(s)); "
                      "siguen en_cola, con el resto de su grupo, y se sigue con los demas grupos", project_uuid, len(ids))
         return "saltar_grupo"
+    if estado == 503 and _codigo_de(respuesta) == CODIGO_ESTADO_DESCONOCIDO:
+        # Una clave confirmada cuyo trabajo el almacen de LAS MANOS ya no conoce: LAS MANOS no la retoma (podria duplicar
+        # un trabajo vivo) y contesta lo mismo hasta que la purga la borre (7 dias) o alguien la resuelva a mano. Cortar
+        # la vuelta frenaria a TODOS los tenants cada 10 s por un solo proyecto: se salta ESE proyecto, como el 409.
+        logger.error("proyectos_documentos: LAS MANOS no conoce el trabajo de la clave %s (estado DESCONOCIDO); se salta "
+                     "el proyecto %s: trozo de %s fila(s) (ids %s..%s) sin despachar, siguen en_cola; ver "
+                     "docs/runbooks/idempotencia-clave-desconocida.md", abreviar_clave(clave), project_uuid, len(ids),
+                     ids[0], ids[-1])
+        return "saltar_proyecto"
+    if estado == 503 and _codigo_de(respuesta) == CODIGO_NO_DISPONIBLE:
+        # El almacen de trabajos de LAS MANOS perdio la integridad: es global y transitorio; no se despacha nada mas en
+        # esta vuelta (cortar), y la vuelta siguiente reintenta.
+        logger.error("proyectos_documentos: LAS MANOS respondio procesamiento_no_disponible a la clave %s (almacen de "
+                     "trabajos sin integridad); se corta la vuelta, siguen en_cola %s fila(s) del proyecto %s",
+                     abreviar_clave(clave), len(ids), project_uuid)
+        return "cortar"
     if estado in (409, 422) and _codigo_de(respuesta) in CODIGOS_DE_IDEMPOTENCIA:
         # La clave la deriva este codigo de las filas: que LAS MANOS la rechace es un defecto de contrato o
         # de version entre las dos, no del documento. Nunca lo convierte en `error`; queda en_cola y el log lo dice.
@@ -548,7 +568,8 @@ async def _despachar(pool) -> None:
     filas de un proyecto rechazado no llenan la ventana para siempre y los demas salen en el mismo ciclo. Se
     recorre hasta el final de la cola (una ventana con menos filas que el limite) y el cursor vuelve a 0; si el
     ciclo se corta (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada, asi la
-    vuelta siguiente la retoma desde ahi. No hay listas de exclusion de proyectos ni tope de pasadas: una consulta
+    vuelta siguiente la retoma desde ahi (salvo que el corte sea en la primera ventana de un ciclo que arranco con
+    cursor > 0: entonces vuelve a 0, para que ninguna fila quede sin leerse con cortes sostenidos). No hay listas de exclusion de proyectos ni tope de pasadas: una consulta
     por ventana, por indice, y la cola finita."""
     global _cursor_de_cola
     frenadas: set[str] = set()
@@ -566,11 +587,15 @@ async def _despachar(pool) -> None:
                        len(_en_incertidumbre), 2 * por_trabajo)
         return
     saltados: set[tuple[str, object]] = set()
-    cursor = _cursor_de_cola
+    cursor = inicio_del_ciclo = _cursor_de_cola
     while True:
         accion, ultimo, cuantas = await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados, cursor)
         if accion == "cortar":
-            _cursor_de_cola = cursor                 # la ventana cortada se retoma desde su inicio
+            # La ventana cortada se retoma desde su inicio; PERO si el corte fue en la PRIMERA ventana de un ciclo que
+            # arranco con el cursor > 0, el siguiente ciclo empieza en 0: con cortes sostenidos en la misma ventana, el
+            # cursor nunca volveria a 0 y las filas de ids bajos (viejas, o re-encoladas) no se leerian jamas. Asi toda
+            # fila se lee al menos cada DOS ciclos que corten.
+            _cursor_de_cola = 0 if (cursor == inicio_del_ciclo and inicio_del_ciclo > 0) else cursor
             return
         if cuantas < LIMITE_DE_FILAS_POR_CICLO:      # ventana incompleta: se llego al final de la cola
             _cursor_de_cola = 0

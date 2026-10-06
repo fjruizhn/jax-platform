@@ -9,6 +9,7 @@ marcha (sin resultados) para no tocarlos.
 import asyncio
 import json
 import logging
+import time
 import os
 import re
 import uuid
@@ -41,16 +42,23 @@ CONTRATO_IDEMPOTENCIA = (
     ("pending", False, "conflicto"),
     ("failed", False, "conflicto"),
     ("completed", False, "conflicto"),
+    # Desenlaces que NO son un trabajo (503 con codigo estable; ver la tabla de jax para su origen).
+    ("confirmado_ausente", True, "desconocido"),
+    ("almacen_sin_integridad", True, "no_disponible"),
 )
 ESTADOS_QUE_SE_REINTENTAN = frozenset({"failed", "cancelled", "rejected"})
 
 
 def decision_del_contrato(estado_previo, mismo_pedido):
     """La regla del contrato, escrita una vez: la usa la falsa y la verifica la tabla."""
+    if estado_previo == "almacen_sin_integridad":      # global: antes que nada, como en la ruta real
+        return "no_disponible"
     if estado_previo is None:
         return "crea"
     if not mismo_pedido:
         return "conflicto"
+    if estado_previo == "confirmado_ausente":
+        return "desconocido"
     return "crea" if estado_previo in ESTADOS_QUE_SE_REINTENTAN else "mismo"
 
 
@@ -94,6 +102,10 @@ class LasManosFalsa:
                 resultado = decision_del_contrato(self.estado_de_trabajo[previo_id], previo_huella == huella)
                 if resultado == "conflicto":
                     return httpx.Response(409, json={"detail": {"code": "idempotency_key_reuse"}})
+                if resultado == "desconocido":
+                    return httpx.Response(503, json={"detail": {"code": "idempotencia_estado_desconocido"}})
+                if resultado == "no_disponible":
+                    return httpx.Response(503, json={"detail": {"code": "procesamiento_no_disponible"}})
                 if resultado == "mismo":
                     return httpx.Response(202, json={"job_id": previo_id, "estado": self.estado_de_trabajo[previo_id]},
                                           headers={"Idempotent-Replayed": "true"})
@@ -1203,6 +1215,10 @@ def test_la_falsa_de_las_manos_cumple_el_contrato_compartido(e, previo, mismo, e
     r = post(["a.pdf"] if mismo else ["otro.pdf"])
     if esperado == "conflicto":
         assert r.status_code == 409
+    elif esperado == "desconocido":
+        assert r.status_code == 503 and r.json()["detail"]["code"] == "idempotencia_estado_desconocido"
+    elif esperado == "no_disponible":
+        assert r.status_code == 503 and r.json()["detail"]["code"] == "procesamiento_no_disponible"
     elif esperado == "mismo":
         assert r.status_code == 202 and r.json()["job_id"] == viejo
     else:
@@ -1326,11 +1342,74 @@ def test_un_ciclo_cortado_retoma_desde_el_inicio_de_la_ventana_cortada(e, monkey
     assert despachador._cursor_de_cola == 0
 
 
-def test_explain_de_la_consulta_real_con_cursor_sobre_50k_filas_y_cientos_de_usuarios(e):
-    """MINOR-H: EXPLAIN y ANALYZE de la consulta REAL (con cursor, ids excluidos y una clase frenada) sobre una tabla
-    sembrada con volumen: 50.000 filas en 20 proyectos, repartidas entre 300 usuarios, el 95% ya procesadas (`listo`)
-    como en produccion y solo el 5% `en_cola`. Sin `Using temporary` ni
-    `Using filesort`, por `idx_project_documents_despacho`, y examinando del orden de LIMITE filas, no de la tabla."""
+def _otro_proyecto_con_filas(e, k, estado_archivado=False):
+    """Un proyecto del mismo dueno con `k` filas en_cola (opcionalmente ARCHIVED despues de insertarlas)."""
+    pid, puuid = e.proyecto()
+    base = uuid.uuid4().int % 10**12 * 10**6
+    ids = [_insertar(e.client, pid, e.usuario, f"{base + i:064x}"[-64:], f"o{i}.pdf",
+                     f"proyectos/{puuid}/entrada/l1/o{i}.pdf") for i in range(k)]
+    if estado_archivado:
+        r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ARCHIVED"})
+        assert r.status_code == 200, r.text
+    return pid, puuid, ids
+
+
+def test_una_clave_desconocida_salta_ese_proyecto_y_no_frena_a_los_demas(e, caplog):
+    """MAJOR-A: el 503 `idempotencia_estado_desconocido` es PERMANENTE para esa clave (7 dias hasta la purga): cortar la
+    vuelta frenaria a todos los tenants en cada ciclo. Se salta el proyecto, el sano sale en la misma vuelta, el
+    cursor no se envenena y el log lleva el hash corto de la clave."""
+    mi = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    _pid, _puuid, otros = _otro_proyecto_con_filas(e, 1)
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(mi)[:2] == ("en_cola", None)                          # el proyecto desconocido sigue esperando
+    assert e.fila(otros[0])[0] == "pendiente"                           # el otro salio en la MISMA vuelta
+    assert despachador._cursor_de_cola == 0
+    msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert "DESCONOCIDO" in msg and e.uuid in msg and despachador.abreviar_clave(e.las_manos.claves[0]) in msg
+    assert e.las_manos.claves[0] not in msg and "idempotencia-clave-desconocida" in msg
+
+
+def test_no_disponible_corta_la_vuelta_pero_no_envenena_el_cursor(e, caplog):
+    """MAJOR-A: `procesamiento_no_disponible` es global y transitorio: corta (nada que despachar mientras dure), con el
+    hash corto en el log, y al volver el almacen la cola sale; el cursor no queda atrapado."""
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "procesamiento_no_disponible"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+    assert despachador._cursor_de_cola == 0
+    assert any(despachador.abreviar_clave(e.las_manos.claves[0]) in r.getMessage() and "sin integridad" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.ERROR)
+    e.ciclo()                                                            # el almacen volvio
+    assert {e.fila(i)[0] for i in ids} == {"pendiente"} and despachador._cursor_de_cola == 0
+
+
+def test_con_cortes_sostenidos_las_filas_de_id_bajo_se_leen_igual(e, monkeypatch):
+    """MINOR-C: un corte en la PRIMERA ventana de un ciclo con cursor > 0 manda el cursor a 0. Sin eso, las filas con
+    id bajo (aqui, un proyecto reactivado) quedaban sin leer mientras los cortes siguieran."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    _pid, _puuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)         # ids bajos, fuera de la cola
+    altas = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(6)]
+    e.las_manos.post_respuestas = [(202, {"job_id": "job-1"})] + [(429, {"detail": "sin capacidad"})] * 3
+    e.ciclo()                                       # ventana 1 sale; la 2 recibe 429 y corta: cursor al inicio de la 2
+    assert despachador._cursor_de_cola == altas[2]
+    r = e.client.post(f"{P}/{_pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
+    assert r.status_code == 200, r.text            # las filas de id bajo vuelven a la cola, DETRAS del cursor
+    e.ciclo()                                       # cursor > 0 y corta en SU primera ventana -> el cursor vuelve a 0
+    assert despachador._cursor_de_cola == 0
+    e.ciclo()                                       # desde 0: lee las de id bajo
+    assert {e.fila(i)[0] for i in bajas} == {"pendiente"}
+
+
+@pytest.mark.parametrize("filas,pct_en_cola,tope_s", [(50_000, 5, 3), (50_000, 100, 5), (200_000, 100, 15)])
+def test_explain_y_tiempo_de_la_consulta_real_con_cursor_con_la_cola_llena(e, filas, pct_en_cola, tope_s):
+    """MINOR-D, el PEOR caso: la cola llena. Sembrado con volumen (20 proyectos, 300 usuarios) se mide el EXPLAIN de la
+    consulta real y el recorrido COMPLETO de la cola por ventanas de 1000. Sin pistas (medido, segundos): 50k/5%: 0,32;
+    50k/100%: 15,62; 200k/5%: 3,96; 200k/100%: 276,71 (recorrido cuadratico: `Using temporary; Using filesort` en cada
+    ventana). Con STRAIGHT_JOIN + FORCE INDEX: 0,01 / 0,18 / 0,04 / 0,71. Los topes de aqui son 10 a 20 veces eso: un
+    runner lento no los rompe y volver al plan viejo, si."""
     marca = uuid.uuid4().hex[:12]
     limite = 1000
     tenant_db = e.client.portal.call(sql, "SELECT tenant_id FROM jax_users WHERE user_id=%s", (e.usuario,), True)[0][0]
@@ -1341,25 +1420,27 @@ def test_explain_de_la_consulta_real_con_cursor_sobre_50k_filas_y_cientos_de_usu
         sql, "SELECT user_id FROM jax_users WHERE email LIKE %s ORDER BY user_id", (f"vol-{marca}-%",), True)]
     assert len(usuarios) == 300
     proyectos = [e.proyecto() for _ in range(20)]
+    por_proyecto = filas // 20
     try:
         for pid, puuid in proyectos:
             e.client.portal.call(
                 sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, bytes, tipo, "
                      "subido_por, estado) SELECT %s, SHA2(CONCAT(%s, %s, seq), 256), CONCAT('a', seq, '.pdf'), "
                      "CONCAT('proyectos/', %s, '/entrada/l1/a', seq, '.pdf'), 10, 'pdf', %s + (seq MOD 300), "
-                     "IF(seq MOD 20 = 0, 'en_cola', 'listo') FROM seq_1_to_2500", (pid, marca, pid, puuid, usuarios[0]))
+                     "IF(seq MOD 100 < %s, 'en_cola', 'listo') FROM seq_1_to_" + str(por_proyecto),
+                (pid, marca, pid, puuid, usuarios[0], pct_en_cola))
         e.client.portal.call(sql, "ANALYZE TABLE project_documents")
-        total = e.client.portal.call(sql, "SELECT COUNT(*) FROM project_documents WHERE project_id IN ("
-                                     + ",".join(str(p[0]) for p in proyectos) + ")", (), True)[0][0]
-        assert total == 50000
-        ids_incierto = (10**12, 10**12 + 1)
-        consulta = repo.sql_tomar_en_cola(frozenset({"excel"}), len(ids_incierto), True)
-        params = (*ids_incierto, 25000, limite)
+        ids_propios = ",".join(str(p[0]) for p in proyectos)
+        en_cola = e.client.portal.call(
+            sql, f"SELECT COUNT(*) FROM project_documents WHERE project_id IN ({ids_propios}) AND estado='en_cola'",
+            (), True)[0][0]
+        assert en_cola == filas * pct_en_cola // 100
+        consulta = repo.sql_tomar_en_cola(frozenset({"excel"}), 2, True)
+        params = (10**12, 10**12 + 1, filas // 2, limite)
         plan = e.client.portal.call(sql, "EXPLAIN " + consulta, params, True)
         extra = " ".join(str(f[9]) for f in plan).lower()
         assert "temporary" not in extra and "filesort" not in extra, plan
-        tabla_d = next(f for f in plan if f[2] == "d")
-        assert tabla_d[5] == "idx_project_documents_despacho", plan
+        assert plan[0][2] == "d" and plan[0][5] == "idx_project_documents_despacho", plan      # `d` primero, por el indice
         analisis = json.loads(e.client.portal.call(sql, "ANALYZE FORMAT=JSON " + consulta, params, True)[0][0])
 
         def filas_leidas(nodo, salida):
@@ -1374,9 +1455,28 @@ def test_explain_de_la_consulta_real_con_cursor_sobre_50k_filas_y_cientos_de_usu
                     filas_leidas(v, salida)
             return salida
         leidas = filas_leidas(analisis, [])
-        assert leidas and max(leidas) <= 3 * limite, leidas       # del orden de la ventana, no de las 50.000
+        assert leidas and max(leidas) <= 3 * limite, leidas              # del orden de la ventana, no de la tabla
+
+        async def recorrer(pool):
+            cursor, total, ventanas = 0, 0, 0
+            propios = {p[0] for p in proyectos}
+            q = repo.sql_tomar_en_cola(frozenset(), 0, True)
+            t0 = time.monotonic()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    while True:
+                        await cur.execute(q, (cursor, limite))
+                        lote = await cur.fetchall()
+                        ventanas += 1
+                        total += sum(1 for f in lote if f[1] in propios)
+                        if len(lote) < limite:
+                            return time.monotonic() - t0, total, ventanas
+                        cursor = lote[-1][0]
+        dt, total, ventanas = _con_pool(e.client, recorrer)
+        assert total == en_cola, (total, en_cola)
+        assert dt <= tope_s, f"recorrer {ventanas} ventanas tardo {dt:.2f}s (tope {tope_s}s): el plan volvio a ser cuadratico"
     finally:
         e.client.portal.call(sql, "DELETE FROM project_documents WHERE project_id IN ("
-                             + ",".join(str(p[0]) for p in proyectos) + ") AND sha256 IS NOT NULL AND bytes = %s", (10,))
+                             + ",".join(str(p[0]) for p in proyectos) + ") AND bytes = %s", (10,))
         e.client.portal.call(sql, "DELETE FROM jax_users WHERE email LIKE %s AND password_hash = %s",
                              (f"vol-{marca}-%", "x"))

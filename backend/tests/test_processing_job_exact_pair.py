@@ -176,6 +176,12 @@ def test_processing_exact_pair_dispatches_real_queue_through_protected_jax_asgi(
 
     async def dispatch():
         from db.connection import get_pool
+        # La ruta REAL de LAS MANOS consulta la tabla de claves de idempotencia, que jax crea al arrancar su servidor
+        # (`server.py`); este arnes no arranca el servidor, asi que crea el esquema que la ruta necesita, como el job
+        # crea el de Jacobs con `init_tables()`. Sin esto la ruta contesta 503 `idempotencia_no_disponible` en una
+        # base limpia y el despacho nunca obtiene `job_id`.
+        import procesamiento_idempotencia
+        await procesamiento_idempotencia.init_tabla()
         pool = await get_pool()
         document_id = await repo.insertar(pool, project_id=project["id"], sha256="a" * 64,
             nombre_original="documento.pdf", ruta_entrada=route, bytes_=1, tipo="pdf",
