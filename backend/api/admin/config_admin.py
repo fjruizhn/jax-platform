@@ -39,6 +39,9 @@ from config_defaults import DEFAULT_CONFIG  # noqa: E402
 # (el ON DUPLICATE KEY la pisaría en claro). GET y PUT deciden con la MISMA
 # regla, la de la base (_reservadas_para_la_base).
 PREFIJO_RESERVADO = "smtp."
+# Largo de la columna axioma_config.config_key (VARCHAR(100)): una clave más larga se
+# rechaza acá y no llega a la base (donde, sin modo estricto, se truncaría).
+CLAVE_MAX_LARGO = 100
 
 
 @router.get("/config")
@@ -140,7 +143,7 @@ async def update_config(items: List[ConfigItem], request: Request,
         return {"ok": True}
     # Una clave con espacios en los bordes no es una clave de esta pantalla: la PK
     # la igualaría a la fila real (PAD SPACE). Se rechaza antes de tocar la base.
-    if any(item.key != item.key.strip() for item in items):
+    if any(item.key != item.key.strip() or len(item.key) > CLAVE_MAX_LARGO for item in items):
         raise HTTPException(status_code=400, detail="config_clave_invalida")
     # Todo en UNA transacción (2026-09-18): el cambio y su auditoría, o
     # ninguno. Si el INSERT de config_audit falla, el UPDATE se revierte con

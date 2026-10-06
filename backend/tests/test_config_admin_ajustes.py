@@ -68,11 +68,29 @@ def test_una_clave_con_espacios_en_los_bordes_es_400_y_no_escribe(client, ajuste
     assert despues == antes
 
 
-@pytest.mark.parametrize("clave", ["MAX_PIPELINES", "máx_pipelines", "​max_pipelines", "ＭＡＸ_pipelines"])
-def test_las_variantes_que_la_base_iguala_siguen_validandose(client, ajustes_en_db, clave):
+@pytest.mark.parametrize("clave,fila", [
+    ("MAX_PIPELINES", "max_pipelines"), ("m\u00e1x_pipelines", "max_pipelines"),
+    ("\u200bmax_pipelines", "max_pipelines"), ("\uff2d\uff21\uff38_pipelines", "max_pipelines"),
+    # Espacio + ignorable al final: str.strip() NO los quita, asi que llegan a la base, y
+    # solo la igualdad `=` (como la PK) los empareja; WEIGHT_STRING los dejaba pasar.
+    ("max_pipelines \u00ad", "max_pipelines"), ("max_pipelines \ufeff", "max_pipelines"),
+    ("ejecutor.c2_edad_max_s \u200b", "ejecutor.c2_edad_max_s"),
+])
+def test_las_variantes_que_la_base_iguala_siguen_validandose(client, ajustes_en_db, clave, fila):
     ajustes_en_db.poner(**ajustes_en_db.validos)
-    r = _put(client, [{"key": clave, "value": "99"}])
-    assert (r.status_code, r.json()) == (400, {"detail": {"code": "config_valor_invalido", "clave": "max_pipelines"}})
+    leer = "SELECT config_value FROM axioma_config WHERE config_key = %s"
+    antes = client.portal.call(sql, leer, (fila,), True)
+    r = _put(client, [{"key": clave, "value": "99" if fila == "max_pipelines" else "1"}])
+    assert (r.status_code, r.json()) == (400, {"detail": {"code": "config_valor_invalido", "clave": fila}})
+    assert client.portal.call(sql, leer, (fila,), True) == antes
+
+
+def test_una_clave_de_mas_de_100_caracteres_es_400_y_no_escribe(client, ajustes_en_db):
+    """config_key mide 100: sin STRICT_TRANS_TABLES se truncaria y, por PAD SPACE, podria
+    caer sobre la fila real sin validarse."""
+    ajustes_en_db.poner(**ajustes_en_db.validos)
+    r = _put(client, [{"key": "x" * 101, "value": "1"}])
+    assert (r.status_code, r.json()) == (400, {"detail": "config_clave_invalida"})
     assert ajustes_en_db.filas()["max_pipelines"] == "3"
 
 
