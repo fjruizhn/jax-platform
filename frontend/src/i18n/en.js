@@ -855,6 +855,7 @@ export default {
   adminSettingsSaveError: 'The configuration could not be saved.',
   adminSettingsLoadError: 'The configuration could not be loaded.',
   config_clave_reservada: 'One of the keys is reserved and cannot be changed from this screen. Nothing was saved.',
+  config_clave_invalida: 'One of the keys is not valid (it has leading or trailing spaces). Nothing was saved.',
   config_collation_desconocida: 'The database could not verify the reserved keys, so nothing was saved.',
   config_valor_invalido: (campo) => `The value of "${campo}" is outside the allowed range. Nothing was saved.`,
   adminSettingsLang: 'Default language',

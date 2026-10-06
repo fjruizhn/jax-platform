@@ -913,6 +913,7 @@ export default {
   adminSettingsSaveError: 'No se pudo guardar la configuración.',
   adminSettingsLoadError: 'No se pudo cargar la configuración.',
   config_clave_reservada: 'Una de las claves está reservada y no se puede cambiar desde esta pantalla. No se guardó nada.',
+  config_clave_invalida: 'Una de las claves no es válida (tiene espacios al principio o al final). No se guardó nada.',
   config_collation_desconocida: 'La base no permitió verificar las claves reservadas, así que no se guardó nada.',
   config_valor_invalido: (campo) => `El valor de "${campo}" está fuera de lo permitido. No se guardó nada.`,
   adminSettingsLang: 'Idioma por defecto',

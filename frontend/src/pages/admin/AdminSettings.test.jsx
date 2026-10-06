@@ -60,7 +60,7 @@ describe('AdminSettings -- el botón mientras guarda (ronda final M8)', () => {
 
 describe('AdminSettings -- los errores del guardado se ven', () => {
   it('los textos existen en los dos idiomas', () => {
-    for (const clave of ['config_clave_reservada', 'config_collation_desconocida', 'adminSettingsSaveError', 'adminSettingsLoadError']) {
+    for (const clave of ['config_clave_reservada', 'config_clave_invalida', 'config_collation_desconocida', 'adminSettingsSaveError', 'adminSettingsLoadError']) {
       expect(es[clave], `es.${clave}`).toBeTruthy()
       expect(en[clave], `en.${clave}`).toBeTruthy()
     }

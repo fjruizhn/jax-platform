@@ -84,7 +84,10 @@ async def _ajustes_para_la_base(cur, claves: list[str]) -> dict[str, str]:
     """{clave pedida: clave de ajuste que la base considera IGUAL}. Misma
     autoridad que _reservadas_para_la_base: la collation de la columna decide
     la colisión de la PRIMARY KEY, así que "MAX_PIPELINES" o "máx_pipelines"
-    escribirían la fila max_pipelines y tienen que validarse como tal."""
+    escribirían la fila max_pipelines y tienen que validarse como tal.
+    Se empareja con `=` y NO con WEIGHT_STRING: la collation es PAD SPACE, la
+    PRIMARY KEY ignora los espacios finales y WEIGHT_STRING no, así que
+    "max_pipelines " escribía la fila real sin validarse (auditoría de #205)."""
     if not claves:
         return {}
     collation = await _collation(cur)
@@ -93,7 +96,7 @@ async def _ajustes_para_la_base(cur, claves: list[str]) -> dict[str, str]:
     conocidas = " UNION ALL ".join(["SELECT %s AS a"] * len(validables))
     await cur.execute(
         f"SELECT p.k, c.a FROM ({pedidas}) p JOIN ({conocidas}) c "
-        f"ON WEIGHT_STRING(p.k COLLATE {collation}) = WEIGHT_STRING(c.a COLLATE {collation})",
+        f"ON p.k COLLATE {collation} = c.a COLLATE {collation}",
         (*claves, *validables),
     )
     return {pedida: conocida for pedida, conocida in await cur.fetchall()}
@@ -135,6 +138,10 @@ async def update_config(items: List[ConfigItem], request: Request,
         raise HTTPException(status_code=400, detail="config_clave_reservada")
     if not items:
         return {"ok": True}
+    # Una clave con espacios en los bordes no es una clave de esta pantalla: la PK
+    # la igualaría a la fila real (PAD SPACE). Se rechaza antes de tocar la base.
+    if any(item.key != item.key.strip() for item in items):
+        raise HTTPException(status_code=400, detail="config_clave_invalida")
     # Todo en UNA transacción (2026-09-18): el cambio y su auditoría, o
     # ninguno. Si el INSERT de config_audit falla, el UPDATE se revierte con
     # él -- fail-closed, sin try/except que lo tape. Las guardas de abajo

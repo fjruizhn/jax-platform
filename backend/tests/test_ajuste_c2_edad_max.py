@@ -82,3 +82,12 @@ def test_put_fuera_de_limites_es_400_y_no_escribe(client, ajustes_en_db, auditor
     assert _fila(client) == "86400"
     assert client.portal.call(
         sql, "SELECT COUNT(*) FROM axioma_config_audit WHERE config_key = %s", (CLAVE,), True)[0][0] == 0
+
+
+async def test_valor_rechaza_las_claves_solo_administradas_con_un_error_claro():
+    """No es `AjusteIlegible("ausente")`: esta clave no se lee por este módulo, y
+    decir "ausente" mandaría a buscar una fila que sí existe."""
+    with pytest.raises(ajustes.ClaveNoLeida) as exc:
+        await ajustes.valor(CLAVE)
+    assert not isinstance(exc.value, ajustes.AjusteIlegible)
+    assert CLAVE in str(exc.value)

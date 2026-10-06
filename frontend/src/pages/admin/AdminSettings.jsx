@@ -9,7 +9,7 @@ import { sincronizarApariencia } from '../../apariencia/sincronizarApariencia'
 // Códigos con los que PUT /admin/config rechaza (backend/api/admin/config_admin.py).
 // Cada uno tiene su texto; cualquier otro cae en el genérico, nunca en silencio
 // (2026-09-14: el catch estaba vacío y quien guardaba no veía por qué no se guardó).
-const CODIGOS_CONOCIDOS = new Set(['config_clave_reservada', 'config_collation_desconocida'])
+const CODIGOS_CONOCIDOS = new Set(['config_clave_reservada', 'config_clave_invalida', 'config_collation_desconocida'])
 
 // Etiqueta de cada ajuste que el backend valida (frente C, 2026-09-16): el
 // error config_valor_invalido nombra el campo, no la clave técnica.

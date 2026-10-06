@@ -75,7 +75,9 @@ TOPE_DEVOLUCIONES = "jacobs.tope_devoluciones"
 # LEE el repo jax por SQL directo (ejecutor/contratos/exportar.py: entero > 0), no
 # por este módulo: acá sólo se administra y se acota. El diseño de C2 pide 30 h
 # (108000): con 24 h el Ejecutor queda sin respaldo vigente entre una corrida del
-# respaldo y la siguiente. Mínimo 1 h y máximo 7 días son barandas de esta rama.
+# respaldo y la siguiente. El valor de diseño de C2 es 108000 (30 h). El mínimo (1 h) y el
+# máximo (7 días) son la baranda TÉCNICA de esta rama para que un valor absurdo no se
+# guarde; el techo lo decide Fernando, y si hace falta otro se cambia acá con su motivo.
 C2_EDAD_MAX_S = "ejecutor.c2_edad_max_s"
 C2_EDAD_MAX_S_MIN = 3600
 C2_EDAD_MAX_S_MAX = 7 * 86400
@@ -150,6 +152,10 @@ CONSULTA = (
 
 class ValorInvalido(ValueError):
     pass
+
+
+class ClaveNoLeida(LookupError):
+    """`valor()` no lee esta clave: se administra acá pero la lee otro servicio."""
 
 
 class AjusteIlegible(Exception):
@@ -307,6 +313,8 @@ def invalidar() -> None:
 
 
 async def valor(clave: str) -> int | str | Decimal:
+    if clave in CLAVES_SOLO_ADMINISTRADAS:
+        raise ClaveNoLeida(f"{clave}: se administra en este servicio pero la lee otro; no está en el caché")
     filas = await _cache.filas()
     if clave not in filas:
         raise AjusteIlegible(clave, "ausente")
