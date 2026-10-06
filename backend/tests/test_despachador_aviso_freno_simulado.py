@@ -29,6 +29,7 @@ _ESTADO_INICIAL = {
     "_ultimo_fallo_aviso_freno_incertidumbre": None,
     "_ultima_actividad_freno_incertidumbre": None,
     "_pausa_previa_al_incidente": None,
+    "_clave_de_lectura_logueada": None,
 }
 
 
@@ -65,6 +66,8 @@ class _Telegram:
             raise httpx.ConnectError("rechazada")
         if que == "http_500":
             return _Resp(500, {"ok": False})
+        if que == "runtime_otro":
+            raise RuntimeError("fallo interno del transporte")
         if que == "proxy_error":
             raise httpx.ProxyError("el proxy no responde")
         raise AssertionError(que)
@@ -277,6 +280,15 @@ async def test_proxy_error_permanente_reintenta_y_nunca_se_calla(monkeypatch):
     assert len(tiempos) >= 24, len(tiempos)
 
 
+async def test_runtime_error_que_no_es_cliente_cerrado_recuerda_cada_enfriamiento(monkeypatch):
+    """Un RuntimeError cualquiera es DESCONOCIDO (no se reintenta antes del enfriamiento), pero con el freno activo no
+    queda en silencio: un recordatorio por enfriamiento."""
+    tiempos = await _simular(monkeypatch, duracion_s=24 * 3600, hay_incidente=_siempre,
+                             comportamiento=lambda n, t: "runtime_otro", enfriamiento=3600, reintento=60)
+    assert len(tiempos) == 24, (len(tiempos), tiempos[:5])
+    assert all(3600 <= h <= 3600 + 10 for h in _huecos(tiempos)), _huecos(tiempos)
+
+
 # ------------------------------------------------------------------ topes de la espera
 
 async def test_la_espera_tiene_tope_en_el_enfriamiento(monkeypatch):
@@ -332,3 +344,48 @@ async def test_el_log_de_lectura_nombra_la_clave_que_fallo(monkeypatch, caplog, 
             if clave_que_falla == ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S
             else ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
     assert clave_que_falla in registros[0] and otra not in registros[0], registros[0]
+
+
+async def test_la_lectura_rota_se_loguea_una_vez_por_incidente_y_por_clave(monkeypatch, caplog):
+    """N ciclos con la lectura del enfriamiento rota dan UN log; otro incidente (el contador pasa por cero) lo
+    vuelve a emitir; y un cambio de la clave que falla dentro del mismo incidente tambien."""
+    for nombre, valor in _ESTADO_INICIAL.items():
+        monkeypatch.setattr(despachador, nombre, valor, raising=False)
+    rota = [ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S]
+
+    async def leer(clave):
+        if clave == ajustes.DOC_RUTAS_POR_TRABAJO:
+            return 50
+        if clave in rota:
+            raise ajustes.AjusteIlegible(clave, "invalido")
+        return 60
+
+    monkeypatch.setattr(despachador.ajustes, "valor", leer)
+    monkeypatch.setattr(despachador, "_pasada_de_despacho", _pasada_vacia)
+
+    def logs():
+        return [r for r in caplog.records if "no se pudo leer el ajuste" in r.getMessage()]
+
+    def incidente():
+        despachador._en_incertidumbre.clear()
+        despachador._en_incertidumbre.update({10**23 + i: despachador._reloj() + 10**6 for i in range(100)})
+
+    try:
+        with caplog.at_level(logging.ERROR):
+            incidente()
+            for _ in range(20):
+                await despachador._despachar(None)
+            assert len(logs()) == 1, caplog.text
+            rota[:] = [ajustes.DOC_FRENO_INCERTIDUMBRE_REINTENTO_S]  # cambia la clave que falla
+            for _ in range(5):
+                await despachador._despachar(None)
+            assert len(logs()) == 2 and ajustes.DOC_FRENO_INCERTIDUMBRE_REINTENTO_S in logs()[1].getMessage()
+            despachador._en_incertidumbre.clear()
+            await despachador._despachar(None)  # el incidente termina
+            incidente()  # y empieza otro
+            for _ in range(5):
+                await despachador._despachar(None)
+            assert len(logs()) == 3, caplog.text
+    finally:
+        despachador._en_incertidumbre.clear()
+        await _esperar_avisos()

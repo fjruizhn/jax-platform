@@ -163,6 +163,9 @@ _ultimo_fallo_aviso_freno_incertidumbre: float | None = None
 # filas que vencen juntas cada pocos minutos) es el mismo problema: no reinicia la espera.
 _ultima_actividad_freno_incertidumbre: float | None = None
 _pausa_previa_al_incidente: float | None = None
+# Clave de ajuste cuya lectura fallo y ya se logueo en este incidente: el error se emite una vez por incidente (o
+# cuando cambia la clave que falla), no en cada ciclo del despachador.
+_clave_de_lectura_logueada: str | None = None
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -501,7 +504,7 @@ async def _despachar(pool) -> None:
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
     global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
-    global _ultima_actividad_freno_incertidumbre, _pausa_previa_al_incidente
+    global _ultima_actividad_freno_incertidumbre, _pausa_previa_al_incidente, _clave_de_lectura_logueada
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -524,6 +527,7 @@ async def _despachar(pool) -> None:
         if not _freno_incertidumbre_activo:
             _freno_incertidumbre_activo = True
             _aviso_freno_incidente_entregado = False
+            _clave_de_lectura_logueada = None
             _pausa_previa_al_incidente = (None if _ultima_actividad_freno_incertidumbre is None
                                           else ahora - _ultima_actividad_freno_incertidumbre)
         _ultima_actividad_freno_incertidumbre = ahora
@@ -537,8 +541,11 @@ async def _despachar(pool) -> None:
         except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
             # Nombra la clave que de verdad fallo (AjusteIlegible la trae; otro error, la que se estaba leyendo).
             clave_fallida = exc.clave if isinstance(exc, ajustes.AjusteIlegible) else clave
-            logger.error("proyectos_documentos: no se pudo leer el ajuste %s del aviso de incertidumbre (%s); "
-                         "se reintentará en el próximo ciclo", clave_fallida, type(exc).__name__)
+            if clave_fallida != _clave_de_lectura_logueada:
+                _clave_de_lectura_logueada = clave_fallida
+                logger.error("proyectos_documentos: no se pudo leer el ajuste %s del aviso de incertidumbre (%s); "
+                             "se reintentará en cada ciclo (este error no se repite en este incidente)",
+                             clave_fallida, type(exc).__name__)
             return
         if _aviso_freno_incidente_entregado and enfriamiento == 0:
             return  # sin enfriamiento no hay recordatorio: un aviso por incidente
