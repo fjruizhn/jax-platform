@@ -34,9 +34,14 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("jacobs_events", "idx_events_pipeline_tipo"),
         ("jacobs_events", "idx_events_auditoria_fecha"),
         ("jacobs_events", "idx_events_pipeline_auditoria_fecha"),
+        ("jax_users", "idx_jax_users_tenant_role_status"),
     }, forzados
     for (tabla, indice), donde in forzados.items():
-        prefijo = "api/admin/auditoria_descarte.py:" if "auditoria" in indice else "api/pipelines.py:"
+        prefijo = (
+            "api/admin/auditoria_descarte.py:"
+            if "auditoria" in indice or tabla == "jax_users"
+            else "api/pipelines.py:"
+        )
         assert all(d.startswith(prefijo) for d in donde), (tabla, indice, donde)
 
 
