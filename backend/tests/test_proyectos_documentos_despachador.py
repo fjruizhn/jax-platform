@@ -199,7 +199,9 @@ def _insertar(client, project_id, usuario, sha, nombre, ruta):
 @pytest.fixture
 def e(client, workspace, monkeypatch):
     entorno = Entorno(client, workspace, monkeypatch)
+    despachador._cursor_de_cola = 0
     yield entorno
+    despachador._cursor_de_cola = 0
     despachador._en_incertidumbre.clear()
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
@@ -1263,12 +1265,118 @@ def test_un_409_que_llena_la_ventana_no_deja_sin_despacho_al_otro_proyecto(e, mo
     assert e.fila(otro)[0] == "pendiente"
 
 
-def test_explain_de_tomar_en_cola_con_duenos_excluidos_usa_el_indice_de_despacho(e):
-    consulta = repo.sql_tomar_en_cola(frozenset(), 2, 2)
-    assert consulta.count("NOT (d.project_id = %s AND u.user_id = %s)") == 2
-    plan = e.client.portal.call(
-        sql, "EXPLAIN " + consulta, (1, 2, 1, 2, 3, 4, 5), True)
-    d = [dict(zip(("id", "select_type", "table", "type", "possible_keys", "key"), f[:6])) for f in plan]
-    fila_d = next(x for x in d if x["table"] == "d")
-    assert fila_d["key"] == "idx_project_documents_despacho", plan
-    assert not any("filesort" in str(f).lower() or "temporary" in str(f).lower() for f in plan), plan
+class _Malos:
+    """La falsa compara `cuerpo["project_uuid"] != self.project_uuid`: con esto, los proyectos que estan en `s`
+    responden lo encolado (409) y el resto responde 202."""
+    def __init__(self):
+        self.s = set()
+
+    def __ne__(self, otro):
+        return otro not in self.s
+
+    def __eq__(self, otro):
+        return otro in self.s
+
+
+def test_52_proyectos_en_409_mas_uno_sano_el_sano_se_despacha_con_el_cursor(e, monkeypatch):
+    """MINOR-G: con LIMITE=3 y 52 proyectos de 3 filas cuyo trozo LAS MANOS rechaza, las listas de exclusion y el
+    tope de 50 pasadas dejaban al proyecto 53 sin despacho. El cursor por id recorre la cola entera en UNA vuelta."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    consultas = {"n": 0}
+    real = repo.tomar_en_cola
+
+    async def contada(pool, **kw):
+        consultas["n"] += 1
+        return await real(pool, **kw)
+    monkeypatch.setattr(repo, "tomar_en_cola", contada)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    base = uuid.uuid4().int % 10**12 * 10**6
+    for p in range(52):
+        pid, puuid = e.proyecto()
+        malos.s.add(puuid)
+        filas = ", ".join(f"({pid}, '{base + p * 1000 + i:064x}', 'a{i}.pdf', "
+                          f"'proyectos/{puuid}/entrada/l1/a{i}.pdf', 10, 'pdf', {e.usuario})" for i in range(3))
+        e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                                  f"bytes, tipo, subido_por) VALUES {filas}")
+    sano_id, sano_uuid = e.proyecto()
+    sano = _insertar(e.client, sano_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{sano_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})] * 1000
+    e.ciclo()
+    assert e.fila(sano)[0] == "pendiente"
+    # una consulta por ventana (157 filas / 3 = 53 ventanas, mas una final): no 50 consultas por cada pasada
+    assert consultas["n"] <= 60, consultas
+    assert despachador._cursor_de_cola == 0, "recorrida la cola, el cursor vuelve al principio"
+
+
+def test_un_ciclo_cortado_retoma_desde_el_inicio_de_la_ventana_cortada(e, monkeypatch):
+    """El cursor persiste entre vueltas: si LAS MANOS corta (429) en la ventana 2, la vuelta siguiente empieza ahi
+    y no se saltea las filas que no llegaron a despacharse."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(9)]
+    e.las_manos.post_respuestas = [(202, {"job_id": "job-1"}), (429, {"detail": "sin capacidad"})]
+    e.ciclo()                              # ventana 1 (ids 1-3) sale; ventana 2 (4-6) recibe 429 y corta
+    assert [e.fila(i)[0] for i in ids[:3]] == ["pendiente"] * 3
+    assert [e.fila(i)[0] for i in ids[3:]] == ["en_cola"] * 6
+    assert despachador._cursor_de_cola == ids[2], despachador._cursor_de_cola
+    e.ciclo()                              # retoma en la ventana 2: ahora si salen todas
+    assert {e.fila(i)[0] for i in ids} <= {"pendiente", "procesando"}          # la sincronizacion pudo avanzar el 1.o
+    assert [e.fila(i)[1] is not None for i in ids] == [True] * 9
+    assert despachador._cursor_de_cola == 0
+
+
+def test_explain_de_la_consulta_real_con_cursor_sobre_50k_filas_y_cientos_de_usuarios(e):
+    """MINOR-H: EXPLAIN y ANALYZE de la consulta REAL (con cursor, ids excluidos y una clase frenada) sobre una tabla
+    sembrada con volumen: 50.000 filas en 20 proyectos, repartidas entre 300 usuarios, el 95% ya procesadas (`listo`)
+    como en produccion y solo el 5% `en_cola`. Sin `Using temporary` ni
+    `Using filesort`, por `idx_project_documents_despacho`, y examinando del orden de LIMITE filas, no de la tabla."""
+    marca = uuid.uuid4().hex[:12]
+    limite = 1000
+    tenant_db = e.client.portal.call(sql, "SELECT tenant_id FROM jax_users WHERE user_id=%s", (e.usuario,), True)[0][0]
+    e.client.portal.call(sql, "INSERT INTO jax_users (tenant_id, email, password_hash) "
+                              "SELECT %s, CONCAT('vol-', %s, '-', seq, '@vol.test'), 'x' FROM seq_1_to_300",
+                         (tenant_db, marca))
+    usuarios = [r[0] for r in e.client.portal.call(
+        sql, "SELECT user_id FROM jax_users WHERE email LIKE %s ORDER BY user_id", (f"vol-{marca}-%",), True)]
+    assert len(usuarios) == 300
+    proyectos = [e.proyecto() for _ in range(20)]
+    try:
+        for pid, puuid in proyectos:
+            e.client.portal.call(
+                sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, bytes, tipo, "
+                     "subido_por, estado) SELECT %s, SHA2(CONCAT(%s, %s, seq), 256), CONCAT('a', seq, '.pdf'), "
+                     "CONCAT('proyectos/', %s, '/entrada/l1/a', seq, '.pdf'), 10, 'pdf', %s + (seq MOD 300), "
+                     "IF(seq MOD 20 = 0, 'en_cola', 'listo') FROM seq_1_to_2500", (pid, marca, pid, puuid, usuarios[0]))
+        e.client.portal.call(sql, "ANALYZE TABLE project_documents")
+        total = e.client.portal.call(sql, "SELECT COUNT(*) FROM project_documents WHERE project_id IN ("
+                                     + ",".join(str(p[0]) for p in proyectos) + ")", (), True)[0][0]
+        assert total == 50000
+        ids_incierto = (10**12, 10**12 + 1)
+        consulta = repo.sql_tomar_en_cola(frozenset({"excel"}), len(ids_incierto), True)
+        params = (*ids_incierto, 25000, limite)
+        plan = e.client.portal.call(sql, "EXPLAIN " + consulta, params, True)
+        extra = " ".join(str(f[9]) for f in plan).lower()
+        assert "temporary" not in extra and "filesort" not in extra, plan
+        tabla_d = next(f for f in plan if f[2] == "d")
+        assert tabla_d[5] == "idx_project_documents_despacho", plan
+        analisis = json.loads(e.client.portal.call(sql, "ANALYZE FORMAT=JSON " + consulta, params, True)[0][0])
+
+        def filas_leidas(nodo, salida):
+            if isinstance(nodo, dict):
+                t = nodo.get("table")
+                if isinstance(t, dict) and t.get("table_name") == "d":
+                    salida.append(float(t.get("r_rows") or 0))
+                for v in nodo.values():
+                    filas_leidas(v, salida)
+            elif isinstance(nodo, list):
+                for v in nodo:
+                    filas_leidas(v, salida)
+            return salida
+        leidas = filas_leidas(analisis, [])
+        assert leidas and max(leidas) <= 3 * limite, leidas       # del orden de la ventana, no de las 50.000
+    finally:
+        e.client.portal.call(sql, "DELETE FROM project_documents WHERE project_id IN ("
+                             + ",".join(str(p[0]) for p in proyectos) + ") AND sha256 IS NOT NULL AND bytes = %s", (10,))
+        e.client.portal.call(sql, "DELETE FROM jax_users WHERE email LIKE %s AND password_hash = %s",
+                             (f"vol-{marca}-%", "x"))

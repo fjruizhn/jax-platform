@@ -47,7 +47,7 @@ _EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb
 
 
 def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0,
-                      n_duenos_excluidos: int = 0) -> str:
+                      con_cursor: bool = False) -> str:
     """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
     frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
     `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
@@ -55,9 +55,9 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
     despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden.
     `n_ids_excluidos`: cuantos `AND d.id NOT IN (%s, ...)` lleva (las filas con desenlace incierto del despachador,
     que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`).
-    `n_duenos_excluidos`: cuantos `AND NOT (d.project_id = %s AND u.user_id = %s)` lleva (los grupos (proyecto,
-    dueno) que el despachador ya salto en este ciclo: sin esto sus filas llenan la ventana de `LIMIT` y los demas
-    proyectos nunca entran; los parametros van despues de los ids y antes del `LIMIT`)."""
+    `con_cursor`: agrega `AND d.id > %s` (un parametro, despues de los ids y antes del `LIMIT`): la cola se recorre por
+    ventanas de `LIMIT` filas avanzando por `id`, asi lo que el despachador salta (un proyecto cuyo trozo LAS MANOS
+    rechaza) no vuelve a llenar la ventana ni deja sin despacho a los demas."""
     desconocida = set(excluir_clases) - set(tipos.CLASES)
     if desconocida:
         raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
@@ -71,9 +71,15 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
             condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
     if n_ids_excluidos:
         condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
-    condiciones.extend(["NOT (d.project_id = %s AND u.user_id = %s)"] * n_duenos_excluidos)
+    if con_cursor:
+        condiciones.append("d.id > %s")
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
+        # Plan medido con 50k filas (95% `listo`, 5% en_cola) y 300 usuarios: `d` por idx_project_documents_despacho,
+        # sin `Using temporary` ni `Using filesort`; `p`, `s` y `u` por clave. Se probo `STRAIGHT_JOIN` y se REVIRTIO:
+        # con esa siembra el optimizador ya elige ese plan (neutral). Con una siembra irreal (TODAS en cola) arranca
+        # por jax_project_scope y ordena con temporary+filesort, y la pista lo llevaba a PRIMARY: ninguna aplica a
+        # la distribucion real. Ver el test de EXPLAIN del despachador.
         "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
         "FROM project_documents d "
         "JOIN projects p ON p.id = d.project_id "
@@ -369,19 +375,19 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
 
 async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset(),
                         excluir_ids: frozenset[int] = frozenset(),
-                        excluir_duenos: frozenset[tuple[int, int]] = frozenset()) -> list[dict]:
+                        despues_de_id: int | None = None) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
     transmite a LAS MANOS en cabeceras cerradas. `excluir_clases`: clases de extension que no se piden
     (ver `sql_tomar_en_cola`); `excluir_ids`: filas que no se piden (las del desenlace incierto, que si no
-    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda."""
+    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda; `despues_de_id`: solo filas con `id` mayor (cursor de la cola)."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             ids = sorted(excluir_ids)
-            duenos = sorted(excluir_duenos)
-            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids), len(duenos)),
-                              (*ids, *[x for par in duenos for x in par], limite))
+            con_cursor = despues_de_id is not None
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids), con_cursor),
+                              (*ids, *((despues_de_id,) if con_cursor else ()), limite))
             filas = await cur.fetchall()
     # `sha256` y `actualizado_at` son lo que el despachador usa para la clave de idempotencia del envio
     # (`despachador.clave_de_idempotencia`): `updated_at` se mueve con CADA UPDATE de la fila, asi que

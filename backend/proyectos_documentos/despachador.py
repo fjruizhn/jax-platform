@@ -83,8 +83,9 @@ INTERVALO_SEGUNDOS = 10
 TIMEOUT_HTTP_SEGUNDOS = 10.0
 # Tope de filas `en_cola` que una vuelta toma; lo que sobre sale en la siguiente.
 LIMITE_DE_FILAS_POR_CICLO = 1000
-# Tope de pasadas de una vuelta (una por clase frenada o grupo saltado, mas la ultima): acota el trabajo de una vuelta.
-MAXIMO_DE_PASADAS = 50
+# Cursor de la cola (`d.id > ultimo`): donde retoma el despacho tras un ciclo cortado. 0 = desde el principio.
+# En memoria de este proceso: un reinicio vuelve a empezar desde 0, que solo cuesta releer.
+_cursor_de_cola = 0
 
 # El nombre de GET_LOCK es global al SERVIDOR de MariaDB: lleva la base para que dos bases en
 # el mismo servidor (otra instancia, una suite de pruebas) no se frenen entre si.
@@ -539,15 +540,17 @@ def _ruta_del_proyecto(project_uuid: str, ruta: str | None) -> bool:
 
 
 async def _despachar(pool) -> None:
-    """Una o varias PASADAS sobre la cola. Cada pasada pide `LIMITE_DE_FILAS_POR_CICLO` filas por `id` SIN las
-    clases ya frenadas en este ciclo y las despacha por grupos (proyecto, dueno, clase). Un 503
-    `extractores_no_disponibles` frena la CLASE entera (la falta de una biblioteca no es de un proyecto) hasta
-    el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
-    1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
-    mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva O salte un (proyecto, dueno) nuevo:
-    sus filas tampoco se piden otra vez (`excluir_duenos`), asi un proyecto cuyo trozo LAS MANOS rechaza (409 de
-    clave, 422 `proyecto_no_activo`) no llena la ventana de LIMITE y deja sin despacho a los demas. El tope de
-    pasadas es `MAXIMO_DE_PASADAS`; lo que quede sale en la vuelta siguiente."""
+    """Recorre la cola `en_cola` por VENTANAS con un cursor por `id` (`d.id > ultimo`). Cada ventana pide
+    `LIMITE_DE_FILAS_POR_CICLO` filas SIN las clases ya frenadas en este ciclo y las despacha por grupos (proyecto,
+    dueno, clase). Un 503 `extractores_no_disponibles` frena la CLASE entera (la falta de una biblioteca no es de un
+    proyecto) hasta el fin del ciclo; un 409/422 de LAS MANOS salta ese (proyecto, dueno). Sus filas quedan en_cola:
+    la ventana siguiente es la de los `id` que siguen, asi 1.000 pdf atascados en los ids bajos (MAJOR-N2) o 1.000
+    filas de un proyecto rechazado no llenan la ventana para siempre y los demas salen en el mismo ciclo. Se
+    recorre hasta el final de la cola (una ventana con menos filas que el limite) y el cursor vuelve a 0; si el
+    ciclo se corta (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada, asi la
+    vuelta siguiente la retoma desde ahi. No hay listas de exclusion de proyectos ni tope de pasadas: una consulta
+    por ventana, por indice, y la cola finita."""
+    global _cursor_de_cola
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -563,26 +566,31 @@ async def _despachar(pool) -> None:
                        len(_en_incertidumbre), 2 * por_trabajo)
         return
     saltados: set[tuple[str, object]] = set()
-    for _pasada in range(MAXIMO_DE_PASADAS):
-        antes = (len(frenadas), len(saltados))
-        if await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados) == "cortar":
+    cursor = _cursor_de_cola
+    while True:
+        accion, ultimo, cuantas = await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados, cursor)
+        if accion == "cortar":
+            _cursor_de_cola = cursor                 # la ventana cortada se retoma desde su inicio
             return
-        if (len(frenadas), len(saltados)) == antes:
+        if cuantas < LIMITE_DE_FILAS_POR_CICLO:      # ventana incompleta: se llego al final de la cola
+            _cursor_de_cola = 0
             return
-    logger.warning("proyectos_documentos: %s pasadas de despacho en una vuelta (tope); lo que falte sale en la siguiente",
-                   MAXIMO_DE_PASADAS)
+        cursor = ultimo
 
 
-async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
-    """Una pasada. Devuelve 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
+async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set,
+                              despues_de_id: int) -> tuple[str | None, int, int]:
+    """Una ventana de la cola (las filas con `id` > `despues_de_id`). Devuelve (accion, ultimo id visto, filas
+    leidas); accion es 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
     por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
     # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
     # LIMITE o mas de ellas las sanas de atras nunca entrarian en la ventana. Viven en la memoria de este proceso
     # (no en la base), asi que se pasan como ids; la condicion es temporal y ya se podo arriba por `_reloj`.
-    for fila in await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas),
-                                         excluir_ids=frozenset(_en_incertidumbre),
-                                         excluir_duenos=frozenset((c.project_id, c.user_id) for _, c in saltados)):
+    leidas = await repo.tomar_en_cola(pool, limite=LIMITE_DE_FILAS_POR_CICLO, excluir_clases=frozenset(frenadas),
+                                      excluir_ids=frozenset(_en_incertidumbre), despues_de_id=despues_de_id)
+    ultimo = leidas[-1]["id"] if leidas else despues_de_id
+    for fila in leidas:
         if fila["id"] in _en_incertidumbre:      # respaldo: se agrego una entre la consulta y aqui
             continue
         if not _ruta_del_proyecto(fila["project_uuid"], fila["ruta_entrada"]):
@@ -601,14 +609,14 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
         for i in range(0, len(filas), por_trabajo):
             accion = await _despachar_trozo(pool, project_uuid, contexto, filas[i:i + por_trabajo])
             if accion == "cortar":
-                return "cortar"
+                return "cortar", ultimo, len(leidas)
             if accion == "saltar_grupo":
                 frenadas.add(clase)                         # la clase entera, en todos los proyectos, hasta el fin del ciclo
                 break
             if accion == "saltar_proyecto":
                 saltados.add((project_uuid, contexto))      # el proyecto entero, tambien sus otras clases
                 break
-    return None
+    return None, ultimo, len(leidas)
 
 
 # ---------------------------------------------------------------- ciclo y tarea de fondo
