@@ -147,6 +147,15 @@ _reloj = time.monotonic
 # id de fila -> hasta cuando (segun `_reloj`) no se re-despacha. En memoria de ESTE proceso.
 _en_incertidumbre: dict[int, float] = {}
 _avisos: set[asyncio.Task] = set()
+_avisos_freno_incertidumbre: set[asyncio.Task] = set()
+_freno_incertidumbre_activo = False
+
+_LIB_AVISAR = os.environ.get("LIB_AVISAR", "/opt/backup-scripts/lib/lib-avisar.sh")
+_DIRECTORIO_CREDENCIALES = os.environ.get("CREDENTIALS_DIRECTORY", "")
+_TELEGRAM_CREDS = os.environ.get(
+    "TELEGRAM_CREDS",
+    os.path.join(_DIRECTORIO_CREDENCIALES, "telegram.env") if _DIRECTORIO_CREDENCIALES
+    else "/etc/restic/telegram.env")
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -483,6 +492,7 @@ async def _despachar(pool) -> None:
     el fin del ciclo: sus filas quedan en_cola y la pasada siguiente pide las que siguen, sin esa clase. Asi,
     1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
+    global _freno_incertidumbre_activo
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -492,10 +502,16 @@ async def _despachar(pool) -> None:
     # (cada una, hasta VENTANA_DE_INCERTIDUMBRE_SEGUNDOS) y cada reintento puede duplicar el trabajo. Con
     # `2 * rutas_por_trabajo` o mas, el ciclo NO despacha nada (falla cerrado) y la lista que se le pasa a la
     # consulta (`NOT IN`) queda acotada.
-    if len(_en_incertidumbre) >= 2 * por_trabajo:
+    freno_activo = len(_en_incertidumbre) >= 2 * por_trabajo
+    if not freno_activo:
+        _freno_incertidumbre_activo = False
+    if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
                        "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
                        len(_en_incertidumbre), 2 * por_trabajo)
+        if not _freno_incertidumbre_activo:
+            _freno_incertidumbre_activo = True
+            _programar_aviso_freno_incertidumbre(len(_en_incertidumbre), 2 * por_trabajo)
         return
     saltados: set[tuple[str, object]] = set()
     for _pasada in range(len(tipos.CLASES) + 1):
@@ -504,6 +520,34 @@ async def _despachar(pool) -> None:
             return
         if len(frenadas) == antes:
             return
+
+
+def _programar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
+    """Encola Telegram en su propia tarea: un canal lento no alarga el ciclo del despachador."""
+    tarea = asyncio.get_running_loop().create_task(_enviar_aviso_freno_incertidumbre(cantidad, umbral))
+    _avisos_freno_incertidumbre.add(tarea)
+    tarea.add_done_callback(_avisos_freno_incertidumbre.discard)
+
+
+async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
+    """Aviso best-effort por la librería compartida. Sus credenciales nunca pasan por argv ni por logs."""
+    script = 'source "$1" && avisar_seguro "$2" "$3"'
+    titulo = "⚠️ JAX: freno de incertidumbre activo"
+    cuerpo = (f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
+              f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "
+              "Revisar si LAS MANOS está cortando las conexiones.")
+    entorno = {"PATH": "/usr/bin:/bin"}
+    entorno["LIB_AVISAR"] = _LIB_AVISAR
+    entorno["TELEGRAM_CREDS"] = _TELEGRAM_CREDS
+    try:
+        proceso = await asyncio.create_subprocess_exec(
+            "/bin/bash", "-c", script, "lib-avisar", _LIB_AVISAR, titulo, cuerpo,
+            env=entorno, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        codigo = await proceso.wait()
+        if codigo:
+            logger.warning("proyectos_documentos: lib-avisar terminó con estado %s", codigo)
+    except Exception as exc:  # fail-soft: un aviso ausente o roto no puede frenar el despachador
+        logger.warning("proyectos_documentos: no se pudo ejecutar lib-avisar (%s)", type(exc).__name__)
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 
 import httpx
@@ -147,9 +148,11 @@ def _insertar(client, project_id, usuario, sha, nombre, ruta):
 
 @pytest.fixture
 def e(client, workspace, monkeypatch):
+    despachador._freno_incertidumbre_activo = False
     entorno = Entorno(client, workspace, monkeypatch)
     yield entorno
     despachador._en_incertidumbre.clear()
+    despachador._freno_incertidumbre_activo = False
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
 
@@ -160,6 +163,14 @@ def _resultado(archivo, estado, carpeta=None, error=None):
 
 def _trabajo(job_id, estado, resultados):
     return (200, {"job_id": job_id, "estado": estado, "resultados": resultados})
+
+
+def test_servicio_entrega_telegram_como_credencial_privada_de_systemd():
+    unidad = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "migration", "systemd-units",
+                          "jax-platform.service")
+    with open(unidad, encoding="utf-8") as archivo:
+        texto = archivo.read()
+    assert "LoadCredential=telegram.env:/etc/restic/telegram.env" in texto
 
 
 # ------------------------------------------------------------------ despacho
@@ -928,6 +939,89 @@ def test_con_100_o_mas_filas_en_incertidumbre_el_ciclo_no_despacha_nada_y_avisa(
     assert e.las_manos.posts == [] and e.fila(sana)[0] == "en_cola"
     avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "incertidumbre" in r.getMessage()]
     assert avisos and "100" in avisos[0], caplog.text
+
+
+def test_freno_de_incertidumbre_encola_un_aviso_sin_esperar_telegram(e, monkeypatch):
+    """Activar el freno programa Telegram una vez y deja terminar el ciclo aunque el envío siga pendiente."""
+    hasta = despachador._reloj() + 1000
+    for i in range(100):
+        despachador._en_incertidumbre[10**12 + i] = hasta
+
+    started = threading.Event()
+    release = threading.Event()
+    envios = []
+
+    async def enviar(cantidad, umbral):
+        envios.append((cantidad, umbral))
+        started.set()
+        await asyncio.to_thread(release.wait, 2)
+
+    monkeypatch.setattr(despachador, "_enviar_aviso_freno_incertidumbre", enviar)
+    e.ciclo()
+    assert started.wait(1), "el aviso no se programó"
+    assert len(envios) == 1
+    assert not any(t.done() for t in despachador._avisos_freno_incertidumbre)
+
+    e.ciclo()  # el trabajo de Telegram sigue pendiente; el ciclo no espera y no duplica el aviso
+    assert len(envios) == 1
+    release.set()
+    e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+
+
+def test_freno_de_incertidumbre_reavisa_solo_tras_desactivarse_y_activarse(e, monkeypatch):
+    hasta = despachador._reloj() + 1000
+    envios = []
+
+    async def enviar(cantidad, umbral):
+        envios.append((cantidad, umbral))
+
+    monkeypatch.setattr(despachador, "_enviar_aviso_freno_incertidumbre", enviar)
+    for i in range(100):
+        despachador._en_incertidumbre[10**12 + i] = hasta
+    e.ciclo()
+    e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    assert len(envios) == 1
+
+    despachador._en_incertidumbre.clear()
+    e.ciclo()  # restablece la marca del freno
+    for i in range(100):
+        despachador._en_incertidumbre[10**13 + i] = hasta
+    e.ciclo()
+    e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    assert len(envios) == 2
+
+
+async def _esperar_tareas_de_aviso(despachador):
+    if despachador._avisos_freno_incertidumbre:
+        await asyncio.gather(*tuple(despachador._avisos_freno_incertidumbre))
+
+
+@pytest.mark.asyncio
+async def test_aviso_freno_usa_lib_avisar_y_el_archivo_de_credenciales(monkeypatch):
+    llamadas = []
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secreto-que-no-se-hereda")
+
+    class Proceso:
+        async def wait(self):
+            return 0
+
+    async def crear(*args, **kwargs):
+        llamadas.append((args, kwargs))
+        return Proceso()
+
+    monkeypatch.setattr(despachador.asyncio, "create_subprocess_exec", crear)
+    await despachador._enviar_aviso_freno_incertidumbre(100, 100)
+
+    (args, kwargs), = llamadas
+    assert args[:3] == ("/bin/bash", "-c", 'source "$1" && avisar_seguro "$2" "$3"')
+    assert args[4] == despachador._LIB_AVISAR
+    assert "freno de incertidumbre" in args[5]
+    assert "100 filas" in args[6] and "umbral 100" in args[6]
+    assert kwargs["env"]["TELEGRAM_CREDS"] == despachador._TELEGRAM_CREDS
+    assert kwargs["env"]["TELEGRAM_CREDS"].endswith("/telegram.env")
+    assert "TELEGRAM_BOT_TOKEN" not in kwargs["env"]
+    assert kwargs["stdout"] is asyncio.subprocess.DEVNULL
+    assert kwargs["stderr"] is asyncio.subprocess.DEVNULL
 
 
 def test_con_menos_de_100_filas_en_incertidumbre_se_despacha_normal(e):
