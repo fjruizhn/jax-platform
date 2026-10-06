@@ -21,6 +21,7 @@ const ETIQUETAS = {
   pipeline_confirmar_usd: 'adminSettingsConfirmarUsd',
   'jacobs.tope_devoluciones': 'adminSettingsTopeDevoluciones',
   'ejecutor.c2_edad_max_s': 'adminSettingsC2EdadMax',
+  'ejecutor.c5_auditor_nube_solo_ordenes': 'adminSettingsC5SoloOrdenes',
 }
 
 const CLASE_ETIQUETA = 'block text-xs font-semibold text-texto-suave uppercase tracking-wider mb-1'
