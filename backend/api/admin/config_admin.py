@@ -89,11 +89,12 @@ async def _ajustes_para_la_base(cur, claves: list[str]) -> dict[str, str]:
         return {}
     collation = await _collation(cur)
     pedidas = " UNION ALL ".join(["SELECT %s AS k"] * len(claves))
-    conocidas = " UNION ALL ".join(["SELECT %s AS a"] * len(ajustes.CLAVES))
+    validables = (*ajustes.CLAVES, *ajustes.CLAVES_SOLO_ADMINISTRADAS)
+    conocidas = " UNION ALL ".join(["SELECT %s AS a"] * len(validables))
     await cur.execute(
         f"SELECT p.k, c.a FROM ({pedidas}) p JOIN ({conocidas}) c "
         f"ON WEIGHT_STRING(p.k COLLATE {collation}) = WEIGHT_STRING(c.a COLLATE {collation})",
-        (*claves, *ajustes.CLAVES),
+        (*claves, *validables),
     )
     return {pedida: conocida for pedida, conocida in await cur.fetchall()}
 
