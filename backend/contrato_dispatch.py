@@ -220,8 +220,9 @@ async def detalle_si_rompe_el_contrato(
     BEGIN sigue igual (sin bloqueo) para que el 409 temprano no cambie.
 
     `provider_id`: el que quedará en facet_binding.provider_id. El PUT lo
-    manda en el request; approve no lo toca (solo cambia model_ref), así que
-    pasa None y se usa el que el binding ya tiene.
+    manda en el request; approve deriva provider_id y model_id de la fila
+    aprobada, así que pasa None y se usa el que el binding ya tiene para
+    verificar que el modelo pertenezca al mismo proveedor.
 
     None = sí (o no hay nada que decidir acá: faceta o modelo inexistentes los
     rechaza el propio endpoint con su 404/FK de siempre). Si no, el `detail`
@@ -398,11 +399,10 @@ async def binding_de(cur, facet_key: str, role: str, para_actualizar: bool = Fal
         return None
     model_ref, provider_id, model_id, approved_by, approved_at = fila
     # Los identificadores legibles son los de la fila de `model` a la que apunta
-    # model_ref (por PK): es la fuente de verdad de la faceta -- approve_proposal
-    # solo mueve model_ref y deja facet_binding.model_id/provider_id como estaban
-    # (medido en tests/test_binding_aplicado_auditado.py). Una lectura aparte, no
-    # un JOIN, para que el FOR UPDATE bloquee solo la fila del binding. Si la fila
-    # de `model` ya no existe, quedan las columnas del propio binding.
+    # model_ref (por PK): approve_proposal escribe model_ref, provider_id y
+    # model_id juntos. Una lectura aparte, no un JOIN, para que el FOR UPDATE
+    # bloquee solo la fila del binding. Si la fila de `model` ya no existe,
+    # quedan las columnas del propio binding.
     if model_ref is not None:
         await cur.execute("SELECT provider_id, model_id FROM model WHERE id=%s", (model_ref,))
         legible = await cur.fetchone()
