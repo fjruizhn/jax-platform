@@ -241,6 +241,11 @@ def test_approve_exitoso_escribe_binding_aplicado_con_proposal_id(client, modelo
     resp = client.post(f"/api/admin/models/proposals/{pid}/approve", headers=_headers())
     assert resp.status_code == 200, resp.text
 
+    binding = client.portal.call(_binding)
+    assert binding[0:3] == (PROVEEDOR, ref, MODELO_OK), (
+        "approve_proposal debe sincronizar las columnas heredadas con model_ref"
+    )
+
     filas = client.portal.call(_filas_de_auditoria, ref)
     assert len(filas) == 1, filas
     (action, model_ref, provider_id, model_id, facet_key, proposal_id, _code,

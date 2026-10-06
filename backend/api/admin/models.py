@@ -496,6 +496,23 @@ async def _fetch_proposal(cur, proposal_id: int):
     return await cur.fetchone()
 
 
+async def _actualizar_binding_aprobado(cur, *, facet_key: str, model_ref: int, approved_by: int) -> None:
+    """Keep the retained identity columns aligned with the approved model.
+
+    ``facet_binding.model_ref`` is the canonical pointer, but the legacy
+    ``provider_id`` and ``model_id`` columns remain NOT NULL and are still
+    read by compatibility paths. Derive all three values from one locked
+    catalog row so an approval cannot leave a mixed identity behind.
+    """
+    await cur.execute(
+        "UPDATE facet_binding AS fb JOIN model AS m ON m.id=%s "
+        "SET fb.model_ref=m.id, fb.provider_id=m.provider_id, fb.model_id=m.model_id, "
+        "fb.approved_by=%s, fb.approved_at=NOW() "
+        "WHERE fb.facet_key=%s AND fb.role='primary'",
+        (model_ref, approved_by, facet_key),
+    )
+
+
 @router.post("/proposals/{proposal_id}/approve")
 async def approve_proposal(
     proposal_id: int,
@@ -590,11 +607,8 @@ async def approve_proposal(
                         cur, detalle, proposal_id, decided_by, user.email, ip_de(request))
                     await conn.commit()
                     raise HTTPException(status_code=409, detail=detalle)
-                await cur.execute(
-                    "UPDATE facet_binding SET model_ref=%s, approved_by=%s, approved_at=NOW() "
-                    "WHERE facet_key=%s AND role='primary'",
-                    (proposed_model_ref, decided_by, facet_key),
-                )
+                await _actualizar_binding_aprobado(
+                    cur, facet_key=facet_key, model_ref=proposed_model_ref, approved_by=decided_by)
                 despues = await binding_de(cur, facet_key, "primary")
                 await registrar_binding_aplicado(
                     cur, facet_key, "primary", antes, despues, proposal_id,
