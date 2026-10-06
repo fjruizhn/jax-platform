@@ -15,7 +15,7 @@ Resultado final policy run [37491432941](https://github.com/fjruizhn/jax-platfor
 
 | Hallazgo | Cierre | Evidencia en el SHA `65b9449` |
 |---|---|---|
-| Major · E3 no medía upload→terminal ni detectaba `sleep(3)` | 20 subidas válidas al máximo de páginas/bytes, chat, despacho durable y sondeo terminal; p95 con tope de CI y mutante ejecutado en configuración OCR acotada válida | Policy run 37485909427: `p95=1917.0 ms`, `max=1918.5 ms`; mutante falló por p95 a `61398.1 ms` sobre `25000 ms`; wrapper del mutante pasó al verificar la causa exacta |
+| Major · E3 no medía upload→terminal ni detectaba `sleep(3)` | 20 subidas válidas al máximo de páginas/bytes, chat, despacho durable y sondeo terminal; p95 con tope de CI y mutante ejecutado en configuración OCR acotada válida | Policy run 37491432941: `p95=1308.5 ms`, `max=1309.7 ms`; mutante falló por p95 a `61448.8 ms` sobre `25000 ms`; wrapper del mutante pasó al verificar la causa exacta |
 | Minor 1 · códigos internos OCR visibles | Causa y estado se resuelven por catálogos i18n; código desconocido usa causa genérica | Tests `FileAttachment`; frontend `1397/1397` |
 | Minor 2 · sondeo sin reintentos ni límite | Reintento ante error transitorio, backoff creciente y tope total configurable con estado honesto al agotar | Tests `BottomBar`; frontend `1397/1397` |
 | Minor 3 · selector bloqueado tras estado terminal | Se desbloquea en estados finales y muestra instrucción localizada | Tests `BottomBar` y `FileAttachment`; frontend `1397/1397` |
@@ -93,4 +93,4 @@ Medición: GitHub Actions run [37454479696](https://github.com/fjruizhn/jax-plat
 
 **Cierre:** la medición de carga y la auditoría adversarial del SHA `c2b7e1d` concluyeron. Se mantiene PR #208 en borrador hasta que CI termine verde sobre el head final. No integrar ni desplegar desde esta sesión. El checkout principal y producción permanecen intactos.
 
-**Cierre de ronda 2 (2026-10-06):** los hallazgos del informe de auditoría `1 MAJOR, 5 MINOR` se cerraron en la rama `feat/e3-respaldo-chat`. El push policy y el evento pull_request quedaron verdes sobre el SHA de código `539b16baab8581b595f6f8ec4965b27b84d33b21` (PR #208); ver tabla y resultados anteriores de esta revisión. Esto actualiza el pendiente anterior sobre CI. El OCR de LAS MANOS real continúa como pendiente fechado y asignado a Fernando; no se ejecutó producción ni se integró a `main`.
+**Cierre de ronda 2 (2026-10-06):** los hallazgos del informe de auditoría `1 MAJOR, 5 MINOR` se cerraron en la rama `feat/e3-respaldo-chat`. El SHA de código `65b9449fcfe5bdbc033469da3799fa938ed3a0f5` recibió APROBADO del auditor escalón 3 y policy run 37491432941 pasó con todos los jobs requeridos; véase la evidencia final arriba. El OCR de LAS MANOS real continúa como pendiente fechado y asignado a Fernando; no se ejecutó producción ni se integró a `main`.
