@@ -21,4 +21,14 @@ La afirmación anterior de que `docs/fase1-credenciales-diseno.md` justificaba u
 
 Se añadieron filtros tenant a memoria (hechos de usuario por el tenant del usuario; hechos compartidos con `user_id IS NULL` por el tenant de `jax_project_scope`; hechos globales sin proyecto excluidos) y uso. `recover` y la auditoría de descarte verifican tenant antes de acceder a Jacobs. Se retiraron los `FORCE INDEX` fail-soft en consultas admin y se corrigieron los filtros de dashboard.
 
+Corrección de auditoría (2026-10-06): el EXPLAIN real de la vista admin de
+descartados está en
+`backend/tests/test_pipelines_descartados_admin.py::test_explain_descartados_admin_usa_idx_pipelines_tenant_status_date_sin_filesort`;
+su nombre y su afirmación deben referirse a `idx_pipelines_tenant_status_date`,
+no a `idx_pipelines_ocultos`. La ronda 3 limita también `fundir` y el
+agrupamiento de hechos al tenant del superadmin, y mantiene en 404 el acceso
+a cualquier id de hecho ajeno. La medición de producción suministrada para
+M3 (2026-10-06) registró 0 hechos globales activos de 104; el agrupamiento
+conserva su exclusión actual hasta la decisión M6 de Fernando.
+
 Verificación de ronda 2: suite completa del backend, con `JAX_TEST_DB_SUFIJO=codexr2oct06final`, `JAX_REPO_PATH=/home/fruiz/wt/jax-pipelines-tenant-index`, `PYTHONPATH` apuntando al checkout y `JAX_WORKSPACE_DIR=/tmp`: **3803 passed, 6 skipped**. Pruebas unitarias del índice Jacobs: **18 passed**. La suite usó `jax_memory_test_codexr2oct06final`; nunca `jax_memory`. Los PRs quedan sin integrar, a la espera de auditoría Sol e integración por Hyde.

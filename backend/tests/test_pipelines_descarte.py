@@ -800,13 +800,13 @@ def test_explain_descartados_del_usuario_usa_idx_pipelines_descartados(client):
         client.portal.call(_borrar_pipelines, ids_ruido + ids_reales)
 
 
-def test_explain_ocultos_usa_idx_pipelines_ocultos(client):
+def test_explain_ocultos_usa_idx_pipelines_tenant_status_date(client):
     from api.admin.pipelines_ocultos import SQL_OCULTOS
 
     filas = client.portal.call(sql, "EXPLAIN " + SQL_OCULTOS, (TENANT, mod.LISTA_PIPELINES_MAX, 5), True)
     ((_id, _sel, tabla, _tipo, _posibles, clave, _largo, _ref, _filas, extra),) = [tuple(f) for f in filas]
     assert tabla == "jacobs_pipelines"
-    assert clave in {"idx_pipelines_tenant_status_date", "idx_pipelines_ocultos"}, filas
+    assert clave == "idx_pipelines_tenant_status_date", filas
     assert "filesort" not in (extra or "") and "temporary" not in (extra or ""), filas
 
 

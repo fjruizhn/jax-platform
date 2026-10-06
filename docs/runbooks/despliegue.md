@@ -350,7 +350,7 @@ arriba.
 | `GET /api/pipelines` (lista principal) | **Local, SQL directo** | `FORCE INDEX (idx_pipelines_visibles)` -- **1176**, el índice no existe |
 | `GET /api/pipelines?estado=discarded` ("Descartados") | **Local, SQL directo** | `SQL_DESCARTADOS_DEL_USUARIO` selecciona `descartado_at` -- **1054**, la columna no existe. NO llega a pedirle nada a Jacobs: revienta antes del proxy |
 | `POST /pipelines/{id}/recover`, usuario NO superadmin | **Local, SQL directo** | `_estado_de_descarte()` (`api/pipelines.py`) hace `SELECT status, descartado_por ...` ANTES de decidir si deja pasar el pedido -- **1054**, `descartado_por` no existe. Tampoco llega al proxy |
-| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **En Jacobs, no local** | Ninguno de estos consulta una columna nueva antes de proxear -- `_require_pipeline_owner`/`_require_pipeline_exists` sólo tocan columnas que YA existían. SÍ llegan al proxy; lo que devuelvan depende de qué tan vieja sea la versión de Jacobs contra la que pegan (sin las rutas de Task 3, un 404 de ruta inexistente -- no un 500 de columna) |
+| `POST /pipelines/{id}/discard`, `/hide`, `/restore` (y `/recover` de un superadmin) | **En Jacobs, no local** | Ninguno de estos consulta una columna nueva antes de proxear -- `_require_pipeline_owner`/`_require_pipeline_tenant` sólo validan propiedad/tenant con columnas que YA existían. SÍ llegan al proxy; lo que devuelvan depende de qué tan vieja sea la versión de Jacobs contra la que pegan (sin las rutas de Task 3, un 404 de ruta inexistente -- no un 500 de columna) |
 
 Sólo la fila de `discard`/`hide`/`restore` "llega al proxy" -- las otras
 tres rompen ANTES, del lado de jax-platform, sin que Jacobs se entere del

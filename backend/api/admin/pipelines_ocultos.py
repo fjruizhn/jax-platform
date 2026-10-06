@@ -28,7 +28,7 @@ LIMITE_MAX = 50
 # tenant_id no se puede omitir en un sistema con más de un tenant.
 SQL_OCULTOS = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines "
+    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
     "WHERE tenant_id = %s AND status='hidden' "
     "ORDER BY descartado_at DESC LIMIT %s OFFSET %s"
 )
@@ -59,21 +59,19 @@ async def listar_ocultos(
 # 2026-09-22 (cierre de los dos huecos de la revisión final de Descartar
 # Pipelines, punto 1): el equivalente de SQL_OCULTOS para status='discarded'
 # -- MISMA forma (campos, paginación limite+1), sólo cambia el status del
-# WHERE. Reusa `idx_pipelines_ocultos` (status, descartado_at), NO
-# `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at):
-# ese índice sirve a la vista de descartados DEL DUEÑO
-# (SQL_DESCARTADOS_DEL_USUARIO, api/pipelines.py), que SÍ filtra por
-# user_id/tenant_id -- cada superadmin ve solamente su tenant. El índice
-# tenant/status/descartado_at/pipeline_id permite filtrar el tenant y recorrer
-# en el mismo orden de la paginación, también para /ocultos. Verificado con
-# EXPLAIN en tests/test_admin_tenant_isolation.py.
+# WHERE. Fuerza `idx_pipelines_tenant_status_date` (tenant_id, status,
+# descartado_at, pipeline_id): `idx_pipelines_ocultos` omite tenant_id y puede
+# recorrer descartados de todos los tenants. El otro índice,
+# `idx_pipelines_descartados` (user_id, tenant_id, status, descartado_at),
+# sirve a la vista del dueño. Verificado con EXPLAIN en los tests admin de
+# descartados y ocultos.
 #
 # 2026-09-23: orden TOTAL (descartado_at DESC, pipeline_id DESC) y
 # paginación por cursor además de offset -- ver api/paginacion_descartados.py
 # y docs/carga-descartados-cursor-2026-09-23.md.
 SQL_DESCARTADOS_ADMIN_BASE = (
     "SELECT pipeline_id, name, user_id, tenant_id, descartado_por, descartado_at, created_at "
-    "FROM jacobs_pipelines "
+    "FROM jacobs_pipelines FORCE INDEX (idx_pipelines_tenant_status_date) "
     "WHERE tenant_id = %s AND status='discarded' "
 )
 SQL_DESCARTADOS_ADMIN = SQL_DESCARTADOS_ADMIN_BASE + ORDEN + "LIMIT %s OFFSET %s"

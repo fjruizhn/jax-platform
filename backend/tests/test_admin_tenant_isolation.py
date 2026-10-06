@@ -201,7 +201,7 @@ def test_dashboard_cuenta_hechos_sin_verificar_solo_del_tenant(client, monkeypat
         assert after.json()["stats"]["facts_unverified"] == before.json()["stats"]["facts_unverified"] + 1
     finally:
         client.portal.call(sql, "DELETE FROM facts WHERE id IN (%s, %s)", (fact_a, fact_b))
-        client.portal.call(sql, "DELETE FROM jax_users WHERE user_id IN (%s, %s)", (user_a, user_b))
+        client.portal.call(sql, "DELETE FROM jax_users WHERE user_id=%s", (user_a,))
 
 
 async def _insertar_fact(texto, user_id, *, is_verified=False, expires_at=None):
@@ -270,6 +270,27 @@ def test_memoria_no_aprueba_hecho_de_otro_tenant(client, monkeypatch):
         assert not verified
     finally:
         client.portal.call(sql, "DELETE FROM facts WHERE id=%s", (fact_a,))
+        client.portal.call(sql, "DELETE FROM jax_users WHERE user_id=%s", (user_a,))
+
+
+def test_memoria_fundir_no_revela_ni_modifica_hecho_de_otro_tenant(client):
+    """Dos hechos del mismo scope ajeno no se pueden fundir ni descubrir."""
+    user_a = uid(client, "tenant-fundir-user-a", "operator", TENANT_A)
+    fact_a = client.portal.call(_insertar_fact, "texto equivalente", user_a)
+    fact_b = client.portal.call(_insertar_fact, "texto equivalente", user_a)
+    try:
+        response = client.post(
+            "/api/admin/memoria/hechos/fundir",
+            json={"superviviente_id": fact_b, "absorbidos": [fact_a]},
+            headers=_admin_b(client),
+        )
+        assert response.status_code == 404, response.text
+        filas = client.portal.call(
+            sql, "SELECT superseded_by FROM facts WHERE id IN (%s, %s) ORDER BY id",
+            (fact_a, fact_b), True)
+        assert filas == ((None,), (None,))
+    finally:
+        client.portal.call(sql, "DELETE FROM facts WHERE id IN (%s, %s)", (fact_a, fact_b))
         client.portal.call(sql, "DELETE FROM jax_users WHERE user_id=%s", (user_a,))
 
 

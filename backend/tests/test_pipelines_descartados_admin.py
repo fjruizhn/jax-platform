@@ -144,7 +144,7 @@ async def _insertar_pipelines_bulk_admin(filas):
                 filas)
 
 
-def test_explain_descartados_admin_usa_idx_pipelines_ocultos_sin_filesort(client):
+def test_explain_descartados_admin_usa_idx_pipelines_tenant_status_date_sin_filesort(client):
     """Con datos con forma de producción (muchos usuarios/tenants distintos,
     no una tabla casi vacía -- mismo motivo que
     test_explain_descartados_del_usuario_usa_idx_pipelines_descartados en

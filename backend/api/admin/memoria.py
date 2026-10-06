@@ -483,8 +483,8 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
     asi que no puede cambiar el veredicto de compatibilidad de ESTE lote
     (compara ids[i] contra ids[j], nunca contra un id de afuera). Calcularlo
     antes tambien acorta la ventana real en la que el lote queda bloqueado:
-    el full scan de `SQL_CITAS` (sin indice sobre `source_fact_ids`, MAJOR A)
-    es el costo mayor de este endpoint.
+    la lectura de `SQL_CITAS` queda limitada a facts propios o compartidos
+    por proyecto dentro del tenant y ocurre antes del `FOR UPDATE`.
 
     m8-b (cierre jax-platform#146, ronda 6, SEGURIDAD -- hallazgo reportado
     tras m8): mismo defecto que tenia `aprobar_hechos` antes de m8 -- con la
@@ -516,7 +516,7 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
         # FOR UPDATE de mas abajo -- ver el porque en el docstring de esta
         # funcion. Mismo cursor, misma transaccion (no abre una segunda
         # conexion), pero SIN bloquear ninguna fila todavia.
-        citas_directas = await _cargar_citas_directas(cur)
+        citas_directas = await _cargar_citas_directas(cur, user.tenant_id)
         cierre_citas = _cierre_transitivo_de_citas(citas_directas)
 
         marcadores = ", ".join(["%s"] * len(ids))
@@ -524,8 +524,8 @@ async def fundir_hechos(body: FundirBody, user: AuthUser = Depends(require_super
             f"SELECT f.id, f.fact_text, f.superseded_by, f.is_verified, f.created_at, "
             f"f.source_facet, f.expires_at, f.user_id, f.project_id, u.tenant_id "
             f"FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
-            f"WHERE f.id IN ({marcadores}) FOR UPDATE",
-            ids,
+            f"WHERE f.id IN ({marcadores}) AND u.tenant_id = %s FOR UPDATE",
+            (*ids, user.tenant_id),
         )
         filas = await cur.fetchall()
         superados_de = {}
@@ -807,8 +807,16 @@ SQL_ACTIVOS_CON_VECTOR = (
     "FROM facts f JOIN jax_users u ON u.user_id = f.user_id "
     "WHERE f.superseded_by IS NULL "
     "AND (f.expires_at IS NULL OR f.expires_at > NOW()) "
+    "AND u.tenant_id = %s "
     f"AND {_embedding_no_cero_sql('f.' + _COLUMNA_EMBED)}"
 )
+# M6 (decision reserved to Fernando): keep globally unscoped facts excluded
+# from grouping. Production observation supplied with the 2026-10-06 review:
+# 0 active unscoped facts out of 104. Reproduce the count with:
+# SELECT SUM(f.user_id IS NULL AND ps.tenant_id IS NULL) AS unscoped,
+#        COUNT(*) AS active FROM facts f LEFT JOIN jax_project_scope ps
+#        ON ps.project_id = f.project_id WHERE f.superseded_by IS NULL
+#   AND (f.expires_at IS NULL OR f.expires_at > NOW());
 # `source_facet` va AL FINAL (índice 5) a propósito: `_casi_duplicados_
 # del_grupo` sigue leyendo el vector en el índice 4 tal cual lo hacía antes
 # de la ronda 2026-09-22, así que las tuplas sintéticas de 5 elementos que
@@ -948,16 +956,31 @@ def _parse_fuentes(valor, fact_id) -> frozenset:
         return frozenset()
 
 
-SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT NULL"
+SQL_CITAS = (
+    "SELECT f.id, f.source_fact_ids FROM jax_users u "
+    "JOIN facts f ON f.user_id = u.user_id "
+    "WHERE u.tenant_id = %s AND f.source_fact_ids IS NOT NULL "
+    "UNION ALL "
+    "SELECT f.id, f.source_fact_ids FROM jax_project_scope ps "
+    "JOIN facts f ON f.project_id = ps.project_id "
+    "WHERE ps.tenant_id = %s AND f.user_id IS NULL "
+    "AND f.source_fact_ids IS NOT NULL"
+)
+# Las dos ramas mantienen M6 sin cambio: filas con dueño del tenant y hechos
+# compartidos mediante jax_project_scope de ese tenant entran al cierre; los
+# hechos globales sin dueño/scope y los de otros tenants quedan fuera.
+# Referencias citadas pueden ser históricas, pero filas de origen de otros
+# tenants no entran al cierre ni conectan clusters entre tenants.
 # Ronda 146, tercera vuelta (MAJOR 1, revisión adversarial de jax-platform
-# PR 146): SIN filtrar por `superseded_by`/`expires_at` a propósito -- una
+# PR 146): dentro del tenant, SIN filtrar por `superseded_by`/`expires_at` a
+# propósito -- una
 # síntesis puede citar a un hecho que después se superó o venció, y la
 # cadena de citas tiene que seguir cerrada igual (una síntesis no deja de
 # ser síntesis DE algo sólo porque ese algo ya no está activo). `EXPLAIN`
 # (test_memoria_grupos.py) confirma que no hay índice útil para
 # `source_fact_ids IS NOT NULL` -- `source_fact_ids` es `longtext`, sin
-# índice (verificado con `SHOW INDEX FROM facts` contra jax_memory_test):
-# full scan, `type=ALL`.
+# índice propio. Con el filtro tenant, EXPLAIN limita las filas por tenant
+# antes de leer los source_fact_ids de sus facts.
 #
 # MAJOR A (revisión adversarial de jax-platform PR 146, ronda 4): la primera
 # medición (docs/carga-memoria-146-2026-09-22.md) decía "son pocas... el
@@ -975,6 +998,8 @@ SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT 
 # dentro de la transacción) queda en milisegundos de un dígito a low-teens
 # (p50 7,6→12,2 ms, p95 18,4→19,1 ms) -- ver la sección "RONDA 4" del
 # documento para el método y los números completos.
+# Esas mediciones preceden al filtro tenant y describen la consulta global
+# anterior; no son un benchmark del plan acotado que usa esta versión.
 #
 # MINOR A-texto (ronda 5): el PEOR caso de verdad -- cadenas LARGAS
 # (profundidad 10) con fuentes VECINAS EN EMBEDDINGS (dentro de un cluster
@@ -993,13 +1018,14 @@ SQL_CITAS = "SELECT id, source_fact_ids FROM facts WHERE source_fact_ids IS NOT 
 # el BFS) -- el costo medido, realista Y peor caso, no lo justifica.
 
 
-async def _cargar_citas_directas(cur) -> dict:
+async def _cargar_citas_directas(cur, tenant_id: str) -> dict:
     """id -> frozenset de ids que ESE id cita directamente (una fila de
-    `source_fact_ids`), para TODOS los facts que tienen ese dato -- activos
-    o no. Un solo SELECT, reusado por el detector (`agrupar_por_tema`, su
+    `source_fact_ids`), para los facts con dueño dentro del tenant -- activos
+    o no. Filtrar filas origen evita que otro tenant altere transitivamente
+    los clusters. Un solo SELECT, reusado por el detector (`agrupar_por_tema`, su
     propia conexión) y por `fundir_hechos` (el cursor de SU transacción,
     para no abrir una segunda conexión en medio del `FOR UPDATE`)."""
-    await cur.execute(SQL_CITAS)
+    await cur.execute(SQL_CITAS, (tenant_id, tenant_id))
     return {fid: _parse_fuentes(raw, fid) for fid, raw in await cur.fetchall()}
 
 
@@ -1352,24 +1378,24 @@ def _construir_grupos(filas: list, vecinos: list, cierre_citas: dict) -> list[di
     return grupos
 
 
-async def agrupar_por_tema() -> list[dict]:
+async def agrupar_por_tema(user: AuthUser) -> list[dict]:
     """Agrupa los hechos activos por cercanía semántica (spec §2.1). Ver el
     comentario de módulo de arriba para el diseño completo (índice,
     umbral, escala)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(SQL_ACTIVOS_CON_VECTOR)
+            await cur.execute(SQL_ACTIVOS_CON_VECTOR, (user.tenant_id,))
             filas = await cur.fetchall()
     if not filas:
         return []
 
     # MAJOR 1, tercera vuelta: el cierre de citas se calcula UNA vez por
-    # request, sobre TODO el grafo (no sólo los miembros de un grupo) --
+    # request, sobre TODO el grafo del tenant (no sólo los miembros de un grupo) --
     # conexión propia, antes de repartir el trabajo de vecinos.
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            citas_directas = await _cargar_citas_directas(cur)
+            citas_directas = await _cargar_citas_directas(cur, user.tenant_id)
     cierre_citas = _cierre_transitivo_de_citas(citas_directas)
 
     semaforo = asyncio.Semaphore(_CONCURRENCIA_VECINOS)
@@ -1399,4 +1425,4 @@ async def agrupar_por_tema() -> list[dict]:
 
 @router.get("/grupos")
 async def listar_grupos(user: AuthUser = Depends(require_superadmin)):
-    return {"grupos": await agrupar_por_tema()}
+    return {"grupos": await agrupar_por_tema(user)}

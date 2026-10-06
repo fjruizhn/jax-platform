@@ -11,8 +11,8 @@ etc.), ordenados del más nuevo al más viejo.
 
 Permisos: el dueño (_require_pipeline_owner, MISMA regla que /results y
 GET/{id} -- un hidden sigue dando 404 a un dueño no-superadmin) O el
-superadmin (mismo patrón de rama que recover_pipeline: _require_pipeline_exists,
-sin exigir dueño). Que la auditoría muestre el user_id del PROPIO
+superadmin (recover valida el tenant con _require_pipeline_tenant). Que la
+auditoría muestre el user_id del PROPIO
 superadmin es intencional (decisión del coordinador, fix round 1): es el
 punto de una auditoría, no una fuga -- ver el comentario en
 api/pipelines.py::auditoria_descarte.

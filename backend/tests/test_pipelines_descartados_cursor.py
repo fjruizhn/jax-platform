@@ -320,7 +320,7 @@ def test_pagina_profunda_por_cursor_lee_limite_mas_uno_en_la_vista_del_admin(cli
         consulta, params = pag.consulta_y_parametros(
             SQL_DESCARTADOS_ADMIN_BASE, (TENANT,), LIMITE_MAX, 0, pag.codificar_cursor(d_ancla, esperado[799]))
         explain, handler, filas_leidas = client.portal.call(_explain_y_handler_read, consulta, params)
-        assert explain["key"] in {"idx_pipelines_tenant_status_date", "idx_pipelines_ocultos"}, explain
+        assert explain["key"] == "idx_pipelines_tenant_status_date", explain
         extra = (explain["Extra"] or "").lower()
         assert "filesort" not in extra and "temporary" not in extra, explain
         assert [f[0] for f in filas_leidas] == esperado[800:800 + LIMITE_MAX + 1]

@@ -268,9 +268,7 @@ def test_explain_de_la_consulta_real_usa_el_indice_cubriente(client, nombre):
     assert fila["table"] == "axioma_usage"
     assert fila["key"] in {IDX, "idx_axioma_usage_periodo"}, fila
     assert fila["type"] == "range", fila                  # no `ALL`: no es un scan de la tabla
-    # tenant_id y el rango temporal usan un acceso por índice; la agregación
-    # puede leer columnas adicionales y ordenar los grupos.
-    assert fila["type"] == "range", fila
+    assert "Using index" in (fila["Extra"] or ""), fila   # el índice cubre el SELECT real
 
 
 # --- Ronda 2 (2026-09-15, re-review de 0c72f4e) ---------------------------------

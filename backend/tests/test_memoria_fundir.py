@@ -322,8 +322,9 @@ def test_fundir_rechaza_lote_de_scope_distinto_antes_de_escribir(
     r = client_superadmin.post("/api/admin/memoria/hechos/fundir",
                                json={"superviviente_id": superviviente,
                                      "absorbidos": [absorbido1, absorbido2]})
-    assert r.status_code == 409
-    assert r.json()["detail"] == "fundir_hechos_de_scope_distinto"
+    assert r.status_code == (404 if scope_ajeno == "tenant" else 409)
+    assert r.json()["detail"] == (
+        "hecho_no_encontrado" if scope_ajeno == "tenant" else "fundir_hechos_de_scope_distinto")
     for fact_id in (superviviente, absorbido1, absorbido2):
         superseded_by, _, _ = client_superadmin.portal.call(_estado, fact_id)
         assert superseded_by is None
@@ -644,8 +645,8 @@ def test_fundir_rechaza_lote_con_cita_transitiva_no_directa(client_superadmin, t
 # test fijaba el ALCANCE de SQL_CITAS ------------------------------------
 
 def test_sql_citas_ve_la_cadena_a_traves_de_un_superado_y_un_vencido(client_superadmin, trio):
-    """SQL_CITAS (memoria.py) trae TODOS los facts con `source_fact_ids` no
-    nulo, a proposito SIN filtrar por `superseded_by`/`expires_at` -- una
+    """SQL_CITAS trae los facts propios o project-scoped del tenant con
+    `source_fact_ids` no nulo, SIN filtrar por `superseded_by`/`expires_at` -- una
     sintesis puede citar a un hecho que despues se supera o vence, y la
     cadena tiene que seguir cerrada igual (comentario junto a SQL_CITAS).
     Si alguien le agrega `AND superseded_by IS NULL` (o el equivalente para
@@ -687,8 +688,8 @@ def test_sql_citas_ve_la_cadena_a_traves_de_un_superado_y_un_vencido(client_supe
 
 def test_fundir_calcula_el_cierre_de_citas_antes_del_for_update(
         client_superadmin, trio, monkeypatch):
-    """El cierre de citas (SQL_CITAS, un full scan sin indice util -- MAJOR
-    A) no necesita correr bajo el mismo candado que protege al lote: las
+    """El cierre de citas tenant-scoped no necesita correr bajo el mismo
+    candado que protege al lote: las
     citas viven en `source_fact_ids`, columna que fundir nunca escribe. Se
     instrumenta el CURSOR real (aiomysql.Cursor.execute), no una funcion del
     modulo memoria, para que la evidencia sea el SQL que de verdad corrio,
