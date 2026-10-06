@@ -1445,6 +1445,42 @@ jobs:
         # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
+      - name: Medir E3 con 20 usuarios chateando mientras sus PDF escaneados se procesan
+        # 20 subidas al tope (escalonadas) y 5 turnos de chat por usuario MIENTRAS corren
+        # el despacho y el sondeo reales, con MariaDB/workspace reales. Solo se simula
+        # el servicio OCR remoto. Se mide por separado el p95 de CADA subida y el p95 de
+        # CADA turno de chat. Topes = peor línea base medida en hall9000 (2026-10-06,
+        # subida 59,4 ms, chat 1255 ms) x margen declarado: subida x25 = 1500 ms (la
+        # base es de decenas de ms: manda el ruido absoluto del runner), chat x3 -> 4000 ms.
+        env:
+          JAX_E3_SUBIDA_P95_MAX_MS: '1500'
+          JAX_E3_CHAT_P95_MAX_MS: '4000'
+        run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
+
+      - name: Comprobar que E3 rechaza el mutante sleep(0.5)
+        # `time.sleep(0.5)` bloqueante en encolar_pdf_desde_chat: los 20 bloqueos se
+        # serializan en el event loop y la subida p95 pasa de ~60 ms a ~10000 ms. Ocho
+        # workers y su timeout máximo válido aíslan el bloqueo del límite del pool OCR:
+        # el job debe fallar por superar el tope de p95; un 503 de cola saturada no cuenta
+        # como prueba del mutante (el grep de abajo exige el mensaje del tope).
+        env:
+          JAX_E3_SUBIDA_P95_MAX_MS: '1500'
+          JAX_E3_CHAT_P95_MAX_MS: '4000'
+          JAX_E3_MUTANT_SLEEP_S: '0.5'
+          JAX_ADJUNTO_PDF_PROCESOS: '8'
+          JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS: '60'
+        run: |
+          set +e
+          python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios >e3-mutante.log 2>&1
+          resultado=$?
+          set -e
+          tail -n 35 e3-mutante.log
+          if [ "$resultado" -eq 0 ]; then
+            echo "El mutante sleep(0.5) pasó E3; la prueba de carga no detecta la regresión."
+            exit 1
+          fi
+          grep -E "E3 (subida|chat) p95 " e3-mutante.log
+
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
         run: |
