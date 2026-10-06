@@ -64,6 +64,4 @@ No queda pendiente la medición E3 solicitada. Si cambia el código del camino, 
 
 **Decisiones y alternativas:** usar `project_documents` y su dispatcher proviene de la arquitectura del proyecto verificada por el arquitecto Tier 3. No llamar LAS MANOS directamente ni usar una tarea efímera proviene del contrato vigente de cola. No presentar un p95 simulado y no conectarse al puerto 3308 provienen del encargo y de la regla de carpintero. El selector se bloquea mientras se sube porque la admisión duradera ocurre antes del POST del turno, y habilitar el cambio permitiría dos contextos distintos.
 
-**Siguiente paso exacto:** esperar CI del nuevo SHA de PR #208; si pasa, ejecutar la medición de 20 turnos concurrentes mientras el documento está en cola en entorno DB aislado, actualizar esta evidencia y pedir auditoría del SHA resultante. Si sigue sin entorno de carga aislado, dejar carga como `N/A` y no pedir integración.
-
-**Siguiente paso:** esperar CI del SHA final después de subir el nuevo piso DB y este registro, luego auditar ese SHA exacto. El checkout principal y producción permanecen intactos.
+**Cierre:** la medición de carga y la auditoría adversarial del SHA `c2b7e1d` concluyeron. Se mantiene PR #208 en borrador hasta que CI termine verde sobre el head final. No integrar ni desplegar desde esta sesión. El checkout principal y producción permanecen intactos.
