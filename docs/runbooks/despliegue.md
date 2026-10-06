@@ -108,8 +108,18 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 ## 1 · `jax` (si el cambio lo toca)
 
 ```bash
-cd /srv/jax-prod/jax && git fetch origin && git merge --ff-only origin/master
-sudo systemctl restart jax-las-manos
+sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+  git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
+sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
+sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
+# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
+unset SHA
+SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
+if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD)" = "$SHA" ]; then
+  sudo systemctl restart jax-las-manos
+else
+  echo "NO desplegado: /srv/jax-prod/jax no está en $SHA (el pull falló); no se reinició"
+fi
 ```
 
 La migración corre sola al arrancar (`ensure_schema`). **Comprobar la columna en
@@ -126,8 +136,18 @@ SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
 > programado», más abajo.
 
 ```bash
-cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
-sudo systemctl restart jax-platform
+sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+  git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
+sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
+sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
+# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
+unset SHA
+SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
+if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD)" = "$SHA" ]; then
+  sudo systemctl restart jax-platform
+else
+  echo "NO desplegado: /srv/jax-prod/jax-platform no está en $SHA (el pull falló); no se reinició"
+fi
 ```
 
 Verificar **por comportamiento**, no por `is-active`:
@@ -152,16 +172,19 @@ público.**
 ```bash
 # Compilar DESDE el checkout de produccion (frontend/dist/ esta en .gitignore,
 # asi que no ensucia el checkout ni desarma el freno del ExecStartPre)
-cd /srv/jax-prod/jax-platform/frontend
-export PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:$PATH
-npm run build
+# Como jaxsvc, dueño del checkout desde 2026-10-05 (fruiz solo lee, por ACL)
+sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin \
+  bash -c 'cd /srv/jax-prod/jax-platform/frontend && npm run build'
 
 # Respaldar el sitio actual en atem-ai
 ssh -p 58291 fruiz@172.16.20.11 'R=/www/wwwroot/axioma-ia.io; \
   B=~/respaldos-sitio/axioma-$(date +%Y%m%d-%H%M%S); mkdir -p "$B"; sudo cp -a "$R"/. "$B"/'
 
-# Publicar
-tar -czf - -C dist . | ssh -p 58291 fruiz@172.16.20.11 \
+# Publicar SIEMPRE desde la ruta absoluta del checkout de producción (nunca `-C dist`
+# relativo: desde ~/jax-platform/frontend publicaría el bundle de una rama de desarrollo)
+DIST=/srv/jax-prod/jax-platform/frontend/dist
+ls "$DIST"/assets/index-*.js | xargs -n1 basename   # anotarlo: es el que sección 5 tiene que ver publicado
+tar -czf - -C "$DIST" . | ssh -p 58291 fruiz@172.16.20.11 \
   'T=$(mktemp -d) && tar -xzf - -C "$T" && sudo cp -a "$T"/. /www/wwwroot/axioma-ia.io/ \
    && sudo chown -R www:www /www/wwwroot/axioma-ia.io/{assets,index.html,favicon.svg}; rm -rf "$T"'
 ```
@@ -173,6 +196,8 @@ que **el hash del bundle haya cambiado**:
 
 ```bash
 curl -s https://axioma-ia.io | grep -oE 'assets/index-[^"]*\.js'   # != ESTADO-ANTES.txt
+# y además IGUAL al de producción (no basta con que cambie: tiene que ser ESTE):
+ls /srv/jax-prod/jax-platform/frontend/dist/assets/index-*.js | xargs -n1 basename
 curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
 ```
 
@@ -185,8 +210,15 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
 
   | checkout | dueño | cómo se actualiza |
   |---|---|---|
-  | `/srv/jax-prod/jax-platform` | `fruiz` | `git` normal, **sin sudo** |
+  | `/srv/jax-prod/jax-platform` | **`jaxsvc`** (desde 2026-10-05; `fruiz` lee por ACL) | igual que `jax`, ver abajo |
   | `/srv/jax-prod/jax` | **`jaxsvc`** | ver abajo |
+
+  2026-10-05 (Hyde, ventana de Fernando): el de `jax-platform` era de `fruiz`, y
+  `fruiz` es la identidad que comparten los agentes (Codex, Kimi, Claude): cualquiera
+  de ellos podía cambiar el código que sirve producción. Ahora los dos checkouts son
+  de `jaxsvc`, y el frontend corre como `jaxsvc`
+  (`jax-platform-frontend.service.d/cuenta-de-servicio.conf`). Todo lo que valga
+  abajo para `/srv/jax-prod/jax` vale igual para `/srv/jax-prod/jax-platform`.
 
   En el de `jax` **nadie puede hacer `fetch` solo**: `jaxsvc` y `root` no tienen
   llave de GitHub, y el remoto es SSH. Falla con `Permission denied (publickey)`.
@@ -209,12 +241,16 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
   sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
   ```
 
-- **`sudo git` sobre `/srv/jax-prod/*` falla y engaña.** Los checkouts son de
-  `fruiz`: como root da `dubious ownership`, y peor — el `fetch` falla con
+- **`sudo git` a secas sobre `/srv/jax-prod/*` falla y engaña.** Los checkouts son
+  de `jaxsvc`: como root sin `-c safe.directory=…` da `dubious ownership`, y peor —
+  sin `GIT_SSH_COMMAND` con la llave de `fruiz` el `fetch` falla con
   `Permission denied (publickey)` (el remoto es SSH y root no tiene la llave)
   mientras el `merge --ff-only` siguiente dice **«Already up to date»** contra
-  una referencia vieja. Sale 0 y no desplegó nada. **Corré git como `fruiz`,
-  sin sudo**, y **comprobá el SHA después**, no el mensaje.
+  una referencia vieja. Sale 0 y no desplegó nada. **Usá los comandos de arriba
+  (safe.directory + llave + `chown` de vuelta)** y **comprobá el SHA después**,
+  no el mensaje. `fruiz` ya no puede escribir en esos checkouts **sin sudo**; como `fruiz`
+  está en el grupo `sudo`, esto protege de un error o de un proceso sin sudo, no de quien
+  tenga sudo.
 - **`ExecStartPre` se niega a arrancar** si el checkout no está limpio y en
   master (`jax-checkout-de-produccion-sano.sh`). Que el `merge` sea `--ff-only`
   y que no queden archivos sueltos.
@@ -450,10 +486,14 @@ y el 5 un clic en «Sincronizar» todavía podría colarse.
    nunca `origin/master` a secas, que puede haber avanzado):
    ```bash
    SHA=<sha-de-40-caracteres>
-   cd /srv/jax-prod/jax-platform && git fetch origin \
-     && git merge-base --is-ancestor HEAD "$SHA" && git merge --ff-only "$SHA"
-   git rev-parse HEAD            # tiene que dar exactamente $SHA
-   git status -s                 # tiene que dar: nada (el ExecStartPre exige árbol limpio)
+   P=/srv/jax-prod/jax-platform
+   sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+     git -C $P -c safe.directory=$P fetch origin \
+     && git -C $P -c safe.directory=$P merge-base --is-ancestor HEAD "$SHA" \
+     && sudo git -C $P -c safe.directory=$P merge --ff-only "$SHA"
+   sudo chown -R jaxsvc:jaxsvc $P; sudo find $P -user root | wc -l   # 0
+   git -C $P -c safe.directory=$P rev-parse HEAD   # tiene que dar exactamente $SHA
+   git -C $P -c safe.directory=$P status -s        # tiene que dar: nada (el ExecStartPre exige árbol limpio)
    ```
 
 5. **Reiniciar el backend y verificar.**
@@ -490,13 +530,13 @@ y el 5 un clic en «Sincronizar» todavía podría colarse.
 
 **Si hay que abortar** (antes del paso 5): nada se reinició. Si ya se hizo el
 paso 4, devolver el checkout a como estaba con
-`git -C /srv/jax-prod/jax-platform reset --hard <SHA-previo>` (anotado en
-`ESTADO-ANTES.txt` de la sección 0), comprobar `git status -s` vacío, y
+`sudo git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform reset --hard <SHA-previo>` seguido de `sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform` (anotado en
+`ESTADO-ANTES.txt` de la sección 0), comprobar `git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform status -s` vacío, y
 **volver a arrancar el timer** (`sudo systemctl start jax-catalogo-modelos.timer`):
 si no, el catálogo deja de sincronizarse sin que nadie avise.
 
 **Volver atrás un despliegue ya hecho:** el mismo procedimiento, con dos
-cambios. En el paso 4, `git reset --hard <SHA-previo>` en lugar del `merge`
+cambios. En el paso 4, `sudo git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform reset --hard <SHA-previo>` seguido de `sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform` (y `sudo find /srv/jax-prod/jax-platform -user root | wc -l` = 0) en lugar del `merge`
 (se hace **después** de los pasos 1-3, nunca antes, porque si no el timer
 podría correr el código viejo con el candado viejo). En el paso 6, reinstalar
 las unidades de ese SHA.
@@ -548,7 +588,6 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    editada a mano ni de memoria):
 
    ```bash
-   set -a; . <(sudo -n cat /etc/jax/.env); set +a
    ARCHIVO=/srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
    # El hash se calcula ANTES de aplicar nada, sobre el archivo que se está
    # por correr -- ANOTALO (pegalo en el ticket/PR de este despliegue): es el
@@ -556,8 +595,15 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    # migración. Calcularlo DESPUÉS (de memoria, o de una copia editada) es
    # exactamente el error que este control existe para atrapar.
    sha256sum "$ARCHIVO"
-   mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
-     jax_memory < "$ARCHIVO"
+   # Credenciales en un archivo de opciones 600 efímero, nunca en argv ni exportadas en
+   # la shell de fruiz (/proc no tiene hidepid; mismo patrón que el control del candado).
+   sudo ARCHIVO="$ARCHIVO" bash -c '
+   set -euo pipefail; set -a; . /etc/jax/.env; set +a
+   T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+   printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+     "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+   chmod 600 $T/c.cnf
+   mariadb --defaults-extra-file=$T/c.cnf jax_memory < "$ARCHIVO"'
    ```
 
    **Si falla a mitad (MariaDB corta la conexión, un error de sintaxis, un lock que
@@ -637,8 +683,11 @@ arregla con un `chmod` a mano en la carpeta del proyecto: se corre el guion, que
 
 1. **Sitio público:** copiar de vuelta `~/respaldos-sitio/axioma-<fecha>/` en
    atem-ai. Es lo más rápido y lo más visible.
-2. **Código:** `git -C <checkout> reset --hard <SHA de ESTADO-ANTES.txt>` y
-   reiniciar la unidad.
+2. **Código:** los dos checkouts son de `jaxsvc`, así que con `C=/srv/jax-prod/jax` o
+   `C=/srv/jax-prod/jax-platform`:
+   `sudo git -C $C -c safe.directory=$C reset --hard <SHA de ESTADO-ANTES.txt>`,
+   `sudo chown -R jaxsvc:jaxsvc $C`, `sudo find $C -user root | wc -l` (tiene que dar 0)
+   y reiniciar la unidad.
 3. **Esquema:** las migraciones de esta casa son **aditivas** (columnas nullable,
    índices). Volver el código NO exige volver el esquema, y no hay que borrar
    columnas para revertir. Si hiciera falta restaurar datos, está el volcado —
