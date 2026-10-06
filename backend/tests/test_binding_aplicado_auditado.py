@@ -376,14 +376,23 @@ def test_dos_approves_concurrentes_de_la_misma_propuesta_aplican_uno_solo(client
     assert acciones == ["binding_aplicado"], acciones
 
 
-def test_la_relectura_de_la_propuesta_va_por_primary(client):
+def test_la_relectura_de_la_propuesta_va_por_primary(client, modelo):
     """Las Cuatro del Rendimiento, 1: el SELECT ... FOR UPDATE de la propuesta
-    va por la PK, una fila."""
+    va por la PK, una fila. El plan se mide sobre DATOS propios: una tabla vacia
+    da "Impossible WHERE" para cualquier id y la prueba dependia del orden de la
+    suite. Se siembran 20 propuestas de relleno y se explica la ultima, por su id
+    real; el fixture `modelo` limpia todas (borra por current/proposed_model_ref)."""
     import api.admin.models as modelos
 
-    plan = client.portal.call(_q, "EXPLAIN " + modelos._SQL_PROPUESTA_PARA_ACTUALIZAR, (1,))
+    ref, _antes = modelo
+    ids = [client.portal.call(_propuesta, ref) for _ in range(20)]
+    objetivo = ids[-1]
+    assert client.portal.call(_q, "SELECT COUNT(*) FROM model_binding_proposal WHERE id=%s", (objetivo,))[0][0] == 1
+
+    plan = client.portal.call(_q, "EXPLAIN " + modelos._SQL_PROPUESTA_PARA_ACTUALIZAR, (objetivo,))
     assert plan[0][5] == "PRIMARY", plan
     assert plan[0][3] in ("const", "ref"), plan
+    assert plan[0][-1] is None or "Impossible" not in str(plan[0][-1]), plan
 
 
 # ------------------------------------------- MINOR-1: deadlock por gap lock ---
