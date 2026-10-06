@@ -59,8 +59,9 @@ import re
 import stat
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -148,9 +149,31 @@ _dormir = asyncio.sleep
 _reloj = time.monotonic
 
 
+ZONA_HORARIA_POR_DEFECTO = "America/Tegucigalpa"
+
+
+def zona_desde_entorno(texto: str | None) -> ZoneInfo:
+    """Zona horaria de la plataforma para los textos de los avisos: `JAX_ZONA_HORARIA` (nombre IANA), por defecto
+    America/Tegucigalpa. NO se usa la del host (un servidor en UTC mostraria otra hora). Un nombre que zoneinfo no
+    conoce es un error al arrancar, como `JAX_AJUSTES_TTL_S` en ajustes.py, no un aviso con la hora equivocada."""
+    nombre = (texto or "").strip() or ZONA_HORARIA_POR_DEFECTO
+    try:
+        return ZoneInfo(nombre)
+    except (KeyError, ValueError, OSError) as exc:
+        raise ValueError(f"JAX_ZONA_HORARIA invalida {nombre!r}: nombre IANA conocido por zoneinfo "
+                         f"(p. ej. {ZONA_HORARIA_POR_DEFECTO})") from exc
+
+
+ZONA_HORARIA = zona_desde_entorno(os.environ.get("JAX_ZONA_HORARIA"))
+
+
+def _ahora_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _hora_civil() -> datetime:
-    """Hora local con zona del servidor, solo para el texto del aviso (el reloj de los plazos es `_reloj`)."""
-    return datetime.now().astimezone()
+    """Hora actual en la zona de la plataforma, solo para el texto del aviso (el reloj de los plazos es `_reloj`)."""
+    return _ahora_utc().astimezone(ZONA_HORARIA)
 # id de fila -> hasta cuando (segun `_reloj`) no se re-despacha. En memoria de ESTE proceso.
 _en_incertidumbre: dict[int, float] = {}
 _avisos: set[asyncio.Task] = set()
@@ -624,7 +647,8 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
 
 async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Desenlace:
     """Envío best-effort por el canal compartido; nunca manipula ni registra credenciales."""
-    desde = _inicio_incidente_civil.strftime("%H:%M") if _inicio_incidente_civil is not None else "--:--"
+    desde = (f"{_inicio_incidente_civil:%Y-%m-%d %H:%M} {ZONA_HORARIA.key}"
+             if _inicio_incidente_civil is not None else "--")
     mensaje = (f"⚠️ JAX: freno de incertidumbre activo (aviso {_avisos_del_incidente + 1}, activo desde {desde})\n"
                f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
                f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "

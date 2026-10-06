@@ -10,6 +10,7 @@ simbolos nuevos, asi se pueden correr tal cual contra el despachador de la ronda
 import asyncio
 import logging
 import sys
+import time
 
 import httpx
 import pytest
@@ -424,31 +425,63 @@ async def test_la_lectura_rota_se_loguea_una_vez_por_incidente_y_por_clave(monke
         await _esperar_avisos()
 
 
+@pytest.fixture(autouse=True)
+def _tz_del_host_restaurada():
+    """Se instancia antes que `monkeypatch` (autouse), asi su limpieza corre DESPUES de que monkeypatch restaure TZ."""
+    yield
+    time.tzset()
+
+
 def _horas_que_avanzan(monkeypatch):
-    """`_hora_civil` falsa que avanza 7 minutos en cada llamada: si el texto la recalculara por aviso, la hora de
-    inicio cambiaria de un aviso al siguiente."""
+    """El host esta en UTC: `_ahora_utc` devuelve 2026-10-07 03:35 UTC (= 2026-10-06 21:35 en Tegucigalpa, UTC-6, otro
+    dia) y avanza 7 minutos en cada llamada: si el texto recalculara la hora por aviso, la de inicio cambiaria."""
     from datetime import datetime, timedelta, timezone
+    monkeypatch.setenv("TZ", "UTC")  # el host en UTC
+    time.tzset()
     llamadas = []
 
-    def hora():
+    def ahora():
         llamadas.append(1)
-        return datetime(2026, 10, 6, 10, 5, tzinfo=timezone.utc) + timedelta(minutes=7 * (len(llamadas) - 1))
+        return datetime(2026, 10, 7, 3, 35, tzinfo=timezone.utc) + timedelta(minutes=7 * (len(llamadas) - 1))
 
-    monkeypatch.setattr(despachador, "_hora_civil", hora)
+    monkeypatch.setattr(despachador, "_ahora_utc", ahora)
     return llamadas
 
 
 async def test_el_recordatorio_dice_aviso_2_con_la_misma_hora_de_inicio(monkeypatch):
-    """El recordatorio se distingue: «aviso N» sube con cada aviso del incidente y «activo desde HH:MM» es la hora en
-    que empezo el incidente sin pausa, la misma en todos sus avisos."""
+    """El recordatorio se distingue: «aviso N» sube con cada aviso del incidente y «activo desde ...» es la hora en que
+    empezo el incidente sin pausa, la misma en todos sus avisos."""
     _horas_que_avanzan(monkeypatch)
     textos = []
     await _simular(monkeypatch, duracion_s=3 * 3600, hay_incidente=_siempre,
                    comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60, textos=textos)
     assert len(textos) == 3, textos
-    assert "aviso 1, activo desde 10:05" in textos[0], textos[0]
-    assert "aviso 2, activo desde 10:05" in textos[1], textos[1]
-    assert "aviso 3, activo desde 10:05" in textos[2], textos[2]
+    desde = "activo desde 2026-10-06 21:35 America/Tegucigalpa"
+    assert f"aviso 1, {desde}" in textos[0], textos[0]
+    assert f"aviso 2, {desde}" in textos[1], textos[1]
+    assert f"aviso 3, {desde}" in textos[2], textos[2]
+
+
+async def test_el_texto_usa_la_zona_de_la_plataforma_no_la_del_host_utc(monkeypatch):
+    """Con el host en UTC el aviso muestra la hora (y el DIA) de Tegucigalpa. Mata M9 (mostrar UTC): daria
+    2026-10-07 03:35."""
+    _horas_que_avanzan(monkeypatch)
+    textos = []
+    await _simular(monkeypatch, duracion_s=60, hay_incidente=_siempre,
+                   comportamiento=lambda n, t: "ok", enfriamiento=3600, reintento=60, textos=textos)
+    assert "2026-10-06 21:35 America/Tegucigalpa" in textos[0], textos[0]
+    assert "03:35" not in textos[0] and "2026-10-07" not in textos[0], textos[0]
+
+
+async def test_un_desconocido_cuenta_para_el_numero_de_aviso(monkeypatch):
+    """Tras un ReadTimeout (desconocido) el recordatorio siguiente dice «aviso 2». Mata M7 (incrementar N solo si fue
+    ENTREGADO)."""
+    _horas_que_avanzan(monkeypatch)
+    textos = []
+    await _simular(monkeypatch, duracion_s=3 * 3600, hay_incidente=_siempre,
+                   comportamiento=lambda n, t: "read_timeout", enfriamiento=3600, reintento=60, textos=textos)
+    assert len(textos) == 3, textos
+    assert "aviso 1," in textos[0] and "aviso 2," in textos[1] and "aviso 3," in textos[2], textos
 
 
 async def test_un_reintento_tras_fallo_cierto_conserva_el_numero_de_aviso(monkeypatch):
@@ -467,4 +500,28 @@ async def test_un_incidente_nuevo_reinicia_el_numero_y_la_hora_de_inicio(monkeyp
     await _simular(monkeypatch, duracion_s=1200, hay_incidente=lambda t: t < 100 or 700 <= t < 800,
                    comportamiento=lambda n, t: "ok", enfriamiento=600, reintento=10, textos=textos)
     assert len(textos) == 2, textos
-    assert "aviso 1, activo desde 10:05" in textos[0] and "aviso 1, activo desde 10:12" in textos[1], textos
+    assert "aviso 1, activo desde 2026-10-06 21:35" in textos[0], textos
+    assert "aviso 1, activo desde 2026-10-06 21:42" in textos[1], textos
+
+
+def test_la_zona_horaria_sale_de_la_configuracion_y_se_valida():
+    """`JAX_ZONA_HORARIA` (nombre IANA), por defecto America/Tegucigalpa; un nombre desconocido es un error al
+    arrancar, no un aviso con la hora equivocada."""
+    assert despachador.zona_desde_entorno(None).key == "America/Tegucigalpa"
+    assert despachador.zona_desde_entorno("  ").key == "America/Tegucigalpa"
+    assert despachador.zona_desde_entorno("Europe/Madrid").key == "Europe/Madrid"
+    for malo in ("Mars/Olympus", "no-es-una-zona", "../../etc/passwd"):
+        with pytest.raises(ValueError, match="JAX_ZONA_HORARIA"):
+            despachador.zona_desde_entorno(malo)
+
+
+def test_el_modulo_se_niega_a_importarse_con_una_zona_invalida():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    backend = Path(__file__).resolve().parent.parent
+    r = subprocess.run([sys.executable, "-c", "import proyectos_documentos.despachador"], cwd=backend,
+                       env={**os.environ, "JAX_ZONA_HORARIA": "Mars/Olympus"}, capture_output=True, text=True,
+                       timeout=120)
+    assert r.returncode != 0 and "JAX_ZONA_HORARIA" in r.stderr, r.stderr[-400:]
