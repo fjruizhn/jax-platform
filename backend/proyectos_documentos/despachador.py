@@ -154,6 +154,9 @@ _ultimo_aviso_freno_incertidumbre: float | None = None
 _aviso_freno_incertidumbre_pendiente = False
 _supresion_freno_incertidumbre_registrada = False
 _aviso_freno_incidente_entregado = False
+# Fallos seguidos del envio y cuando ocurrio el ultimo (segun `_reloj`): fijan la espera antes del reintento.
+_fallos_aviso_freno_incertidumbre = 0
+_ultimo_fallo_aviso_freno_incertidumbre: float | None = None
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -491,7 +494,7 @@ async def _despachar(pool) -> None:
     1.000 pdf atascados en los ids bajos no llenan la ventana y las imagenes que llegaron despues salen en el
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
     global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
-    global _aviso_freno_incidente_entregado
+    global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -506,6 +509,7 @@ async def _despachar(pool) -> None:
         _freno_incertidumbre_activo = False
         _supresion_freno_incertidumbre_registrada = False
         _aviso_freno_incidente_entregado = False
+        _fallos_aviso_freno_incertidumbre = 0
     if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
                        "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
@@ -519,10 +523,18 @@ async def _despachar(pool) -> None:
             return
         try:
             enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
+            reintento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_REINTENTO_S)
         except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
             logger.error("proyectos_documentos: no se pudo leer el enfriamiento del aviso (%s); "
                          "se reintentará en el próximo ciclo", type(exc).__name__)
             return
+        if _fallos_aviso_freno_incertidumbre and _ultimo_fallo_aviso_freno_incertidumbre is not None:
+            # Tras un fallo (entrega incierta) se espera 1x, 2x, 4x... el minimo, con tope en el enfriamiento
+            # (o en el minimo si el enfriamiento es menor): sin esto se reenvia en cada ciclo.
+            espera = min(reintento * 2 ** min(_fallos_aviso_freno_incertidumbre - 1, 30),
+                         max(enfriamiento, reintento))
+            if ahora - _ultimo_fallo_aviso_freno_incertidumbre < espera:
+                return
         if (_ultimo_aviso_freno_incertidumbre is None
                 or ahora - _ultimo_aviso_freno_incertidumbre >= enfriamiento):
             _supresion_freno_incertidumbre_registrada = False
@@ -553,11 +565,16 @@ def _programar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
 async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
     """Confirma el enfriamiento solo tras entrega; un fallo queda listo para reintento."""
     global _ultimo_aviso_freno_incertidumbre, _aviso_freno_incertidumbre_pendiente
-    global _aviso_freno_incidente_entregado
+    global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
+    global _ultimo_fallo_aviso_freno_incertidumbre
     try:
         if await _enviar_aviso_freno_incertidumbre(cantidad, umbral):
             _ultimo_aviso_freno_incertidumbre = _reloj()
             _aviso_freno_incidente_entregado = True
+            _fallos_aviso_freno_incertidumbre = 0
+        else:
+            _fallos_aviso_freno_incertidumbre += 1
+            _ultimo_fallo_aviso_freno_incertidumbre = _reloj()
     finally:
         _aviso_freno_incertidumbre_pendiente = False
 

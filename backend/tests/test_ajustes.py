@@ -169,6 +169,8 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "proyectos.documentos.rutas_por_trabajo": {"min": 1, "max": 50},
         "proyectos.documentos.freno_incertidumbre_enfriamiento_s": {
             "min": 0, "max": 604800},
+        "proyectos.documentos.freno_incertidumbre_reintento_s": {
+            "min": 1, "max": 604800},
         # Subidas simultaneas de documentos (E2a ronda final, MAJOR-4): por usuario y en
         # todo el servicio; el 429 sale antes de leer el cuerpo.
         "proyectos.documentos.subidas_por_usuario": {"min": 1, "max": 10},
@@ -232,6 +234,7 @@ def test_lee_los_valores_tipados_de_la_tabla(client, ajustes_en_db):
         "proyectos.documentos.max_bytes_lote": 1073741824,
         "proyectos.documentos.rutas_por_trabajo": 50,
         "proyectos.documentos.freno_incertidumbre_enfriamiento_s": 3600,
+        "proyectos.documentos.freno_incertidumbre_reintento_s": 60,
         "proyectos.documentos.subidas_por_usuario": 2,
         "proyectos.documentos.subidas_globales": 4,
         "proyectos.documentos.reprocesar_por_usuario": 1,
