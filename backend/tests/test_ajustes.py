@@ -254,13 +254,45 @@ def test_valor_invalido_es_un_error_y_no_un_default(client, ajustes_en_db):
     assert client.portal.call(_error_de, "session_timeout_min") == ("session_timeout_min", "invalido")
 
 
+PREFIJO_RELLENO = "zz_explain_relleno_"
+
+
 def test_explain_de_la_consulta_real_va_por_primary(client, ajustes_en_db):
+    """`axioma_config` es una tabla que crece: el plan se mide con un volumen realista (al menos 10 veces
+    las claves consultadas), no con el minimo de la fixture, donde el optimizador prefiere recorrerla
+    entera (type=ALL) y el EXPLAIN mediria el tamano de la fixture y no la consulta. El relleno usa claves
+    que no estan en CLAVES y se borra siempre."""
+    from tests.identidades import sql
+
     ajustes_en_db.poner(**ajustes_en_db.validos)
-    filas, columnas = client.portal.call(_explain)
-    plan = dict(zip(columnas, filas[0]))
-    assert plan["key"] == "PRIMARY", plan
-    extra = plan.get("Extra") or ""
-    assert "filesort" not in extra and "temporary" not in extra, plan
+    objetivo = 10 * len(ajustes.CLAVES)
+    client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",))
+    try:
+        existentes = client.portal.call(sql, "SELECT COUNT(*) FROM axioma_config", (), True)[0][0]
+        faltan = max(objetivo - existentes, 0) + 1
+        for i in range(faltan):
+            clave = f"{PREFIJO_RELLENO}{i:05d}"
+            assert clave not in ajustes.CLAVES
+            client.portal.call(sql, "INSERT INTO axioma_config (config_key, config_value) VALUES (%s, %s)",
+                               (clave, "relleno"))
+        client.portal.call(sql, "ANALYZE TABLE axioma_config", (), True)  # estadisticas al dia, no las del azar
+        sembradas = client.portal.call(
+            sql, "SELECT COUNT(*) FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",), True)[0][0]
+        total = client.portal.call(sql, "SELECT COUNT(*) FROM axioma_config", (), True)[0][0]
+        assert sembradas == faltan, "el relleno no se inserto completo"
+        assert total >= objetivo, (total, objetivo)
+
+        filas, columnas = client.portal.call(_explain)
+        plan = dict(zip(columnas, filas[0]))
+        assert plan["key"] == "PRIMARY", plan
+        assert plan["type"] in ("range", "eq_ref", "const"), plan
+        extra = plan.get("Extra") or ""
+        assert "filesort" not in extra and "temporary" not in extra, plan
+    finally:
+        client.portal.call(sql, "DELETE FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",))
+        restos = client.portal.call(
+            sql, "SELECT COUNT(*) FROM axioma_config WHERE config_key LIKE %s", (PREFIJO_RELLENO + "%",), True)[0][0]
+        assert restos == 0, "el relleno quedo en la tabla"
 
 
 # Chequeo al arrancar (revisión final, ruling R16, 2026-09-17): bajar
@@ -297,6 +329,8 @@ def test_avisar_claves_ilegibles_loguea_error_sin_el_valor(client, ajustes_en_db
     ("proyectos.documentos.subidas_globales", ["0", "51"]),
     ("proyectos.documentos.reprocesar_por_usuario", ["0", "5", "01"]),
     ("proyectos.documentos.reprocesar_globales", ["0", "5"]),
+    ("proyectos.documentos.freno_incertidumbre_reintento_s", ["0", "604801", "01", "-1", "1.5"]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", ["-1", "604801", "01", "1.5"]),
 ])
 def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db, clave, malos):
     for malo in malos:
@@ -313,6 +347,8 @@ def test_topes_de_documentos_fuera_de_rango_son_ilegibles(client, ajustes_en_db,
     ("proyectos.documentos.subidas_globales", [1, 50]),
     ("proyectos.documentos.reprocesar_por_usuario", [1, 4]),
     ("proyectos.documentos.reprocesar_globales", [1, 4]),
+    ("proyectos.documentos.freno_incertidumbre_reintento_s", [1, 604800]),
+    ("proyectos.documentos.freno_incertidumbre_enfriamiento_s", [0, 604800]),
 ])
 def test_topes_de_documentos_aceptan_sus_bordes(client, ajustes_en_db, clave, bordes):
     for borde in bordes:
