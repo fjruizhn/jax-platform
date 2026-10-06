@@ -112,8 +112,10 @@ sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" 
   git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
 sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
 sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
-git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD   # = SHA del merge del PR; si no, el pull falló: NO reiniciar
-sudo systemctl restart jax-las-manos
+# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
+SHA=<sha-de-40-caracteres-del-merge>
+test "$(git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD)" = "$SHA" \
+  && sudo systemctl restart jax-las-manos || echo "NO desplegado: /srv/jax-prod/jax no está en $SHA"
 ```
 
 La migración corre sola al arrancar (`ensure_schema`). **Comprobar la columna en
@@ -134,8 +136,10 @@ sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" 
   git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
 sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
 sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
-git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD   # = SHA del merge del PR; si no, el pull falló: NO reiniciar
-sudo systemctl restart jax-platform
+# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
+SHA=<sha-de-40-caracteres-del-merge>
+test "$(git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD)" = "$SHA" \
+  && sudo systemctl restart jax-platform || echo "NO desplegado: /srv/jax-prod/jax-platform no está en $SHA"
 ```
 
 Verificar **por comportamiento**, no por `is-active`:
