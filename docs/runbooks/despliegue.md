@@ -126,7 +126,10 @@ SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
 > programado», más abajo.
 
 ```bash
-cd /srv/jax-prod/jax-platform && git fetch origin && git merge --ff-only origin/master
+sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+  git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
+sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
+sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
 sudo systemctl restart jax-platform
 ```
 
@@ -152,9 +155,9 @@ público.**
 ```bash
 # Compilar DESDE el checkout de produccion (frontend/dist/ esta en .gitignore,
 # asi que no ensucia el checkout ni desarma el freno del ExecStartPre)
-cd /srv/jax-prod/jax-platform/frontend
-export PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:$PATH
-npm run build
+# Como jaxsvc, dueño del checkout desde 2026-10-05 (fruiz solo lee, por ACL)
+sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin \
+  bash -c 'cd /srv/jax-prod/jax-platform/frontend && npm run build'
 
 # Respaldar el sitio actual en atem-ai
 ssh -p 58291 fruiz@172.16.20.11 'R=/www/wwwroot/axioma-ia.io; \
@@ -185,8 +188,15 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
 
   | checkout | dueño | cómo se actualiza |
   |---|---|---|
-  | `/srv/jax-prod/jax-platform` | `fruiz` | `git` normal, **sin sudo** |
+  | `/srv/jax-prod/jax-platform` | **`jaxsvc`** (desde 2026-10-05; `fruiz` lee por ACL) | igual que `jax`, ver abajo |
   | `/srv/jax-prod/jax` | **`jaxsvc`** | ver abajo |
+
+  2026-10-05 (Hyde, ventana de Fernando): el de `jax-platform` era de `fruiz`, y
+  `fruiz` es la identidad que comparten los agentes (Codex, Kimi, Claude): cualquiera
+  de ellos podía cambiar el código que sirve producción. Ahora los dos checkouts son
+  de `jaxsvc`, y el frontend corre como `jaxsvc`
+  (`jax-platform-frontend.service.d/cuenta-de-servicio.conf`). Todo lo que valga
+  abajo para `/srv/jax-prod/jax` vale igual para `/srv/jax-prod/jax-platform`.
 
   En el de `jax` **nadie puede hacer `fetch` solo**: `jaxsvc` y `root` no tienen
   llave de GitHub, y el remoto es SSH. Falla con `Permission denied (publickey)`.
@@ -209,12 +219,14 @@ curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
   sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
   ```
 
-- **`sudo git` sobre `/srv/jax-prod/*` falla y engaña.** Los checkouts son de
-  `fruiz`: como root da `dubious ownership`, y peor — el `fetch` falla con
+- **`sudo git` a secas sobre `/srv/jax-prod/*` falla y engaña.** Los checkouts son
+  de `jaxsvc`: como root sin `-c safe.directory=…` da `dubious ownership`, y peor —
+  sin `GIT_SSH_COMMAND` con la llave de `fruiz` el `fetch` falla con
   `Permission denied (publickey)` (el remoto es SSH y root no tiene la llave)
   mientras el `merge --ff-only` siguiente dice **«Already up to date»** contra
-  una referencia vieja. Sale 0 y no desplegó nada. **Corré git como `fruiz`,
-  sin sudo**, y **comprobá el SHA después**, no el mensaje.
+  una referencia vieja. Sale 0 y no desplegó nada. **Usá los comandos de arriba
+  (safe.directory + llave + `chown` de vuelta)** y **comprobá el SHA después**,
+  no el mensaje. `fruiz` ya no puede escribir en esos checkouts.
 - **`ExecStartPre` se niega a arrancar** si el checkout no está limpio y en
   master (`jax-checkout-de-produccion-sano.sh`). Que el `merge` sea `--ff-only`
   y que no queden archivos sueltos.
@@ -450,10 +462,14 @@ y el 5 un clic en «Sincronizar» todavía podría colarse.
    nunca `origin/master` a secas, que puede haber avanzado):
    ```bash
    SHA=<sha-de-40-caracteres>
-   cd /srv/jax-prod/jax-platform && git fetch origin \
-     && git merge-base --is-ancestor HEAD "$SHA" && git merge --ff-only "$SHA"
-   git rev-parse HEAD            # tiene que dar exactamente $SHA
-   git status -s                 # tiene que dar: nada (el ExecStartPre exige árbol limpio)
+   P=/srv/jax-prod/jax-platform
+   sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
+     git -C $P -c safe.directory=$P fetch origin \
+     && git -C $P -c safe.directory=$P merge-base --is-ancestor HEAD "$SHA" \
+     && sudo git -C $P -c safe.directory=$P merge --ff-only "$SHA"
+   sudo chown -R jaxsvc:jaxsvc $P; sudo find $P -user root | wc -l   # 0
+   git -C $P -c safe.directory=$P rev-parse HEAD   # tiene que dar exactamente $SHA
+   git -C $P -c safe.directory=$P status -s        # tiene que dar: nada (el ExecStartPre exige árbol limpio)
    ```
 
 5. **Reiniciar el backend y verificar.**
@@ -490,7 +506,7 @@ y el 5 un clic en «Sincronizar» todavía podría colarse.
 
 **Si hay que abortar** (antes del paso 5): nada se reinició. Si ya se hizo el
 paso 4, devolver el checkout a como estaba con
-`git -C /srv/jax-prod/jax-platform reset --hard <SHA-previo>` (anotado en
+`sudo git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform reset --hard <SHA-previo>` seguido de `sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform` (anotado en
 `ESTADO-ANTES.txt` de la sección 0), comprobar `git status -s` vacío, y
 **volver a arrancar el timer** (`sudo systemctl start jax-catalogo-modelos.timer`):
 si no, el catálogo deja de sincronizarse sin que nadie avise.
