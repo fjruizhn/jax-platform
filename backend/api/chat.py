@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,6 +6,7 @@ import re
 import sys
 import tomllib
 import unicodedata
+import time
 import uuid
 from pathlib import Path
 from collections import OrderedDict
@@ -43,6 +45,7 @@ from contrato_dispatch import (
     _max_tokens_field,
 )
 import model_catalog
+import conversaciones_inactivas
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from kill_switch import exigir_mesa_libre
@@ -149,6 +152,18 @@ _puerto_invalido_avisado = False
 # nunca se abandona una conversación abierta sin cerrarla en la DB.
 _conv_uuids: OrderedDict[str, str] = OrderedDict()
 MAX_TRACKED_CONVERSATIONS = 500
+# Última actividad (reloj monótono) por la misma clave de `_conv_uuids`. Decisión
+# de Fernando (2026-10-05): una conversación web se cierra a los N minutos sin
+# actividad (conversaciones_inactivas.py) para que la memoria extraiga.
+# Invalidación: cada vez que una clave sale de `_conv_uuids` (cierre por
+# inactividad, LRU, shutdown) sale también de acá. `_reloj` es inyectable.
+_conv_ultima_actividad: dict[str, float] = {}
+_reloj = time.monotonic
+INTERVALO_BARRIDO_INACTIVIDAD_S = 300  # barrido periódico: cada 5 minutos
+
+
+def umbral_inactividad_segundos() -> int:
+    return conversaciones_inactivas.umbral_inactividad_minutos() * 60
 
 
 async def _ensure_memory() -> bool:
@@ -213,10 +228,61 @@ async def _evict_oldest_conversation_if_over_cap():
     # yield), así que la segunda llamada concurrente ve el dict ya reducido y
     # saca la SIGUIENTE más vieja, no la misma.
     oldest_key, oldest_uuid = _conv_uuids.popitem(last=False)
+    _conv_ultima_actividad.pop(oldest_key, None)
     try:
         await _memory.end_conversation(oldest_uuid)
     except Exception:  # fail-soft: best-effort documentado en el comentario de arriba: la conversacion queda abierta en DB pero deja de trackearse aca, no hay falso exito
         pass  # best-effort: queda abierta en la DB, pero ya no se trackea acá
+
+
+async def _cerrar_conversacion_best_effort(uuid_: str) -> bool:
+    try:
+        await _memory.end_conversation(uuid_)
+        return True
+    except Exception:  # fail-soft: el cierre por inactividad es best-effort y no debe tumbar el chat; queda en WARNING
+        logger.warning("No se pudo cerrar la conversación inactiva %s", uuid_[:8], exc_info=True)
+        return False
+
+
+async def cerrar_conversaciones_inactivas() -> int:
+    """Cierra (end_conversation) y deja de rastrear las conversaciones web con
+    inactividad >= umbral. Best-effort: nunca lanza. Devuelve cuántas cerró."""
+    if not (_memory and _memory_ready):
+        return 0
+    limite = umbral_inactividad_segundos()
+    ahora = _reloj()
+    vencidas = [(k, u) for k, u in list(_conv_uuids.items())
+                if ahora - _conv_ultima_actividad.get(k, ahora) >= limite]
+    n = 0
+    for key, uuid_ in vencidas:
+        # Se saca del dict antes del await: un turno que llegue mientras tanto
+        # abre una conversación nueva en vez de reusar la que se está cerrando.
+        _conv_uuids.pop(key, None)
+        _conv_ultima_actividad.pop(key, None)
+        if await _cerrar_conversacion_best_effort(uuid_):
+            n += 1
+    return n
+
+
+async def start_cierre_por_inactividad():
+    """Tarea periódica del lifespan (cancelable al apagar)."""
+    while True:
+        await asyncio.sleep(INTERVALO_BARRIDO_INACTIVIDAD_S)
+        try:
+            await cerrar_conversaciones_inactivas()
+        except Exception:  # fail-soft: el barrido es best-effort; un fallo no debe matar la tarea periódica, queda en WARNING
+            logger.warning("Barrido de conversaciones inactivas falló", exc_info=True)
+
+
+async def iniciar_cierre_por_inactividad(obtener_pool) -> "asyncio.Task":
+    """Arranque del cierre por inactividad (lo llama el lifespan): cierra en la
+    base las huérfanas de un reinicio anterior (best-effort, nunca lanza) y deja
+    corriendo el barrido periódico. Devuelve la tarea para cancelarla al apagar."""
+    try:
+        await conversaciones_inactivas.cerrar_huerfanas_al_arrancar(await obtener_pool())
+    except Exception:  # fail-soft: sin pool no hay cierre al arrancar; el servicio sigue y el barrido en proceso cubre lo demás
+        logger.warning("Cierre de conversaciones huérfanas al arrancar no disponible", exc_info=True)
+    return asyncio.create_task(start_cierre_por_inactividad())
 
 
 async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
@@ -228,14 +294,26 @@ async def _get_conv_uuid(user_id: int, tenant_id, project_id) -> str | None:
     # part of the cache namespace even when two tenants happen to use equal IDs.
     key = f"{tenant_id}:{user_id}:{project_id}"
     u = _conv_uuids.get(key)
+    ahora = _reloj()
     if u:
-        _conv_uuids.move_to_end(key)
-        return u
+        ultima = _conv_ultima_actividad.get(key)
+        if ultima is not None and ahora - ultima >= umbral_inactividad_segundos():
+            # Inactiva: se cierra y se abre una nueva. Se saca del dict ANTES del
+            # await (como la evicción) para que dos turnos concurrentes no la
+            # cierren dos veces.
+            _conv_uuids.pop(key, None)
+            _conv_ultima_actividad.pop(key, None)
+            await _cerrar_conversacion_best_effort(u)
+        else:
+            _conv_uuids.move_to_end(key)
+            _conv_ultima_actividad[key] = ahora
+            return u
     source = "axioma-web-proyecto" if project_id is not None else "axioma-web"
     u = await _memory.start_conversation(source=source, user_id=user_id,
                                          tenant_id=tenant_id, project_id=project_id)
     if u:
         _conv_uuids[key] = u
+        _conv_ultima_actividad[key] = ahora
         await _evict_oldest_conversation_if_over_cap()
     return u
 
@@ -287,6 +365,7 @@ async def flush_open_conversations() -> int:
         except Exception:  # fail-soft: shutdown flush best-effort documentado en el docstring de la funcion ('nunca lanza'); el conteo n de exitos reales es lo que se reporta
             pass
     _conv_uuids.clear()
+    _conv_ultima_actividad.clear()
     try:
         await _memory.close()
     except Exception:  # fail-soft: cierre de memoria en shutdown, best-effort documentado; el proceso ya esta terminando

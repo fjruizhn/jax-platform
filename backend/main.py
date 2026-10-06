@@ -226,7 +226,14 @@ async def lifespan(app: FastAPI):
     # Drena una vez al arrancar, antes del primer sleep: un reinicio
     # después de una caída tiene que recuperar enseguida, no al minuto.
     asyncio.create_task(start_reintento_de_uso())
+    # 2026-10-05 (decisión de Fernando): conversaciones web sin actividad por el
+    # umbral (JAX_CONVERSACION_INACTIVIDAD_MIN, default 30) se cierran para que la
+    # memoria extraiga. Al arrancar se cierran en la base las que un reinicio dejó
+    # abiertas; después, un barrido cada 5 min, cancelable al apagar. Best-effort.
+    from api.chat import iniciar_cierre_por_inactividad
+    tarea_inactividad = await iniciar_cierre_por_inactividad(get_pool)
     yield
+    tarea_inactividad.cancel()
     # Cerrar conversaciones web abiertas -> el worker de facts las destila.
     try:
         from api.chat import flush_open_conversations
