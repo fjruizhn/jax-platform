@@ -243,6 +243,14 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                              "ruta insegura" if insegura else "error de disco", exc_info=True)
                 raise _error(500, "almacen_ruta_insegura" if insegura else "almacen_error_escritura",
                              lote=lote, aceptados=aceptados, ignorados=ignorados) from None
+            except HTTPException as exc:
+                # Esta guarda corre antes de crear el archivo actual. Si el lote
+                # ya acepto otros, incluirlos en la respuesta para el cliente.
+                if aceptados:
+                    codigo = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
+                    raise _error(exc.status_code, str(codigo), lote=lote, aceptados=aceptados,
+                                 ignorados=ignorados) from None
+                raise
             except BaseException:
                 usados.discard(seguro)
                 raise
