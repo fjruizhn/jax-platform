@@ -1363,7 +1363,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=48647f288dac448d8c765f58713bbb70ff915a5a
+          PIN=19e564e5c0b66898aee08e3bca2eea514348ef67
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -3695,7 +3695,11 @@ jobs:
           #   (master 39b3ef2 local 3911 -> mezcla 3956, mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA):
           #   las pruebas de idempotencia/cursor/despacho de #210 (el EXPLAIN con volumen, la tabla de contrato, los saltos de
           #   trozo, el aviso de clave desconocida, el cruce freno x cursor x salto). El runner confirma el absoluto.
-          PISO_PASSED = 3955
+          # 3955 -> 3960 (ronda 7 de #210): REGLA 5, base del runner 3910 + delta local +50 (master 39b3ef2 local 3911 -> mezcla 3961,
+          #   mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366): +5 sobre la ronda 6 (conjunto de
+          #   trozos trabados con cota k + 1, error global sin POST doble, 422 de formato global, aviso agregado, y la prueba de los
+          #   ids bajos restaurada). El runner confirma el absoluto.
+          PISO_PASSED = 3960
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4837,7 +4841,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=48647f288dac448d8c765f58713bbb70ff915a5a
+          PIN=19e564e5c0b66898aee08e3bca2eea514348ef67
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

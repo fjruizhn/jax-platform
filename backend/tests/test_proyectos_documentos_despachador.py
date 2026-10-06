@@ -223,11 +223,11 @@ def e(client, workspace, monkeypatch):
     despachador._pausa_previa_al_incidente = None
     entorno = Entorno(client, workspace, monkeypatch)
     despachador._cursor_de_cola = 0
-    despachador._trozo_cortado = None
+    despachador._trozos_trabados.clear()
     despachador._claves_desconocidas.clear()
     yield entorno
     despachador._cursor_de_cola = 0
-    despachador._trozo_cortado = None
+    despachador._trozos_trabados.clear()
     despachador._claves_desconocidas.clear()
     despachador._en_incertidumbre.clear()
     despachador._freno_incertidumbre_activo = False
@@ -919,11 +919,12 @@ def test_un_503_generico_sigue_cortando_el_ciclo_entero(e, caplog):
     e.ciclo()
     assert len(e.las_manos.posts) == 1
     assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
-    # Segundo ciclo: el trozo del pdf corta POR SEGUNDA VEZ seguida y se salta (un 5xx de su proyecto no frena a los
-    # demas); el del jpg tambien recibe el 503 y ESE si corta el ciclo.
-    e.las_manos.post_respuestas = [(503, {"detail": "texto"}), (503, {"detail": "texto"})]
+    # Un 503 es GLOBAL: en el segundo ciclo corta de nuevo en el MISMO primer trozo (el del pdf) y el del jpg no se envia;
+    # no hay salto ni trozo recordado. Un POST por ciclo.
+    e.las_manos.post_respuestas = [(503, {"detail": "texto"})]
     e.ciclo()
-    assert len(e.las_manos.posts) == 3 and e.fila(jpg)[0] == "en_cola" and e.fila(pdf)[0] == "en_cola"
+    assert len(e.las_manos.posts) == 2 and e.fila(jpg)[0] == "en_cola" and e.fila(pdf)[0] == "en_cola"
+    assert despachador._trozos_trabados == set()
 
 
 def test_el_503_de_extractores_con_otro_estado_no_se_confunde(e):
@@ -1734,22 +1735,116 @@ def test_no_disponible_corta_la_vuelta_pero_no_envenena_el_cursor(e, caplog):
     assert {e.fila(i)[0] for i in ids} == {"pendiente"} and despachador._cursor_de_cola == 0
 
 
-def test_un_trozo_que_corta_por_un_5xx_de_su_proyecto_no_bloquea_la_cola(e, monkeypatch):
-    """MINOR-2: A sano (ids 1-3), V con 5xx persistente (4-6) y B (7-12), con ventanas de 3. Antes el corte caia siempre
-    en V y B no salia nunca. Ahora el MISMO trozo que corta dos ciclos seguidos se salta y B sale en el segundo ciclo."""
+def test_un_trozo_que_corta_por_un_500_de_su_proyecto_no_bloquea_la_cola(e, monkeypatch):
+    """A sano (ids 1-3), V con un 500 persistente (4-6) y B (7-12), con ventanas de 3. V corta el ciclo UNA vez y entra al
+    conjunto de trabados; en el ciclo siguiente se salta y B sale. Antes el corte caia siempre en V y B no salia nunca."""
     monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
-    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)                        # A: ids bajos, sano
-    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(3)]        # V = el proyecto de `e`: 5xx
-    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 6)                        # B: ids altos, sano
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(3)]       # V = el proyecto de `e`: 500
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 6)
     e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 20
     e.ciclo()
-    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"}                  # A salio; V corto
-    assert {e.fila(i)[0] for i in b_ids} == {"en_cola"}                    # B espera: primer corte de ese trozo
-    assert despachador._cursor_de_cola == a_ids[-1]
-    e.ciclo()                                                              # el MISMO trozo de V corta otra vez: se salta
-    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}, [e.fila(i)[0] for i in b_ids]
-    assert {e.fila(i)[:2] for i in v_ids} == {("en_cola", None)}           # V sigue esperando, no paso a error
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"} and {e.fila(i)[0] for i in b_ids} == {"en_cola"}
+    assert despachador._trozos_trabados == {v_ids[0]} and despachador._cursor_de_cola == a_ids[-1]
+    posts = len(e.las_manos.posts)
+    e.ciclo()                                                          # V se salta SIN enviarse; B sale
+    assert len(e.las_manos.posts) == posts, "el trozo trabado no se vuelve a enviar en esta pasada"
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}
+    assert {e.fila(i)[:2] for i in v_ids} == {("en_cola", None)}       # V sigue esperando, no paso a error
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()    # pasada completa: se vacia
+
+
+def test_dos_trozos_trabados_en_la_misma_ventana_la_cola_sale_en_trabados_mas_uno_ciclos(e, monkeypatch):
+    """Escenario del auditor: A sano, V y W trabados (500) en la MISMA ventana y B detras. Cota: k trabados + 1 ciclos:
+    con k = 2, B sale en el ciclo 3 y NO antes."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 9)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)                    # A sano: ids 1-3
+    v, vu, v_ids = _otro_proyecto_con_filas(e, 3)
+    w, wu, w_ids = _otro_proyecto_con_filas(e, 3)
+    malos.s.update({vu, wu})                                           # V y W consumen los 500; el resto responde 202
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 6)                    # B detras: segunda ventana
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 50
+    e.ciclo()                                                          # A sale; V corta -> {V}
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"} and len(despachador._trozos_trabados) == 1
+    e.ciclo()                                                          # V saltado; W corta -> {V, W}
+    assert len(despachador._trozos_trabados) == 2 and {e.fila(i)[0] for i in b_ids} == {"en_cola"}
+    posts = len(e.las_manos.posts)
+    e.ciclo()                                                          # V y W saltados; B sale; pasada completa
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}, "B tenia que salir en el ciclo k + 1 = 3"
+    assert len(e.las_manos.posts) == posts and despachador._trozos_trabados == set() and despachador._cursor_de_cola == 0
+    assert {e.fila(i)[:2] for i in v_ids + w_ids} == {("en_cola", None)}
+
+
+def test_con_cortes_sostenidos_las_filas_de_id_bajo_se_leen_igual(e, monkeypatch):
+    """Cortes sostenidos por un 500 local: las filas con id bajo (un proyecto reactivado detras del cursor) se leen en un
+    numero acotado de ciclos, porque la pasada termina y el cursor vuelve a 0."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    pid, _puuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)         # ids bajos, fuera de la cola
+    altas = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(6)]          # el proyecto de `e`: 500 persistente
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 50
+    e.ciclo()                                                          # ventana 1 (altas 1-3) corta y se traba
+    r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
+    assert r.status_code == 200, r.text                                # las de id bajo vuelven a la cola, DETRAS del cursor
+    for _ in range(3):                                                 # cota: trabados (2) + 1 ciclos, mas la pasada siguiente
+        e.ciclo()
     assert despachador._cursor_de_cola == 0
+    e.ciclo()                                                          # nueva pasada desde 0: lee las de id bajo
+    assert {e.fila(i)[0] for i in bajas} <= {"pendiente", "procesando"} and {e.fila(i)[1] is not None for i in bajas} == {True}
+    assert {e.fila(i)[:2] for i in altas} == {("en_cola", None)}
+
+
+def test_un_error_global_no_duplica_los_post_en_ciclos_alternos(e):
+    """Un 429 (global) corta SIEMPRE en el primer trozo y no entra al conjunto: exactamente UN POST por ciclo, nunca dos en
+    ciclos alternos (que era el efecto de saltar el trozo que cortaba dos veces)."""
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(429, {"detail": "sin capacidad"})] * 10
+    for ciclo in range(1, 5):
+        e.ciclo()
+        assert len(e.las_manos.posts) == ciclo, f"ciclo {ciclo}: {len(e.las_manos.posts)} POST"
+        assert despachador._trozos_trabados == set()
+    assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+
+
+def test_el_422_de_formato_de_clave_es_global_y_da_un_solo_error(e, caplog):
+    """MINOR-3: el formato lo arma este codigo para todos los trozos: corta la vuelta y deja UN ERROR, no uno por trozo."""
+    e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(422, {"detail": {"code": "idempotency_key_invalida"}})] * 5
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    errores = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "FORMATO" in r.getMessage()]
+    assert len(errores) == 1 and len(e.las_manos.posts) == 1
+
+
+def test_con_mas_claves_que_el_tope_se_avisa_un_solo_agregado(e, monkeypatch):
+    """MINOR-1: llena la tabla de claves vistas, las nuevas NO expulsan a las viejas ni re-avisan: un aviso agregado, con el
+    mismo enfriamiento."""
+    enviados = []
+
+    async def enviar(mensaje):
+        enviados.append(mensaje)
+        return Desenlace.ENTREGADO
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", enviar)
+    monkeypatch.setattr(despachador, "MAXIMO_CLAVES_DESCONOCIDAS", 2)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    filas = []
+    for _ in range(5):
+        _p, puuid, ids = _otro_proyecto_con_filas(e, 1)
+        malos.s.add(puuid)
+        filas += ids
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}})] * 5
+    e.ciclo()
+    e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    individuales = [m for m in enviados if "mas de" not in m]
+    agregados = [m for m in enviados if "mas de 2 claves" in m]
+    assert len(individuales) == 2 and len(agregados) == 1, enviados          # 2 por clave + 1 agregado (las otras 3 no avisan)
+    assert set(despachador._claves_desconocidas) == {*list(despachador._claves_desconocidas)[:2], despachador.CLAVE_AGREGADA}
+    assert len(despachador._claves_desconocidas) == 3
+    assert {e.fila(i)[0] for i in filas} == {"en_cola"}
 
 
 def test_un_409_de_clave_salta_solo_ese_trozo_y_los_demas_del_proyecto_salen(e):
@@ -1798,29 +1893,29 @@ def test_una_clave_desconocida_salta_solo_su_trozo_avisa_una_vez_y_agrupa_el_log
     assert len(errores) == 2 and "3 repeticion(es)" in errores[1] and len(enviados) == 1
 
 
-def test_cruce_freno_de_incertidumbre_cursor_y_salto_de_trozo(e, monkeypatch):
-    """El freno de incertidumbre (#203) corta ANTES del cursor: no lee la cola ni mueve el cursor ni el trozo recordado. Al
-    vencer, la cola se recorre desde donde estaba y un trozo con 409 se salta sin frenar a los proyectos que siguen."""
+def test_cruce_freno_de_incertidumbre_cursor_y_trozos_trabados(e, monkeypatch):
+    """El freno de incertidumbre (#203) corta ANTES del cursor: no lee la cola ni mueve el cursor ni el conjunto de trabados.
+    Al vencer, el trozo trabado se salta SIN enviarse y un proyecto que llega detras sale."""
     monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
     _b, _bu, b_ids = _otro_proyecto_con_filas(e, 3)                    # ids bajos: ventana 1
     mios = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(3)]     # ventana 2: el proyecto de `e`
-    e.las_manos.post_respuestas = [(429, {"detail": "sin capacidad"})]
-    e.ciclo()                                       # ventana 1 (B) sale; la 2 recibe 429 y corta: cursor al inicio de la 2
-    cursor, cortado = despachador._cursor_de_cola, despachador._trozo_cortado
-    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"} and cursor == b_ids[-1] and cortado == mios[0]
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})]
+    e.ciclo()                                       # ventana 1 (B) sale; la 2 recibe 500: se traba y corta
+    cursor, trabados = despachador._cursor_de_cola, set(despachador._trozos_trabados)
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"} and cursor == b_ids[-1] and trabados == {mios[0]}
     hasta = despachador._reloj() + 600
     for i in range(100):                            # freno ACTIVO (>= 2 x rutas_por_trabajo en incertidumbre)
         despachador._en_incertidumbre[10**12 + i] = hasta
     posts = len(e.las_manos.posts)
     e.ciclo()
     assert len(e.las_manos.posts) == posts          # el freno no despacha nada...
-    assert (despachador._cursor_de_cola, despachador._trozo_cortado) == (cursor, cortado)    # ...ni toca el cursor
+    assert (despachador._cursor_de_cola, despachador._trozos_trabados) == (cursor, trabados)    # ...ni toca el estado
     despachador._en_incertidumbre.clear()           # vence la ventana
     _c, _cu, c_ids = _otro_proyecto_con_filas(e, 3)  # un proyecto que llega detras
-    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
-    e.ciclo()                                       # retoma en la ventana 2: el 409 salta SOLO ese trozo; C sale
+    e.ciclo()                                       # retoma en la ventana 2: `mios` se salta sin enviarse; C sale
+    assert len(e.las_manos.posts) == posts, "el trozo trabado no se envio"
     assert {e.fila(i)[0] for i in mios} == {"en_cola"} and {e.fila(i)[0] for i in c_ids} == {"pendiente"}
-    assert despachador._cursor_de_cola == 0
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()
 
 
 def test_no_disponible_corta_la_vuelta_y_no_deja_salir_a_otro_proyecto(e):
