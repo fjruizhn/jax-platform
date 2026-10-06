@@ -262,8 +262,12 @@ async def detalle_si_rompe_el_contrato(
        (jax/core/registro_facetas.py:17-19, que documenta el desalineo). Un
        binding con proveedor distinto al del modelo manda model_id de un
        proveedor a la URL y credencial de otro, y los lectores divergen
-       entre sí. approve cambia model_ref sin tocar provider_id: una
-       propuesta hacia un modelo de otro proveedor lo producía."""
+       entre sí. approve escribe model_ref, provider_id y model_id juntos
+       desde la fila aprobada (_actualizar_binding_aprobado), así que ya no
+       deja una identidad mezclada; aun así este guard corre ANTES de ese
+       UPDATE y rechaza con 409 una propuesta hacia un modelo de otro
+       proveedor que el del binding: cambiar de proveedor se declara por el
+       PUT, no se cuela por approve."""
     await cur.execute("SELECT transport FROM facet WHERE `key`=%s", (facet_key,))
     facet_row = await cur.fetchone()
     await cur.execute(
