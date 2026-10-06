@@ -1601,6 +1601,7 @@ export default {
         error: 'Failed',
         sin_extractor: 'This file type cannot be read',
         cancelado: 'Cancelled',
+        desconocido: 'not recognized',
       },
       motivos: {
         tipo_no_admitido: 'File type not supported',

@@ -1697,6 +1697,7 @@ export default {
         error: 'Con error',
         sin_extractor: 'No se puede leer este tipo de archivo',
         cancelado: 'Cancelado',
+        desconocido: 'no reconocido',
       },
       motivos: {
         tipo_no_admitido: 'Tipo de archivo no admitido',
