@@ -28,3 +28,19 @@ El arnés local detectó `JAX_DB_PORT=3308`, puerto de la instancia de producci�
 ## Para completar la medición
 
 Repetir el escenario con el job de CI que levanta MariaDB desechable o en un host que tenga un contenedor aislado accesible en un puerto que no sea 3306 ni 3308. Medir duración de cada POST `/api/chat`, p95, cantidad de turnos completados y el estado del documento mientras el despachador está activo; registrar si LAS MANOS fue real o simulado.
+
+## Registro de trabajo y traspaso
+
+**Objetivo:** registrar el PDF escaneado del chat en el proyecto autenticado y entregar respuesta sin esperar el OCR; mostrar después el estado verdadero del procesador.
+
+**Hecho (2026-10-06):** `PdfSinTexto` ahora lleva el total de páginas. `/api/chat/upload` exige `project_id` para el escaneado, vuelve a validar membresía/papel de escritura y proyecto activo, limita bytes/páginas con la configuración existente, y reutiliza el guardado durable, deduplicación y dispatcher de `project_documents`. El nuevo GET de estado comprueba visibilidad del proyecto y oculta documentos ocultos/ajenos con 404. BottomBar sondea el estado y la tarjeta usa i18n es/en y `aria-live`. No se envía el PDF al modelo ni se presenta como leído: E2b no está implementado.
+
+**Decisión técnica:** se reutiliza el dispatcher existente, que ya llama el API vigente de LAS MANOS; no se crea una tarea efímera en FastAPI ni se espera OCR dentro de la petición. La suba de chat no crea un adjunto de texto que el modelo pudiera confundir con extracción real. La decisión procede del alcance E3 del encargo, no de una nueva decisión de negocio.
+
+**Pruebas:** backend completo en modo aislado sin DB: 2362 pasadas / 1479 omitidas; frontend: 1390 pasadas / 0 fallidas. Pruebas focales tras los últimos cambios: 27 pasadas / 9 omitidas, más 43 Vitest pasadas. Los dos casos que prueban admisión real en la cola y aislamiento HTTP requieren MariaDB y no se ejecutaron aquí. Los pisos subieron backend +4 y frontend +6 respecto a worktree limpio `origin/master d283d90`.
+
+**Pendiente:** cargar el escenario de 20 usuarios en MariaDB desechable, medir y registrar p95 con LAS MANOS real o simulada, correr pruebas DB de cola/autorización y cerrar hallazgos de auditoría. No se integró ni desplegó.
+
+**Alternativas descartadas:** no conectar el test harness al puerto 3308, porque es producción; no autorizar el opt-in que el harness ofrece; no usar un mock para atribuirle un p95 real. Las tres decisiones evitan mezclar un ensayo con operación real o convertir una simulación en evidencia falsa.
+
+**Siguiente comando (backend desde `backend/`):** `env -u JAX_DB_HOST -u JAX_DB_PORT -u JAX_DB_USER -u JAX_DB_PASSWORD -u JAX_DB_NAME JAX_CI_NO_DB=1 JAX_REPO_PATH=/home/fruiz/jax JAX_CONFIG_PATH=/tmp/jax-e3-test-config-absent.json JAX_WORKSPACE_DIR=/tmp/jxp-e3-workspace PYTHONPATH=/home/fruiz/jax:/home/fruiz/jax/las_manos python3 -m pytest -q`.
