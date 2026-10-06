@@ -909,7 +909,12 @@ def sql_eventos_de_causa(n_ids: int) -> str:
     tests/test_pipelines_continuar.py)."""
     ids = ", ".join(["%s"] * n_ids)
     tipos = ", ".join(["%s"] * len(EVENTOS_DE_CAUSA))
+    # The global audit feed adds idx_events_auditoria_fecha, whose leading
+    # event_type column is also a possible key here. Keep this pipeline-scoped
+    # hot path on its existing composite index so new audit indexes cannot
+    # change the optimizer's plan (confirmed by EXPLAIN regression test).
     return (f"SELECT pipeline_id, id, event_type, payload FROM jacobs_events "
+            "FORCE INDEX (idx_events_pipeline_tipo) "
             f"WHERE pipeline_id IN ({ids}) AND event_type IN ({tipos})")
 
 

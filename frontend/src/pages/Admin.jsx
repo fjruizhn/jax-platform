@@ -9,6 +9,7 @@ import AdminSettings from './admin/AdminSettings'
 import AdminCosts from './admin/AdminCosts'
 import AdminSmtp from './admin/AdminSmtp'
 import AdminPipelinesOcultos from './admin/AdminPipelinesOcultos'
+import AdminAuditoriaDescarte from './admin/AdminAuditoriaDescarte'
 import Memoria from './Memoria'
 import Proyectos from './Proyectos'
 import ProyectoDetalle from './ProyectoDetalle'
@@ -42,6 +43,7 @@ export default function Admin() {
           <Route path="proyectos" element={<Proyectos />} />
           <Route path="proyectos/:id" element={<ProyectoDetalle />} />
           <Route path="pipelines-ocultos" element={<AdminPipelinesOcultos />} />
+          <Route path="auditoria-descarte" element={<AdminAuditoriaDescarte />} />
         </Routes>
       </main>
       {/* Etapa 3 (2026-09-15): los toasts solo se montaban en Dashboard; en

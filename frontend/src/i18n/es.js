@@ -625,6 +625,16 @@ export default {
   // Fix round 1 (MINOR-7): faltaba en AdminSidebar -- el superadmin entraba
   // por el enlace de BarraUsuario pero no podía volver sin salir de Admin.
   adminPipelinesOcultos: 'Pipelines descartados y ocultos',
+  adminAuditoriaDescarte: 'Auditoría de descartes',
+  adminAuditTitle: 'Auditoría de descartes de pipelines',
+  adminAuditEvent: 'Evento', adminAuditAllEvents: 'Todos los eventos',
+  adminAuditPipelineId: 'ID del pipeline', adminAuditFrom: 'Desde', adminAuditTo: 'Hasta',
+  adminAuditFilter: 'Filtrar', adminAuditDate: 'Fecha', adminAuditPipeline: 'Pipeline',
+  adminAuditActor: 'Actor', adminAuditReason: 'Motivo', adminAuditUnknown: 'Desconocido',
+  adminAuditEmpty: 'No hay eventos para estos filtros.', adminAuditError: 'No se pudo cargar la auditoría.',
+  adminAuditRetry: 'Reintentar', adminAuditMore: 'Cargar más', adminAuditLoading: 'Cargando…',
+  adminAuditType_PIPELINE_DISCARDED: 'Descartado', adminAuditType_PIPELINE_RECOVERED: 'Recuperado',
+  adminAuditType_PIPELINE_HIDDEN: 'Ocultado', adminAuditType_PIPELINE_RESTORED: 'Restaurado',
   adminBack: (nombre) => `Volver a ${nombre}`,
 
   // Admin dashboard

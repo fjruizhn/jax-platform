@@ -140,6 +140,7 @@ from api.admin import (
     smtp_router,
     kill_switch_router,
     pipelines_ocultos_router,
+    auditoria_descarte_router,
 )
 
 from par_jax import verificar_par_jax
@@ -310,6 +311,7 @@ ROUTERS = (
     ejecutor_router,
     memoria_router,
     pipelines_ocultos_router,
+    auditoria_descarte_router,
     proyectos_router,
     proyectos_documentos_router,
 )

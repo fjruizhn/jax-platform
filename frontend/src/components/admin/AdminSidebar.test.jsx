@@ -43,10 +43,11 @@ describe('AdminSidebar', () => {
 const ORDEN = [
   'adminDashboard', 'adminFacetsModels', 'adminCosts', 'adminRepo', 'adminMemoria',
   'adminProyectos', 'adminUsers', 'adminPipelinesOcultos', 'adminSettings', 'adminSmtp',
+  'adminAuditoriaDescarte',
 ]
 
 describe('AdminSidebar -- orden del menú (2026-10-02)', () => {
-  it('Dashboard · Facetas · Costos · Repositorio · Memoria · Proyectos · Usuarios · Pipelines ocultos · Configuración · Correo', () => {
+  it('conserva el orden acordado y agrega la auditoría al final del menú', () => {
     renderSidebar()
     // Los enlaces de navegación; el último (volver) no es del menú.
     const enlaces = screen.getAllByRole('link').slice(0, ORDEN.length).map((a) => a.textContent)
