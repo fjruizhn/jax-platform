@@ -4,6 +4,7 @@ import pytest
 from starlette.requests import Request
 
 import api.admin.models as admin_models
+import db.transaccion as db_transaccion
 from auth.models import AuthUser
 
 
@@ -82,7 +83,7 @@ def _configure(monkeypatch, conn):
     async def get_pool():
         return _Pool(conn)
 
-    monkeypatch.setattr(admin_models, "get_pool", get_pool)
+    monkeypatch.setattr(db_transaccion, "get_pool", get_pool)
     monkeypatch.setattr(admin_models, "errores_del_contrato", lambda *_: [])
     monkeypatch.setattr(admin_models, "ip_de", lambda *_: "127.0.0.1")
     monkeypatch.setattr(admin_models.facet_resolver, "_tocar_sello", lambda: None)
@@ -101,12 +102,16 @@ def test_declarar_contrato_abre_transaccion_antes_de_leer_y_confirmar(monkeypatc
         _user(),
     ))
 
-    assert events[0] == ("begin", None)
+    begin = events.index(("begin", None))
     assert events[-1] == ("commit", None)
-    assert events.index(("begin", None)) < next(
+    assert begin < next(
         index for index, event in enumerate(events)
         if event[0] == "execute" and event[1] == admin_models._SQL_DECLARAR_CONTRATO
     )
+    assert next(
+        index for index, event in enumerate(events)
+        if event[0] == "execute" and event[1] == admin_models._SQL_CONTRATO_ACTUAL
+    ) > begin
 
 
 def test_error_al_insertar_auditoria_revierte_el_cambio_del_modelo(monkeypatch):

@@ -156,41 +156,33 @@ async def declarar_contrato_dispatch(
     propósito (decisión de la ronda 1 de PR-L): declarar el contrato arregla
     el catálogo; cambiar el modelo de una faceta sigue siendo una decisión
     explícita de un superadmin, que vuelve a hacer click en Aprobar."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.begin()
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(_SQL_CONTRATO_ACTUAL, (model_ref,))
-                fila = await cur.fetchone()
-                if fila is None:
-                    raise HTTPException(status_code=404, detail="modelo_no_encontrado")
-                provider_id, model_id, param_antes, tope_antes = fila
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await cur.execute(_SQL_CONTRATO_ACTUAL, (model_ref,))
+        fila = await cur.fetchone()
+        if fila is None:
+            raise HTTPException(status_code=404, detail="modelo_no_encontrado")
+        provider_id, model_id, param_antes, tope_antes = fila
 
-                errores = errores_del_contrato(model_id, req.max_tokens_param, req.max_output_tokens)
-                if errores:
-                    raise HTTPException(status_code=422, detail={
-                        "code": "contrato_dispatch_invalido",
-                        "model_ref": model_ref,
-                        "model_id": model_id,
-                        "campos": [campo for campo, _ in errores],
-                        "message": " | ".join(str(e) for _, e in errores),
-                    })
+        errores = errores_del_contrato(model_id, req.max_tokens_param, req.max_output_tokens)
+        if errores:
+            raise HTTPException(status_code=422, detail={
+                "code": "contrato_dispatch_invalido",
+                "model_ref": model_ref,
+                "model_id": model_id,
+                "campos": [campo for campo, _ in errores],
+                "message": " | ".join(str(e) for _, e in errores),
+            })
 
-                antes = {"max_tokens_param": param_antes, "max_output_tokens": tope_antes}
-                despues = {"max_tokens_param": req.max_tokens_param, "max_output_tokens": req.max_output_tokens}
-                await cur.execute(_SQL_DECLARAR_CONTRATO, (req.max_tokens_param, req.max_output_tokens, model_ref))
-                await cur.execute(
-                    "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, valor_antes, "
-                    "valor_despues, performed_by, performed_by_email, performed_from_ip) "
-                    "VALUES ('contrato_declarado', %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (model_ref, provider_id, model_id, json.dumps(antes), json.dumps(despues),
-                     int(user.user_id), user.email, ip_de(request)),
-                )
-            await conn.commit()
-        except BaseException:
-            await conn.rollback()
-            raise
+        antes = {"max_tokens_param": param_antes, "max_output_tokens": tope_antes}
+        despues = {"max_tokens_param": req.max_tokens_param, "max_output_tokens": req.max_output_tokens}
+        await cur.execute(_SQL_DECLARAR_CONTRATO, (req.max_tokens_param, req.max_output_tokens, model_ref))
+        await cur.execute(
+            "INSERT INTO model_catalog_audit (action, model_ref, provider_id, model_id, valor_antes, "
+            "valor_despues, performed_by, performed_by_email, performed_from_ip) "
+            "VALUES ('contrato_declarado', %s, %s, %s, %s, %s, %s, %s, %s)",
+            (model_ref, provider_id, model_id, json.dumps(antes), json.dumps(despues),
+             int(user.user_id), user.email, ip_de(request)),
+        )
 
     # Después del commit (mismo criterio que api/admin/motors.py): un sello
     # antes del commit haría que otro proceso recargue el valor VIEJO y crea
