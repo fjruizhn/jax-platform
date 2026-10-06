@@ -43,6 +43,8 @@ Repetir el escenario con el job de CI que levanta MariaDB desechable o en un hos
 
 **Pendiente:** cargar el escenario de 20 usuarios en MariaDB desechable, medir y registrar p95 con LAS MANOS real o simulada, correr pruebas DB de cola/autorización y obtener auditoría adversarial aprobada del SHA final. La primera reauditoría rechazó `ff619e7` por persistir la posibilidad de cambiar de proyecto después de iniciar una subida; ahora el selector se bloquea durante la subida y mientras el PDF permanece en el compositor. Sus hallazgos anteriores de bloqueo de turno, traducción de autorización, tipo PDF y procedencia del piso se corrigieron. No se integró ni desplegó.
 
+**Incidente de CI (2026-10-06):** la corrida aislada de backend con DB en PR #208 reportó `1 failed, 3836 passed, 2 skipped`. El único fallo fue `test_pdf_escaneado_desde_chat_se_encola_y_expone_su_estado`: el test construía `AuthUser.tenant_id` con el alias textual de `Entorno`, mientras la ruta que guarda en proyectos requiere el ID numérico real de tenant. El harness `JAX_CI_NO_DB=1` omitía ese camino. Se corrigió el fixture usando `tests.identidades._tenant_db_id`; queda pendiente que una nueva corrida DB lo confirme.
+
 **Alternativas descartadas:** no conectar el test harness al puerto 3308, porque es producción; no autorizar el opt-in que el harness ofrece; no usar un mock para atribuirle un p95 real. Las tres decisiones evitan mezclar un ensayo con operación real o convertir una simulación en evidencia falsa.
 
 ## Traspaso registrado
@@ -51,12 +53,12 @@ Repetir el escenario con el job de CI que levanta MariaDB desechable o en un hos
 
 **Objetivo:** cerrar E3 para PDFs escaneados subidos desde el chat, usando la cola durable del proyecto y mostrando estados reales sin esperar OCR en la petición.
 
-**Hecho:** commits locales `8161f02` (admisión a cola), `8b1883d` (evidencia y handoff inicial), `ff619e7` (turno de texto no espera OCR) y `2984c5f` (selector ligado al contexto del PDF). La auditoría adversarial rechazó `8b1883d` y `ff619e7`; el segundo confirmó el cierre de los hallazgos funcionales previos y pidió fijar proyecto, actualizar/eliminar el handoff y resolver DB/carga. El selector ahora se bloquea durante toda subida y mientras el PDF escaneado esté en el compositor. Las suites completas pasan en los conteos indicados arriba.
+**Hecho:** commits locales `8161f02` (admisión a cola), `8b1883d` (evidencia y handoff inicial), `ff619e7` (turno de texto no espera OCR) y `2984c5f` (selector ligado al contexto del PDF); el SHA de PR #208 se encuentra después de estos commits. La auditoría adversarial rechazó `8b1883d`, `ff619e7` y `a998c98`; cerró hallazgos funcionales, pero mantuvo bloqueada la evidencia DB/carga. El selector ahora se bloquea durante toda subida y mientras el PDF escaneado esté en el compositor. Suite frontend 1393 y backend no-DB 2363/1479 skips pasan.
 
-**Pendiente:** prueba DB de ingreso/aislamiento, prueba de carga de 20 usuarios con PDF en proceso y auditoría aprobada sobre SHA final. No se tocó `jax_memory` ni producción. No se editó `PENDIENTES.md`.
+**Pendiente:** nueva corrida CI de DB para confirmar el arreglo del tenant; prueba de carga de 20 usuarios con PDF en proceso; auditoría aprobada sobre SHA final. No se tocó `jax_memory` ni producción. No se editó `PENDIENTES.md`.
 
 **Decisiones y alternativas:** usar `project_documents` y su dispatcher proviene de la arquitectura del proyecto verificada por el arquitecto Tier 3. No llamar LAS MANOS directamente ni usar una tarea efímera proviene del contrato vigente de cola. No presentar un p95 simulado y no conectarse al puerto 3308 provienen del encargo y de la regla de carpintero. El selector se bloquea mientras se sube porque la admisión duradera ocurre antes del POST del turno, y habilitar el cambio permitiría dos contextos distintos.
 
-**Siguiente paso exacto:** configurar una base MariaDB desechable aislada, ejecutar primero `cd /home/fruiz/wt/jxp-e3-respaldo/backend && python3 -m pytest -q tests/test_proyectos_documentos_api.py`, después medir 20 turnos concurrentes mientras el documento está en cola; actualizar esta evidencia y pedir auditoría del SHA resultante. Si sigue sin DB aislada, dejar carga como `N/A` y no pedir integración.
+**Siguiente paso exacto:** esperar CI del nuevo SHA de PR #208; si pasa, ejecutar la medición de 20 turnos concurrentes mientras el documento está en cola en entorno DB aislado, actualizar esta evidencia y pedir auditoría del SHA resultante. Si sigue sin entorno de carga aislado, dejar carga como `N/A` y no pedir integración.
 
 **Siguiente comando (backend desde `backend/`):** `env -u JAX_DB_HOST -u JAX_DB_PORT -u JAX_DB_USER -u JAX_DB_PASSWORD -u JAX_DB_NAME JAX_CI_NO_DB=1 JAX_REPO_PATH=/home/fruiz/jax JAX_CONFIG_PATH=/tmp/jax-e3-test-config-absent.json JAX_WORKSPACE_DIR=/tmp/jxp-e3-workspace PYTHONPATH=/home/fruiz/jax:/home/fruiz/jax/las_manos python3 -m pytest -q`.

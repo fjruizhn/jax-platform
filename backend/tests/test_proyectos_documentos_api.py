@@ -190,7 +190,8 @@ def test_pdf_escaneado_desde_chat_se_encola_y_expone_su_estado(ent, workspace, t
     adjuntos = tmp_path / "adjuntos"
     adjuntos.mkdir(mode=0o700)
     monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
-    usuario = AuthUser(user_id=str(ent._id("dueno")), tenant_id=ent.tenant, role="operator")
+    from tests.identidades import _tenant_db_id
+    usuario = AuthUser(user_id=str(ent._id("dueno")), tenant_id=str(_tenant_db_id(ent.tenant)), role="operator")
     # El tipo lo verificó el contenido de los bytes; el nombre de usuario puede
     # tener un sufijo engañoso y no debe cambiar la ruta del extractor.
     archivo = UploadFile(io.BytesIO(pdf_con_texto(["", ""])), filename="estado.docx")
