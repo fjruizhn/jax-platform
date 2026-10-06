@@ -74,9 +74,9 @@ La columna **superadmin** describe el contrato global posterior a M6. **Admin** 
 | `GET /api/admin/usage` | Uso agregado de todos los tenants; filtro opcional | Solo filas y agregados de usuarios ordinarios del tenant del actor |
 | `GET /api/admin/users` | Todos los tenants; filtro opcional | Solo cuentas ordinarias del tenant del actor, incluyendo bajas; las cuentas admin/superadmin se omiten y consultar su id da 404 |
 | `POST /api/admin/users` | Crea usuario en tenant destino explícito y existente; puede crear `admin` | Crea `operator` o `viewer` solo en su tenant; `tenant_id` suministrado se rechaza |
-| `PUT /api/admin/users/{user_id}` | Actualiza usuario de cualquier tenant; puede asignar/quitar `admin` sujeto a invariantes | Actualiza usuarios de su tenant con rol `operator` o `viewer`; no puede asignar `admin`/`superadmin`, ni editar cuentas `admin`/`superadmin` |
-| `POST /api/admin/users/{user_id}/unlock` | Desbloquea usuario de cualquier tenant | Solo usuario ordinario del tenant |
-| `POST /api/admin/users/{user_id}/revoke-sessions` | Revoca sesiones en cualquier tenant | Solo usuario ordinario del tenant |
+| `PUT /api/admin/users/{user_id}` | Actualiza usuario de cualquier tenant excepto la cuenta protegida; puede asignar/quitar `admin` sujeto a invariantes | Actualiza usuarios de su tenant con rol `operator` o `viewer`; no puede asignar `admin`/`superadmin`, ni editar cuentas `admin`/`superadmin` |
+| `POST /api/admin/users/{user_id}/unlock` | Desbloquea usuario de cualquier tenant excepto la cuenta protegida | Solo usuario ordinario del tenant |
+| `POST /api/admin/users/{user_id}/revoke-sessions` | Revoca sesiones en cualquier tenant excepto la cuenta protegida | Solo usuario ordinario del tenant |
 | `GET /api/admin/users/{user_id}/audit` | Historial del usuario de cualquier tenant | Solo historial de usuario ordinario del tenant; sin datos de otros tenants |
 | `POST /api/admin/users/{user_id}/reset-link` | Emite enlace para usuario de cualquier tenant, excepto la cuenta protegida | Solo usuario ordinario del tenant; no emite automáticamente un reset-link al crear una cuenta cuyo correo el destinatario aún no confirmó |
 | `POST /api/admin/users/{user_id}/password` | Fija contraseña de usuario de cualquier tenant, excepto la cuenta protegida | Solo usuario ordinario del tenant |
