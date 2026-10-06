@@ -567,10 +567,14 @@ async def ciclo(pool) -> None:
                 raise
 
 
-def despachar_ahora() -> None:
+def despachar_ahora(forzado: bool = False) -> None:
     """Programa un `ciclo` inmediato, sin esperarlo. Necesita el loop de la plataforma
     corriendo (se llama desde un handler). Si ya hay uno programado sin terminar, no
-    suma otro: lo que llegue despues sale en la vuelta del intervalo."""
+    suma otro: lo que llegue despues sale en la vuelta del intervalo. No arranca
+    bajo pytest salvo que un test lo pida explícitamente con `forzado=True`."""
+    if not forzado and _corriendo_bajo_pytest():
+        logger.warning("proyectos_documentos: el aviso inmediato no arranca bajo pytest")
+        return
     if any(not t.done() for t in _avisos):
         return
     tarea = asyncio.get_running_loop().create_task(_ciclo_inmediato())
