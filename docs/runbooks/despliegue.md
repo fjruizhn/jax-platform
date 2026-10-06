@@ -112,6 +112,7 @@ sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" 
   git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
 sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
 sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
+git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD   # = SHA del merge del PR; si no, el pull falló: NO reiniciar
 sudo systemctl restart jax-las-manos
 ```
 
@@ -133,6 +134,7 @@ sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" 
   git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
 sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
 sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
+git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD   # = SHA del merge del PR; si no, el pull falló: NO reiniciar
 sudo systemctl restart jax-platform
 ```
 
@@ -574,7 +576,6 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    editada a mano ni de memoria):
 
    ```bash
-   set -a; . <(sudo -n cat /etc/jax/.env); set +a
    ARCHIVO=/srv/jax-prod/jax/jax/memory/b9_migrations/<archivo>.sql
    # El hash se calcula ANTES de aplicar nada, sobre el archivo que se está
    # por correr -- ANOTALO (pegalo en el ticket/PR de este despliegue): es el
@@ -582,8 +583,15 @@ archivos por glob contra el manifiesto de abajo -- NO los aplica a ciegas: que u
    # migración. Calcularlo DESPUÉS (de memoria, o de una copia editada) es
    # exactamente el error que este control existe para atrapar.
    sha256sum "$ARCHIVO"
-   mysql -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u"$JAX_DB_USER" -p"$JAX_DB_PASSWORD" \
-     jax_memory < "$ARCHIVO"
+   # Credenciales en un archivo de opciones 600 efímero, nunca en argv ni exportadas en
+   # la shell de fruiz (/proc no tiene hidepid; mismo patrón que el control del candado).
+   sudo ARCHIVO="$ARCHIVO" bash -c '
+   set -euo pipefail; set -a; . /etc/jax/.env; set +a
+   T=$(mktemp -d); chmod 700 $T; trap "rm -rf $T" EXIT
+   printf "[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n" \
+     "$JAX_DB_HOST" "$JAX_DB_PORT" "$JAX_DB_USER" "$JAX_DB_PASSWORD" > $T/c.cnf
+   chmod 600 $T/c.cnf
+   mariadb --defaults-extra-file=$T/c.cnf jax_memory < "$ARCHIVO"'
    ```
 
    **Si falla a mitad (MariaDB corta la conexión, un error de sintaxis, un lock que
