@@ -349,6 +349,12 @@ async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, us
 
     La llamada sucede después de recibir y clasificar el adjunto; se vuelve a validar
     membresía/estado antes de tocar el workspace y el INSERT vuelve a cerrar la carrera.
+
+    Toma el MISMO cupo de subidas simultáneas que `subir` (`cupo_de_subidas`, 429
+    `subidas_simultaneas`): este camino también escribe en el workspace del proyecto, y
+    `DOC_SUBIDAS_POR_USUARIO`/`DOC_SUBIDAS_GLOBALES` prometen un máximo de escrituras en vuelo
+    sin importar por qué puerta entran. El limitador de /api/chat/upload es de tasa por
+    usuario, no de concurrencia.
     """
     # El PDF pudo tardar en subirse y clasificarse; igual que la ruta de
     # proyectos, revalidar el freno inmediatamente antes de tocar el disco.
@@ -361,16 +367,25 @@ async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, us
         workspace = almacen.cargar_workspace()
     except almacen.WorkspaceNoConfigurado:
         raise _error(503, "almacen_no_configurado") from None
-    # El stream se lee por bloques por almacen.escribir_streaming; no se carga el PDF
-    # completo a memoria ni se espera al OCR de LAS MANOS.
-    stream = await asyncio.to_thread(_abrir_archivo_sin_enlaces, ruta)
+    # Cupo de subidas simultaneas (por usuario y global), el mismo de `subir`, ANTES de tocar el
+    # disco. Se suelta pase lo que pase.
+    usuario = str(user.user_id)
+    if not cupo_de_subidas.tomar(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_SUBIDAS_POR_USUARIO)),
+                                 globales=int(await ajustes.valor(ajustes.DOC_SUBIDAS_GLOBALES))):
+        raise _error(429, "subidas_simultaneas")
     try:
-        parte = UploadFile(filename=nombre, file=stream)
-        respuesta = await _guardar_lote([parte], proyecto=proyecto, user=user, workspace=workspace,
-                                        max_archivo=max_archivo, max_archivos=1, max_lote=max_archivo,
-                                        incluir_id_duplicado=True, tipo_verificado="pdf")
+        # El stream se lee por bloques por almacen.escribir_streaming; no se carga el PDF
+        # completo a memoria ni se espera al OCR de LAS MANOS.
+        stream = await asyncio.to_thread(_abrir_archivo_sin_enlaces, ruta)
+        try:
+            parte = UploadFile(filename=nombre, file=stream)
+            respuesta = await _guardar_lote([parte], proyecto=proyecto, user=user, workspace=workspace,
+                                            max_archivo=max_archivo, max_archivos=1, max_lote=max_archivo,
+                                            incluir_id_duplicado=True, tipo_verificado="pdf")
+        finally:
+            await asyncio.to_thread(stream.close)
     finally:
-        await asyncio.to_thread(stream.close)
+        cupo_de_subidas.soltar(usuario)
     if respuesta["aceptados"]:
         document_id = respuesta["aceptados"][0]["id"]
     elif respuesta["ignorados"] and respuesta["ignorados"][0]["motivo"] in ("duplicado", "duplicado_oculto"):

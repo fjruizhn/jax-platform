@@ -223,6 +223,29 @@ def test_estado_de_documento_exige_que_pertenezca_al_proyecto(ent, workspace):
     assert ajeno.status_code == 404
 
 
+def test_un_documento_oculto_no_se_lee_por_su_estado_ni_siquiera_el_lector_ve_su_nombre(ent, workspace):
+    """`estado` solo pide papel de lectura y `listar` reserva la vista de ocultos a quien escribe:
+    el filtro `oculto_at IS NULL` del SQL es lo UNICO que impide que un VIEWER lea nombre, estado y
+    error de un documento oculto."""
+    proyecto = ent.proyecto()
+    lector = ent.miembro(proyecto, "lector", "VIEWER")
+    documento_id = ent.subir(proyecto, ent.dueno, [_parte("secreto.pdf", "s")]).json()["aceptados"][0]["id"]
+    ruta = f"{P}/{proyecto.id}/documentos/{documento_id}"
+
+    visible = ent.client.get(ruta, headers=lector)
+    assert visible.status_code == 200 and visible.json()["nombre"] == "secreto.pdf"
+
+    assert ent.client.post(f"{ruta}/ocultar", headers=ent.dueno).status_code == 204
+    for quien in (lector, ent.dueno):
+        oculto = ent.client.get(ruta, headers=quien)
+        assert oculto.status_code == 404, oculto.text
+        assert oculto.json() == {"detail": {"code": "documento_no_encontrado"}}
+        assert "secreto" not in oculto.text
+
+    assert ent.client.post(f"{ruta}/restaurar", headers=ent.dueno).status_code == 204
+    assert ent.client.get(ruta, headers=lector).status_code == 200
+
+
 def test_el_dueno_tambien_sube(ent, workspace):
     p = ent.proyecto()
     r = ent.subir(p, ent.dueno, [_parte("a.pdf", "a")])
@@ -2210,3 +2233,117 @@ def test_el_429_del_cupo_global_de_reprocesar_deja_log_con_quien_pidio(ent, work
     m = mensajes[0]
     assert f"usuario {ent._id('dueno')}" in m and f"proyecto {p.id}" in m and f"documento {doc}" in m, m
     assert "otro-recorriendo" not in " ".join(caplog.messages)                    # quien tiene el lugar no se registra
+
+
+# ------------------------------------------- PDF escaneado desde el chat (E3)
+
+@pytest.fixture
+def chat_pdf(ent, tmp_path, monkeypatch):
+    """`subir(headers, pdf, project_id=..)` -> respuesta de POST /api/chat/upload."""
+    from tests.adjuntos_muestras import pdf_con_texto
+
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+
+    def subir(headers, proyecto, pdf=None, nombre="escaneo.pdf"):
+        return ent.client.post("/api/chat/upload", headers=headers, data={"project_id": str(proyecto.id)},
+                               files={"file": (nombre, pdf or pdf_con_texto([""]), "application/pdf")})
+    return subir
+
+
+def test_duplicado_desde_el_chat_reutiliza_el_documento_existente(ent, workspace, chat_pdf):
+    """El mismo PDF escaneado dos veces no crea otra fila ni otro archivo: la respuesta es la del
+    documento canonico, con su estado actual."""
+    proyecto = ent.proyecto()
+    primera = chat_pdf(ent.dueno, proyecto)
+    assert primera.status_code == 200, primera.text
+    segunda = chat_pdf(ent.dueno, proyecto, nombre="otro-nombre.pdf")
+    assert segunda.status_code == 200, segunda.text
+    assert segunda.json()["document_id"] == primera.json()["document_id"]
+    assert segunda.json()["tipo"] == "pdf_procesando" and segunda.json()["estado"] == "en_cola"
+    assert len(ent.filas(proyecto)) == 1
+    assert len(_en_disco(workspace)) == 1, "el duplicado dejo su copia en el workspace"
+    # El estado que se devuelve es el ACTUAL del documento, no un "en_cola" fijo.
+    ent.client.portal.call(sql, "UPDATE project_documents SET estado='listo' WHERE id=%s",
+                           (primera.json()["document_id"],))
+    tercera = chat_pdf(ent.dueno, proyecto)
+    assert tercera.status_code == 200, tercera.text
+    assert tercera.json()["document_id"] == primera.json()["document_id"] and tercera.json()["estado"] == "listo"
+
+
+def test_duplicado_oculto_desde_el_chat_es_409_sin_revelar_el_documento(ent, workspace, chat_pdf):
+    """Si el documento canonico esta oculto, el chat no lo reutiliza (no se lo puede consultar): 409."""
+    proyecto = ent.proyecto()
+    primera = chat_pdf(ent.dueno, proyecto)
+    documento_id = primera.json()["document_id"]
+    assert ent.client.post(f"{P}/{proyecto.id}/documentos/{documento_id}/ocultar",
+                           headers=ent.dueno).status_code == 204
+    segunda = chat_pdf(ent.dueno, proyecto)
+    assert segunda.status_code == 409, segunda.text
+    assert _code(segunda) == "documento_duplicado_en_proyecto"
+    assert str(documento_id) not in segunda.text
+    assert len(ent.filas(proyecto)) == 1 and len(_en_disco(workspace)) == 1
+
+
+def test_el_tope_por_archivo_de_proyectos_menor_que_el_del_chat_manda_413(ent, workspace, chat_pdf, ajustes_en_db):
+    """DOC_MAX_BYTES_ARCHIVO (area de proyectos) es el tope del PDF escaneado aunque el del chat sea
+    mayor: 413 `adjunto_demasiado_grande` con el tope de proyectos, no 422 `documento_no_admitido`."""
+    from tests.adjuntos_muestras import pdf_con_texto
+    from adjuntos.limites import cargar_limites
+
+    proyecto = ent.proyecto()
+    grande = pdf_con_texto([""], comentario=b"x" * (MIB + 4096))
+    assert MIB < len(grande) < cargar_limites().max_bytes  # entra en el chat, no en proyectos
+    ajustes_en_db.poner(**{ARCHIVO: str(MIB)})
+    rechazado = chat_pdf(ent.dueno, proyecto, grande)
+    assert rechazado.status_code == 413, rechazado.text
+    assert rechazado.json()["detail"] == {"code": "adjunto_demasiado_grande", "max_bytes": MIB}
+    assert ent.filas(proyecto) == [] and _en_disco(workspace) == []
+    # El mismo PDF entra cuando el tope de proyectos lo admite: el 413 es del ajuste, no del PDF.
+    ajustes_en_db.poner(**{ARCHIVO: str(5 * MIB)})
+    aceptado = chat_pdf(ent.dueno, proyecto, grande)
+    assert aceptado.status_code == 200, aceptado.text
+    assert len(ent.filas(proyecto)) == 1
+
+
+@pytest.mark.parametrize("tope,mismo_usuario", [("por_usuario", True), ("globales", False)])
+def test_el_pdf_del_chat_toma_el_cupo_de_subidas_simultaneas(
+        tope, mismo_usuario, ent, workspace, chat_pdf, ajustes_en_db, monkeypatch):
+    """Con N=1, una segunda escritura simultanea por la puerta del chat es 429 `subidas_simultaneas`,
+    igual que en el area de proyectos; al terminar la primera el cupo queda libre."""
+    from proyectos_documentos import cupo_de_subidas
+    from tests.adjuntos_muestras import pdf_con_texto
+
+    proyecto = ent.proyecto()
+    otro = ent.miembro(proyecto, "contrib", "CONTRIBUTOR")
+    ajustes_en_db.poner(**{"proyectos.documentos.subidas_por_usuario": "1" if tope == "por_usuario" else "10",
+                           "proyectos.documentos.subidas_globales": "1" if tope == "globales" else "50"})
+    assert cupo_de_subidas.en_uso() == (0, {})
+
+    dentro, soltar = threading.Event(), threading.Event()
+    escribir = almacen.escribir_streaming
+
+    async def retenida(*args, **kwargs):
+        dentro.set()                                  # la primera ya esta escribiendo, con el cupo tomado
+        await asyncio.to_thread(soltar.wait, 20)
+        return await escribir(*args, **kwargs)
+    monkeypatch.setattr(almacen, "escribir_streaming", retenida)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        primera = pool.submit(chat_pdf, ent.dueno, proyecto, pdf_con_texto(["", ""]))
+        try:
+            assert dentro.wait(20), "la primera subida no llego a escribir"
+            segunda = chat_pdf(ent.dueno if mismo_usuario else otro, proyecto, pdf_con_texto(["", "", ""]))
+            assert segunda.status_code == 429, segunda.text
+            assert _code(segunda) == "subidas_simultaneas"
+            # Rechazada antes de tocar el disco ni la base: nada de la segunda quedo registrado.
+            assert len(ent.filas(proyecto)) == 0 and len(_en_disco(workspace)) <= 1
+        finally:
+            soltar.set()
+        assert primera.result(timeout=30).status_code == 200
+    assert cupo_de_subidas.en_uso() == (0, {}), "el cupo no se soltó"
+    monkeypatch.setattr(almacen, "escribir_streaming", escribir)
+    tercera = chat_pdf(ent.dueno if mismo_usuario else otro, proyecto, pdf_con_texto(["", "", "", ""]))
+    assert tercera.status_code == 200, tercera.text
+    assert len(ent.filas(proyecto)) == 2
