@@ -108,7 +108,7 @@ blanco quedan `parcial` sin una sola palabra de texto: el estado no distingue «
 4. **Lo que sí se degrada es el tiempo hasta tener el documento listo:** crece linealmente (≈ 17,5 s por documento
    de 20 páginas) y es independiente del cupo. Con 20 simultáneos el último espera unos 6 min; con 40, unos 12 min.
    Si el criterio es «un PDF escaneado de 20 páginas listo en menos de 5 min», el límite **estimado** es de unos 16
-   documentos al tope subidos a la vez: es una extrapolación: la recta de los dos puntos medidos (20 documentos → 352 s, 40 → 698 s) es ≈ 17,3 s por documento más ≈ 6 s fijos, así que 16 documentos dan ≈ 283 s y 17 dan ≈ 300,1 s, justo por encima del límite, no una
+   documentos al tope subidos a la vez: es una extrapolación con el reloj del usuario (desde la subida hasta el último documento listo; máximos de R1 con 20 documentos, 366,1 s, y de R4 con 40, 710,0 s, en `res/*.json`): la recta es ≈ 17,2 s por documento más ≈ 22 s, así que 16 documentos dan ≈ 297 s y 17 dan ≈ 315 s; el margen bajo los 5 min es de unos 3 s. (Contado desde que LAS MANOS crea el primer trabajo, en `procesamiento_jobs.jsonl`, R1 da 352,0 s y R4 697,9 s; ese reloj no incluye la subida y no sirve para el criterio), no una
    medición; ninguna corrida tuvo 16 documentos (se corrió con 20 y con 40). Que en producción real, con menos de 4
    subidas simultáneas, no haya cola, **no se midió**: los topes de producción se leyeron después y coinciden con el spec (ver «Qué se midió», con sus límites de evidencia), pero
    no se corrió una carga con menos de 4 subidas; es solo lo que se esperaría del despachador de 4 trabajos.
@@ -144,4 +144,4 @@ blanco quedan `parcial` sin una sola palabra de texto: el estado no distingue «
 Contenedor detenido con `docker stop` (se borró solo, `--rm`). Borrados los PDF sintéticos, el workspace, los adjuntos, los
 temporales y los archivos de entorno con credenciales. Los procesos del gemelo (uvicorn de la plataforma, LAS MANOS, el
 proveedor simulado y el monitor) se lanzaron con `timeout` y terminan solos; pids en el scratchpad
-(`ocr-gemelo/pids.txt`). Registros crudos de cada corrida en `ocr-gemelo/res/` del scratchpad de la sesión.
+(`ocr-gemelo/pids.txt`). Registros crudos de cada corrida (`res/`) y `procesamiento_jobs.jsonl` de LAS MANOS del gemelo, archivados en `docs/carga-ocr-real-gemelo-2026-10-06-crudos.tar.xz` (148 KB; nombres de archivo y usuarios sintéticos, sin credenciales); el scratchpad de la sesión no es durable.
