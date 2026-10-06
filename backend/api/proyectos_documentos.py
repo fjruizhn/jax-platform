@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -70,6 +71,13 @@ REINTENTAR_DESPUES_S = 2
 def _error(status: int, code: str, **extra) -> HTTPException:
     cabeceras = {"Retry-After": str(REINTENTAR_DESPUES_S)} if status == 429 else None
     return HTTPException(status_code=status, detail={"code": code, **extra}, headers=cabeceras)
+
+
+def _rechazo_parcial(exc: HTTPException, lote: str, aceptados: list[dict], ignorados: list[dict]) -> HTTPException:
+    """Conserva el rechazo original y agrega los resultados ya confirmados del lote."""
+    detalle = dict(exc.detail) if isinstance(exc.detail, dict) else {"code": exc.detail}
+    detalle.update(lote=lote, aceptados=aceptados, ignorados=ignorados)
+    return HTTPException(status_code=exc.status_code, detail=detalle, headers=exc.headers)
 
 
 def _puede_escribir(papel: str) -> bool:
@@ -172,7 +180,8 @@ async def _recibir_lote(request: Request, project_id: int, *, user: AuthUser, wo
 
 
 async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspace: Path, max_archivo: int,
-                        max_archivos: int, max_lote: int) -> dict:
+                        max_archivos: int, max_lote: int, incluir_id_duplicado: bool = False,
+                        tipo_verificado: str | None = None) -> dict:
     pool = await get_pool()
     lote = _nuevo_lote()
     carpeta: almacen.CarpetaLote | None = None
@@ -188,11 +197,14 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 ignorados.append({"nombre": "", "motivo": "nombre_invalido"})
                 continue
             nombre = almacen.nombre_para_mostrar(parte.filename)
-            tipo = tipos.tipo_de(parte.filename)
+            if tipo_verificado not in (None, "pdf"):
+                raise ValueError("tipo_verificado solo admite el PDF validado por contenido")
+            tipo = tipo_verificado or tipos.tipo_de(parte.filename)
             if tipo is None:
                 ignorados.append({"nombre": nombre, "motivo": "tipo_no_admitido"})
                 continue
-            seguro = almacen.nombre_seguro(parte.filename, usados)
+            nombre_archivo = _nombre_de_almacenamiento(parte.filename, nombre, tipo_verificado)
+            seguro = almacen.nombre_seguro(nombre_archivo, usados)
             if tipos.tipo_de(seguro) != tipo:
                 ignorados.append({"nombre": nombre, "motivo": "nombre_invalido"})
                 continue
@@ -203,6 +215,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 except cuota.SinEspacio:
                     raise _error(507, "sin_espacio") from None
                 try:
+                    exigir_freno_suelto()
                     carpeta = await asyncio.to_thread(almacen.abrir_carpeta_lote, workspace, proyecto["uuid"], lote)
                 except almacen.RutaInsegura:
                     # Un enlace simbolico en proyectos/<uuid>/entrada/<lote>: el detalle va
@@ -219,6 +232,7 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
             restante = max_lote - bytes_lote
             usados.add(seguro)
             try:
+                exigir_freno_suelto()
                 escritos, sha256 = await almacen.escribir_streaming(parte, carpeta, seguro, min(max_archivo, restante))
             except almacen.DemasiadoGrande:
                 usados.discard(seguro)
@@ -236,12 +250,19 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                              "ruta insegura" if insegura else "error de disco", exc_info=True)
                 raise _error(500, "almacen_ruta_insegura" if insegura else "almacen_error_escritura",
                              lote=lote, aceptados=aceptados, ignorados=ignorados) from None
+            except HTTPException as exc:
+                # Esta guarda corre antes de crear el archivo actual. Si el lote
+                # ya acepto otros, incluirlos en la respuesta para el cliente.
+                if aceptados:
+                    raise _rechazo_parcial(exc, lote, aceptados, ignorados) from None
+                raise
             except BaseException:
                 usados.discard(seguro)
                 raise
             bytes_lote += escritos
 
             try:
+                exigir_freno_suelto()
                 nuevo = await repo.insertar(
                     pool, project_id=proyecto["id"], sha256=sha256, nombre_original=nombre,
                     ruta_entrada=carpeta.ruta_relativa(seguro), bytes_=escritos, tipo=tipo,
@@ -250,6 +271,15 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                 # Rechazo DEFINITIVO del INSERT: nada se inserto, el archivo sobra.
                 await asyncio.to_thread(carpeta.borrar, seguro)
                 raise _rechazo_definitivo(exc, lote, aceptados, ignorados) from None
+            except HTTPException as exc:
+                # El freno puede activarse despues de escribir el archivo pero antes
+                # del INSERT. Es un rechazo definitivo, no un resultado incierto.
+                await asyncio.to_thread(carpeta.borrar, seguro)
+                if aceptados:
+                    # En un lote con exitos previos el cliente debe conocerlos para
+                    # no reintentar ni perder referencias al resultado parcial.
+                    raise _rechazo_parcial(exc, lote, aceptados, ignorados) from None
+                raise
             except BaseException as exc:
                 # Resultado INCIERTO (p. ej. se cayo la conexion despues de mandar el
                 # COMMIT): la fila pudo quedar escrita. NO se toca el disco -- borrar el
@@ -285,7 +315,12 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
                     raise _error(500, "consulta_duplicado_fallida", lote=lote, aceptados=aceptados,
                                  ignorados=ignorados) from None
                 oculto = existente is not None and existente["oculto"]
-                ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto" if oculto else "duplicado"})
+                if oculto:
+                    ignorados.append({"nombre": nombre, "motivo": "duplicado_oculto"})
+                else:
+                    ignorados.append({"nombre": nombre, "motivo": "duplicado"})
+                    if incluir_id_duplicado and existente is not None:
+                        ignorados[-1]["document_id"] = existente["id"]
                 continue
             aceptados.append({"id": nuevo, "nombre": nombre})
     finally:
@@ -299,6 +334,79 @@ async def _guardar_lote(partes: list, *, proyecto: dict, user: AuthUser, workspa
         except Exception:  # fail-soft: el aviso es un adelanto; las filas ya estan en_cola y el despachador de fondo las toma en su vuelta
             logger.warning("proyectos_documentos: no se pudo avisar al despachador (lote %s)", lote, exc_info=True)
     return {"lote": lote, "aceptados": aceptados, "ignorados": ignorados}
+
+
+def _nombre_de_almacenamiento(nombre_subido: str, nombre_mostrado: str, tipo_verificado: str | None) -> str:
+    """Conserva el sufijo del formato validado por contenido para el extractor."""
+    if tipo_verificado == "pdf":
+        return f"{Path(nombre_mostrado).stem}.pdf"
+    return nombre_subido
+
+
+async def encolar_pdf_desde_chat(ruta: Path, *, nombre: str, project_id: int, user: AuthUser,
+                                 bytes_: int, max_bytes: int) -> dict:
+    """Admite un PDF escaneado en la misma cola durable que la biblioteca del proyecto.
+
+    La llamada sucede después de recibir y clasificar el adjunto; se vuelve a validar
+    membresía/estado antes de tocar el workspace y el INSERT vuelve a cerrar la carrera.
+
+    Toma el MISMO cupo de subidas simultáneas que `subir` (`cupo_de_subidas`, 429
+    `subidas_simultaneas`): este camino también escribe en el workspace del proyecto, y
+    `DOC_SUBIDAS_POR_USUARIO`/`DOC_SUBIDAS_GLOBALES` prometen un máximo de escrituras en vuelo
+    sin importar por qué puerta entran. El limitador de /api/chat/upload es de tasa por
+    usuario, no de concurrencia.
+    """
+    # El PDF pudo tardar en subirse y clasificarse; igual que la ruta de
+    # proyectos, revalidar el freno inmediatamente antes de tocar el disco.
+    exigir_freno_suelto()
+    proyecto = await _con_papel(user, project_id, escribe=True, activo=True)
+    max_archivo = max_bytes
+    if bytes_ > max_archivo:
+        raise _error(413, "adjunto_demasiado_grande", max_bytes=max_archivo)
+    try:
+        workspace = almacen.cargar_workspace()
+    except almacen.WorkspaceNoConfigurado:
+        raise _error(503, "almacen_no_configurado") from None
+    # Cupo de subidas simultaneas (por usuario y global), el mismo de `subir`, ANTES de tocar el
+    # disco. Se suelta pase lo que pase.
+    usuario = str(user.user_id)
+    if not cupo_de_subidas.tomar(usuario, por_usuario=int(await ajustes.valor(ajustes.DOC_SUBIDAS_POR_USUARIO)),
+                                 globales=int(await ajustes.valor(ajustes.DOC_SUBIDAS_GLOBALES))):
+        raise _error(429, "subidas_simultaneas")
+    try:
+        # El stream se lee por bloques por almacen.escribir_streaming; no se carga el PDF
+        # completo a memoria ni se espera al OCR de LAS MANOS.
+        stream = await asyncio.to_thread(_abrir_archivo_sin_enlaces, ruta)
+        try:
+            parte = UploadFile(filename=nombre, file=stream)
+            respuesta = await _guardar_lote([parte], proyecto=proyecto, user=user, workspace=workspace,
+                                            max_archivo=max_archivo, max_archivos=1, max_lote=max_archivo,
+                                            incluir_id_duplicado=True, tipo_verificado="pdf")
+        finally:
+            await asyncio.to_thread(stream.close)
+    finally:
+        cupo_de_subidas.soltar(usuario)
+    if respuesta["aceptados"]:
+        document_id = respuesta["aceptados"][0]["id"]
+    elif respuesta["ignorados"] and respuesta["ignorados"][0]["motivo"] in ("duplicado", "duplicado_oculto"):
+        # La unicidad de SQL resuelve carreras; reutilizar el id canónico si es visible.
+        document_id = respuesta["ignorados"][0].get("document_id")
+        if respuesta["ignorados"][0]["motivo"] == "duplicado" and document_id is not None:
+            estado_existente = await repo.estado_documento(await get_pool(), project_id=proyecto["id"],
+                                                           documento_id=document_id)
+            if estado_existente is not None:
+                return {"tipo": "pdf_procesando", "nombre": nombre, "project_id": project_id,
+                        "document_id": document_id, "estado": estado_existente["estado"]}
+        raise _error(409, "documento_duplicado_en_proyecto")
+    else:
+        raise _error(422, "documento_no_admitido")
+    return {"tipo": "pdf_procesando", "nombre": nombre, "project_id": project_id,
+            "document_id": document_id, "estado": "en_cola"}
+
+
+def _abrir_archivo_sin_enlaces(ruta: Path):
+    descriptor = os.open(ruta, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    return os.fdopen(descriptor, "rb")
 
 
 def _rechazo_definitivo(exc: Exception, lote: str, aceptados: list, ignorados: list) -> HTTPException:
@@ -350,6 +458,15 @@ async def listar(project_id: int, vista: Literal["visibles", "ocultos"] = "visib
                               antes_de=antes_de, limite=limite + 1)
     siguiente = filas[limite - 1]["id"] if len(filas) > limite else None
     return {"documentos": filas[:limite], "siguiente": siguiente}
+
+
+@router.get("/proyectos/{project_id}/documentos/{documento_id}")
+async def estado(project_id: int, documento_id: int, user: AuthUser = Depends(get_current_user)):
+    proyecto = await _con_papel(user, project_id, escribe=False)
+    fila = await repo.estado_documento(await get_pool(), project_id=proyecto["id"], documento_id=documento_id)
+    if fila is None:
+        raise _error(404, "documento_no_encontrado")
+    return fila
 
 
 async def _cambiar_visibilidad(project_id: int, documento_id: int, user: AuthUser, *, ocultar: bool) -> Response:

@@ -10,7 +10,11 @@ roto en disco es el MISMO 404, sin memoria, sin estado y sin proveedor."""
 import base64
 import json
 import logging
+import math
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pytest
@@ -35,6 +39,7 @@ class _Grabador:
 
     def __init__(self):
         self.pedidos: list[tuple[str, dict]] = []
+        self.delay_s = 0.0
 
     @property
     def al_proveedor(self):
@@ -47,6 +52,9 @@ class _Grabador:
         else:
             cuerpo = kwargs.get("json")
         self.pedidos.append((url, cuerpo))
+        if self.delay_s:
+            import asyncio
+            await asyncio.sleep(self.delay_s)
 
         class _R:
             def raise_for_status(self):
@@ -444,3 +452,386 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
     assert r.json()["aviso"] is None
     assert r.json()["response"] == "The response could not be verified safely."
     assert r.json()["contract_state"] == "DEGRADED_STRUCTURED"
+
+
+# Topes de la prueba de carga E3 (ver el comentario dentro de la prueba y el informe).
+TOPE_SUBIDA_MS = 1500
+TOPE_CHAT_MS = 5000
+_ESCALONADO_S = 0.05    # separación entre la llegada de un usuario y la del siguiente
+_SONDEO_S = 0.1         # pausa entre vueltas de despacho + sondeo
+_OCR_SIMULADO_S = 3.0  # lo que tarda el OCR remoto simulado: el PDF sigue en proceso mientras se chatea
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
+        client, grabador, monkeypatch, tmp_path, request, ajustes_en_db):
+    """Mide E3 como lo vive el usuario: chatear MIENTRAS su PDF escaneado se procesa.
+
+    MariaDB, workspace, autorización, upload, despachador y endpoint de estado
+    son reales. Solo se sustituye LAS MANOS (servicio OCR remoto), que tarda
+    `_OCR_SIMULADO_S` por trabajo para que el PDF siga en proceso mientras
+    corren los turnos de chat.
+
+    Qué se mide (latencia POR PETICIÓN, no el tiempo de pared del lote):
+      - p95 de cada subida `POST /api/chat/upload` (20 PDF al tope, concurrentes);
+      - p95 de cada turno `POST /api/chat` (5 por usuario, 100 en total), medidos
+        aparte, mientras el hilo principal corre `despachador.ciclo` (despacho y
+        sondeo reales) y consulta el estado de cada documento.
+    Un bloqueo del event loop en la ruta de subida (p. ej. `time.sleep` dentro de
+    `encolar_pdf_desde_chat`) sube las dos cifras: los chats esperan el loop.
+
+    Topes (JAX_E3_SUBIDA_P95_MAX_MS / JAX_E3_CHAT_P95_MAX_MS): ver el comentario de
+    los valores por defecto, derivados de la línea base medida más un margen.
+    """
+    import uuid
+    from db.connection import get_pool
+    from proyectos_documentos import despachador
+    from tests.adjuntos_muestras import pdf_con_texto
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.identidades import sql
+    import ajustes
+    from adjuntos.limites import cargar_limites
+
+    usuarios, turnos = 20, 5
+    # LÍNEA BASE medida (hall9000, MariaDB 12.3.3 efímera, 2026-10-06, 12 corridas sin
+    # mutante; ver docs/carga-e3-respaldo-chat-2026-10-06.md):
+    #   subida p95  32-60 ms   (peor corrida: 59,9 ms)
+    #   chat   p95  1021-1623 ms (peor corrida: 1623 ms; es cola: 100 turnos en ~2 s sobre un loop)
+    # TOPES = peor base medida x margen declarado:
+    #   subida: 60 ms x 25 = 1500 ms. La base es de decenas de ms, donde el ruido ABSOLUTO del
+    #           runner (disco, CPU compartida) manda; un x3 (180 ms) se rompería con ruido.
+    #           Sigue 6x por debajo de lo que da un `time.sleep(0.5)` en la ruta (~10000 ms).
+    #   chat:   1623 ms x 3 = 4870 -> 5000 ms. La base ya es de cola, no de ruido absoluto.
+    # El `time.sleep(0.5)` bloqueante en `encolar_pdf_desde_chat` (mutante del job de CI)
+    # da subida p95 ~9800-10100 ms (siempre rojo) y chat p95 2100-3900 ms (bajo su tope de 5000): el bloqueo
+    # no está en la ruta del chat y esa cifra es cola; el tope de chat solo ve regresiones GRANDES de su ruta (ver «Límites conocidos de los topes» en el informe).
+    tope_subida_ms = int(os.getenv("JAX_E3_SUBIDA_P95_MAX_MS", str(TOPE_SUBIDA_MS)))
+    tope_chat_ms = int(os.getenv("JAX_E3_CHAT_P95_MAX_MS", str(TOPE_CHAT_MS)))
+    mutante_s = float(os.getenv("JAX_E3_MUTANT_SLEEP_S", "0"))
+    # Los topes tienen que poder ver el mutante: con `time.sleep(0.5)` los 20 bloqueos se
+    # serializan en el loop y la subida 19 (p95 de 20) espera >= 19 x 0.5 s. Un tope por
+    # encima de eso no detectaría ni el mutante de referencia.
+    assert 0 < tope_subida_ms < 19 * 500
+    assert 0 < tope_chat_ms
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+    # El cupo de subidas simultaneas (por defecto 2 por usuario y 4 globales) alcanza a la puerta del
+    # chat y responde 429: aquí se mide la latencia del loop, no el rechazo del cupo, así que se sube
+    # al máximo permitido (ajustes_en_db lo repone al terminar). El 429 tiene su propia prueba.
+    ajustes_en_db.poner(**{"proyectos.documentos.subidas_por_usuario": "10",
+                           "proyectos.documentos.subidas_globales": "50"})
+
+    limites = cargar_limites()
+    pdf_base = pdf_con_texto([""] * limites.max_paginas)
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+    identidades = [entorno.miembro(proyecto, f"load-{n}", "CONTRIBUTOR") for n in range(usuarios)]
+    max_bytes = min(limites.max_bytes, int(client.portal.call(ajustes.valor, ajustes.DOC_MAX_BYTES_ARCHIVO)))
+    assert max_bytes >= len(pdf_base)
+    payloads = []
+    for n in range(usuarios):
+        marca = f"e3-user-{n} ".encode()
+        relleno = max_bytes - len(pdf_base) - len(marca) - 3  # `% ` y salto de línea del comentario
+        assert relleno > 0
+        for _ in range(4):  # startxref crece de longitud al insertar el comentario
+            payload = pdf_con_texto([""] * limites.max_paginas, comentario=marca + b"x" * relleno)
+            diferencia = max_bytes - len(payload)
+            if diferencia == 0:
+                break
+            relleno += diferencia
+        assert len(payload) == max_bytes
+        payloads.append(payload)
+
+    trabajos = {}
+    despachado_en = {}
+    class _Accepted:
+        status_code = 202
+        def __init__(self, job_id): self.job_id = job_id
+        def json(self): return {"job_id": self.job_id}
+    class _Processing:
+        async def post(self, _url, **kwargs):
+            job_id = "e3-" + uuid.uuid4().hex
+            trabajos[job_id] = kwargs["json"]["rutas"][0]
+            despachado_en[job_id] = time.perf_counter()
+            return _Accepted(job_id)
+        async def get(self, url, **_kwargs):
+            job_id = url.rsplit("/", 1)[-1]
+            # El OCR remoto tarda: mientras tanto el trabajo está `running` y el documento
+            # sigue `procesando`, que es cuando el usuario chatea.
+            if time.perf_counter() - despachado_en[job_id] < _OCR_SIMULADO_S:
+                return type("Response", (), {"status_code": 200, "json": lambda self: {
+                    "estado": "running", "resultados": []}})()
+            return type("Response", (), {"status_code": 200, "json": lambda self: {
+                "estado": "completed", "resultados": [{"archivo": trabajos[job_id], "estado": "ok"}]}})()
+    async def processing_client(): return _Processing()
+    monkeypatch.setattr(despachador, "get_http_client", processing_client)
+    monkeypatch.setattr(despachador, "despachar_ahora", lambda: None)
+
+    _resolver(monkeypatch)
+    grabador.delay_s = 0.03
+    if mutante_s:
+        from api import proyectos_documentos as api_documentos
+        original_encolar = api_documentos.encolar_pdf_desde_chat
+        async def encolar_mutante(*args, **kwargs):
+            time.sleep(mutante_s)  # bloquea el event loop, como lo haría un acceso síncrono
+            return await original_encolar(*args, **kwargs)
+        monkeypatch.setattr(api_documentos, "encolar_pdf_desde_chat", encolar_mutante)
+
+    subidos: list[int] = []        # document_id, en orden de llegada
+    terminales: list[int] = []     # documentos ya vistos en estado final por el sondeo
+    lat_subida: list[float] = []
+    lat_chat: list[float] = []
+    chats_con_documentos_abiertos: list[bool] = []
+    ciclos_en_vuelo = {"n": 0, "durante_chats": 0}
+    chats_activos = {"n": 0}
+    candado = threading.Lock()
+
+    def usuario(n):
+        time.sleep(n * _ESCALONADO_S)  # llegadas escalonadas: unos chatean mientras otros todavía suben
+        inicio = time.perf_counter()
+        response = client.post("/api/chat/upload", headers=identidades[n],
+            data={"project_id": str(proyecto.id)},
+            files={"file": (f"escaneo-{n}.pdf", payloads[n], "application/pdf")})
+        lat_subida.append((time.perf_counter() - inicio) * 1000)
+        assert response.status_code == 200, response.text
+        documento = response.json()
+        assert documento["tipo"] == "pdf_procesando"
+        subidos.append((documento["document_id"], inicio))
+        for turno in range(turnos):
+            with candado:
+                chats_activos["n"] += 1
+            chats_con_documentos_abiertos.append(len(subidos) - len(terminales) > 0)
+            t0 = time.perf_counter()
+            try:
+                chat = client.post("/api/chat", headers=identidades[n], json={
+                    "message": f"consulta {n}.{turno}", "facet": "jax_local", "project_id": proyecto.id})
+            finally:
+                with candado:
+                    chats_activos["n"] -= 1
+            lat_chat.append((time.perf_counter() - t0) * 1000)
+            assert chat.status_code == 200, chat.text
+        return documento["document_id"]
+
+    pool = client.portal.call(get_pool)
+    pendientes: dict[int, float] = {}
+    duraciones: list[float] = []
+    estados_terminales: list[str] = []
+    vistos = 0
+    with ThreadPoolExecutor(max_workers=usuarios) as executor:
+        # El cleanup queda registrado antes de cualquier upload concurrente: si
+        # uno falla a mitad, no quedan filas de esta prueba en MariaDB.
+        request.addfinalizer(lambda project_id=proyecto.id: client.portal.call(
+            sql, "DELETE FROM project_documents WHERE project_id=%s", (project_id,)))
+        futuros = [executor.submit(usuario, n) for n in range(usuarios)]
+        # Mientras los usuarios suben y chatean: despacho real (POST durable a LAS MANOS),
+        # sondeo real (GET externo + persistencia) y consulta de estado por documento.
+        deadline = time.perf_counter() + 90
+        while time.perf_counter() < deadline:
+            while vistos < len(subidos):
+                document_id, inicio = subidos[vistos]
+                pendientes[document_id] = inicio
+                vistos += 1
+            hubo_chats = chats_activos["n"] > 0
+            ciclos_en_vuelo["n"] += 1
+            client.portal.call(despachador.ciclo, pool)
+            if hubo_chats or chats_activos["n"] > 0:
+                ciclos_en_vuelo["durante_chats"] += 1
+            for document_id, inicio in list(pendientes.items()):
+                response = client.get(f"/api/proyectos/{proyecto.id}/documentos/{document_id}",
+                                      headers=entorno.dueno)
+                assert response.status_code == 200, response.text
+                estado = response.json()["estado"]
+                if estado in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
+                    estados_terminales.append(estado)
+                    terminales.append(document_id)
+                    duraciones.append((time.perf_counter() - inicio) * 1000)
+                    del pendientes[document_id]
+            if all(f.done() for f in futuros) and vistos == len(subidos) and not pendientes:
+                break
+            time.sleep(_SONDEO_S)
+        for futuro in futuros:
+            futuro.result(timeout=60)  # propaga el fallo de un usuario
+
+    def p95(valores):
+        ordenados = sorted(valores)
+        return ordenados[math.ceil(0.95 * len(ordenados)) - 1]
+
+    subida_p95, chat_p95 = p95(lat_subida), p95(lat_chat)
+    print(f"E3_LOAD users={usuarios} turns={turnos} pages={limites.max_paginas} upload_bytes={max_bytes} "
+          f"dispatched={len(trabajos)} mutante_s={mutante_s} "
+          f"subida_p95_ms={subida_p95:.1f} subida_max_ms={max(lat_subida):.1f} subida_tope_ms={tope_subida_ms} "
+          f"chat_p95_ms={chat_p95:.1f} chat_max_ms={max(lat_chat):.1f} chat_tope_ms={tope_chat_ms} "
+          f"chats_con_docs_abiertos={sum(chats_con_documentos_abiertos)}/{len(chats_con_documentos_abiertos)} "
+          f"ciclos={ciclos_en_vuelo['n']} ciclos_durante_chats={ciclos_en_vuelo['durante_chats']} "
+          f"terminal_p95_ms={p95(duraciones) if duraciones else float('nan'):.1f}", flush=True)
+    # El escenario es el pedido: chats mientras hay documentos en proceso y despacho/sondeo corriendo.
+    assert len(lat_subida) == usuarios and len(lat_chat) == usuarios * turnos
+    assert sum(chats_con_documentos_abiertos) >= 0.9 * len(chats_con_documentos_abiertos), \
+        "E3: los turnos de chat no ocurrieron mientras había documentos en proceso"
+    assert ciclos_en_vuelo["durante_chats"] >= 3, "E3: el despacho y el sondeo no corrieron durante los chats"
+    assert subida_p95 <= tope_subida_ms, f"E3 subida p95 {subida_p95:.1f} ms supera el tope de {tope_subida_ms} ms"
+    assert chat_p95 <= tope_chat_ms, f"E3 chat p95 {chat_p95:.1f} ms supera el tope de {tope_chat_ms} ms"
+    assert len(trabajos) == usuarios, f"E3 despachó {len(trabajos)} de {usuarios} PDFs"
+    assert len(estados_terminales) == usuarios and all(e == "listo" for e in estados_terminales), \
+        f"E3 no completó los {usuarios} PDFs: {estados_terminales}"
+    assert not pendientes, f"E3 no llegó a estado terminal: {sorted(pendientes)}"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+@pytest.mark.parametrize("caso,esperado", [
+    ("otro_tenant", 404), ("sin_membresia", 404), ("viewer", 403),
+    ("archivado", 409), ("inexistente", 404),
+])
+def test_upload_pdf_escaneado_revalida_autorizacion_antes_de_escribir(
+        caso, esperado, client, monkeypatch, tmp_path):
+    """Las cinco denegaciones deben ocurrir dentro de la entrada nueva del chat."""
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+    from api import proyectos_documentos as api_documentos
+
+    llamadas_papel = []
+    original_con_papel = api_documentos._con_papel
+    async def con_papel_spy(*args, **kwargs):
+        llamadas_papel.append((args[1], kwargs.get("escribe"), kwargs.get("activo")))
+        return await original_con_papel(*args, **kwargs)
+    monkeypatch.setattr(api_documentos, "_con_papel", con_papel_spy)
+
+    escrituras = []
+    original_abrir = api_documentos.almacen.abrir_carpeta_lote
+    def abrir_spy(*args, **kwargs):
+        escrituras.append("abrir")
+        return original_abrir(*args, **kwargs)
+    monkeypatch.setattr(api_documentos.almacen, "abrir_carpeta_lote", abrir_spy)
+    original_stream = api_documentos.almacen.escribir_streaming
+    async def stream_spy(*args, **kwargs):
+        escrituras.append("stream")
+        return await original_stream(*args, **kwargs)
+    monkeypatch.setattr(api_documentos.almacen, "escribir_streaming", stream_spy)
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+    if caso == "otro_tenant":
+        atacante = cabeceras(client, f"attacker-{time.time_ns()}", tenant_id=f"otro-{time.time_ns()}")
+        target_id = proyecto.id
+    elif caso == "sin_membresia":
+        atacante = entorno.usuario(f"sin-membresia-{time.time_ns()}")
+        target_id = proyecto.id
+    elif caso == "viewer":
+        atacante = entorno.miembro(proyecto, f"viewer-{time.time_ns()}", "VIEWER")
+        target_id = proyecto.id
+    elif caso == "archivado":
+        proyecto = entorno.proyecto(archivar=True)
+        atacante, target_id = entorno.dueno, proyecto.id
+    else:
+        atacante, target_id = entorno.dueno, proyecto.id + 9_000_000
+
+    response = client.post("/api/chat/upload", headers=atacante,
+        data={"project_id": str(target_id)},
+        files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
+    assert response.status_code == esperado, response.text
+    assert llamadas_papel == [(target_id, True, True)], llamadas_papel
+    assert escrituras == [], escrituras
+    assert list((workspace / "proyectos").iterdir()) == [], "una solicitud denegada escribió en el workspace"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+def test_freno_antes_del_insert_limpia_archivo_y_devuelve_423(client, monkeypatch, tmp_path):
+    """Un freno activado tras escribir no debe dejar archivo huérfano ni ocultarse como 500."""
+    from fastapi import HTTPException
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+    from api import proyectos_documentos as api_documentos
+    from proyectos_documentos import cupo_de_subidas
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    adjuntos = tmp_path / "adjuntos"
+    adjuntos.mkdir(mode=0o700)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("JAX_ADJUNTOS_DIR", str(adjuntos))
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+
+    llamadas = 0
+    def freno():
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas == 4:
+            raise HTTPException(status_code=423, detail="kill_switch_activo")
+    monkeypatch.setattr(api_documentos, "exigir_freno_suelto", freno)
+
+    async def insertar_spy(*args, **kwargs):
+        pytest.fail("repo.insertar no debe ejecutarse después de activarse el freno")
+    monkeypatch.setattr(api_documentos.repo, "insertar", insertar_spy)
+    response = client.post("/api/chat/upload", headers=entorno.dueno,
+        data={"project_id": str(proyecto.id)},
+        files={"file": ("escaneo.pdf", pdf_con_texto([""]), "application/pdf")})
+
+    assert llamadas == 4
+    assert response.status_code == 423, response.text
+    assert not [path for path in (workspace / "proyectos").rglob("*") if path.is_file()], \
+        "el freno dejó un archivo sin fila"
+    # El camino de error también suelta el cupo de subidas simultáneas.
+    assert cupo_de_subidas.en_uso() == (0, {}), "el 423 dejó el cupo tomado"
+
+
+@pytest.mark.skipif(os.getenv("JAX_CI_NO_DB") == "1", reason="requiere MariaDB desechable de CI")
+def test_cancelar_la_escritura_del_pdf_del_chat_suelta_el_cupo_de_subidas(client, monkeypatch, tmp_path):
+    """Una cancelación (cliente que corta) en plena escritura no puede dejar el cupo tomado: con
+    N subidas así el area de proyectos y el chat quedarian en 429 `subidas_simultaneas` para siempre."""
+    import asyncio
+    from tests.test_proyectos_documentos_api import Entorno
+    from tests.adjuntos_muestras import pdf_con_texto
+    from tests.identidades import _tenant_db_id
+    from api import proyectos_documentos as api_documentos
+    from proyectos_documentos import cupo_de_subidas
+
+    workspace = tmp_path / "workspace"
+    (workspace / "proyectos").mkdir(parents=True)
+    os.chmod(workspace / "proyectos", 0o2770)
+    monkeypatch.setenv("JAX_WORKSPACE_DIR", str(workspace))
+    entorno = Entorno(client)
+    proyecto = entorno.proyecto()
+    usuario = AuthUser(user_id=str(entorno._id("dueno")), tenant_id=str(_tenant_db_id(entorno.tenant)),
+                       role="operator")
+    pdf = tmp_path / "escaneo.pdf"
+    contenido = pdf_con_texto([""])
+    pdf.write_bytes(contenido)
+    assert cupo_de_subidas.en_uso() == (0, {})
+
+    async def escenario():
+        escribiendo = asyncio.Event()
+
+        async def retenida(*args, **kwargs):
+            escribiendo.set()
+            await asyncio.sleep(60)   # la cancelación llega mientras se escribe
+
+        monkeypatch.setattr(api_documentos.almacen, "escribir_streaming", retenida)
+        tarea = asyncio.create_task(api_documentos.encolar_pdf_desde_chat(
+            pdf, nombre="escaneo.pdf", project_id=proyecto.id, user=usuario,
+            bytes_=len(contenido), max_bytes=len(contenido) + 1024))
+        await asyncio.wait_for(escribiendo.wait(), 20)
+        durante = cupo_de_subidas.en_uso()
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        return durante, cupo_de_subidas.en_uso()
+
+    durante, despues = client.portal.call(escenario)
+    assert durante[0] == 1, "la escritura debia tener el cupo tomado"
+    assert despues == (0, {}), "la cancelación dejó el cupo tomado"
