@@ -1119,8 +1119,11 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1389) {
-              console.error("PISO ROTO: se esperaban 1389 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1389 -> 1391 (2026-10-06, feat/c5-solo-ordenes): +2 en AdminSettings.test.jsx
+            //   (semilla false, escritura true como texto e i18n es/en). Medido en el worktree:
+            //   1391/0/1391, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1391) {
+              console.error("PISO ROTO: se esperaban 1391 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3624,7 +3627,9 @@ jobs:
           # 3792 -> 3830 (Hyde fruiz-b1, 2026-10-06, #205 integra último, regla 5): MEDIDO en el runner,
           # run 37442801991/37442806997 sobre 67f127ee: backend-tests-con-db passed=3828 skipped=2; +2 de
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
-          PISO_PASSED = 3830
+          # 3830 -> 3838 (2026-10-06, feat/c5-solo-ordenes): +8 casos puros en ajustes, misiones y semilla
+          # de C5. Los 8 pasaron con JAX_CI_NO_DB=1; no necesitan DB y por eso también suman con DB.
+          PISO_PASSED = 3838
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4707,7 +4712,9 @@ jobs:
       # 2340 -> 2358 (Hyde fruiz-b1, 2026-10-06, #205, regla 5): MEDIDO en el runner sobre 67f127ee,
       # backend-tests-no-db passed=2358 skipped=1472; las 2 pruebas nuevas de 100 caracteres piden `client`
       # (se saltean sin DB), así que no suman aquí.
-      JAX_CI_MIN_PASSED: "2358"
+      # 2358 -> 2366 (2026-10-06, feat/c5-solo-ordenes): suite completa medida sin DB en el worktree,
+      # JAX_CI_NO_DB=1 y JAX_WORKSPACE_DIR temporal: 2366 passed / 1474 skipped.
+      JAX_CI_MIN_PASSED: "2366"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

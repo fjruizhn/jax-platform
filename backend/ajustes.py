@@ -107,7 +107,8 @@ CLAVES = (SESION, MAX_PIPELINES, IDIOMA, NOMBRE, CONFIRMAR_USD, TOPE_DEVOLUCIONE
 # en el arranque si falta la fila y (b) con 15 claves sobre una tabla de ~25 filas el
 # optimizador prefiere recorrer la tabla entera (EXPLAIN: type ALL) y el control
 # `test_explain_de_la_consulta_real_va_por_primary` falla.
-CLAVES_SOLO_ADMINISTRADAS = (C2_EDAD_MAX_S,)
+C5_AUDITOR_NUBE_SOLO_ORDENES = "ejecutor.c5_auditor_nube_solo_ordenes"
+CLAVES_SOLO_ADMINISTRADAS = (C2_EDAD_MAX_S, C5_AUDITOR_NUBE_SOLO_ORDENES)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -207,6 +208,14 @@ class Definicion:
     limites: dict
 
 
+def _booleano_estricto(texto: str) -> bool:
+    if texto == "true":
+        return True
+    if texto == "false":
+        return False
+    raise ValorInvalido(texto)
+
+
 DEFINICIONES: dict[str, Definicion] = {
     SESION: Definicion(_entero(SESION_MIN, SESION_MAX), {"min": SESION_MIN, "max": SESION_MAX}),
     MAX_PIPELINES: Definicion(_entero(1, MAX_PARALLEL_PIPELINES), {"min": 1, "max": MAX_PARALLEL_PIPELINES}),
@@ -219,6 +228,7 @@ DEFINICIONES: dict[str, Definicion] = {
                                   {"min": 0, "max": TOPE_DEVOLUCIONES_MAX}),
     C2_EDAD_MAX_S: Definicion(_entero(C2_EDAD_MAX_S_MIN, C2_EDAD_MAX_S_MAX),
                               {"min": C2_EDAD_MAX_S_MIN, "max": C2_EDAD_MAX_S_MAX}),
+    C5_AUDITOR_NUBE_SOLO_ORDENES: Definicion(_booleano_estricto, {"opciones": ["true", "false"]}),
     DOC_MAX_BYTES_ARCHIVO: Definicion(_entero(MIB, 2 * GIB), {"min": MIB, "max": 2 * GIB}),
     DOC_MAX_ARCHIVOS_LOTE: Definicion(_entero(1, 1000), {"min": 1, "max": 1000}),
     DOC_MAX_BYTES_LOTE: Definicion(_entero(MIB, 10 * GIB), {"min": MIB, "max": 10 * GIB}),

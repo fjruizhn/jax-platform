@@ -3621,6 +3621,9 @@ _EJECUTOR_CONFIG_C5 = (
     # `eleccion_c5.config_desde_filas` -- sin la fila, el Ejecutor no arranca
     # (fail-closed), por eso tiene que estar acá y no sólo en el repo jax.
     ("ejecutor.c5_auditor_admite_mismo_proveedor", "false"),
+    # Excepción limitada a auditoría de órdenes: C5 impide proyectar reclamos/datos del
+    # cliente. Nace cerrada; la plataforma valida binding cloud y distinctness.
+    ("ejecutor.c5_auditor_nube_solo_ordenes", "false"),
 )
 
 

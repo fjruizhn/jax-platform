@@ -51,6 +51,16 @@ def test_idioma_solo_admite_es_y_en():
             idioma(texto)
 
 
+def test_c5_solo_ordenes_es_booleano_estricto_y_solo_administrado():
+    clave = ajustes.C5_AUDITOR_NUBE_SOLO_ORDENES
+    assert clave in ajustes.CLAVES_SOLO_ADMINISTRADAS and clave not in ajustes.CLAVES
+    interpretar = ajustes.DEFINICIONES[clave].interpretar
+    assert interpretar("true") is True and interpretar("false") is False
+    for texto in ("TRUE", "True", "1", "yes", "", " false"):
+        with pytest.raises(ajustes.ValorInvalido):
+            interpretar(texto)
+
+
 def test_nombre_del_sistema_sin_espacios_alrededor_ni_control_ni_largo_de_mas():
     nombre = ajustes.DEFINICIONES[ajustes.NOMBRE].interpretar
     assert nombre("Axioma") == "Axioma"
@@ -148,6 +158,7 @@ def test_limites_publicos_y_tope_espejado_de_jacobs():
         "jacobs.tope_devoluciones": {"min": 0, "max": 5},
         # Edad maxima del respaldo para C2 (1 h a 7 dias): la lee el repo jax, no este servicio.
         "ejecutor.c2_edad_max_s": {"min": 3600, "max": 604800},
+        "ejecutor.c5_auditor_nube_solo_ordenes": {"opciones": ["true", "false"]},
         "system_name": {"max_largo": 60},
         "pipeline_confirmar_usd": {"min": "0", "max": "999999.99", "decimales": 2},
         # Topes de documentos de proyecto (E2a T5): los valores del spec de Fernando

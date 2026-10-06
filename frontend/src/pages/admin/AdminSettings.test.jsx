@@ -383,3 +383,31 @@ describe('AdminSettings -- edad máxima del respaldo de C2 (2026-10-06)', () => 
     expect(en.adminSettingsC2EdadMaxAyuda).toContain('108000')
   })
 })
+
+describe('AdminSettings -- auditor C5 nube solo órdenes', () => {
+  const CLAVE = 'ejecutor.c5_auditor_nube_solo_ordenes'
+  const CON_C5 = { data: { config: [
+    { key: 'system_name', value: 'Axioma' }, { key: CLAVE, value: 'false' },
+  ], limites: LIMITES } }
+
+  it('muestra apagada la semilla false y guarda true como string', async () => {
+    api.get.mockResolvedValue(CON_C5)
+    api.put.mockResolvedValue({ data: { ok: true } })
+    renderSettings()
+    const campo = await screen.findByRole('checkbox', { name: es.adminSettingsC5SoloOrdenes })
+    expect(campo).not.toBeChecked()
+    fireEvent.click(campo)
+    expect(campo).toBeChecked()
+    await guardar()
+    await waitFor(() => expect(api.put).toHaveBeenCalled())
+    expect(api.put.mock.calls[0][1]).toContainEqual({ key: CLAVE, value: 'true' })
+  })
+
+  it('la etiqueta y la ayuda están traducidas para los dos idiomas', () => {
+    for (const key of ['adminSettingsC5SoloOrdenes', 'adminSettingsC5SoloOrdenesAyuda']) {
+      expect(es[key], `es.${key}`).toBeTruthy()
+      expect(en[key], `en.${key}`).toBeTruthy()
+      expect(es[key]).not.toBe(en[key])
+    }
+  })
+})

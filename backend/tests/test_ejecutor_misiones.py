@@ -271,6 +271,42 @@ def test_compuerta_ilegible_es_cerrada():
     assert misiones.compuerta_abierta("true") is True
 
 
+@pytest.mark.parametrize("flag,auditor,brain,admite_mismo,esperada", [
+    ("true", ("nube", False), ("cerebro", False), "false", True),
+    ("true", ("local-mal-bindeado", True), ("cerebro", False), "false", False),
+    ("true", ("mismo", False), ("mismo", False), "false", False),
+    ("true", ("mismo", False), ("mismo", False), "true", True),
+    ("TRUE", ("nube", False), ("cerebro", False), "false", False),
+    ("false", ("nube", False), ("cerebro", False), "false", False),
+])
+def test_modo_solo_ordenes_solo_habilita_auditor_de_nube_distinto(monkeypatch, flag, auditor, brain,
+                                                                  admite_mismo, esperada):
+    """La elegibilidad de plataforma refleja el resolver C5: flag estricto, proveedor cloud real y distinctness."""
+    valores = {
+        misiones.CLAVE_COMPUERTA: "false",
+        "ejecutor.c5_auditor_nube_solo_ordenes": flag,
+        "ejecutor.c5_auditor_admite_mismo_proveedor": admite_mismo,
+    }
+    proveedores = {"ejecutor.auditor_faceta": auditor, "ejecutor.cerebro_faceta": brain}
+
+    async def consultar(consulta, args=(), una=False):
+        if consulta == misiones.SQL_MAQUINAS:
+            return [("t-clientes", "clientes", True, True)]
+        if consulta == misiones.SQL_COMPUERTA:
+            return (valores.get(args[0]),)
+        if consulta == misiones.SQL_PROVEEDOR_FACETA_CONFIGURADA:
+            return proveedores.get(args[0])
+        raise AssertionError(f"consulta inesperada: {consulta}")
+
+    async def local_disponible():
+        return False
+
+    monkeypatch.setattr(misiones, "_consultar", consultar)
+    monkeypatch.setattr(misiones, "_auditor_local_disponible", local_disponible)
+    resultado = asyncio.run(misiones.maquinas())[0]
+    assert resultado["elegible"] is esperada
+
+
 # --- crear: validaciones antes de lanzar nada -----------------------------------------------
 
 def _misiones_de(client, user_id):
