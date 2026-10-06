@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 import credencial_las_manos
+from catalogo_modelos_ejecutor import Desenlace
 from proyectos_documentos import despachador
 from proyectos_documentos import repositorio as repo
 from tests.identidades import cabeceras, sql, uid
@@ -155,6 +156,8 @@ def e(client, workspace, monkeypatch):
     despachador._aviso_freno_incidente_entregado = False
     despachador._fallos_aviso_freno_incertidumbre = 0
     despachador._ultimo_fallo_aviso_freno_incertidumbre = None
+    despachador._ultima_actividad_freno_incertidumbre = None
+    despachador._pausa_previa_al_incidente = None
     entorno = Entorno(client, workspace, monkeypatch)
     yield entorno
     despachador._en_incertidumbre.clear()
@@ -165,6 +168,8 @@ def e(client, workspace, monkeypatch):
     despachador._aviso_freno_incidente_entregado = False
     despachador._fallos_aviso_freno_incertidumbre = 0
     despachador._ultimo_fallo_aviso_freno_incertidumbre = None
+    despachador._ultima_actividad_freno_incertidumbre = None
+    despachador._pausa_previa_al_incidente = None
     for pid in entorno.proyectos:
         client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (pid,))
 
@@ -957,6 +962,7 @@ def test_freno_de_incertidumbre_encola_un_aviso_sin_esperar_telegram(e, monkeypa
         started.set()
         await asyncio.to_thread(release.wait)
         finished.set()
+        return Desenlace.ENTREGADO
 
     monkeypatch.setattr(despachador.ajustes, "valor", _ajuste_con_enfriamiento(3600))
     monkeypatch.setattr(despachador, "_enviar_aviso_freno_incertidumbre", enviar)
@@ -994,7 +1000,7 @@ def test_freno_de_incertidumbre_rearma_en_cero_y_respeta_enfriamiento(e, monkeyp
 
     async def enviar(cantidad, umbral):
         envios.append((cantidad, umbral))
-        return True
+        return Desenlace.ENTREGADO
 
     reloj = [1000.0]
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
@@ -1028,7 +1034,7 @@ async def test_freno_histeresis_no_rearma_al_bajar_uno_bajo_umbral(monkeypatch):
 
     async def enviar(cantidad, umbral):
         envios.append((cantidad, umbral))
-        return True
+        return Desenlace.ENTREGADO
 
     reloj = [1000.0]
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
@@ -1040,6 +1046,8 @@ async def test_freno_histeresis_no_rearma_al_bajar_uno_bajo_umbral(monkeypatch):
     monkeypatch.setattr(despachador, "_aviso_freno_incidente_entregado", False)
     monkeypatch.setattr(despachador, "_fallos_aviso_freno_incertidumbre", 0)
     monkeypatch.setattr(despachador, "_ultimo_fallo_aviso_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_ultima_actividad_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_pausa_previa_al_incidente", None)
     monkeypatch.setattr(despachador, "_pasada_de_despacho", _pasada_vacia)
     try:
         despachador._en_incertidumbre.clear()
@@ -1082,8 +1090,8 @@ async def test_freno_reintenta_lectura_y_envio_y_avisa_al_vencer_enfriamiento(mo
         envios.append((cantidad, umbral))
         if entregas_fallidas:
             entregas_fallidas.pop()
-            return False
-        return True
+            return Desenlace.FALLO_CIERTO
+        return Desenlace.ENTREGADO
 
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
     monkeypatch.setattr(despachador.ajustes, "valor", leer)
@@ -1094,6 +1102,8 @@ async def test_freno_reintenta_lectura_y_envio_y_avisa_al_vencer_enfriamiento(mo
     monkeypatch.setattr(despachador, "_aviso_freno_incidente_entregado", False)
     monkeypatch.setattr(despachador, "_fallos_aviso_freno_incertidumbre", 0)
     monkeypatch.setattr(despachador, "_ultimo_fallo_aviso_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_ultima_actividad_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_pausa_previa_al_incidente", None)
     monkeypatch.setattr(despachador, "_pasada_de_despacho", _pasada_vacia)
     try:
         despachador._en_incertidumbre.clear()
@@ -1106,7 +1116,7 @@ async def test_freno_reintenta_lectura_y_envio_y_avisa_al_vencer_enfriamiento(mo
             await despachador._despachar(None)  # reintento tras la espera
             await _esperar_tareas_de_aviso(despachador)
         assert len(envios) == 2
-        assert "no se pudo leer el enfriamiento" in caplog.text
+        assert "no se pudo leer el ajuste proyectos.documentos.freno_incertidumbre_enfriamiento_s" in caplog.text
 
         # Nuevo incidente dentro del enfriamiento; mientras siga activo, un ciclo
         # posterior al vencimiento debe entregar un aviso para este incidente.
@@ -1133,7 +1143,7 @@ async def test_envio_que_falla_siempre_se_reintenta_con_espera_creciente(monkeyp
 
     async def enviar(cantidad, umbral):
         envios.append(reloj[0])
-        return False
+        return Desenlace.FALLO_CIERTO
 
     monkeypatch.setattr(despachador, "_reloj", lambda: reloj[0])
     monkeypatch.setattr(despachador, "_enviar_aviso_freno_incertidumbre", enviar)
@@ -1144,6 +1154,8 @@ async def test_envio_que_falla_siempre_se_reintenta_con_espera_creciente(monkeyp
     monkeypatch.setattr(despachador, "_aviso_freno_incidente_entregado", False)
     monkeypatch.setattr(despachador, "_fallos_aviso_freno_incertidumbre", 0)
     monkeypatch.setattr(despachador, "_ultimo_fallo_aviso_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_ultima_actividad_freno_incertidumbre", None)
+    monkeypatch.setattr(despachador, "_pausa_previa_al_incidente", None)
     monkeypatch.setattr(despachador, "_pasada_de_despacho", _pasada_vacia)
     try:
         despachador._en_incertidumbre.clear()
@@ -1195,9 +1207,9 @@ async def test_aviso_freno_usa_emisor_telegram_compartido_y_registra_fallo(monke
 
     async def enviar(mensaje):
         llamadas.append(mensaje)
-        return False
+        return Desenlace.FALLO_CIERTO
 
-    monkeypatch.setattr(despachador, "_enviar_telegram", enviar, raising=False)
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", enviar, raising=False)
     with caplog.at_level(logging.ERROR):
         await despachador._enviar_aviso_freno_incertidumbre(100, 100)
 

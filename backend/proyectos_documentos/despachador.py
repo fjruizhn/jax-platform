@@ -64,7 +64,7 @@ from pathlib import Path
 import httpx
 
 import ajustes
-from catalogo_modelos_ejecutor import _enviar_telegram
+from catalogo_modelos_ejecutor import Desenlace, _enviar_telegram_con_desenlace
 from credencial_las_manos import encabezados_procesamiento
 from db.connection import get_pool
 from http_client import get_http_client
@@ -157,6 +157,12 @@ _aviso_freno_incidente_entregado = False
 # Fallos seguidos del envio y cuando ocurrio el ultimo (segun `_reloj`): fijan la espera antes del reintento.
 _fallos_aviso_freno_incertidumbre = 0
 _ultimo_fallo_aviso_freno_incertidumbre: float | None = None
+# Ultimo ciclo con el freno activo, y cuanto duro la pausa entre el incidente anterior y el actual (fijada al
+# empezar el incidente): el contador de fallos solo se reinicia tras una entrega confirmada o si esa pausa
+# alcanzo un enfriamiento completo. Un incidente que termina y vuelve a empezar DENTRO del enfriamiento (100
+# filas que vencen juntas cada pocos minutos) es el mismo problema: no reinicia la espera.
+_ultima_actividad_freno_incertidumbre: float | None = None
+_pausa_previa_al_incidente: float | None = None
 
 
 # ---------------------------------------------------------------- borrado de entrada/
@@ -495,6 +501,7 @@ async def _despachar(pool) -> None:
     mismo ciclo (MAJOR-N2). Se repite mientras una pasada frene una clase nueva: como mucho una pasada por clase."""
     global _freno_incertidumbre_activo, _supresion_freno_incertidumbre_registrada
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
+    global _ultima_actividad_freno_incertidumbre, _pausa_previa_al_incidente
     frenadas: set[str] = set()
     por_trabajo = await ajustes.valor(ajustes.DOC_RUTAS_POR_TRABAJO)
     ahora = _reloj()
@@ -509,6 +516,7 @@ async def _despachar(pool) -> None:
         _freno_incertidumbre_activo = False
         _supresion_freno_incertidumbre_registrada = False
         _aviso_freno_incidente_entregado = False
+        # El contador de fallos NO se reinicia aca: ver `_pausa_previa_al_incidente`.
     if freno_activo:
         logger.warning("proyectos_documentos: %s fila(s) en incertidumbre (tope %s = 2 x rutas_por_trabajo): este "
                        "ciclo no despacha nada hasta que venzan; revisar si LAS MANOS corta las conexiones",
@@ -516,17 +524,28 @@ async def _despachar(pool) -> None:
         if not _freno_incertidumbre_activo:
             _freno_incertidumbre_activo = True
             _aviso_freno_incidente_entregado = False
+            _pausa_previa_al_incidente = (None if _ultima_actividad_freno_incertidumbre is None
+                                          else ahora - _ultima_actividad_freno_incertidumbre)
+        _ultima_actividad_freno_incertidumbre = ahora
         if _aviso_freno_incertidumbre_pendiente:
             return
         if _aviso_freno_incidente_entregado:
             return
+        clave = ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S
         try:
-            enfriamiento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
-            reintento = await ajustes.valor(ajustes.DOC_FRENO_INCERTIDUMBRE_REINTENTO_S)
+            enfriamiento = await ajustes.valor(clave)
+            clave = ajustes.DOC_FRENO_INCERTIDUMBRE_REINTENTO_S
+            reintento = await ajustes.valor(clave)
         except Exception as exc:  # fail-soft: config ilegible suprime solo el aviso; el freno cerrado sigue activo
-            logger.error("proyectos_documentos: no se pudo leer el enfriamiento del aviso (%s); "
-                         "se reintentará en el próximo ciclo", type(exc).__name__)
+            # Nombra la clave que de verdad fallo (AjusteIlegible la trae; otro error, la que se estaba leyendo).
+            clave_fallida = exc.clave if isinstance(exc, ajustes.AjusteIlegible) else clave
+            logger.error("proyectos_documentos: no se pudo leer el ajuste %s del aviso de incertidumbre (%s); "
+                         "se reintentará en el próximo ciclo", clave_fallida, type(exc).__name__)
             return
+        if (_fallos_aviso_freno_incertidumbre and _pausa_previa_al_incidente is not None
+                and _pausa_previa_al_incidente >= enfriamiento):
+            _fallos_aviso_freno_incertidumbre = 0  # paso un enfriamiento completo sin incidente
+        _pausa_previa_al_incidente = None  # se evalua una vez por incidente, no en cada ciclo
         if _fallos_aviso_freno_incertidumbre and _ultimo_fallo_aviso_freno_incertidumbre is not None:
             # Tras un fallo (entrega incierta) se espera 1x, 2x, 4x... el minimo, con tope en el enfriamiento
             # (o en el minimo si el enfriamiento es menor): sin esto se reenvia en cada ciclo.
@@ -567,32 +586,37 @@ async def _entregar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Non
     global _aviso_freno_incidente_entregado, _fallos_aviso_freno_incertidumbre
     global _ultimo_fallo_aviso_freno_incertidumbre
     try:
-        if await _enviar_aviso_freno_incertidumbre(cantidad, umbral):
-            _ultimo_aviso_freno_incertidumbre = _reloj()
-            _aviso_freno_incidente_entregado = True
-            _fallos_aviso_freno_incertidumbre = 0
-        else:
+        desenlace = await _enviar_aviso_freno_incertidumbre(cantidad, umbral)
+        if desenlace is Desenlace.FALLO_CIERTO:
             _fallos_aviso_freno_incertidumbre += 1
             _ultimo_fallo_aviso_freno_incertidumbre = _reloj()
+        else:
+            # ENTREGADO, o DESCONOCIDO (ReadTimeout/corte despues de enviar): el aviso cuenta como entregado para
+            # este incidente y NO se reintenta -- un duplicado es peor que perderlo, y el siguiente incidente
+            # (pasado el enfriamiento) vuelve a avisar. Solo la entrega CONFIRMADA reinicia el contador.
+            _ultimo_aviso_freno_incertidumbre = _reloj()
+            _aviso_freno_incidente_entregado = True
+            if desenlace is Desenlace.ENTREGADO:
+                _fallos_aviso_freno_incertidumbre = 0
     finally:
         _aviso_freno_incertidumbre_pendiente = False
 
 
-async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> bool:
+async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Desenlace:
     """Envío best-effort por el canal compartido; nunca manipula ni registra credenciales."""
     mensaje = ("⚠️ JAX: freno de incertidumbre activo\n"
                f"El despachador de documentos dejó de enviar trabajos: {cantidad} filas tienen "
                f"desenlace incierto (umbral {umbral}). Se reanudará al vencer la ventana de incertidumbre. "
                "Revisar si LAS MANOS está cortando las conexiones.")
     try:
-        entregado = await _enviar_telegram(mensaje)
+        desenlace = await _enviar_telegram_con_desenlace(mensaje)
     except Exception as exc:  # fail-soft: un aviso ausente o roto no puede frenar el despachador
         logger.error("proyectos_documentos: falló el envío del aviso de incertidumbre (%s)", type(exc).__name__)
-        return False
-    if not entregado:
-        logger.error("proyectos_documentos: Telegram no confirmó la entrega del aviso de incertidumbre; "
-                     "revisar credenciales y el motivo registrado por catalogo_modelos_ejecutor")
-    return bool(entregado)
+        return Desenlace.FALLO_CIERTO
+    if desenlace is not Desenlace.ENTREGADO:
+        logger.error("proyectos_documentos: Telegram no confirmó la entrega del aviso de incertidumbre (%s); "
+                     "revisar credenciales y el motivo registrado por catalogo_modelos_ejecutor", desenlace.value)
+    return desenlace
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set) -> str | None:
