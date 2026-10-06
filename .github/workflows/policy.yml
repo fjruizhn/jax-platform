@@ -1439,6 +1439,11 @@ jobs:
         # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
 
+      - name: Medir E3 con 20 usuarios y escaneo en proceso
+        # Corre sobre MariaDB efímera de este job. El test imprime p95 medido;
+        # el backend de LAS MANOS se simula reteniendo el estado 'running'.
+        run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
+
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
         run: |
