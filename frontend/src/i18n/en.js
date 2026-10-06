@@ -1150,6 +1150,11 @@ export default {
     rotuloContrato: 'Contract',
     afirmaciones: 'Claims',
     sinAfirmaciones: 'This turn delivered no claims.',
+    auditoriaC5: {
+      NO_AUDITADA_SOLO_ORDENES: 'Claims not audited by C5 (orders only)',
+      AUDITADA_POR_C5: 'Claims audited by C5',
+      NO_AUDITADA_ILEGIBLE: 'Claims not audited because C5 failed',
+    },
     rotuloProposito: 'Purpose',
     rotuloDato: 'Value',
     rotuloMaquina: 'Machine',

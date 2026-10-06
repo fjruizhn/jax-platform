@@ -256,6 +256,7 @@ def _turno(fila) -> dict:
             "iniciado_at": iso_utc(iniciado), "terminado_at": iso_utc(terminado),
             "rechazo": r.get("rechazo", []), "afirmaciones": r.get("afirmaciones", []),
             "descartadas": r.get("descartadas", []), "crudas": r.get("crudas", []),
+            "auditoria_afirmaciones": r.get("auditoria_afirmaciones"),
             "verificacion": r.get("verificacion", {})}
 
 

@@ -1214,6 +1214,11 @@ export default {
     rotuloContrato: 'Contrato',
     afirmaciones: 'Afirmaciones',
     sinAfirmaciones: 'Este turno no entregó afirmaciones.',
+    auditoriaC5: {
+      NO_AUDITADA_SOLO_ORDENES: 'Afirmaciones no auditadas por C5 (solo órdenes)',
+      AUDITADA_POR_C5: 'Afirmaciones auditadas por C5',
+      NO_AUDITADA_ILEGIBLE: 'Afirmaciones no auditadas por fallo de C5',
+    },
     rotuloProposito: 'Propósito',
     rotuloDato: 'Dato',
     rotuloMaquina: 'Máquina',

@@ -33,6 +33,11 @@ function Turno({ turno }) {
         <span className="font-semibold text-texto-fuerte">{tx.turno(turno.n)}</span>
         <span className="px-1.5 py-0.5 rounded border border-borde text-texto">{traducir(tx.estadosTurno, turno.estado)}</span>
         {turno.codigo && <span className="text-peligro">{traducir(tx.codigosTurno, turno.codigo)}</span>}
+        {turno.auditoria_afirmaciones && tx.auditoriaC5?.[turno.auditoria_afirmaciones] && (
+          <span data-auditoria-c5 className="px-1.5 py-0.5 rounded border border-aviso-borde bg-aviso-fondo text-aviso">
+            {tx.auditoriaC5[turno.auditoria_afirmaciones]}
+          </span>
+        )}
         <span className="text-texto-suave">{tx.iniciado}: {fecha(turno.iniciado_at)}</span>
         <span className="text-texto-suave">{tx.terminado}: {fecha(turno.terminado_at)}</span>
       </header>

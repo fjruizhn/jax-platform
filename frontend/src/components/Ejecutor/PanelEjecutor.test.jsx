@@ -372,6 +372,12 @@ describe('Ejecutor -- misión de código (Task 11)', () => {
     expect(screen.getByText('fjruizhn/jax-platform')).toBeInTheDocument()
   })
 
+  it('DetalleMision muestra el estado nuevo de afirmaciones no auditadas por C5', async () => {
+    await pintarConMision(mision('completada', [turno({ auditoria_afirmaciones: 'NO_AUDITADA_SOLO_ORDENES' })]))
+    expect(screen.getByText(tx.auditoriaC5.NO_AUDITADA_SOLO_ORDENES)).toBeInTheDocument()
+    for (const dic of [es, en]) expect(dic.ejecutor.auditoriaC5.NO_AUDITADA_SOLO_ORDENES).toBeTruthy()
+  })
+
   it('la bitácora traduce las violaciones de entrega_codigo por regla', async () => {
     await pintarConMision(mision('rechazada', [turno({ estado: 'rechazado' })], { tipo: 'codigo' }), [
       { id: 1, turno: 1, evento: 'entrega_codigo', datos: { violaciones: [{ regla: 'secretos', ruta: 'ops/x.sh', detalle: 'token en claro' }] }, at: '2026-09-28T10:00:00Z' },

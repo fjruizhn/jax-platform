@@ -26,6 +26,12 @@ AFIRMACION = {"maquina": "t-sp2-vm", "comando": "ssh -tt -p 58291 axioma@192.0.2
               "linea": "Mem:           1.9Gi       180Mi", "dato": "1.9Gi", "proposito": "memoria total"}
 
 
+def test_turno_publica_estado_de_auditoria_de_afirmaciones_c5():
+    datos = {"auditoria_afirmaciones": "NO_AUDITADA_SOLO_ORDENES"}
+    fila = (1, "ver memoria", "completado", None, json.dumps(datos), None, None, None)
+    assert misiones._turno(fila)["auditoria_afirmaciones"] == "NO_AUDITADA_SOLO_ORDENES"
+
+
 # --- el runner falso ------------------------------------------------------------------------
 
 RUNNER_FALSO = textwrap.dedent('''

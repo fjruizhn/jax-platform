@@ -1122,8 +1122,11 @@ jobs:
             // 1389 -> 1391 (2026-10-06, feat/c5-solo-ordenes): +2 en AdminSettings.test.jsx
             //   (semilla false, escritura true como texto e i18n es/en). Medido en el worktree:
             //   1391/0/1391, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1391) {
-              console.error("PISO ROTO: se esperaban 1391 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1391 -> 1392 (2026-10-06, ronda 2 C5): +1 en PanelEjecutor.test.jsx para que
+            //   NO_AUDITADA_SOLO_ORDENES llegue a la pantalla y tenga texto es/en. Medido:
+            //   1392/0/1392, 113 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1392) {
+              console.error("PISO ROTO: se esperaban 1392 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3629,7 +3632,9 @@ jobs:
           # test_una_clave_de_exactamente_100_caracteres_se_acepta (piden `client`), que esta CI confirma.
           # 3830 -> 3838 (2026-10-06, feat/c5-solo-ordenes): +8 casos puros en ajustes, misiones y semilla
           # de C5. Los 8 pasaron con JAX_CI_NO_DB=1; no necesitan DB y por eso también suman con DB.
-          PISO_PASSED = 3838
+          # 3838 -> 3839 (2026-10-06, ronda 2 C5): +1 prueba pura de _turno, propagación del estado
+          # de auditoría hacia la interfaz. Medido en la suite sin DB: 2367 passed / 1477 skipped.
+          PISO_PASSED = 3839
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4714,7 +4719,9 @@ jobs:
       # (se saltean sin DB), así que no suman aquí.
       # 2358 -> 2366 (2026-10-06, feat/c5-solo-ordenes): suite completa medida sin DB en el worktree,
       # JAX_CI_NO_DB=1 y JAX_WORKSPACE_DIR temporal: 2366 passed / 1474 skipped.
-      JAX_CI_MIN_PASSED: "2366"
+      # 2366 -> 2367 (2026-10-06, ronda 2 C5): +1 prueba de estado NO_AUDITADA_SOLO_ORDENES en _turno.
+      # Medición completa local, JAX_CI_NO_DB=1: 2367 passed / 1477 skipped.
+      JAX_CI_MIN_PASSED: "2367"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -5296,3 +5303,38 @@ jobs:
         with:
           name: f2e-sr3-processing-exact-pair-evidence
           path: f2e-sr3-processing-exact-pair-evidence.json
+
+  # Ordered rollout: #209 seeds the closed flag before JAX #363 consumes it.
+  # This exact-pair pin tests the JAX head that emits the marker the UI renders.
+  c5-orders-only-exact-pair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'master' && github.head_ref == 'feat/c5-solo-ordenes'
+    runs-on: ubuntu-latest
+    env:
+      JAX_C5_EXPECTED_SHA: 2c39dad6751e33140cc53613f3c625e5889bbc29
+      JAX_CI_NO_DB: "1"
+      JAX_REPO_PATH: ${{ github.workspace }}/jax
+      JAX_CONFIG_PATH: ${{ github.workspace }}/jax/config/config.toml
+      JAX_WORKSPACE_DIR: ${{ runner.temp }}/jax-workspace
+      JAX_JWT_SECRET: c5-orders-only-exact-pair-ci
+      JAX_OLLAMA_URL: http://127.0.0.1:11434
+      PYTHONPATH: ${{ github.workspace }}/jax:${{ github.workspace }}/jax/las_manos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/checkout@v4
+        with:
+          repository: fjruizhn/Jax
+          ref: 2c39dad6751e33140cc53613f3c625e5889bbc29
+          path: jax
+      - name: Require exact C5 JAX head
+        run: test "$(git -C jax rev-parse HEAD)" = "$JAX_C5_EXPECTED_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend test dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -c constraints.txt pytest pytest-asyncio
+      - name: Verify the exact JAX-to-platform audit marker pair
+        working-directory: backend
+        run: python -m pytest -q -p no:warnings tests/test_ejecutor_misiones.py::test_turno_publica_estado_de_auditoria_de_afirmaciones_c5
