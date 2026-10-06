@@ -131,7 +131,7 @@ class Desenlace(Enum):
     sabemos si llego" (un ReadTimeout), y quien decide reintentar necesita distinguirlos."""
     ENTREGADO = "entregado"          # Telegram confirmo (200 + ok)
     FALLO_CIERTO = "fallo_cierto"    # no llego: sin credenciales, conexion rechazada, o respuesta HTTP de error
-    DESCONOCIDO = "desconocido"      # pudo haber llegado: ReadTimeout, corte despues de enviar, cuerpo ilegible
+    DESCONOCIDO = "desconocido"      # pudo haber llegado: ReadTimeout, corte despues de enviar, 504/524, 200 ilegible
 
 #: MAJOR-2(c) (cuarta auditoría adversarial, 2026-09-28): un candado ocupado
 #: UNA vez no es alarmante (alguien más -- un click manual, u otro intento
@@ -298,11 +298,23 @@ def _mensaje_fallo_critico(motivo: str) -> str:
 
 
 def _fallo_antes_de_enviar(e: Exception) -> bool:
-    """True si la excepcion prueba que NADA salio hacia Telegram (no se pudo conectar). `httpx` se importa
-    aca adentro, como `http_client`: un .venv roto se reporta como fallo del envio, no tumba el modulo."""
+    """True si la excepcion prueba que NADA procesable salio hacia Telegram: no se pudo conectar (ConnectError,
+    ConnectTimeout, PoolTimeout, conexion rechazada), la peticion no llego a armarse o a salir (ProxyError,
+    UnsupportedProtocol, LocalProtocolError, RuntimeError de un cliente cerrado) o se corto la ESCRITURA
+    (WriteError, WriteTimeout: un cuerpo incompleto no lo procesa Telegram). Todo lo demas (ReadTimeout, ReadError,
+    RemoteProtocolError, errores desconocidos) pudo haber entregado el mensaje. `httpx` se importa aca adentro,
+    como `http_client`: un .venv roto se reporta como fallo del envio, no tumba el modulo."""
     import httpx
 
-    return isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError))
+    return isinstance(e, (
+        httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError,
+        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError, RuntimeError,
+        httpx.WriteError, httpx.WriteTimeout,
+    ))
+
+
+# Un 504/524 de gateway equivale a un ReadTimeout: el proxy se rindio esperando a Telegram, que pudo haber entregado.
+_STATUS_DE_GATEWAY_DESCONOCIDO = frozenset({504, 524})
 
 
 async def _enviar_telegram_con_desenlace(mensaje: str) -> Desenlace:
@@ -323,7 +335,7 @@ async def _enviar_telegram_con_desenlace(mensaje: str) -> Desenlace:
     Devuelve `Desenlace.ENTREGADO` SÓLO si Telegram confirmó la entrega (200 + body['ok']) --
     nunca "se intentó mandar". `FALLO_CIERTO` = no llegó (sin credenciales, conexión rechazada antes de
     enviar, respuesta HTTP de error o `ok` falso); `DESCONOCIDO` = pudo haber llegado (ReadTimeout, corte
-    después de enviar, 200 con cuerpo ilegible): reintentar duplicaría el aviso. `_enviar_telegram` es el
+    después de enviar, 504/524 de gateway, 200 con cuerpo ilegible): reintentar duplicaría el aviso. `_enviar_telegram` es el
     envoltorio booleano de siempre para quien solo necesita "¿confirmó?". `_avisar()` depende de este valor real para
     decidir si el dedupe avanza: antes se marcaba "avisado" aunque el envío
     fallara, y un Telegram caído dejaba el catálogo roto en silencio otras
@@ -381,13 +393,20 @@ async def _enviar_telegram_con_desenlace(mensaje: str) -> Desenlace:
             return Desenlace.FALLO_CIERTO
         return Desenlace.DESCONOCIDO
 
+    if resp.status_code in _STATUS_DE_GATEWAY_DESCONOCIDO:
+        logger.warning(
+            f"catalogo_modelos_ejecutor: Telegram no respondio a tiempo (gateway, status={resp.status_code})"
+        )
+        return Desenlace.DESCONOCIDO
+
     try:
         cuerpo = resp.json()
     except Exception:  # fail-soft: una respuesta no-JSON tampoco puede tumbar el job
         logger.warning(
             f"catalogo_modelos_ejecutor: Telegram respondió algo no-JSON, status={resp.status_code}"
         )
-        # 200 con cuerpo ilegible: Telegram aceptó la peticion y no sabemos si la entrego.
+        # 200 con cuerpo ilegible: Telegram aceptó la peticion y no sabemos si la entrego (un 200 nunca es fallo
+        # cierto); cualquier otro status con cuerpo no-JSON (p. ej. el HTML de un proxy en un 500) si lo es.
         return Desenlace.DESCONOCIDO if resp.status_code == 200 else Desenlace.FALLO_CIERTO
 
     # `resp.json()` puede parsear bien y devolver algo que NO es un objeto
