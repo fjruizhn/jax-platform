@@ -506,6 +506,19 @@ def test_el_invoke_facet_real_despacha_a_el_juez_fuera_de_personalities(monkeypa
         return None
     monkeypatch.setattr(facet_canary.misiones, "turno_en_curso", sin_mision)
 
+    # El registro de uso de la sonda (request_type 'canario', PR 8 del diseno
+    # del tablero de consumo) tiene sus propios tests en
+    # tests/test_facet_canary_uso.py, con DB. Este prueba el DESPACHO: sin
+    # esto, el record_usage real pide pool y el test pasaria a necesitar DB
+    # (skip en el job sin DB, y una fila 'canario' sin limpiar en el con DB).
+    async def sin_registro_de_uso(*args, **kwargs):
+        return None
+    monkeypatch.setattr(facet_canary, "record_usage", sin_registro_de_uso)
+
+    async def sin_precio(*args, **kwargs):
+        return None  # calcular_costo tambien pediria pool (el precio sale de la base)
+    monkeypatch.setattr(facet_canary, "calcular_costo", sin_precio)
+
     out = asyncio.run(facet_canary.probe_facet(
         "el_juez", _config(), facet_canary.SOURCE_CANARY_PERIODIC))
 

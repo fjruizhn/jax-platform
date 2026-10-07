@@ -1142,8 +1142,14 @@ jobs:
             // REMEZCLA con origin/master 39b3ef2 (2026-10-06, regla 5): master trae #203 (+4 en AdminSettings.test.jsx,
             //   piso del runner de master 1393). Base del runner de master 1393 + delta de E3 +21 = 1414.
             //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1414) {
-              console.error("PISO ROTO: se esperaban 1414 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1414 -> 1417 (GLM g1, ronda 2 de #212, 2026-10-07): +3 en AdminCosts.test.jsx (columna Tipo con el
+            //   request_type traducido: es/en, canario, tipo desconocido y ausente). Vistas en rojo contra 14af0d6.
+            //   MEDIDO local con `npx vitest run` sobre la rama: 1417/0/1417, 113 archivos. A confirmar en el runner.
+            // 1417 -> 1419 (GLM g1, ronda 3 de #212, 2026-10-07): +2 en AdminCosts.test.jsx (el titulo del grafico por
+            //   faceta aclara que excluye las sondas del canario, es/en). Vistas en rojo contra f8def07. MEDIDO local
+            //   con `npx vitest run` sobre la rama: 1419/0/1419, 113 archivos. A confirmar en el runner.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1419) {
+              console.error("PISO ROTO: se esperaban 1419 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3800,7 +3806,38 @@ jobs:
           #   se corrige (misma cuenta). Base del runner 3934 + delta local +53 (master 6f5094b local 3932 -> rama 3985, mismo comando,
           #   MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan
           #   en los dos por el entorno local). Sin DB no suma (usan `client`). El runner confirma el absoluto.
-          PISO_PASSED = 3987
+          # 3987 -> 3991 (GLM g1, 2026-10-07, PR 8 del diseno del tablero de consumo: el canario registra
+          #   su uso): +4 con DB (tests/test_facet_canary_uso.py: 3 puras del contrato del registro --
+          #   registra como 'canario' con tenant/user None, no registra sin dispatch real, y un fallo del
+          #   registro no miente sobre la salud -- y 1 de integracion que verifica la fila REAL en
+          #   axioma_usage: costo desde el catalogo, tenant/user NULL, request_type 'canario'). MEDIDO
+          #   sobre la rama con el mismo comando del job (MariaDB 12.3.3 efimera --network none, socket
+          #   compartido + socat en 127.0.0.1:33991, plantilla jax_memory_test LIMPIA con init_tables de
+          #   jax y esquema de memoria, jax en el pin 92452a69, venv con requirements-archivos.txt):
+          #   3992 passed / 1 skipped (el SR2 gateado; el +1 sobre el piso es el test de secretos que el
+          #   runner omite por entorno, mismo desfase ya documentado arriba). Vista en ROJA contra
+          #   master: las 4 nuevas fallan. Mutante sin la llamada a record_usage: las 2 que fijan el
+          #   registro la matan. El runner tiene la ultima palabra.
+          # 3991 -> 3998 (GLM g1, ronda 2 de #212, 2026-10-07): +7 con DB en tests/test_facet_canary_uso.py:
+          #   record_usage colgado con tope propio (dos: por probe_facet y por la puerta del barrido
+          #   _sondear_con_tope), ni la cola puede -> registros_perdidos, la cancelacion de afuera no se traga,
+          #   un bug nuestro en el registro no se traga, el SQL de peticiones excluye 'canario' y el de dinero no,
+          #   y 1 de integracion (una fila canario no cuenta en messages_today pero si en el costo). MEDIDO
+          #   sobre la rama, mismo comando del job, MariaDB 12.3.3 efimera --network none (socket + socat en
+          #   127.0.0.1:33992, base LIMPIA, jax en el pin 92452a69): 3999 passed / 1 skipped (SR2) / 0 failed
+          #   (3992 de la ronda 1 + 7; el +1 sobre el piso es el de secretos que el runner omite, ya documentado).
+          #   Vistas en rojo contra 14af0d6; los mutantes mueren. El runner tiene la ultima palabra.
+          # 3998 -> 4006 (GLM g1, ronda 3 de #212, 2026-10-07): +8 con DB en tests/test_facet_canary_uso.py: X1 (sonda
+          #   al borde del tope de salud con el registro colgado), X3 (el tope del barrido no cancela el registro),
+          #   X2 (COMMIT lento + reintento.drenar: exactamente 1 fila), A1 (request_type NULL sigue contando), el
+          #   costo ya calculado viaja a la cola, un spool_id por sonda, el tope se lee del entorno y la
+          #   cancelacion de la tarea de registro no se traga. MEDIDO sobre la rama, mismo comando del job, MariaDB
+          #   12.3.3 efimera --network none (socket + socat en 127.0.0.1:33993, base LIMPIA, jax en el pin 92452a69):
+          #   4007 passed / 1 skipped (SR2) / 0 failed (3999 de la ronda 2 + 8; el +1 sobre el piso es el de
+          #   secretos que el runner omite, ya documentado). Vistas en rojo contra f8def07; los mutantes mueren.
+          # 4006 -> 4013 (ronda 4 de #212): +7 puras de la validacion de CANARY_USAGE_TIMEOUT_SECONDS (se cuentan
+          #   tambien con DB; delta sumado sobre el piso, no re-medido con DB).
+          PISO_PASSED = 4013
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4938,7 +4975,31 @@ jobs:
       #   +11 (master 2435 -> mezcla 2446, JAX_CI_NO_DB=1, 1501 -> 1540 skipped, mismo comando, jax en el head de #366). El runner confirma.
       # 2446 -> 2446 (ronda 8 de #210): sin cambio. Las 3 pruebas nuevas de despacho piden `client` y se saltan sin DB: medido con
       #   JAX_CI_NO_DB=1, mismo comando, 2446 passed / 1543 skipped (los 1540 de la mezcla + las 3 nuevas).
-      JAX_CI_MIN_PASSED: "2446"
+      # 2446 -> 2449 (GLM g1, 2026-10-07, PR 8 del diseno del tablero de consumo: el canario registra su
+      #   uso): +3 puras (tests/test_facet_canary_uso.py: registra como 'canario' con tenant/user None,
+      #   no registra sin dispatch real, y un fallo del registro no miente sobre la salud; la cuarta pide
+      #   `client` y se salta sin DB). La prueba del despacho de el_juez
+      #   (test_facet_canary_internas.py) ahora parchea record_usage para seguir probando SOLO el
+      #   despacho sin pedir pool: sin ese parche pasaba de pass a skip en este job y el delta era +2.
+      #   MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true (env -i, jax en el pin 92452a69, mismo
+      #   comando): master 2446 -> rama 2449 passed / 1544 skipped (1543 + la cuarta mia). El runner
+      #   tiene la ultima palabra.
+      # 2449 -> 2455 (GLM g1, ronda 2 de #212, 2026-10-07): +6 puras en tests/test_facet_canary_uso.py (las dos
+      #   de record_usage colgado, ni la cola puede, cancelacion no se traga, bug nuestro no se traga, SQL de
+      #   peticiones sin canario); la de integracion (messages_today) pide `client` y se salta. MEDIDO con
+      #   JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2455 passed /
+      #   1545 skipped. El runner tiene la ultima palabra.
+      # 2455 -> 2461 (GLM g1, ronda 3 de #212, 2026-10-07): +6 puras en tests/test_facet_canary_uso.py (X1, X3, costo
+      #   ya calculado a la cola, spool_id por sonda, tope leido del entorno, cancelacion de la tarea de registro);
+      #   X2 y A1 piden `client` y se saltan sin DB. La prueba del despacho de el_juez parchea tambien
+      #   calcular_costo (si no, el precio pide pool y la prueba pasaria de pass a skip). MEDIDO con JAX_CI_NO_DB=1
+      #   CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2461 passed / 1547 skipped.
+      # 2461 -> 2468 (GLM g1, ronda 4 de #212, 2026-10-07): +7 puras en tests/test_facet_canary_uso.py (la validacion
+      #   de CANARY_USAGE_TIMEOUT_SECONDS: 6 invalidos "nan","inf","-inf","0","-1","abc" + 1 valido). MEDIDO con
+      #   JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2468 passed / 1547 skipped.
+      #   Con DB suman las mismas 7 (PISO_PASSED 4006 -> 4013 por la regla de piso = base + delta; NO re-medido con DB:
+      #   son puras y no tocan la base). El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2468"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

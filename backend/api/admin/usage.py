@@ -152,9 +152,26 @@ async def _lookup_model_price(provider_id: str, model: str) -> tuple[float | Non
     return row[0], row[1]
 
 
+async def calcular_costo(provider_id: str, model: str, tokens_in: int, tokens_out: int) -> float | None:
+    """Costo en USD desde el catalogo `model`; None si el modelo no tiene
+    precio (nunca un numero inventado). Es el calculo de record_usage, publico
+    para quien lo necesita ANTES de escribir (el canario: si el registro se
+    corta, la fila encolada lleva el costo ya calculado y no NULL)."""
+    price_in, price_out = await _lookup_model_price(provider_id, model)
+    if price_in is None or price_out is None:
+        return None
+    # round(): la división en float casi siempre produce más decimales de los
+    # que cost_usd DECIMAL(10,6) puede guardar exactos -- sin esto MariaDB
+    # redondea igual al insertar pero emite "Data truncated for column
+    # 'cost_usd'" en cada request (no es perdida de magnitud, el valor
+    # guardado ya era correcto; ensanchar la columna no lo evita, cualquier
+    # float sigue excediendo una precision fija en algun punto).
+    return round((tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000, 6)
+
+
 async def record_usage(
-    user_id: str,
-    tenant_id: str,
+    user_id: str | None,
+    tenant_id: str | None,
     facet: str,
     provider_id: str,
     model: str,
@@ -162,6 +179,7 @@ async def record_usage(
     tokens_out: int,
     request_type: str = "chat",
     cost_usd_override: float | None = None,
+    spool_id: str | None = None,
 ):
     """Llamar desde chat.py e image.py para registrar uso. Costo real desde
     `model` (Bloque D) — nunca un dict hardcodeado. Si el modelo no esta en
@@ -169,6 +187,20 @@ async def record_usage(
     visible en el propio dato (nunca un numero inventado). cost_usd_override
     es para pricing plano-por-request que no encaja en precio-por-token
     (ej. generacion de imagenes).
+
+    user_id/tenant_id None = llamada de sistema sin usuario (canario), y
+    entra como NULL -- nunca como el DEFAULT 1 de la columna, que atribuiria
+    el gasto de infraestructura a un tenant de verdad en silencio. Mismo
+    tratamiento que las llamadas de sistema del repo jax (preflight_probe,
+    jacobs/usage_writer.py) y que las filas NULL que ya conviven en la tabla.
+    El chat y las imagenes siguen pasando ids del JWT validados por
+    validar_ids_de_uso; None es exclusivo de quien no tiene usuario.
+
+    spool_id (opcional): la identidad idempotente de la fila. Entra en la
+    columna `spool_id` (UNIQUE) y, si la escritura falla o se corta desde
+    afuera y la fila se encola, viaja con ESE mismo id: si el INSERT si
+    llego a confirmarse, el drenaje (`INSERT IGNORE`) no la cobra dos veces.
+    None = el camino de siempre (NULL; un UNIQUE admite muchos).
 
     Devuelve el id de la fila escrita, o None si no se pudo escribir (fix
     wave final, 2026-09-15: los tests de chat borran exactamente las filas
@@ -179,63 +211,77 @@ async def record_usage(
     # significa cost_usd NULL (nunca un numero inventado).
     cost = cost_usd_override
     try:
-        if cost_usd_override is not None:
-            cost = cost_usd_override
-        else:
-            price_in, price_out = await _lookup_model_price(provider_id, model)
-            if price_in is None or price_out is None:
-                cost = None
-            else:
-                # round(): la división en float casi siempre produce más
-                # decimales de los que cost_usd DECIMAL(10,6) puede guardar
-                # exactos -- sin esto MariaDB redondea igual al insertar
-                # pero emite "Data truncated for column 'cost_usd'" en cada
-                # request (no es perdida de magnitud, el valor guardado ya
-                # era correcto; ensanchar la columna no lo evita, cualquier
-                # float sigue excediendo una precision fija en algun punto).
-                cost = round((tokens_in * float(price_in) + tokens_out * float(price_out)) / 1_000_000, 6)
+        if cost_usd_override is None:
+            cost = await calcular_costo(provider_id, model, tokens_in, tokens_out)
 
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
+                    "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type, spool_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    # None entra como NULL (llamada de sistema sin usuario --
+                    # ver docstring); un id numerico como string (JWT) igual
+                    # que antes.
+                    (int(tenant_id) if tenant_id is not None else None,
+                     int(user_id) if user_id is not None else None,
+                     facet, model, tokens_in, tokens_out, cost, request_type, spool_id),
                 )
                 fila = cur.lastrowid
             await conn.commit()
         return fila
     except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la fila NO se pierde (va al respaldo de uso/cola.py, que el drenaje reinserta), y lo que no se pudo ni encolar lo hace visible registros_perdidos (GET /api/admin/usage) y el WARNING
-        global _registros_perdidos, _ultimo_error
-        motivo = texto_de_error(e)[:_ERROR_MAX]
-        if await _encolar_la_fila_perdida(
-                user_id, tenant_id, facet, model, tokens_in, tokens_out,
-                cost, request_type, motivo):
-            return None
-        _registros_perdidos += 1
-        _ultimo_error = motivo
-        # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
-        # El texto del error pasa por la redaccion (Task 6): puede venir del
-        # proveedor o de la DB.
-        logger.warning(
-            "record_usage failed facet=%s model=%s total=%d reason=%s",
-            facet, model, _registros_perdidos, _ultimo_error,
-        )
+        await encolar_o_contar_perdida(
+            user_id, tenant_id, facet, model, tokens_in, tokens_out,
+            cost, request_type, texto_de_error(e)[:_ERROR_MAX], spool_id)
         return None
+
+
+async def encolar_o_contar_perdida(
+    user_id, tenant_id, facet, model, tokens_in, tokens_out, cost,
+    request_type, motivo: str, spool_id: str | None = None,
+) -> bool:
+    """Deja la fila en el respaldo durable; si ni eso se pudo, la cuenta como
+    perdida (registros_perdidos + WARNING). True si quedo encolada.
+
+    Es la cola de fail-soft de record_usage, publica para quien corta a
+    record_usage desde afuera con un tope propio (el canario: si el tope se
+    vence, la cancelacion no pasa por el `except Exception` de arriba y nadie
+    encolaria la fila). `cost` None = «sin precio»: nunca un numero inventado."""
+    global _registros_perdidos, _ultimo_error
+    if await _encolar_la_fila_perdida(
+            user_id, tenant_id, facet, model, tokens_in, tokens_out,
+            cost, request_type, motivo, spool_id):
+        return True
+    _registros_perdidos += 1
+    _ultimo_error = motivo
+    # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
+    # El texto del error pasa por la redaccion (Task 6): puede venir del
+    # proveedor o de la DB.
+    logger.warning(
+        "record_usage failed facet=%s model=%s total=%d reason=%s",
+        facet, model, _registros_perdidos, _ultimo_error,
+    )
+    return False
 
 
 async def _encolar_la_fila_perdida(
     user_id, tenant_id, facet, model, tokens_in, tokens_out, cost,
-    request_type, motivo: str,
+    request_type, motivo: str, spool_id: str | None = None,
 ) -> bool:
     """Deja la fila en el respaldo de disco. True si entro.
 
+    `spool_id` (opcional) es la identidad de la fila si ya se intento escribir
+    con ella (record_usage con spool_id): el drenaje la inserta con
+    `INSERT IGNORE` contra el UNIQUE, asi que no se duplica. None = id nuevo.
+
     `created_at` es la hora del TURNO, fijada aca y no en el reintento: si la
     pusiera el drenaje, una caida de dos horas moveria el costo al dia
-    siguiente. `tenant_id`/`user_id` se guardan tal como llegaron (los valida
-    validar_ids_de_uso ANTES del LLM); el drenaje los convierte con int(), que
-    es lo que hace el INSERT de arriba y lo que ya guardan las copias de jax.
+    siguiente. `tenant_id`/`user_id` se guardan tal como llegaron (el chat
+    los valido con validar_ids_de_uso ANTES del LLM; el canario llega con
+    None, que viaja tal cual); el drenaje los pasa por `_entero()`, que deja
+    el NULL como NULL y convierte el numerico igual que el INSERT de arriba
+    -- mismo contrato que las copias de jax.
 
     `encolar` promete no propagar, pero esto corre DENTRO del `except` de
     record_usage: si la promesa se rompiera, la excepcion saldria por arriba y
@@ -254,6 +300,7 @@ async def _encolar_la_fila_perdida(
             "cost_usd": cost,
             "request_type": request_type,
             "origen": ORIGEN,
+            "spool_id": spool_id,
             # explícitos aunque el contrato los admita ausentes: la plataforma
             # no sabe de trabajos del motor, y que se vean en None dice que es
             # una decisión y no un campo que se olvidó de mandar.
@@ -299,10 +346,15 @@ SQL_USO_POR_FACETA = """
     GROUP BY facet, model, request_type
     ORDER BY SUM(cost_usd) DESC
 """
+# El conteo de PETICIONES excluye las sondas del canario (request_type
+# 'canario', ~144+/dia): medirian sondas y no uso. El DINERO si las suma
+# siempre (SQL_USO_POR_FACETA no filtra: los canarios cuestan). Decision de
+# Hyde 2026-10-07 (auditoria de jax-platform#212). request_type admite NULL
+# (DEFAULT 'chat', sin NOT NULL): `<=>` es null-safe y no pierde esas filas.
 SQL_USO_GRAFICO = """
     SELECT facet, DATE(created_at) AS day, COUNT(*) AS cnt
     FROM axioma_usage
-    WHERE created_at >= %s
+    WHERE created_at >= %s AND NOT (request_type <=> 'canario')
     GROUP BY facet, day
 """
 
