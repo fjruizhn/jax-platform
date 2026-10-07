@@ -515,6 +515,10 @@ def test_el_invoke_facet_real_despacha_a_el_juez_fuera_de_personalities(monkeypa
         return None
     monkeypatch.setattr(facet_canary, "record_usage", sin_registro_de_uso)
 
+    async def sin_precio(*args, **kwargs):
+        return None  # calcular_costo tambien pediria pool (el precio sale de la base)
+    monkeypatch.setattr(facet_canary, "calcular_costo", sin_precio)
+
     out = asyncio.run(facet_canary.probe_facet(
         "el_juez", _config(), facet_canary.SOURCE_CANARY_PERIODIC))
 
