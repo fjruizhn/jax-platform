@@ -459,7 +459,11 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
 TECHO_SUBIDA_MS = 8000     # red absoluta de la subida p95 (ver el comentario en la prueba)
 TOPE_CHAT_MS = 5000
 LATIDO_P99_MAX_MS = 40     # retraso p99 tolerado del loop de la app (ver el comentario en la prueba)
+LATIDO_MAX_MS = 100        # atraso máximo tolerado de un solo despertar del latido
+LATIDO_BLOQUEADO_MAX_MS = 200  # tiempo total bloqueado tolerado (suma de los atrasos > _LATIDO_UMBRAL_MS)
+_LATIDO_UMBRAL_MS = 20     # un atraso por encima de esto cuenta como «loop bloqueado»
 _LATIDO_S = 0.01           # el latido duerme 10 ms en bucle y mide cuánto se atrasa cada despertar
+_LATIDO_VIDA_MAX_S = 180   # el latido se apaga solo: nunca puede colgar el cierre del portal
 _ESCALONADO_S = 0.05    # separación entre la llegada de un usuario y la del siguiente
 _SONDEO_S = 0.1         # pausa entre vueltas de despacho + sondeo
 _OCR_SIMULADO_S = 3.0  # lo que tarda el OCR remoto simulado: el PDF sigue en proceso mientras se chatea
@@ -508,11 +512,18 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     # directo con un LATIDO: una tarea en el MISMO loop donde corre la app (el del portal de
     # TestClient) duerme `_LATIDO_S` en bucle y registra cuánto se atrasa cada despertar. Un
     # bloqueo síncrono de X ms en el loop atrasa el latido >= X ms con CUALQUIER número de
-    # núcleos, y el trabajo legítimo en `to_thread` no lo atrasa. Se exige el p99 de los atrasos
-    # <= `LATIDO_P99_MAX_MS` (40 ms): sin regresión el p99 midió 2-16 ms con 1, 2, 4 y 32 CPU;
-    # con un `time.sleep` de 0,05 s REAL dentro de `encolar_pdf_desde_chat`, 97-146 ms. El p99 (y
-    # no el máximo) tolera un tirón aislado del runner (GC, CPU robada) sin dejar pasar una
-    # regresión, que atrasa decenas de despertares (ver el informe).
+    # núcleos, y el trabajo legítimo en `to_thread` no lo atrasa. Tres aserciones sobre los
+    # atrasos (ver el informe, con los datos de 1, 2, 4 y 32 CPU, con y sin regresión):
+    #   - p99 <= `LATIDO_P99_MAX_MS` (40 ms): sin regresión 2-16 ms; con `sleep(0.05)` en todas
+    #     las subidas, 75-146 ms. Tolera un tirón aislado del runner. Pero NO ve <= 4 bloqueos,
+    #     de cualquier tamaño: ese hueco lo cubren las otras dos.
+    #   - máximo <= `LATIDO_MAX_MS` (100 ms): un solo bloqueo de 0,3, 1, 3 o 5 s. Sin regresión
+    #     el máximo fue de 4 a 34 ms.
+    #   - tiempo total bloqueado <= `LATIDO_BLOQUEADO_MAX_MS` (200 ms): suma de los atrasos
+    #     > `_LATIDO_UMBRAL_MS` (20 ms). Ve las regresiones repartidas y chicas (`sleep(0.03)` en
+    #     todas: 520-654 ms). Sin regresión la suma fue de 0 a 66 ms.
+    # Con contención fuerte (muchos competidores por la CPU) estas aserciones pueden dar falsos
+    # fallos: está declarado y medido en el informe.
     # Un tope de p95 de subida NO sirve para esto: depende de los núcleos (hall9000 con 32 CPU
     # 32-94 ms; runner de CI 1215-1669 ms sin regresión) y una vara tomada de la misma ruta
     # (un costo aislado) se infla con la regresión igual que lo medido.
@@ -524,12 +535,14 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     techo_subida_ms = int(os.getenv("JAX_E3_SUBIDA_TECHO_MS", str(TECHO_SUBIDA_MS)))
     tope_chat_ms = int(os.getenv("JAX_E3_CHAT_P95_MAX_MS", str(TOPE_CHAT_MS)))
     latido_p99_max_ms = float(os.getenv("JAX_E3_LATIDO_P99_MAX_MS", str(LATIDO_P99_MAX_MS)))
+    latido_max_ms = float(os.getenv("JAX_E3_LATIDO_MAX_MS", str(LATIDO_MAX_MS)))
+    latido_bloqueado_max_ms = float(os.getenv("JAX_E3_LATIDO_BLOQUEADO_MAX_MS", str(LATIDO_BLOQUEADO_MAX_MS)))
     mutante_s = float(os.getenv("JAX_E3_MUTANT_SLEEP_S", "0"))
     # Los topes tienen que poder ver el mutante: con `time.sleep(0.5)` los 20 bloqueos se
     # serializan en el loop y la subida 19 (p95 de 20) espera >= 19 x 0.5 s. Un techo por
     # encima de eso no detectaría ni el mutante de referencia; un latido por encima de 500 ms tampoco.
     assert 0 < techo_subida_ms < 19 * 500
-    assert 0 < latido_p99_max_ms < 500
+    assert 0 < latido_p99_max_ms <= latido_max_ms < 500 and 0 < latido_bloqueado_max_ms
     assert 0 < tope_chat_ms
 
     workspace = tmp_path / "workspace"
@@ -641,7 +654,8 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     latido_activo = {"v": True}
 
     async def latido():
-        while latido_activo["v"]:
+        fin = time.perf_counter() + _LATIDO_VIDA_MAX_S
+        while latido_activo["v"] and time.perf_counter() < fin:
             t0 = time.perf_counter()
             await asyncio.sleep(_LATIDO_S)
             atrasos_ms.append((time.perf_counter() - t0 - _LATIDO_S) * 1000)
@@ -655,52 +669,63 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
         request.addfinalizer(lambda project_id=proyecto.id: client.portal.call(
             sql, "DELETE FROM project_documents WHERE project_id=%s", (project_id,)))
         tarea_latido = client.portal.start_task_soon(latido)  # en el loop de la app
-        futuros = [executor.submit(usuario, n) for n in range(usuarios)]
-        # Mientras los usuarios suben y chatean: despacho real (POST durable a LAS MANOS),
-        # sondeo real (GET externo + persistencia) y consulta de estado por documento.
-        deadline = time.perf_counter() + 90
-        while time.perf_counter() < deadline:
-            while vistos < len(subidos):
-                document_id, inicio = subidos[vistos]
-                pendientes[document_id] = inicio
-                vistos += 1
-            hubo_chats = chats_activos["n"] > 0
-            ciclos_en_vuelo["n"] += 1
-            client.portal.call(despachador.ciclo, pool)
-            if hubo_chats or chats_activos["n"] > 0:
-                ciclos_en_vuelo["durante_chats"] += 1
-            for document_id, inicio in list(pendientes.items()):
-                response = client.get(f"/api/proyectos/{proyecto.id}/documentos/{document_id}",
-                                      headers=entorno.dueno)
-                assert response.status_code == 200, response.text
-                estado = response.json()["estado"]
-                if estado in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
-                    estados_terminales.append(estado)
-                    terminales.append(document_id)
-                    duraciones.append((time.perf_counter() - inicio) * 1000)
-                    del pendientes[document_id]
-            if all(f.done() for f in futuros) and vistos == len(subidos) and not pendientes:
-                break
-            time.sleep(_SONDEO_S)
-        for futuro in futuros:
-            futuro.result(timeout=60)  # propaga el fallo de un usuario
-        latido_activo["v"] = False
-        tarea_latido.result(timeout=10)
+        try:
+            futuros = [executor.submit(usuario, n) for n in range(usuarios)]
+            # Mientras los usuarios suben y chatean: despacho real (POST durable a LAS MANOS),
+            # sondeo real (GET externo + persistencia) y consulta de estado por documento.
+            deadline = time.perf_counter() + 90
+            while time.perf_counter() < deadline:
+                while vistos < len(subidos):
+                    document_id, inicio = subidos[vistos]
+                    pendientes[document_id] = inicio
+                    vistos += 1
+                hubo_chats = chats_activos["n"] > 0
+                ciclos_en_vuelo["n"] += 1
+                client.portal.call(despachador.ciclo, pool)
+                if hubo_chats or chats_activos["n"] > 0:
+                    ciclos_en_vuelo["durante_chats"] += 1
+                for document_id, inicio in list(pendientes.items()):
+                    response = client.get(f"/api/proyectos/{proyecto.id}/documentos/{document_id}",
+                                          headers=entorno.dueno)
+                    assert response.status_code == 200, response.text
+                    estado = response.json()["estado"]
+                    if estado in {"listo", "parcial", "error", "sin_extractor", "cancelado"}:
+                        estados_terminales.append(estado)
+                        terminales.append(document_id)
+                        duraciones.append((time.perf_counter() - inicio) * 1000)
+                        del pendientes[document_id]
+                if all(f.done() for f in futuros) and vistos == len(subidos) and not pendientes:
+                    break
+                time.sleep(_SONDEO_S)
+            for futuro in futuros:
+                futuro.result(timeout=60)  # propaga el fallo de un usuario
+        finally:
+            # El latido se detiene pase lo que pase (un usuario que falla, un timeout, un assert):
+            # si no, el cierre del portal de TestClient espera para siempre a su tarea y la prueba
+            # se cuelga sin log. Además tiene su propio tope de vida (`_LATIDO_VIDA_MAX_S`).
+            latido_activo["v"] = False
+            try:
+                tarea_latido.result(timeout=10)
+            except TimeoutError:  # no paró a tiempo: se cancela, nunca se espera sin tope
+                tarea_latido.cancel()
 
     def p95(valores):
         ordenados = sorted(valores)
         return ordenados[math.ceil(0.95 * len(ordenados)) - 1]
 
     subida_p95, chat_p95 = p95(lat_subida), p95(lat_chat)
-    assert len(atrasos_ms) >= 50, f"E3 loop: el latido casi no corrió ({len(atrasos_ms)} despertares)"
+    assert len(atrasos_ms) >= 50, f"E3 latido muerto: casi no corrió ({len(atrasos_ms)} despertares)"
     atraso_max = max(atrasos_ms)
     atraso_p99 = sorted(atrasos_ms)[math.ceil(0.99 * len(atrasos_ms)) - 1]
     atrasos_sobre_tope = sum(1 for a in atrasos_ms if a > latido_p99_max_ms)
+    bloqueado_total = sum(a for a in atrasos_ms if a > _LATIDO_UMBRAL_MS)
     print(f"E3_LOAD users={usuarios} turns={turnos} pages={limites.max_paginas} upload_bytes={max_bytes} "
           f"dispatched={len(trabajos)} mutante_s={mutante_s} "
           f"subida_p95_ms={subida_p95:.1f} subida_max_ms={max(lat_subida):.1f} subida_techo_ms={techo_subida_ms} "
           f"latido_n={len(atrasos_ms)} latido_max_ms={atraso_max:.1f} latido_p99_ms={atraso_p99:.1f} "
-          f"latido_sobre_tope={atrasos_sobre_tope} latido_p99_tope_ms={latido_p99_max_ms:g} "
+          f"latido_sobre_tope={atrasos_sobre_tope} latido_bloqueado_ms={bloqueado_total:.1f} "
+          f"latido_p99_tope_ms={latido_p99_max_ms:g} latido_max_tope_ms={latido_max_ms:g} "
+          f"latido_bloqueado_tope_ms={latido_bloqueado_max_ms:g} "
           f"chat_p95_ms={chat_p95:.1f} chat_max_ms={max(lat_chat):.1f} chat_tope_ms={tope_chat_ms} "
           f"chats_con_docs_abiertos={sum(chats_con_documentos_abiertos)}/{len(chats_con_documentos_abiertos)} "
           f"ciclos={ciclos_en_vuelo['n']} ciclos_durante_chats={ciclos_en_vuelo['durante_chats']} "
@@ -713,6 +738,11 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     assert atraso_p99 <= latido_p99_max_ms, (
         f"E3 loop: el event loop de la app se bloqueó (p99 de atraso del latido {atraso_p99:.1f} ms, "
         f"máx {atraso_max:.1f} ms; tope de p99 {latido_p99_max_ms:g} ms)")
+    assert atraso_max <= latido_max_ms, (
+        f"E3 loop: un despertar del latido se atrasó {atraso_max:.1f} ms (tope {latido_max_ms:g} ms)")
+    assert bloqueado_total <= latido_bloqueado_max_ms, (
+        f"E3 loop: el event loop estuvo bloqueado {bloqueado_total:.1f} ms en total "
+        f"(atrasos > {_LATIDO_UMBRAL_MS} ms; tope {latido_bloqueado_max_ms:g} ms)")
     assert subida_p95 <= techo_subida_ms, f"E3 subida p95 {subida_p95:.1f} ms supera el techo de {techo_subida_ms} ms"
     assert chat_p95 <= tope_chat_ms, f"E3 chat p95 {chat_p95:.1f} ms supera el tope de {tope_chat_ms} ms"
     assert len(trabajos) == usuarios, f"E3 despachó {len(trabajos)} de {usuarios} PDFs"
