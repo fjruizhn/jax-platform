@@ -34,7 +34,7 @@ Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso d
 - `tope = min(FACTOR_SUBIDA x costo_aislado x usuarios, TECHO_SUBIDA_MS)` con `FACTOR_SUBIDA = 6`, `usuarios = 20` (concurrencia efectiva máxima) y `TECHO_SUBIDA_MS = 8000`.
 - Por qué 6: la razón p95/aislado medida va de 22 a 59 con 1, 2 y 4 CPU y de 1,3 a 3,4 con 32; el mutante `sleep(0.5)` da 305-410. El tope (razón 120) queda 2x sobre la peor razón sin mutante y 2,5x por debajo de la menor con mutante.
 - Por qué el techo: `sleep(0.5)` suma >= 18 x 500 ms a la subida p95 en cualquier máquina (9540-10370 ms medidos); en una máquina tan lenta que el costo aislado subiera el tope relativo por encima de eso, el techo (8000 ms, 5x lo que midió el runner sin mutante) lo sigue atrapando. Con `JAX_E3_SUBIDA_FACTOR=1000` y el mutante, cae por el techo (p95 9922 ms contra 8000).
-- Variables nuevas: `JAX_E3_SUBIDA_FACTOR` y `JAX_E3_SUBIDA_TECHO_MS`. **La prueba ya no lee `JAX_E3_SUBIDA_P95_MAX_MS`**: `policy.yml` aún la fija en `'1500'` en dos pasos; es inerte y hay que quitarla (el archivo es reservado a Fernando).
+- Variables nuevas: `JAX_E3_SUBIDA_FACTOR` y `JAX_E3_SUBIDA_TECHO_MS`. **La prueba ya no lee `JAX_E3_SUBIDA_P95_MAX_MS`**, y `policy.yml` ya no la fija (quitada en el mismo PR).
 - La línea `E3_LOAD` imprime ahora `subida_aislada_ms`, `razon_p95_aislada`, `subida_tope_ms` (el efectivo), `factor_subida` y `techo_subida_ms`: el runner deja registrada su línea base.
 - Debilidad declarada: en una máquina con muchos núcleos el tope relativo (~3200 ms en hall9000, base 33-47 ms) es holgado; ve el mutante y bloqueos grandes, no una regresión de decenas de ms. Es el precio de que el control no dependa de la máquina.
 
