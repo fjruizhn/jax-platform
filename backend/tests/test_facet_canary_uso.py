@@ -16,6 +16,7 @@ NINGUN test de este archivo llama a un proveedor: _invoke_facet esta
 parcheado en todos, misma regla que test_facet_canary.py.
 """
 import asyncio
+import uuid
 
 import pytest
 
@@ -45,12 +46,22 @@ def sonda_falsa(monkeypatch):
     registro = {"usage": None, "texto": None}
 
     async def invoke_falso(facet, config, user_id, message, *, source=None, **kw):
+        await asyncio.sleep(registro.get("demora", 0))
         if registro["usage"] is None:
             return chat_mod.AvisoDeChat(code="faceta_no_autorizada"), None
         return registro["texto"] or "listo", registro["usage"]
 
     monkeypatch.setattr(facet_canary, "_invoke_facet", invoke_falso)
     return registro
+
+
+@pytest.fixture
+def costo_fijo(monkeypatch):
+    """Los tests puros no tocan la base: el precio sale de un doble."""
+    async def costo(provider_id, model, tokens_in, tokens_out):
+        return 0.25
+
+    monkeypatch.setattr(facet_canary, "calcular_costo", costo, raising=False)
 
 
 def _invoca(registro, **kw):
@@ -61,7 +72,7 @@ def _invoca(registro, **kw):
 # --- puros: que registre, y que no mienta -------------------------------
 
 
-def test_la_sonda_registra_su_uso_como_canario(sonda_falsa, monkeypatch):
+def test_la_sonda_registra_su_uso_como_canario(sonda_falsa, costo_fijo, monkeypatch):
     llamadas = []
 
     async def record_espia(*args, **kwargs):
@@ -71,10 +82,24 @@ def test_la_sonda_registra_su_uso_como_canario(sonda_falsa, monkeypatch):
     out = _invoca(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
 
     assert out is None
-    assert llamadas == [
-        ((None, None, "thot", "deepseek", "deepseek-v4-flash", 5, 7,
-          facet_canary.REQUEST_TYPE_CANARIO), {})
-    ], "la sonda paga una llamada real: tiene que dejar la misma fila de uso que el chat, como canario"
+    ((args, kwargs),) = llamadas
+    assert args == (None, None, "thot", "deepseek", "deepseek-v4-flash", 5, 7,
+                    facet_canary.REQUEST_TYPE_CANARIO), \
+        "la sonda paga una llamada real: tiene que dejar la misma fila de uso que el chat, como canario"
+    assert kwargs["cost_usd_override"] == 0.25, "el precio ya calculado viaja a record_usage"
+    uuid.UUID(kwargs["spool_id"])  # un uuid valido: la identidad idempotente de la fila
+
+
+def test_cada_sonda_lleva_su_propio_spool_id(sonda_falsa, costo_fijo, monkeypatch):
+    ids = []
+
+    async def record_espia(*args, **kwargs):
+        ids.append(kwargs["spool_id"])
+
+    monkeypatch.setattr(facet_canary, "record_usage", record_espia)
+    _invoca(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
+    _invoca(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
+    assert len(ids) == 2 and ids[0] != ids[1], "dos sondas, dos filas, dos spool_id"
 
 
 def test_una_sonda_sin_dispatch_real_no_registra_uso(sonda_falsa, monkeypatch):
@@ -93,7 +118,7 @@ def test_una_sonda_sin_dispatch_real_no_registra_uso(sonda_falsa, monkeypatch):
 
 
 def test_un_fallo_del_registro_no_convierte_una_sonda_sana_en_fallida(
-        sonda_falsa, monkeypatch):
+        sonda_falsa, costo_fijo, monkeypatch):
     """La salud la decide _invoke_facet; el costo es OTRO registro. Si
     record_usage rompiera su promesa de no propagar, la sonda ya invocada y
     sana NO puede volverse probe_error -- seria una fila de salud falsa por
@@ -107,7 +132,7 @@ def test_un_fallo_del_registro_no_convierte_una_sonda_sana_en_fallida(
     assert out is None, "el registro de uso no es parte del veredicto de salud de la sonda"
 
 
-def test_un_bug_nuestro_en_el_registro_no_se_traga(sonda_falsa, monkeypatch):
+def test_un_bug_nuestro_en_el_registro_no_se_traga(sonda_falsa, costo_fijo, monkeypatch):
     """Solo los errores de la base o del tiempo (_ERRORES_DE_BASE) son
     fail-soft; un AttributeError/TypeError es un bug nuestro y tiene que
     verse, igual que en las lecturas de la sonda."""
@@ -181,6 +206,8 @@ def test_record_usage_colgado_no_pierde_la_fila_ni_cambia_la_salud(
     assert (fila["facet"], fila["request_type"], fila["tokens_in"], fila["tokens_out"]) == \
         ("thot", "canario", 5, 7)
     assert (fila["tenant_id"], fila["user_id"]) == (None, None)
+    uuid.UUID(archivos[0].stem)  # la fila encolada lleva un spool_id (uuid) de la sonda
+    assert fila["spool_id"] == archivos[0].stem
     assert fila["cost_usd"] is None, "sin precio: nunca un numero inventado"
     assert usage_mod._registros_perdidos == 0
 
@@ -375,3 +402,210 @@ def test_las_consultas_de_peticiones_excluyen_canario_y_la_de_dinero_no():
     assert "request_type <=> 'canario'" in usage_mod.SQL_USO_GRAFICO
     assert "canario" not in usage_mod.SQL_USO_POR_FACETA, \
         "el dinero (y la columna Tipo) ven al canario: la consulta por faceta no filtra"
+
+
+# --- ronda 3 de la auditoria: el borde del tope, el barrido, el COMMIT lento --
+
+
+def _archivos_de_cola(directorio):
+    return [p for p in directorio.iterdir() if p.is_file() and p.suffix == ".json"]
+
+
+def test_X1_la_sonda_al_borde_del_tope_de_salud_no_pierde_su_registro(
+        sonda_falsa, base_colgada, monkeypatch):
+    """MAJOR-1 de la ronda 3: el registro corria DENTRO del tope de salud. Con
+    el tope de faceta en 1,0 s, la sonda tardando 0,7 s y el registro colgado
+    (tope propio 0,5 s), el tope de faceta cortaba el registro a mitad: la
+    faceta sana quedaba probe_error y la fila se perdia. Ahora el registro
+    corre despues de cerrar ese tope."""
+    from api.admin import usage as usage_mod
+
+    escritas = []
+
+    async def sin_fila_de_salud(*args, **kwargs):
+        escritas.append(args)
+
+    monkeypatch.setattr(facet_canary, "record_facet_health", sin_fila_de_salud)
+    monkeypatch.setattr(facet_canary, "CANARY_FACET_TIMEOUT_SECONDS", 1.0)
+    sonda_falsa.update(usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7), demora=0.7)
+
+    async def barrido():
+        try:
+            return await asyncio.wait_for(facet_canary._sondear_con_tope(
+                "thot", _config(), SOURCE_CANARY_PERIODIC), 10)
+        except TimeoutError:
+            return SIN_RESPUESTA
+
+    out = asyncio.run(barrido())
+
+    assert out is None, "faceta sana al borde del tope: ok, no probe_error"
+    assert escritas == [], "ninguna fila de salud de error"
+    assert len(_archivos_de_cola(base_colgada)) == 1, "la fila pagada queda en la cola durable"
+    assert usage_mod._registros_perdidos == 0
+
+
+def test_X3_el_tope_del_barrido_tampoco_cancela_el_registro(
+        sonda_falsa, base_colgada, monkeypatch):
+    """El registro va blindado (asyncio.shield): aunque el barrido entero venza
+    su tope mientras el registro esta en vuelo, el registro termina por su
+    cuenta y encola la fila."""
+    from api.admin import usage as usage_mod
+
+    async def una_faceta(config):
+        return ["thot"]
+
+    monkeypatch.setattr(facet_canary, "canary_facets", una_faceta)
+    monkeypatch.setattr(facet_canary, "_load_config", _config)
+    monkeypatch.setattr(facet_canary, "CANARY_SWEEP_TIMEOUT_SECONDS", 1.0)
+    sonda_falsa.update(usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7), demora=0.7)
+
+    async def escenario():
+        with pytest.raises(TimeoutError):
+            await facet_canary.probe_all()
+        await asyncio.sleep(0.8)  # el registro (tope 0,5 s) sigue vivo tras el corte del barrido
+
+    asyncio.run(escenario())
+
+    assert len(_archivos_de_cola(base_colgada)) == 1, \
+        "el tope del barrido cancelo el registro: la fila pagada se perdio"
+    assert usage_mod._registros_perdidos == 0
+
+
+def test_si_el_precio_ya_se_calculo_antes_del_cuelgue_la_fila_encolada_lo_lleva(
+        sonda_falsa, base_colgada, monkeypatch):
+    import json
+    from decimal import Decimal
+    from api.admin import usage as usage_mod
+
+    async def precio(provider_id, model):
+        return Decimal("0.14"), Decimal("0.28")
+
+    monkeypatch.setattr(usage_mod, "_lookup_model_price", precio)
+    out = _invoca_con_red(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 1000, 500))
+
+    assert out is None
+    (archivo,) = _archivos_de_cola(base_colgada)
+    fila = json.loads(archivo.read_text())
+    assert fila["cost_usd"] == pytest.approx((1000 * 0.14 + 500 * 0.28) / 1_000_000), \
+        "el precio ya estaba calculado: la fila encolada no pierde el costo (no NULL)"
+
+
+def test_el_tope_del_registro_se_lee_del_entorno_con_default_5():
+    import inspect
+    fuente = inspect.getsource(facet_canary)
+    assert 'os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5")' in fuente
+    import os
+    if "CANARY_USAGE_TIMEOUT_SECONDS" not in os.environ:
+        assert facet_canary.CANARY_USAGE_TIMEOUT_SECONDS == 5.0
+
+
+class _ConexionConCommitLento:
+    """Confirma de verdad y DESPUES tarda: el escenario en que el tope corta
+    entre el COMMIT y el retorno de record_usage (la fila ya esta en la tabla)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self, *a, **k):
+        return self._conn.cursor(*a, **k)
+
+    async def commit(self):
+        await self._conn.commit()
+        await asyncio.sleep(1)
+
+
+class _AdquisicionLenta:
+    def __init__(self, pool):
+        self._cm = pool.acquire()
+
+    async def __aenter__(self):
+        return _ConexionConCommitLento(await self._cm.__aenter__())
+
+    async def __aexit__(self, *exc):
+        return await self._cm.__aexit__(*exc)
+
+
+class _PoolConCommitLento:
+    def __init__(self, pool):
+        self._pool = pool
+
+    def acquire(self):
+        return _AdquisicionLenta(self._pool)
+
+
+def test_X2_un_commit_lento_no_duplica_la_fila_tras_el_drenaje(
+        client, sonda_falsa, monkeypatch, tmp_path):
+    """MAJOR-2 de la ronda 3: el tope corta tras el COMMIT; la fila ya esta en
+    la tabla Y se encola. Sin spool_id el drenaje la insertaba otra vez (2
+    filas). Con el mismo spool_id en las dos, el INSERT IGNORE contra el UNIQUE
+    la deja en exactamente 1."""
+    from api.admin import usage as usage_mod
+    from uso import cola, reintento
+
+    monkeypatch.setenv(cola.VARIABLE_DIRECTORIO, str(tmp_path))
+    usage_mod.reset_registros_perdidos()
+    cola.reset_estado()
+    monkeypatch.setattr(facet_canary, "CANARY_USAGE_TIMEOUT_SECONDS", 0.5)
+    sonda_falsa["usage"] = UsageInfo("deepseek", "deepseek-v4-flash", 1000, 500)
+
+    async def escenario():
+        from db.connection import get_pool
+        real = await get_pool()
+        await _limpiar_filas_del_canario()
+        with monkeypatch.context() as m:
+            m.setattr(usage_mod, "get_pool", _devuelve(_PoolConCommitLento(real)))
+            out = await probe_facet("thot", _config(), SOURCE_CANARY_PERIODIC)
+        tras_el_corte = len(await _filas_del_canario())
+        en_cola = len(_archivos_de_cola(tmp_path))
+        resumen = await reintento.drenar(100)
+        tras_el_drenaje = len(await _filas_del_canario())
+        pendientes = len(_archivos_de_cola(tmp_path))
+        return out, tras_el_corte, en_cola, resumen, tras_el_drenaje, pendientes
+
+    try:
+        out, tras_el_corte, en_cola, resumen, tras_el_drenaje, pendientes = \
+            client.portal.call(escenario)
+    finally:
+        client.portal.call(_limpiar_filas_del_canario)
+
+    assert out is None
+    assert tras_el_corte == 1, "el COMMIT ya habia confirmado la fila"
+    assert en_cola == 1, "el tope corto: la fila tambien se encolo"
+    assert tras_el_drenaje == 1, \
+        "la fila encolada es la MISMA (spool_id): el drenaje no la cobra dos veces"
+    assert resumen["duplicadas"] == 1 and pendientes == 0
+
+
+def _devuelve(valor):
+    async def get_pool():
+        return valor
+
+    return get_pool
+
+
+async def _insertar_uso_nulo(facet, costo):
+    from tests.identidades import sql
+    return await sql(
+        "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, "
+        "tokens_out, cost_usd, request_type) VALUES (NULL, NULL, %s, 'm-nulo', "
+        "1, 1, %s, NULL)", (facet, costo))
+
+
+def test_A1_una_fila_con_request_type_NULL_sigue_contando_como_peticion(client):
+    """`<=>` es null-safe: un `<>` perderia las filas con request_type NULL
+    (la columna admite NULL) de «Peticiones hoy» y del grafico."""
+    from tests.identidades import token_de
+
+    faceta = f"nul-{uuid.uuid4().hex[:10]}"
+    cab = {"Authorization": f"Bearer {token_de(client, 'canario-nulo', 'superadmin', '1')}"}
+    antes = client.get("/api/admin/dashboard", headers=cab).json()["stats"]["messages_today"]
+    ids = [client.portal.call(_insertar_uso_nulo, faceta, 0.1)]
+    try:
+        despues = client.get("/api/admin/dashboard", headers=cab).json()["stats"]["messages_today"]
+        uso = client.get("/api/admin/usage?period=day", headers=cab).json()
+    finally:
+        client.portal.call(_borrar_uso, ids)
+
+    assert despues - antes == 1, "la fila con request_type NULL cuenta como peticion"
+    assert sum(uso["chart_data"]["datasets"].get(faceta, [])) == 1, \
+        "y entra en el grafico por faceta"
