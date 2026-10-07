@@ -153,8 +153,8 @@ async def _lookup_model_price(provider_id: str, model: str) -> tuple[float | Non
 
 
 async def record_usage(
-    user_id: str,
-    tenant_id: str,
+    user_id: str | None,
+    tenant_id: str | None,
     facet: str,
     provider_id: str,
     model: str,
@@ -169,6 +169,14 @@ async def record_usage(
     visible en el propio dato (nunca un numero inventado). cost_usd_override
     es para pricing plano-por-request que no encaja en precio-por-token
     (ej. generacion de imagenes).
+
+    user_id/tenant_id None = llamada de sistema sin usuario (canario), y
+    entra como NULL -- nunca como el DEFAULT 1 de la columna, que atribuiria
+    el gasto de infraestructura a un tenant de verdad en silencio. Mismo
+    tratamiento que las llamadas de sistema del repo jax (preflight_probe,
+    jacobs/usage_writer.py) y que las filas NULL que ya conviven en la tabla.
+    El chat y las imagenes siguen pasando ids del JWT validados por
+    validar_ids_de_uso; None es exclusivo de quien no tiene usuario.
 
     Devuelve el id de la fila escrita, o None si no se pudo escribir (fix
     wave final, 2026-09-15: los tests de chat borran exactamente las filas
@@ -201,7 +209,12 @@ async def record_usage(
                 await cur.execute(
                     "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, tokens_out, cost_usd, request_type) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (int(tenant_id), int(user_id), facet, model, tokens_in, tokens_out, cost, request_type),
+                    # None entra como NULL (llamada de sistema sin usuario --
+                    # ver docstring); un id numerico como string (JWT) igual
+                    # que antes.
+                    (int(tenant_id) if tenant_id is not None else None,
+                     int(user_id) if user_id is not None else None,
+                     facet, model, tokens_in, tokens_out, cost, request_type),
                 )
                 fila = cur.lastrowid
             await conn.commit()
@@ -233,9 +246,11 @@ async def _encolar_la_fila_perdida(
 
     `created_at` es la hora del TURNO, fijada aca y no en el reintento: si la
     pusiera el drenaje, una caida de dos horas moveria el costo al dia
-    siguiente. `tenant_id`/`user_id` se guardan tal como llegaron (los valida
-    validar_ids_de_uso ANTES del LLM); el drenaje los convierte con int(), que
-    es lo que hace el INSERT de arriba y lo que ya guardan las copias de jax.
+    siguiente. `tenant_id`/`user_id` se guardan tal como llegaron (el chat
+    los valido con validar_ids_de_uso ANTES del LLM; el canario llega con
+    None, que viaja tal cual); el drenaje los pasa por `_entero()`, que deja
+    el NULL como NULL y convierte el numerico igual que el INSERT de arriba
+    -- mismo contrato que las copias de jax.
 
     `encolar` promete no propagar, pero esto corre DENTRO del `except` de
     record_usage: si la promesa se rompiera, la excepcion saldria por arriba y
