@@ -99,12 +99,156 @@ def test_un_fallo_del_registro_no_convierte_una_sonda_sana_en_fallida(
     sana NO puede volverse probe_error -- seria una fila de salud falsa por
     un problema de contabilidad."""
     async def record_roto(*args, **kwargs):
-        raise RuntimeError("promesa rota: record_usage no debe lanzar")
+        raise OSError("promesa rota: record_usage no debe lanzar")
 
     monkeypatch.setattr(facet_canary, "record_usage", record_roto)
     out = _invoca(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
 
     assert out is None, "el registro de uso no es parte del veredicto de salud de la sonda"
+
+
+def test_un_bug_nuestro_en_el_registro_no_se_traga(sonda_falsa, monkeypatch):
+    """Solo los errores de la base o del tiempo (_ERRORES_DE_BASE) son
+    fail-soft; un AttributeError/TypeError es un bug nuestro y tiene que
+    verse, igual que en las lecturas de la sonda."""
+    async def record_con_bug(*args, **kwargs):
+        raise TypeError("bug nuestro")
+
+    monkeypatch.setattr(facet_canary, "record_usage", record_con_bug)
+    with pytest.raises(TypeError):
+        _invoca(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
+
+
+# --- record_usage colgado: tope propio, encolado explicito, salud intacta --
+
+SIN_RESPUESTA = "la sonda no volvio: record_usage colgado sin tope propio"
+
+
+def _invoca_con_red(registro, **kw):
+    """Como _invoca, pero con una red de 10 s: si el codigo no tiene tope
+    propio para record_usage la sonda no vuelve nunca, y eso tiene que fallar
+    por ASERCION (SIN_RESPUESTA != None), no colgando la suite."""
+    registro.update(kw)
+
+    async def con_red():
+        try:
+            return await asyncio.wait_for(
+                probe_facet("thot", _config(), SOURCE_CANARY_PERIODIC), 10)
+        except TimeoutError:
+            return SIN_RESPUESTA
+
+    return asyncio.run(con_red())
+
+
+@pytest.fixture
+def base_colgada(monkeypatch, tmp_path):
+    """La base no contesta: get_pool nunca vuelve (pool agotado, metadata
+    lock). Respaldo durable en un directorio propio; contadores en cero."""
+    from api.admin import usage as usage_mod
+    from uso import cola
+
+    monkeypatch.setenv(cola.VARIABLE_DIRECTORIO, str(tmp_path))
+    usage_mod.reset_registros_perdidos()
+    cola.reset_estado()
+
+    async def pool_que_no_vuelve():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(usage_mod, "get_pool", pool_que_no_vuelve)
+    monkeypatch.setattr(facet_canary, "CANARY_USAGE_TIMEOUT_SECONDS", 0.5, raising=False)
+    yield tmp_path
+    usage_mod.reset_registros_perdidos()
+    cola.reset_estado()
+
+
+def test_record_usage_colgado_no_pierde_la_fila_ni_cambia_la_salud(
+        sonda_falsa, base_colgada):
+    """MAJOR-1 de la auditoria: record_usage corria dentro del tope de salud;
+    una base colgada cancelaba el registro con CancelledError (que ningun
+    `except Exception` atrapa): la faceta sana quedaba probe_error y la fila
+    pagada se perdia con 0 en la cola. Ahora el registro tiene su tope y, al
+    vencerse, la fila se encola explicitamente."""
+    from api.admin import usage as usage_mod
+    import json
+
+    out = _invoca_con_red(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
+
+    assert out is None, "la salud de la faceta no cambia por un fallo de contabilidad"
+    archivos = [p for p in base_colgada.iterdir()
+                if p.is_file() and p.suffix == ".json"]
+    assert len(archivos) == 1, "la fila pagada tiene que quedar en la cola durable"
+    fila = json.loads(archivos[0].read_text())
+    assert (fila["facet"], fila["request_type"], fila["tokens_in"], fila["tokens_out"]) == \
+        ("thot", "canario", 5, 7)
+    assert (fila["tenant_id"], fila["user_id"]) == (None, None)
+    assert fila["cost_usd"] is None, "sin precio: nunca un numero inventado"
+    assert usage_mod._registros_perdidos == 0
+
+
+def test_record_usage_colgado_bajo_el_tope_de_salud_deja_la_faceta_sana(
+        sonda_falsa, base_colgada, monkeypatch):
+    """El escenario EXACTO de la auditoria, por la puerta real del barrido
+    (_sondear_con_tope): con el registro dentro del tope de salud, la base
+    colgada cancelaba la sonda sana y el barrido la veia probe_error. Con el
+    tope de salud holgado frente al del registro, el veredicto es `ok`."""
+    from api.admin import usage as usage_mod
+
+    escritas = []
+
+    async def sin_fila_de_salud(*args, **kwargs):
+        escritas.append(args)
+
+    monkeypatch.setattr(facet_canary, "record_facet_health", sin_fila_de_salud)
+    monkeypatch.setattr(facet_canary, "CANARY_FACET_TIMEOUT_SECONDS", 3)
+    sonda_falsa["usage"] = UsageInfo("deepseek", "deepseek-v4-flash", 5, 7)
+
+    async def barrido():
+        try:
+            return await asyncio.wait_for(facet_canary._sondear_con_tope(
+                "thot", _config(), SOURCE_CANARY_PERIODIC), 10)
+        except TimeoutError:
+            return SIN_RESPUESTA
+
+    out = asyncio.run(barrido())
+
+    assert out is None, "faceta sana: un fallo de contabilidad no la vuelve probe_error"
+    assert escritas == [], "ninguna fila de salud de error: la sonda fue ok"
+    assert len([p for p in base_colgada.iterdir() if p.suffix == ".json"]) == 1
+    assert usage_mod._registros_perdidos == 0
+
+
+def test_si_ni_la_cola_puede_la_fila_se_cuenta_perdida(
+        sonda_falsa, base_colgada, monkeypatch):
+    """La fila solo cuenta en registros_perdidos si tampoco se pudo encolar."""
+    from api.admin import usage as usage_mod
+    from uso import cola
+
+    async def cola_rota(fila):
+        return None
+
+    monkeypatch.setattr(cola, "encolar", cola_rota)
+    out = _invoca_con_red(sonda_falsa, usage=UsageInfo("deepseek", "deepseek-v4-flash", 5, 7))
+
+    assert out is None
+    assert usage_mod._registros_perdidos == 1
+
+
+def test_la_cancelacion_de_afuera_nunca_se_traga(sonda_falsa, base_colgada, monkeypatch):
+    """Un tope de salud (o el cierre del servicio) que cancela a la sonda
+    mientras record_usage esta colgado tiene que propagar CancelledError, no
+    convertirlo en un retorno normal."""
+    monkeypatch.setattr(facet_canary, "CANARY_USAGE_TIMEOUT_SECONDS", 30)
+    sonda_falsa["usage"] = UsageInfo("deepseek", "deepseek-v4-flash", 5, 7)
+
+    async def escenario():
+        tarea = asyncio.ensure_future(
+            probe_facet("thot", _config(), SOURCE_CANARY_PERIODIC))
+        await asyncio.sleep(0.2)
+        tarea.cancel()
+        await tarea
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(escenario())
 
 
 # --- con DB: la fila de verdad, por la via de verdad ----------------------
@@ -171,3 +315,63 @@ def test_la_fila_del_canario_entra_de_verdad_en_axioma_usage(
     assert rtype == "canario"
     expected = (1000 * 0.14 + 500 * 0.28) / 1_000_000
     assert abs(float(cost) - expected) < 1e-9
+
+
+# --- el canario en las pantallas: el dinero suma, las peticiones no -----------
+# MAJOR-2 de la auditoria (decision de Hyde 2026-10-07): ~144+ sondas/dia
+# pasaban a medir sondas en «Peticiones hoy» y en el grafico por faceta. El
+# conteo de PETICIONES excluye request_type='canario'; el DINERO lo suma
+# siempre (los canarios cuestan).
+
+
+async def _insertar_uso(facet, tipo, costo):
+    from tests.identidades import sql
+    return await sql(
+        "INSERT INTO axioma_usage (tenant_id, user_id, facet, model, tokens_in, "
+        "tokens_out, cost_usd, request_type) VALUES (NULL, NULL, %s, 'm-canario', "
+        "1, 1, %s, %s)", (facet, costo, tipo))
+
+
+async def _borrar_uso(ids):
+    from tests.identidades import sql
+    for i in ids:
+        await sql("DELETE FROM axioma_usage WHERE id = %s", (i,))
+
+
+def test_una_fila_canario_no_cuenta_en_messages_today_pero_si_en_el_costo(client):
+    import uuid
+    from tests.identidades import token_de
+
+    faceta = f"cnr-{uuid.uuid4().hex[:10]}"
+    cab = {"Authorization": f"Bearer {token_de(client, 'canario-pantallas', 'superadmin', '1')}"}
+    antes = client.get("/api/admin/dashboard", headers=cab).json()["stats"]["messages_today"]
+    ids = [
+        client.portal.call(_insertar_uso, faceta, "canario", 0.5),
+        client.portal.call(_insertar_uso, faceta, "canario", 0.25),
+        client.portal.call(_insertar_uso, faceta, "chat", 0.1),
+    ]
+    try:
+        despues = client.get("/api/admin/dashboard", headers=cab).json()["stats"]["messages_today"]
+        uso = client.get("/api/admin/usage?period=day", headers=cab).json()
+    finally:
+        client.portal.call(_borrar_uso, ids)
+
+    assert despues - antes == 1, \
+        "«Peticiones hoy» cuenta la peticion de chat y NO las 2 sondas del canario"
+    mias = {f["request_type"]: f for f in uso["by_facet"] if f["facet"] == faceta}
+    assert "canario" in mias, "la fila canario tiene que verse en Costos (columna Tipo)"
+    assert mias["canario"]["cost_usd"] == pytest.approx(0.75), \
+        "el dinero suma siempre: los canarios cuestan"
+    assert mias["canario"]["requests"] == 2
+    assert "chat" in mias and mias["chat"]["cost_usd"] == pytest.approx(0.1)
+    # El grafico por faceta cuenta peticiones: 1 de chat, 0 de canario.
+    assert sum(uso["chart_data"]["datasets"].get(faceta, [])) == 1
+
+
+def test_las_consultas_de_peticiones_excluyen_canario_y_la_de_dinero_no():
+    from api.admin import dashboard, usage as usage_mod
+
+    assert "request_type <=> 'canario'" in dashboard.SQL_USO_DEL_DIA
+    assert "request_type <=> 'canario'" in usage_mod.SQL_USO_GRAFICO
+    assert "canario" not in usage_mod.SQL_USO_POR_FACETA, \
+        "el dinero (y la columna Tipo) ven al canario: la consulta por faceta no filtra"

@@ -17,9 +17,11 @@ router = APIRouter(prefix="/api/admin")
 # A-37 (2026-09-16): una consulta, rango sargable sobre idx_axioma_usage_periodo.
 # SUM sin filas es NULL: COALESCE. EXPLAIN no distingue DATE(col) de un rango
 # en MariaDB >= 11.1; tests/test_tablero.py fija el texto del WHERE.
+# Peticiones = uso real: las sondas del canario ('canario') no cuentan aqui
+# (si cuentan en el dinero de Costos). Decision de Hyde 2026-10-07.
 SQL_USO_DEL_DIA = (
     "SELECT COUNT(*), COALESCE(SUM(request_type = 'imagen'), 0) FROM axioma_usage "
-    "WHERE created_at >= %s AND created_at < %s"
+    "WHERE created_at >= %s AND created_at < %s AND NOT (request_type <=> 'canario')"
 )
 # A-35: la verdad de las llaves es `credential` (credential_resolver), no el
 # .env. Total = proveedores activos que usan api_key; configurados = los que

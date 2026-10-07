@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 import aiomysql
 
-from api.admin.usage import record_usage
+from api.admin.usage import encolar_o_contar_perdida, record_usage
 from api.chat import _invoke_facet, _load_config
 from config_entorno import url_requerida
 from db.connection import get_pool
@@ -129,6 +129,14 @@ REQUEST_TYPE_CANARIO = "canario"
 # timeout propio de consulta, y sin este tope una MariaDB que no contesta se
 # come el barrido entero antes de sondear nada.
 CANARY_DB_TIMEOUT_SECONDS = 10
+
+# Tope PROPIO y corto del registro de uso de la sonda (record_usage). Corre
+# FUERA del tope de salud (CANARY_FACET_TIMEOUT_SECONDS): una base lenta
+# (pool agotado, metadata lock) no puede cancelar a una sonda ya invocada y
+# sana ni perder la fila pagada. Si se vence, la fila se encola EXPLICITAMENTE
+# en el respaldo durable (la cancelacion no pasa por el `except` fail-soft de
+# record_usage, asi que si no la encola esta funcion no la encola nadie).
+CANARY_USAGE_TIMEOUT_SECONDS = 5
 
 # hyde no se sondea: chat() lo corta antes del dispatch con una respuesta
 # enlatada, no hay nada que medir.
@@ -310,7 +318,17 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     try de arriba a proposito: la salud la decide _invoke_facet, el costo es
     OTRO registro -- si record_usage fallara (rompe su promesa de no
     propagar, pero por si sola), una sonda ya invocada y sana no puede
-    volverse probe_error por un problema de contabilidad."""
+    volverse probe_error por un problema de contabilidad.
+
+    LIMITE CONOCIDO (auditoria de #212, 2026-10-07; viene del chat, no se
+    arregla aqui): una sonda que FALLA DESPUES DE PAGAR no deja fila. Las
+    funciones `_call_*` de api/chat.py (p. ej. la lectura de la respuesta
+    tras `raise_for_status()`, ~983-985 y ~1017-1021) lanzan si el cuerpo
+    llega malformado o el proveedor corta tras facturar, y el UsageInfo solo
+    existe cuando la llamada vuelve completa: la sonda es probe_error y el
+    gasto de esa llamada no se registra. El subregistro es solo de las
+    sondas que fallan despues de pagar; las que vuelven se registran todas.
+    Pendiente fechado 2026-10-09 (PENDIENTES.md)."""
     if kill_switch.activo():
         logger.warning(
             "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
@@ -350,15 +368,40 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         # Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
         return OUTCOME_PROBE_ERROR
     if usage is not None:
-        try:
+        await _registrar_uso_de_la_sonda(facet, source, usage)
+    return None
+
+
+async def _registrar_uso_de_la_sonda(facet: str, source: str, usage) -> None:
+    """Registra el uso pagado de una sonda ya invocada, sin tocar su salud.
+
+    Tope propio (CANARY_USAGE_TIMEOUT_SECONDS): si record_usage no vuelve a
+    tiempo se cancela y la fila se ENCOLA explicitamente (cost None = «sin
+    precio»: el calculo del precio era parte de lo que se colgo; nunca un
+    numero inventado). Solo si tampoco se pudo encolar cuenta en
+    registros_perdidos (lo hace encolar_o_contar_perdida). Un fallo de la
+    base (_ERRORES_DE_BASE) o el tope NO cambian la salud: ok sigue ok. Un
+    bug nuestro (AttributeError, TypeError) sube, como en las lecturas de
+    arriba. La cancelacion de afuera (tope de salud, cierre del servicio) NO se
+    traga: asyncio.timeout solo convierte SU vencimiento en TimeoutError.
+
+    Carrera residual, aceptada: si el tope corta justo entre el commit del
+    INSERT y el retorno de record_usage, la fila queda dos veces (la escrita
+    y la encolada). Es preferible a perderla; el drenaje no deduplica."""
+    try:
+        async with asyncio.timeout(CANARY_USAGE_TIMEOUT_SECONDS):
             await record_usage(None, None, facet, usage.provider_id,
                                usage.model, usage.tokens_in,
                                usage.tokens_out, REQUEST_TYPE_CANARIO)
-        except Exception:  # fail-soft: record_usage promete no propagar (fail-soft total); por si la promesa se rompe, el costo no puede tumbar el veredicto de salud que ya se emitio
-            logger.warning(
-                "facet_canary: no se pudo registrar el uso de la sonda de "
-                "%s (%s)", facet, source, exc_info=True)
-    return None
+    except _ERRORES_DE_BASE as e:  # fail-soft: la contabilidad no es la salud; el tope o la base caida no convierten una sonda sana en fallida, y la fila pagada se encola (o se cuenta perdida) en vez de desaparecer
+        logger.warning(
+            "facet_canary: el registro de uso de la sonda de %s (%s) no "
+            "termino (%s): se encola en el respaldo durable", facet, source,
+            type(e).__name__, exc_info=True)
+        await encolar_o_contar_perdida(
+            None, None, facet, usage.model, usage.tokens_in, usage.tokens_out,
+            None, REQUEST_TYPE_CANARIO,
+            f"{type(e).__name__}: el registro de uso de la sonda no termino")
 
 
 async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None:

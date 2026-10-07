@@ -220,22 +220,38 @@ async def record_usage(
             await conn.commit()
         return fila
     except Exception as e:  # fail-soft: el turno ya se pagó y ya respondió; un 500 no recupera el costo y le quita la respuesta al usuario; la fila NO se pierde (va al respaldo de uso/cola.py, que el drenaje reinserta), y lo que no se pudo ni encolar lo hace visible registros_perdidos (GET /api/admin/usage) y el WARNING
-        global _registros_perdidos, _ultimo_error
-        motivo = texto_de_error(e)[:_ERROR_MAX]
-        if await _encolar_la_fila_perdida(
-                user_id, tenant_id, facet, model, tokens_in, tokens_out,
-                cost, request_type, motivo):
-            return None
-        _registros_perdidos += 1
-        _ultimo_error = motivo
-        # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
-        # El texto del error pasa por la redaccion (Task 6): puede venir del
-        # proveedor o de la DB.
-        logger.warning(
-            "record_usage failed facet=%s model=%s total=%d reason=%s",
-            facet, model, _registros_perdidos, _ultimo_error,
-        )
+        await encolar_o_contar_perdida(
+            user_id, tenant_id, facet, model, tokens_in, tokens_out,
+            cost, request_type, texto_de_error(e)[:_ERROR_MAX])
         return None
+
+
+async def encolar_o_contar_perdida(
+    user_id, tenant_id, facet, model, tokens_in, tokens_out, cost,
+    request_type, motivo: str,
+) -> bool:
+    """Deja la fila en el respaldo durable; si ni eso se pudo, la cuenta como
+    perdida (registros_perdidos + WARNING). True si quedo encolada.
+
+    Es la cola de fail-soft de record_usage, publica para quien corta a
+    record_usage desde afuera con un tope propio (el canario: si el tope se
+    vence, la cancelacion no pasa por el `except Exception` de arriba y nadie
+    encolaria la fila). `cost` None = «sin precio»: nunca un numero inventado."""
+    global _registros_perdidos, _ultimo_error
+    if await _encolar_la_fila_perdida(
+            user_id, tenant_id, facet, model, tokens_in, tokens_out,
+            cost, request_type, motivo):
+        return True
+    _registros_perdidos += 1
+    _ultimo_error = motivo
+    # Prefijo estable: se cuenta desde journalctl sin depender del endpoint.
+    # El texto del error pasa por la redaccion (Task 6): puede venir del
+    # proveedor o de la DB.
+    logger.warning(
+        "record_usage failed facet=%s model=%s total=%d reason=%s",
+        facet, model, _registros_perdidos, _ultimo_error,
+    )
+    return False
 
 
 async def _encolar_la_fila_perdida(
@@ -314,10 +330,15 @@ SQL_USO_POR_FACETA = """
     GROUP BY facet, model, request_type
     ORDER BY SUM(cost_usd) DESC
 """
+# El conteo de PETICIONES excluye las sondas del canario (request_type
+# 'canario', ~144+/dia): medirian sondas y no uso. El DINERO si las suma
+# siempre (SQL_USO_POR_FACETA no filtra: los canarios cuestan). Decision de
+# Hyde 2026-10-07 (auditoria de jax-platform#212). request_type admite NULL
+# (DEFAULT 'chat', sin NOT NULL): `<=>` es null-safe y no pierde esas filas.
 SQL_USO_GRAFICO = """
     SELECT facet, DATE(created_at) AS day, COUNT(*) AS cnt
     FROM axioma_usage
-    WHERE created_at >= %s
+    WHERE created_at >= %s AND NOT (request_type <=> 'canario')
     GROUP BY facet, day
 """
 
