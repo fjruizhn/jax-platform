@@ -344,6 +344,27 @@ def test_la_fila_del_canario_entra_de_verdad_en_axioma_usage(
     assert abs(float(cost) - expected) < 1e-9
 
 
+def test_la_cancelacion_de_la_tarea_de_registro_nunca_se_traga(
+        sonda_falsa, base_colgada, monkeypatch):
+    """El registro corre en su propia tarea blindada: cancelar a quien espera
+    no la toca, pero si SE CANCELA ella misma (cierre del servicio) el
+    CancelledError tiene que salir, no convertirse en un retorno normal."""
+    monkeypatch.setattr(facet_canary, "CANARY_USAGE_TIMEOUT_SECONDS", 30)
+    sonda_falsa["usage"] = UsageInfo("deepseek", "deepseek-v4-flash", 5, 7)
+
+    async def escenario():
+        tarea = asyncio.ensure_future(
+            probe_facet("thot", _config(), SOURCE_CANARY_PERIODIC))
+        await asyncio.sleep(0.2)
+        en_vuelo = list(facet_canary._registros_en_vuelo)
+        assert len(en_vuelo) == 1, "el registro tiene que estar en vuelo"
+        en_vuelo[0].cancel()
+        await tarea
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(escenario())
+
+
 # --- el canario en las pantallas: el dinero suma, las peticiones no -----------
 # MAJOR-2 de la auditoria (decision de Hyde 2026-10-07): ~144+ sondas/dia
 # pasaban a medir sondas en «Peticiones hoy» y en el grafico por faceta. El
