@@ -895,6 +895,18 @@ export default {
   adminCostsTokensIn: 'Input tokens',
   adminCostsTokensOut: 'Output tokens',
   adminCostsCost: 'Cost USD',
+  adminCostsTipo: 'Type',
+  // axioma_usage request_type translated for the «Type» column. A value not
+  // listed here is shown as-is (a spending row is never hidden).
+  adminCostsTipos: {
+    chat: 'Chat',
+    imagen: 'Image',
+    canario: 'Canary (health probe)',
+    pipeline: 'Pipeline',
+    motor: 'Engine',
+    preflight_probe: 'Preflight (probe)',
+    preflight_probe_est: 'Preflight (estimate)',
+  },
   adminCostsRequests: 'Requests',
   adminCostsDay: 'Today',
   adminCostsWeek: 'Week',
