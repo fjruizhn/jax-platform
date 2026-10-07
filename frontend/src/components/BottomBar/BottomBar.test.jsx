@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -71,6 +71,12 @@ const POLITICA = {
 // nombre, bytes -- nunca base64 ni el texto completo.
 const SUBIDA_IMAGEN = { id: 'img-id-1', tipo: 'imagen', nombre: 'f.png', mime: 'image/png', bytes: 3 }
 const SUBIDA_IMAGEN_2 = { id: 'img-id-2', tipo: 'imagen', nombre: 'g.png', mime: 'image/png', bytes: 3 }
+// El selector pide GET /proyectos al montar y des-elige un proyecto activo que no esté en la lista:
+// los mocks por URL tienen que devolverlo, o el formData saldría sin project_id por esa otra razón.
+const LISTA_PROYECTOS = { proyectos: [{ id: 7, nombre: 'Proyecto siete' }], siguiente: null }
+const SUBIDA_PDF_PROCESANDO = {
+  tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+}
 
 function adjuntar(container, archivo) {
   const input = container.querySelector('input[type="file"]')
@@ -112,6 +118,16 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith({ message: es.erroresMesa.adjunto_tipo_no_permitido(), type: 'error' }))
   })
 
+  it('un rechazo de autorización del proyecto muestra el texto de Documentos', async () => {
+    api.post.mockRejectedValueOnce({ response: { status: 403, data: { detail: { code: 'papel_insuficiente' } } } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith({
+      message: es.proyectos.documentos.errores.papel_insuficiente, type: 'error',
+    }))
+  })
+
   // Kill switch en la subida (ruling del principal 2026-09-17): 423 con detail
   // de texto, el mismo código que el resto de la Mesa. Nunca el código crudo.
   it('un 423 del kill switch en el upload se muestra traducido, no queda adjunto', async () => {
@@ -137,6 +153,64 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
       message: 'describí', facet: 'hipatia', origin: 'web',
       adjuntos: [{ id: 'img-id-1' }],
     }])
+  })
+
+  it('envía el turno de texto sin esperar al OCR y sin fingir que el PDF ya es adjunto de chat', async () => {
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } }).mockResolvedValueOnce({ data: { facet: 'hipatia', response: 'Lo reviso.', timestamp: 't' } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await screen.findByText(/procesamiento/i)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Resume el estado financiero' } })
+    fireEvent.click(screen.getByRole('button', { name: es.send }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2))
+    expect(api.post.mock.calls[1][0]).toBe('/chat')
+    expect(api.post.mock.calls[1][1].message).toBe('Resume el estado financiero')
+    expect(api.post.mock.calls[1][1]).not.toHaveProperty('adjuntos')
+    expect(useJaxStore.getState().messages.find((message) => message.facet === 'user')?.attachment).toBeNull()
+  })
+
+  it('sube el project_id del proyecto activo en el formData (sin él todo PDF escaneado cae en pdf_escaneado_requiere_proyecto)', async () => {
+    api.get.mockImplementation((url) => Promise.resolve({
+      data: url === '/chat/adjuntos' ? POLITICA : url === '/proyectos' ? LISTA_PROYECTOS : {} }))
+    api.post.mockResolvedValueOnce({ data: SUBIDA_PDF_PROCESANDO })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/proyectos', expect.anything()))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    const cuerpo = api.post.mock.calls[0][1]
+    expect(cuerpo.get('project_id')).toBe('7')
+    expect(cuerpo.get('file')).toBeInstanceOf(File)
+  })
+
+  it('sin proyecto activo no manda project_id', async () => {
+    api.post.mockResolvedValueOnce({ data: SUBIDA_IMAGEN })
+    useJaxStore.setState({ proyectoActivo: null })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toBeTruthy())
+    adjuntar(container, new File(['abc'], 'f.png', { type: 'image/png' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(1))
+    expect(api.post.mock.calls[0][1].has('project_id')).toBe(false)
+  })
+
+  it('mantiene bloqueado el selector mientras el PDF siga activo', async () => {
+    api.get.mockImplementation((url) => url === '/chat/adjuntos'
+      ? Promise.resolve({ data: POLITICA })
+      : Promise.resolve({ data: { estado: 'procesando' } }))
+    api.post.mockResolvedValueOnce({ data: {
+      tipo: 'pdf_procesando', nombre: 'scan.pdf', project_id: 7, document_id: 42, estado: 'en_cola',
+    } })
+    useJaxStore.setState({ proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await screen.findByText(/cola de procesamiento/i)
+    await waitFor(() => expect(screen.getByLabelText(es.proyectos.selectorChat.etiqueta)).toBeDisabled())
   })
 
   it('la vista previa de la imagen subida usa un object URL local del compositor', async () => {
@@ -330,5 +404,117 @@ describe('BottomBar -- adjuntos cableados (frente D)', () => {
       const ultimo = useJaxStore.getState().messages.at(-1)
       expect(ultimo.content).toContain(es.erroresMesa.imagen_no_soportada())
     })
+  })
+})
+
+// El sondeo del documento (GET /proyectos/7/documentos/42) con reloj falso: los tiempos de
+// espera son EXACTOS y no dependen de la velocidad de la máquina. Los mocks van por URL, nunca
+// por el orden de las llamadas: otras lecturas (la lista del selector) no desplazan al sondeo.
+// Los valores salen de vitest.config.js (test.env): espera 10, 20, 40, 40... ms; tope total 400 ms.
+describe('BottomBar -- sondeo del PDF escaneado (reintento, backoff y tope)', () => {
+  const URL_ESTADO = '/proyectos/7/documentos/42'
+  const INICIAL = Number(import.meta.env.VITE_CHAT_PDF_POLL_INITIAL_MS)
+  const MAXIMO = Number(import.meta.env.VITE_CHAT_PDF_POLL_MAX_MS)
+  const TOPE = Number(import.meta.env.VITE_CHAT_PDF_POLL_TIMEOUT_MS)
+
+  beforeEach(() => {
+    useJaxStore.setState({ activeFacet: 'hipatia', messages: [], addToast: vi.fn(),
+      proyectoActivo: { id: 7, nombre: 'Proyecto siete' } })
+    api.post.mockReset()
+    api.post.mockResolvedValueOnce({ data: SUBIDA_PDF_PROCESANDO })
+  })
+  afterEach(() => vi.useRealTimers())
+
+  const avanzar = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
+  // `sondeo(n)` responde a la n-ésima consulta de ESTE documento; devuelve los instantes (reloj falso).
+  function mockearApi(sondeo) {
+    const llamadas = []
+    api.get.mockImplementation((url) => {
+      if (url === '/chat/adjuntos') return Promise.resolve({ data: POLITICA })
+      if (url === '/proyectos') return Promise.resolve({ data: LISTA_PROYECTOS })
+      if (url === URL_ESTADO) { llamadas.push(Date.now()); return sondeo(llamadas.length) }
+      return Promise.resolve({ data: {} })
+    })
+    return llamadas
+  }
+
+  async function subirPdf() {
+    const { container } = renderBar()
+    await waitFor(() => expect(container.querySelector('input[type="file"]').getAttribute('accept')).toContain('application/pdf'))
+    vi.useFakeTimers()
+    adjuntar(container, new File(['scan'], 'scan.pdf', { type: 'application/pdf' }))
+    await avanzar(0) // la subida resuelve, el adjunto aparece y el efecto hace la primera consulta
+  }
+
+  const selector = () => screen.getByLabelText(es.proyectos.selectorChat.etiqueta)
+
+  it('reintenta una consulta del documento que falla, con backoff exponencial, y libera el selector al terminar', async () => {
+    const llamadas = mockearApi((n) => n === 1 ? Promise.reject(new Error('red transitoria'))
+      : Promise.resolve({ data: { estado: n === 2 ? 'procesando' : 'listo' } }))
+    await subirPdf()
+    expect(llamadas).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent(/cola de procesamiento/i) // el fallo no agotó nada
+    expect(selector()).toBeDisabled()
+
+    await avanzar(INICIAL - 1)
+    expect(llamadas).toHaveLength(1)
+    await avanzar(1)
+    expect(llamadas).toHaveLength(2)          // reintento tras INICIAL ms
+    await avanzar(2 * INICIAL - 1)
+    expect(llamadas).toHaveLength(2)
+    await avanzar(1)
+    expect(llamadas).toHaveLength(3)          // y el siguiente espera el DOBLE
+    expect([llamadas[1] - llamadas[0], llamadas[2] - llamadas[1]]).toEqual([INICIAL, 2 * INICIAL])
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Procesamiento completo/i)
+    expect(selector()).toBeEnabled()
+    expect(screen.getByText(es.erroresMesa.pdf_procesando_selector_libre)).toBeInTheDocument()
+    await avanzar(TOPE)
+    expect(llamadas).toHaveLength(3)          // terminado: no se sigue consultando
+  })
+
+  it('si el documento nunca responde, el backoff topa en el máximo y al agotar el tiempo declara que no pudo consultar', async () => {
+    const llamadas = mockearApi(() => Promise.reject(new Error('sin red')))
+    await subirPdf()
+    await avanzar(TOPE - 1)
+    const esperas = llamadas.slice(1).map((t, i) => t - llamadas[i])
+    // 10, 20, 40, 40, ...: el cuarto intervalo ya no duplica (tope de espera).
+    expect(esperas.slice(0, 4)).toEqual([INICIAL, 2 * INICIAL, MAXIMO, MAXIMO])
+    expect(Math.max(...esperas)).toBe(MAXIMO)
+    expect(screen.getByRole('status')).toHaveTextContent(/cola de procesamiento/i)
+    expect(selector()).toBeDisabled()
+
+    await avanzar(1)                          // se cumple el tiempo total
+    expect(screen.getByRole('status')).toHaveTextContent(/No se pudo consultar el estado/i)
+    expect(selector()).toBeEnabled()
+    const total = llamadas.length
+    await avanzar(10 * TOPE)
+    expect(llamadas).toHaveLength(total)      // agotado: no vuelve a consultar
+  })
+
+  it('una consulta que no vuelve nunca no deja el selector bloqueado más allá del tiempo total', async () => {
+    const llamadas = mockearApi(() => new Promise(() => {}))
+    await subirPdf()
+    expect(llamadas).toHaveLength(1)
+    await avanzar(TOPE - 1)
+    expect(selector()).toBeDisabled()
+    await avanzar(1)
+    expect(screen.getByRole('status')).toHaveTextContent(/No se pudo consultar el estado/i)
+    expect(selector()).toBeEnabled()
+    expect(llamadas).toHaveLength(1)
+  })
+
+  it('al agotar el tiempo total con el documento siempre en proceso declara que no pudo consultar y libera el selector', async () => {
+    const llamadas = mockearApi(() => Promise.resolve({ data: { estado: 'procesando' } }))
+    await subirPdf()
+    await avanzar(TOPE - 1)
+    expect(selector()).toBeDisabled()
+    await avanzar(1)
+    expect(screen.getByRole('status')).toHaveTextContent(/No se pudo consultar el estado/i)
+    expect(selector()).toBeEnabled()
+    const total = llamadas.length
+    await avanzar(10 * TOPE)
+    expect(llamadas).toHaveLength(total)
   })
 })

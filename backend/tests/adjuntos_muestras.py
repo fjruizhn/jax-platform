@@ -9,9 +9,11 @@ WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"relleno-webp" * 4
 GIF = b"GIF89a" + b"relleno-gif" * 4
 
 
-def pdf_con_texto(paginas: list[str]) -> bytes:
+def pdf_con_texto(paginas: list[str], *, comentario: bytes = b"") -> bytes:
     """PDF 1.4 válido, una línea de texto ASCII (Helvetica) por página.
-    Una cadena vacía da una página sin texto extraíble."""
+    Una cadena vacía da una página sin texto extraíble. `comentario` inserta
+    un comentario PDF después de la cabecera, antes de los objetos (útil para
+    formar PDFs válidos con un tamaño controlado en la carga E3)."""
     objetos: list[bytes] = []
     n = len(paginas)
     kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(n))
@@ -26,6 +28,10 @@ def pdf_con_texto(paginas: list[str]) -> bytes:
              f"/Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>").encode())
         objetos.append(b"<< /Length %d >>\nstream\n" % len(contenido) + contenido + b"\nendstream")
     salida = bytearray(b"%PDF-1.4\n")
+    if comentario:
+        if b"\n" in comentario or b"\r" in comentario:
+            raise ValueError("el comentario de relleno no admite saltos de línea")
+        salida += b"% " + comentario + b"\n"
     offsets = []
     for numero, cuerpo in enumerate(objetos, start=1):
         offsets.append(len(salida))

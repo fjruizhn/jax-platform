@@ -23,7 +23,7 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 // no está (archivado, o ya no se es miembro), se vuelve a «Personal» con aviso.
 // Si la lista falla, no se des-elige nada: el 403 `project_scope_denied` del
 // chat es la defensa real.
-export default function SelectorDeProyecto() {
+export default function SelectorDeProyecto({ bloqueado = false }) {
   const { t } = useI18n()
   const proyectoActivo = useJaxStore((s) => s.proyectoActivo)
   const setProyectoActivo = useJaxStore((s) => s.setProyectoActivo)
@@ -56,6 +56,7 @@ export default function SelectorDeProyecto() {
   }, [cargar])
 
   function elegir(e) {
+    if (bloqueado) return
     const id = e.target.value
     if (id === '') { setProyectoActivo(null); return }
     const p = proyectos.find((x) => String(x.id) === id)
@@ -75,10 +76,11 @@ export default function SelectorDeProyecto() {
       <select
         id="selector-proyecto-chat"
         value={proyectoActivo ? String(proyectoActivo.id) : ''}
+        disabled={bloqueado}
         onChange={elegir}
         onMouseDown={cargar}
         onFocus={cargar}
-        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie-2 text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco`}
+        className={`${TAMANO_BOTON_ACCION} max-w-40 truncate rounded bg-superficie-2 text-texto-suave hover:text-texto font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-foco disabled:opacity-60 disabled:cursor-not-allowed`}
       >
         <option value="">{t.proyectos.selectorChat.personal}</option>
         {hayElegidoFueraDeLista && (

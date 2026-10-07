@@ -108,6 +108,8 @@ jobs:
       # runner vitest imprime con colores ANSI y un grep sobre el texto
       # ("Tests 69 passed") no matcheaba con los 69 en verde -- medido en la
       # primera corrida de este job. El conteo no puede depender del formato.
+      # Los tiempos del sondeo del PDF escaneado del chat (VITE_CHAT_PDF_POLL_*) viven
+      # en frontend/vitest.config.js (test.env): iguales en local y en CI, sin variables aqui.
       - name: Piso exacto de tests CORRIDOS
         run: |
           npx vitest run --reporter=default --reporter=json --outputFile=/tmp/vitest.json
@@ -1119,12 +1121,29 @@ jobs:
             // 1385 -> 1389 (2026-10-06, feat/ajuste-c2-edad-max): +4 en AdminSettings.test.jsx (campo de
             //   ejecutor.c2_edad_max_s: valor y limites, envio, error nombrado, i18n). Vistos en rojo antes de verde.
             //   Medido con `npm test` (vitest run) sobre la rama: 1389/0/1389, 113 archivos.
+            // 1393 -> 1397 (2026-10-06, E3 respaldo chat ronda 2): +4 tests netos de reintento,
+            // bloqueo durante proceso, agotamiento honesto y traducción de códigos OCR.
+            // 1389 -> 1393 (2026-10-06, E3 respaldo chat): +4: estado OCR real, turno de chat sin
+            //   adjunto pendiente, traducción de rechazo de proyecto y bloqueo del selector durante carga/cola.
+            //   Medido sobre origin/master d283d90: 1389/0/1389 -> 1393/0/1393.
+            // 1397 -> 1410 (2026-10-06, E3 respaldo chat, cierre de la auditoría sobre b209f7de): +13
+            //   netos. BottomBar.test.jsx 26 -> 30 (+4: el reintento y el tope se prueban sobre EL SONDEO
+            //   del documento con reloj falso y mocks por URL -- 4 pruebas en lugar de 2 --, y +2 de
+            //   project_id en el formData), FileAttachment.test.jsx 7 -> 16 (+9: sin «listo» mientras
+            //   está en curso, estado traducido y «desconocido»). MEDICION LOCAL (hall9000, 2026-10-06,
+            //   `npx vitest run` sobre la rama, sin variables de entorno -- el sondeo ya sale de
+            //   vitest.config.js): 1410/0/1410, 113 archivos. CONFIRMADO en el runner: policy run 37502134709 (SHA 365adba).
+            // REBASE sobre origin/master 303006f (2026-10-06): master no cambia el conteo del frontend (1389 en master y
+            //   en la base d283d90), asi que 1389 + 21 de E3 = 1410. MEDIDO sobre la mezcla: 1410/0/1410, 113 archivos.
             // 1389 -> 1392 (Codex, ronda 2 de #203, 2026-10-06): +3 AdminSettings.test.jsx
             //   para enfriamiento configurable. Medido con `npx vitest run`: 1392/0/1392, 113 archivos.
             // 1392 -> 1393 (ronda 9 de #203, 2026-10-06): +1 AdminSettings.test.jsx (la ayuda del enfriamiento muestra el
             //   minimo de `limites`). Medido con `npx vitest run`: 1393/0/1393, 113 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1393) {
-              console.error("PISO ROTO: se esperaban 1393 tests de vitest CORRIDOS y 0 fallidos.");
+            // REMEZCLA con origin/master 39b3ef2 (2026-10-06, regla 5): master trae #203 (+4 en AdminSettings.test.jsx,
+            //   piso del runner de master 1393). Base del runner de master 1393 + delta de E3 +21 = 1414.
+            //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1414) {
+              console.error("PISO ROTO: se esperaban 1414 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1363,7 +1382,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=19e564e5c0b66898aee08e3bca2eea514348ef67
+          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -1442,6 +1461,42 @@ jobs:
         # The exact JAX pin provides runtime-status and structured projection
         # APIs. The dedicated exact-pair job additionally records both heads.
         run: python -m pytest -q -rs --ignore=tests/test_carga_indice_pipelines_del_usuario.py --junitxml=junit-db.xml
+
+      - name: Medir E3 con 20 usuarios chateando mientras sus PDF escaneados se procesan
+        # 20 subidas al tope (escalonadas) y 5 turnos de chat por usuario MIENTRAS corren
+        # el despacho y el sondeo reales, con MariaDB/workspace reales. Solo se simula
+        # el servicio OCR remoto. Se mide por separado el p95 de CADA subida y el p95 de
+        # CADA turno de chat. Topes = peor línea base medida en hall9000 (2026-10-06,
+        # subida 59,9 ms, chat 1623 ms; 12 corridas) x margen declarado: subida x25 = 1500 ms (la
+        # base es de decenas de ms: manda el ruido absoluto del runner), chat x3 -> 5000 ms.
+        env:
+          JAX_E3_SUBIDA_P95_MAX_MS: '1500'
+          JAX_E3_CHAT_P95_MAX_MS: '5000'
+        run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
+
+      - name: Comprobar que E3 rechaza el mutante sleep(0.5)
+        # `time.sleep(0.5)` bloqueante en encolar_pdf_desde_chat: los 20 bloqueos se
+        # serializan en el event loop y la subida p95 pasa de ~60 ms a ~10000 ms. Ocho
+        # workers y su timeout máximo válido aíslan el bloqueo del límite del pool OCR:
+        # el job debe fallar por superar el tope de p95; un 503 de cola saturada no cuenta
+        # como prueba del mutante (el grep de abajo exige el mensaje del tope).
+        env:
+          JAX_E3_SUBIDA_P95_MAX_MS: '1500'
+          JAX_E3_CHAT_P95_MAX_MS: '5000'
+          JAX_E3_MUTANT_SLEEP_S: '0.5'
+          JAX_ADJUNTO_PDF_PROCESOS: '8'
+          JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS: '60'
+        run: |
+          set +e
+          python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios >e3-mutante.log 2>&1
+          resultado=$?
+          set -e
+          tail -n 35 e3-mutante.log
+          if [ "$resultado" -eq 0 ]; then
+            echo "El mutante sleep(0.5) pasó E3; la prueba de carga no detecta la regresión."
+            exit 1
+          fi
+          grep -E "E3 (subida|chat) p95 " e3-mutante.log
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()
@@ -3644,6 +3699,30 @@ jobs:
           #   (la pura del filtro de rol y la relectura de #199, ahora con filas propias) no cambian el
           #   conteo. MEDIDO igual que arriba sobre la rama (18c6d2c): 3836 passed, 1 skipped, el mismo 1 failed
           #   local de extractores. Sin DB no suma (se salta): 2361 igual. El runner tiene la ultima palabra.
+          # 3838 -> 3847 (Codex, E3 ronda 2, 2026-10-06): +9 DB (5 autorizaciones del nuevo
+          # punto de entrada, 1 guarda de freno, 1 regresión antes del INSERT y 2 escenarios
+          # de respuesta parcial en lotes); el
+          # arnés E3 exige 20 dispatches y 20 estados listos y limpia filas aun con fallo parcial.
+          # Se re-mide en backend-tests-con-db, que usa MariaDB desechable.
+          # 3830 -> 3838 (Codex, E3 respaldo chat, 2026-10-06): CI 37454479696 sobre 30989bf midió
+          # colectados=3840 passed=3838 skipped=2 failed=0; incluye admisión durable, estado y carga E3.
+          # 3847 -> 3853 (Codex/Hyde, E3 respaldo chat, cierre de la auditoría sobre b209f7de, 2026-10-06):
+          # +6 DB (visibilidad de un documento oculto, duplicado y duplicado oculto desde el chat, tope por
+          # archivo de proyectos < tope del chat, y el cupo de subidas simultáneas x2: por usuario y global).
+          # La prueba de carga E3 se reescribe 1 a 1 (sigue siendo 1). MEDICION LOCAL (hall9000, MariaDB
+          # 12.3.3 efímera en su propio netns, venv de pruebas con los extractores): 3854 passed / 1 skipped
+          # (antes de estos cambios, mismo método, sobre b209f7de: 3848 / 1; CI midió 3847 / 2: la
+          # diferencia de 1 es una prueba que el runner omite por entorno). Piso = 3854 - 1 = 3853;
+          # Piso 3853 respetado en el runner: policy run 37502134709 (SHA 365adba).
+          # 3853 -> 3854 (cierre de los 3 MINOR de la auditoria sobre 365adba): +1 DB (cancelar la
+          # escritura del PDF del chat suelta el cupo). MEDICION LOCAL: 3855 passed / 1 skipped; piso =
+          # 3855 - 1 (el que el runner omite por entorno). Ese +1 NO esta medido en el runner (regla 5).
+          # REBASE sobre origin/master 303006f (ya trae #199 y #200; piso de master 3836): los pisos se SUMAN, no se
+          # eligen. Delta de E3 = 3854 - 3830 = +24 (3830 era el piso de la base d283d90); 3836 + 24 = 3860.
+          # MEDIDO sobre la mezcla, mismo comando que este job (MariaDB 12.3.3 efimera propia, en su netns, puerto
+          # distinto de 3306 y 3308; venv con los extractores; jax en el pin 0604754): 3861 passed / 1 skipped
+          # (la rama E3 sola daba 3855). Piso = 3861 - 1 (el que el runner omite por
+          # entorno) = 3860. NO medido en el runner (regla 5).
           # 3836 -> 3875 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO EN EL RUNNER, run
           # 37498133766 sobre e8d2cca: colectados=3877 passed=3875 skipped=2 (1 de entorno y 1 SR2 gateado) failed=0.
           # El local (venv-jxp-tests + mariadb:12.3.3 desechable) daba 3876: +1 sobre el runner, por un skip de
@@ -3664,6 +3743,10 @@ jobs:
           # 3906 -> 3910 (ronda 9 de #203, 2026-10-06): base del runner 3875 (e8d2cca) + delta local +35 (e8d2cca 3876 ->
           # rama 3911): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14 (M7 el desconocido
           # cuenta para N, zona de la plataforma con el host en UTC, validacion de JAX_ZONA_HORARIA). El runner confirma.
+          # REMEZCLA con origin/master 39b3ef2 (regla 5): master trae #203 (piso del runner de master 3910). Delta de E3 = +24
+          # (3854 - 3830, ver arriba); base del runner de master 3910 + 24 = 3934. MEDIDO local sobre la mezcla (MariaDB 12.3.3
+          # efimera propia, en su netns; venv con los extractores; jax en el pin 0604754): 3935 passed / 1 skipped (el SR2 gateado); master solo daba 3911 local, 3910 en el runner; 3911 + 24 = 3935. Piso = medido - 1 (el skip de
+          # entorno que el runner omite). A confirmar en el runner.
           # 3836 -> 3847 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +11 con DB, ninguna
           #   cambia el conteo de las existentes: 5 puras (test_despachador_clave_idempotencia.py) + 6 en
           #   test_proyectos_documentos_despachador.py (clave en el encabezado; el corte entre el 202 y
@@ -3699,7 +3782,10 @@ jobs:
           #   mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366): +5 sobre la ronda 6 (conjunto de
           #   trozos trabados con cota k + 1, error global sin POST doble, 422 de formato global, aviso agregado, y la prueba de los
           #   ids bajos restaurada). El runner confirma el absoluto.
-          PISO_PASSED = 3960
+          # 3960 -> 3984 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 3934 + delta
+          #   local +50 (master 6f5094b local 3932 -> mezcla 3982, mismo comando del job, MariaDB 12.3.3 efimera --network none, base
+          #   LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan en los dos por el entorno local). El runner confirma.
+          PISO_PASSED = 3984
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4789,6 +4875,18 @@ jobs:
       # 2361 -> 2361 (ronda 3 de #200): sin cambio. La prueba nueva pide `client` (se salta sin DB) y la
       # pura solo endurece una asercion. MEDIDO con JAX_CI_NO_DB=1 sobre la rama (18c6d2c): 2361 passed /
       # 1477 skipped / 0 failed (+1 skipped, la prueba nueva). El runner tiene la ultima palabra.
+      # 2363 -> 2364 (2026-10-06, E3 ronda 2): +1 test unitario de guardia de kill switch.
+      # 2358 -> 2363 (2026-10-06, E3 respaldo chat): +5 tests puros sin DB.
+      #   Delta medido con JAX_CI_NO_DB=1 sobre origin/master d283d90: test_adjuntos_upload.py 15 -> 17
+      #   passed, test_proyectos_documentos_estado_unit.py 0 -> 2 y la comprobación del sufijo PDF suma 1.
+      #   Las pruebas DB-required de cola y aislamiento siguen omitidas en este runner y no suman.
+      # 2364 -> 2364 (2026-10-06, E3 respaldo chat, cierre de la auditoría sobre b209f7de): las +6 pruebas
+      # nuevas piden `client` (se saltean sin DB) y la de carga se reescribe 1 a 1: no suman aquí.
+      # MEDICION LOCAL (hall9000, JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, env -i): 2364 passed /
+      # 1491 skipped (antes, sobre b209f7de: 2364 / 1485; +6 skipped = las +6 nuevas). CONFIRMADO en el runner: policy run 37502134709 (SHA 365adba) respeto el piso 2364.
+      # REBASE sobre origin/master 303006f (piso de master 2361): delta de E3 = 2364 - 2358 = +6; 2361 + 6 = 2367.
+      # MEDIDO sobre la mezcla con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true (env -i): 2367 passed / 1495 skipped.
+      # NO medido en el runner (regla 5).
       # 2361 -> 2394 (Hyde, ronda 5 de #203 sobre master 303006f, 2026-10-06): MEDIDO LOCAL con JAX_CI_NO_DB=1
       # CI=true GITHUB_ACTIONS=true, env -i, pin de JAX 0604754 y el venv de pruebas: master 303006f = 2361 passed;
       # rama e8d2cca = 2394 passed (el job sin DB de e8d2cca paso con ese piso). En la ronda 5 el local con DB dio +1 sobre
@@ -4802,6 +4900,9 @@ jobs:
       # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +10. El runner confirma.
       # 2425 -> 2429 (ronda 9 de #203, 2026-10-06): base 2394 + delta local +35 (e8d2cca 2394 -> rama 2429, local 1483
       # skipped): test_catalogo_modelos_ejecutor +21 y test_despachador_aviso_freno_simulado +14. El runner confirma.
+      # REMEZCLA con origin/master 39b3ef2 (regla 5): master trae #203 (piso del runner de master 2429). Delta de E3 = +6;
+      # base del runner de master 2429 + 6 = 2435. MEDIDO local sobre la mezcla con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true
+      # (env -i): 2435 passed / 1501 skipped (2429 + 6). A confirmar en el runner.
       # 2361 -> 2366 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +5 puras
       #   (tests/test_despachador_clave_idempotencia.py, ninguna pide `client`). Las 6 de despacho con
       #   `client` (test_proyectos_documentos_despachador.py) se saltan sin DB. MEDIDO con JAX_CI_NO_DB=1 sobre
@@ -4818,7 +4919,9 @@ jobs:
       # 2429 -> 2440 (ronda 6 de #210, mezcla con master 39b3ef2): REGLA 5, base del runner 2429 + delta local +11 (master
       #   2429 -> mezcla 2440, JAX_CI_NO_DB=1, 1483 -> 1517 skipped): las pruebas puras de #210 (clave de idempotencia, contrato
       #   y su deriva con jax). Frontend sin cambio (1393 de master). El runner confirma el absoluto.
-      JAX_CI_MIN_PASSED: "2440"
+      # 2440 -> 2446 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 2435 + delta local
+      #   +11 (master 2435 -> mezcla 2446, JAX_CI_NO_DB=1, 1501 -> 1540 skipped, mismo comando, jax en el head de #366). El runner confirma.
+      JAX_CI_MIN_PASSED: "2446"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4841,7 +4944,7 @@ jobs:
           # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
           # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
           # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=19e564e5c0b66898aee08e3bca2eea514348ef67
+          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

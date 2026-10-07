@@ -20,7 +20,11 @@ class PdfIlegible(ValueError):
 
 
 class PdfSinTexto(ValueError):
-    """Se leyó, pero no tiene texto extraíble."""
+    """Se leyó, pero no tiene texto extraíble. `paginas` es el total real del PDF."""
+
+    def __init__(self, paginas: int = 0):
+        self.paginas = paginas
+        super().__init__("PDF sin texto extraíble")
 
 
 def extraer_texto(datos: bytes | str, max_paginas: int, max_chars: int) -> tuple[str, bool]:
@@ -58,6 +62,6 @@ def extraer_texto(datos: bytes | str, max_paginas: int, max_chars: int) -> tuple
         raise PdfIlegible(type(e).__name__) from e
     texto = "\n\n".join(partes).strip()
     if not texto:
-        raise PdfSinTexto()
+        raise PdfSinTexto(paginas=total_paginas)
     recortado = len(texto) > max_chars or leidas < total_paginas
     return texto[:max_chars], recortado

@@ -80,4 +80,14 @@ describe('SelectorDeProyecto', () => {
     await waitFor(() => expect(listarProyectos).toHaveBeenCalled())
     expect(useJaxStore.getState().proyectoActivo).toEqual(A)
   })
+
+  it('bloquea cambios de proyecto mientras hay un PDF escaneado ligado al proyecto activo', async () => {
+    useJaxStore.setState({ proyectoActivo: A })
+    listarProyectos.mockResolvedValue({ proyectos: [A, B] })
+    render(<I18nProvider><SelectorDeProyecto bloqueado /></I18nProvider>)
+    const selector = await screen.findByLabelText(es.proyectos.selectorChat.etiqueta)
+    expect(selector).toBeDisabled()
+    fireEvent.change(selector, { target: { value: '2' } })
+    expect(useJaxStore.getState().proyectoActivo).toEqual(A)
+  })
 })

@@ -16,6 +16,8 @@ CODIGOS: tuple[str, ...] = (
     "imagen_no_soportada",
     "pdf_ilegible",
     "pdf_sin_texto",
+    "pdf_escaneado_requiere_proyecto",
+    "adjunto_demasiadas_paginas",
 )
 
 
