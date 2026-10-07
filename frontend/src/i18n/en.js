@@ -912,7 +912,7 @@ export default {
   adminCostsWeek: 'Week',
   adminCostsMonth: 'Month',
   adminCostsTotal: 'Total',
-  adminCostsChart: 'Requests by facet (last 7 days)',
+  adminCostsChart: 'Requests by facet (last 7 days; excludes canary probes)',
   adminCostsNoData: 'No data yet',
   adminCostsNoPricing: 'No pricing',
   adminCostsPartialMarker: '*',

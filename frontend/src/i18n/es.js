@@ -970,7 +970,7 @@ export default {
   adminCostsWeek: 'Semana',
   adminCostsMonth: 'Mes',
   adminCostsTotal: 'Total',
-  adminCostsChart: 'Requests por faceta (últimos 7 días)',
+  adminCostsChart: 'Requests por faceta (últimos 7 días; no incluye las sondas del canario)',
   adminCostsNoData: 'Sin datos aún',
   adminCostsNoPricing: 'Sin precio',
   adminCostsPartialMarker: '*',

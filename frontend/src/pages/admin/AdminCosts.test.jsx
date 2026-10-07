@@ -339,3 +339,26 @@ describe('AdminCosts -- columna Tipo (request_type)', () => {
     expect(screen.getByText('—')).toBeInTheDocument()
   })
 })
+
+// Ronda 3 de #212: el gráfico por faceta cuenta peticiones y excluye las sondas
+// del canario (backend); el título lo dice, para que nadie lea «el canario no
+// hace nada» cuando solo no se cuenta aquí (su costo sí está en la tabla).
+describe('AdminCosts -- el gráfico dice que excluye las sondas', () => {
+  const CON_GRAFICO = {
+    by_facet: [FILA],
+    chart_data: { labels: ['2026-10-01', '2026-10-02'], datasets: { hyde: [1, 2] } },
+  }
+
+  it('en español el título del gráfico aclara que no incluye las sondas del canario', async () => {
+    api.get.mockResolvedValue({ data: CON_GRAFICO })
+    renderCosts()
+    expect(await screen.findByText(/no incluye las sondas del canario/)).toBeInTheDocument()
+  })
+
+  it('en inglés el título del gráfico aclara que excluye las sondas del canario', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({ data: CON_GRAFICO })
+    renderCosts()
+    expect(await screen.findByText(/excludes canary probes/)).toBeInTheDocument()
+  })
+})
