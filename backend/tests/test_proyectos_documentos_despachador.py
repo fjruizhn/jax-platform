@@ -1830,7 +1830,7 @@ def test_con_un_corte_global_sostenido_las_filas_reactivadas_detras_del_cursor_s
 def test_un_error_global_no_duplica_los_post_y_la_cota_cuenta_los_trozos_saltados(e):
     """Un 429 (global) corta en el primer trozo que lo recibe y no entra al conjunto de trabados, asi que cada ciclo
     no crece de un ciclo a otro. Sin claves desconocidas por delante, es UN POST por ciclo; con ellas, la cota es 1 + un
-    POST por cada trozo saltado de la ventana por delante del corte (cada uno recibio su 503
+    POST por cada trozo saltado en las ventanas recorridas en ese ciclo antes del corte (cada uno recibio su 503
     `idempotencia_estado_desconocido`; no es un doble envio: es otro trozo). Si el cursor va y viene (corte en la primera
     ventana -> 0), la cuenta por ciclo puede alternar entre esas dos cotas; nunca las supera."""
     pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
