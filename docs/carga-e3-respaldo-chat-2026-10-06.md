@@ -19,10 +19,44 @@ El primer resultado normal de CI del SHA `18c4364` (policy run 37484684852) fue 
 
 | Medida | Rango | Peor corrida | Tope | Margen declarado |
 |---|---:|---:|---:|---|
-| p95 de subida | 32-60 ms | 59,9 ms | 1500 ms | x25: la base es de decenas de ms y manda el ruido absoluto del runner; sigue 6x por debajo del mutante |
+| p95 de subida | 32-60 ms | 59,9 ms | ~~1500 ms~~ (reemplazado el 2026-10-06, ver «Tope de subida independiente de los núcleos») | x25: válido solo con 32 CPU; el runner de CI midió 1215-1669 ms sin mutante |
 | p95 de turno de chat | 1021-1623 ms | 1623 ms | 5000 ms | x3: la base ya es de cola (100 turnos en ~2 s sobre un loop) |
 
-Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope 1500) y chat p95 3908 / 3713 / 2132 / 3577 ms en cuatro corridas (con subida 10110 ms en la última); la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat (5000 ms) no ve este mutante, a propósito: el bloqueo no está en la ruta del chat y esa cifra es cola. **Ese tope NO promete detectar un bloqueo pequeño en `chat()`: ver «Límites conocidos de los topes».** **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
+Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso de CI (8 workers, 60 s): **subida p95 9828 / 9918 / 10130 ms** (tope absoluto de entonces: 1500; el vigente es el relativo) y chat p95 3908 / 3713 / 2132 / 3577 ms en cuatro corridas (con subida 10110 ms en la última); la prueba queda en rojo siempre por `E3 subida p95`. El tope de chat (5000 ms) no ve este mutante, a propósito: el bloqueo no está en la ruta del chat y esa cifra es cola. **Ese tope NO promete detectar un bloqueo pequeño en `chat()`: ver «Límites conocidos de los topes».** **La prueba ANTERIOR (`b209f7de`) con el mismo mutante a 0,5 s pasó** (p95 11062 ms contra tope 25000): ese era el defecto. Sin los 8 workers el mutante da `503 adjuntos_reintentar` antes de medir, por eso el paso de CI los fija y el grep exige el mensaje del tope.
+
+## Tope de subida independiente de los núcleos (2026-10-06)
+
+**Defecto:** `tope_subida_ms=1500` era absoluto y se calibró en hall9000 (32 CPU, base 32-60 ms x25). La subida p95 bajo carga depende de los núcleos: con 32 CPU los 20 usuarios caben en el pool de hilos por defecto de Python y las llegadas escalonadas (50 ms) casi no se solapan; con 1-4 CPU se serializan. En el runner de CI, **master** dio 1215 ms y los runs de **#210** 1616 y 1669 ms (verificado en los logs `E3_LOAD`) sin cambio en la ruta de subida: el control fallaba por la máquina, no por el código. Con la prueba vieja, 1 CPU compartida con un competidor de CPU (emulación de runner lento) falló 2 de 3 veces (1524 y 1742 ms contra 1500) y la nueva pasó 3 de 3.
+
+**Fórmula (en la misma corrida):**
+
+- Se mide el **costo aislado** de una subida: mediana de 7 subidas distintas (mismo tamaño, 10 MiB y 20 páginas), sin concurrencia, sin despacho, sin chats, **antes** de instalar el mutante (si no, el mutante inflaría su propia vara). Las filas se borran para que el escenario despache exactamente 20 trabajos.
+- `tope = min(FACTOR_SUBIDA x costo_aislado x usuarios, TECHO_SUBIDA_MS)` con `FACTOR_SUBIDA = 6`, `usuarios = 20` (concurrencia efectiva máxima) y `TECHO_SUBIDA_MS = 8000`.
+- Por qué 6: la razón p95/aislado medida va de 22 a 59 con 1, 2 y 4 CPU y de 1,3 a 3,4 con 32; el mutante `sleep(0.5)` da 305-410. El tope (razón 120) queda 2x sobre la peor razón sin mutante y 2,5x por debajo de la menor con mutante.
+- Por qué el techo: `sleep(0.5)` suma >= 18 x 500 ms a la subida p95 en cualquier máquina (9540-10370 ms medidos); en una máquina tan lenta que el costo aislado subiera el tope relativo por encima de eso, el techo (8000 ms, 5x lo que midió el runner sin mutante) lo sigue atrapando. Con `JAX_E3_SUBIDA_FACTOR=1000` y el mutante, cae por el techo (p95 9922 ms contra 8000).
+- Variables nuevas: `JAX_E3_SUBIDA_FACTOR` y `JAX_E3_SUBIDA_TECHO_MS`. **La prueba ya no lee `JAX_E3_SUBIDA_P95_MAX_MS`**: `policy.yml` aún la fija en `'1500'` en dos pasos; es inerte y hay que quitarla (el archivo es reservado a Fernando).
+- La línea `E3_LOAD` imprime ahora `subida_aislada_ms`, `razon_p95_aislada`, `subida_tope_ms` (el efectivo), `factor_subida` y `techo_subida_ms`: el runner deja registrada su línea base.
+- Debilidad declarada: en una máquina con muchos núcleos el tope relativo (~3200 ms en hall9000, base 33-47 ms) es holgado; ve el mutante y bloqueos grandes, no una regresión de decenas de ms. Es el precio de que el control no dependa de la máquina.
+
+**Mediciones (hall9000, MariaDB 12.3.3 efímera `--network none`, `taskset`; 4 corridas por configuración, código final):**
+
+| CPU | aislado (ms) | p95 subida (ms) | razón p95/aislado | tope efectivo (ms) | resultado |
+|---|---|---|---|---|---|
+| 1 | 26,6-30,7 | 979 / 1328 / 1231 / 1356 | 36,8 / 46,2 / 42,4 / 44,1 | 3193-3688 | 4/4 pasa |
+| 2 | 26,6-30,7 | 1252 / 1327 / 1154 / 1274 | 47,0 / 49,4 / 42,3 / 41,5 | 3198-3682 | 4/4 pasa |
+| 4 | 27,0-30,4 | 917 / 1158 / 658 / 931 | 34,0 / 42,7 / 24,0 / 30,7 | 3237-3646 | 4/4 pasa |
+| 32 (sin restringir) | 26,3-27,2 | 33 / 38 / 46 / 46 | 1,3 / 1,4 / 1,7 / 1,7 | 3156-3267 | 4/4 pasa |
+| 1 + competidor de CPU | 43,8-44,0 | 1233 / 1323 / 1298 | 28-30 | 4378-4398 | 3/3 pasa (la prueba vieja: 2/3 falla) |
+
+Mutante `sleep(0.5)` (8 workers y 60 s, como el paso de CI):
+
+| CPU | p95 subida (ms) | razón | tope (ms) | resultado |
+|---|---|---|---|---|
+| 1 | 10209 / 10029 / 10371 / 10204 | 338-374 | 3277-3623 | 4/4 falla por `E3 subida p95` |
+| 32 | 9540 / 9827 / 9573 / 9830 | 308-339 | 3461-3831 | 4/4 falla por `E3 subida p95` |
+
+El número de pruebas no cambia: `--collect-only` de `tests/test_adjuntos_chat_endpoint.py` da 32 antes y después.
+
 
 **Límites conocidos de los topes (declarados tras la auditoría de `365adba`):**
 
@@ -35,8 +69,8 @@ Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso d
   | 0,05 s | no | — |
   | 0,1 s | a veces (2 de 2 en la máquina del auditor) | ningún tope; la aserción del escenario (71/100 < 90 %), sin garantía |
 
-- **Tope de subida (1500 ms): solo ve bloqueos del event loop.** Una espera no bloqueante por subida, por ejemplo `await asyncio.sleep(1.0)`, **pasa** con p95 de subida de 1048 ms (según la auditoría). Un retraso que no bloquea el loop (una consulta lenta, un acceso lento a disco en `to_thread`, un `await` de red) solo cae si supera los 1500 ms.
-- **El margen x25 del tope de subida no se midió contra el ruido del runner de CI**: se eligió porque la base local son decenas de ms y el ruido absoluto manda; el run 37502134709 pasó, y es una sola observación. Si el runner se vuelve ruidoso, el tope se re-mide, no se sube a ciegas.
+- **Tope de subida (relativo al costo aislado, ver «Tope de subida independiente de los núcleos»): solo ve bloqueos del event loop.** Una espera no bloqueante por subida, por ejemplo `await asyncio.sleep(1.0)`, **pasa** con p95 de subida de 1048 ms (según la auditoría; con el tope absoluto de 1500 ms que había entonces, y también con el relativo, que en hall9000 queda en ~3200 ms). Un retraso que no bloquea el loop (una consulta lenta, un acceso lento a disco en `to_thread`, un `await` de red) solo cae si supera el tope relativo (120 x costo aislado, ~3200-3700 ms medidos) o el techo de 8000 ms.
+- **El margen x25 del tope absoluto de subida (1500 ms) no valía fuera de hall9000, y se reemplazó.** Corregido con datos del runner de CI (verificados en los logs `E3_LOAD`): master dio subida p95 **1215 ms** y los runs de #210 **1616 y 1669 ms**, sin que el código de subida cambiara; la base de decenas de ms es de una máquina de 32 CPU. Un tope absoluto mide la máquina, no el código. El run 37502134709 que había pasado era una sola observación.
 - Ninguno de los dos topes mide OCR real: el borde HTTP de LAS MANOS está simulado (`_OCR_SIMULADO_S`).
 
 | Hallazgo | Cierre | Evidencia local |
