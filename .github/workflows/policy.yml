@@ -3785,7 +3785,13 @@ jobs:
           # 3960 -> 3984 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 3934 + delta
           #   local +50 (master 6f5094b local 3932 -> mezcla 3982, mismo comando del job, MariaDB 12.3.3 efimera --network none, base
           #   LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan en los dos por el entorno local). El runner confirma.
-          PISO_PASSED = 3984
+          # 3984 -> 3987 (ronda 8 de #210): +3 con DB sobre la mezcla, ninguna cambia el conteo de las existentes: el corte global
+          #   sin progreso reinicia el cursor (sonda A del auditor), el rastro del conjunto de trabados (entrada, un log de saltos por
+          #   ciclo, vaciado) y el tope de ids del log; la prueba «restaurada» se reescribe (misma cuenta) y la de «un POST por ciclo»
+          #   se corrige (misma cuenta). Base del runner 3934 + delta local +53 (master 6f5094b local 3932 -> rama 3985, mismo comando,
+          #   MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan
+          #   en los dos por el entorno local). Sin DB no suma (usan `client`). El runner confirma el absoluto.
+          PISO_PASSED = 3987
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4921,6 +4927,8 @@ jobs:
       #   y su deriva con jax). Frontend sin cambio (1393 de master). El runner confirma el absoluto.
       # 2440 -> 2446 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 2435 + delta local
       #   +11 (master 2435 -> mezcla 2446, JAX_CI_NO_DB=1, 1501 -> 1540 skipped, mismo comando, jax en el head de #366). El runner confirma.
+      # 2446 -> 2446 (ronda 8 de #210): sin cambio. Las 3 pruebas nuevas de despacho piden `client` y se saltan sin DB: medido con
+      #   JAX_CI_NO_DB=1, mismo comando, 2446 passed / 1543 skipped (los 1540 de la mezcla + las 3 nuevas).
       JAX_CI_MIN_PASSED: "2446"
     steps:
       - uses: actions/checkout@v4
