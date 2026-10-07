@@ -709,8 +709,10 @@ async def _despachar(pool) -> None:
     filas de un proyecto rechazado no llenan la ventana para siempre y los demas salen en el mismo ciclo. Se
     recorre hasta el final de la cola (una ventana con menos filas que el limite) y el cursor vuelve a 0; si el
     ciclo se corta por un error GLOBAL (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada y la
-    vuelta siguiente la retoma desde ahi, salvo que haya cortado en la primera ventana del ciclo (sin progreso): entonces
-    vuelve a 0, para que lo que se reactive detras del cursor se lea en la primera pasada tras recuperarse; un trozo que
+    vuelta siguiente la retoma desde ahi, salvo que haya cortado en la primera ventana del ciclo (aunque esa ventana haya despachado algo antes del corte):
+    entonces vuelve a 0, para que lo que se reactive detras del cursor se lea en la primera pasada tras recuperarse. Con un
+    corte global sostenido el cursor puede ir y venir entre 0 y el inicio de la ventana cortada en ciclos alternos; el costo
+    aceptado es un POST extra por cada trozo saltado detras del cursor cada dos ciclos (un SELECT en LAS MANOS). Un trozo que
     corta por un error LOCAL de su proyecto (un 500) entra a
     `_trozos_trabados` y se salta hasta completar la pasada, asi que no frena a los demas (cota: trabados + 1 ciclos). Con el
     freno de incertidumbre activo el ciclo no llega aca y el cursor no se toca. No hay listas de exclusion de
@@ -795,7 +797,7 @@ async def _despachar(pool) -> None:
                 _cursor_de_cola = cursor             # error LOCAL: la ventana cortada se retoma desde su inicio
                 return
             if accion == "cortar":
-                # Error GLOBAL. Si corto en la PRIMERA ventana del ciclo (no hubo progreso) y el cursor estaba adelantado, se
+                # Error GLOBAL. Si corto en la PRIMERA ventana del ciclo (haya o no despachado algo antes) y el cursor estaba adelantado, se
                 # reinicia: las filas que volvieron a la cola detras del cursor (un proyecto reactivado) no esperan sin tope
                 # a que el corte termine; al recuperarse, la pasada siguiente arranca desde 0. Si corto mas adelante, la
                 # ventana cortada se retoma desde su inicio.
