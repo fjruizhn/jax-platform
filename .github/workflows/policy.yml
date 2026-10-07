@@ -1142,8 +1142,11 @@ jobs:
             // REMEZCLA con origin/master 39b3ef2 (2026-10-06, regla 5): master trae #203 (+4 en AdminSettings.test.jsx,
             //   piso del runner de master 1393). Base del runner de master 1393 + delta de E3 +21 = 1414.
             //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1414) {
-              console.error("PISO ROTO: se esperaban 1414 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1414 -> 1417 (GLM g1, ronda 2 de #212, 2026-10-07): +3 en AdminCosts.test.jsx (columna Tipo con el
+            //   request_type traducido: es/en, canario, tipo desconocido y ausente). Vistas en rojo contra 14af0d6.
+            //   MEDIDO local con `npx vitest run` sobre la rama: 1417/0/1417, 113 archivos. A confirmar en el runner.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1417) {
+              console.error("PISO ROTO: se esperaban 1417 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -3812,7 +3815,16 @@ jobs:
           #   runner omite por entorno, mismo desfase ya documentado arriba). Vista en ROJA contra
           #   master: las 4 nuevas fallan. Mutante sin la llamada a record_usage: las 2 que fijan el
           #   registro la matan. El runner tiene la ultima palabra.
-          PISO_PASSED = 3991
+          # 3991 -> 3998 (GLM g1, ronda 2 de #212, 2026-10-07): +7 con DB en tests/test_facet_canary_uso.py:
+          #   record_usage colgado con tope propio (dos: por probe_facet y por la puerta del barrido
+          #   _sondear_con_tope), ni la cola puede -> registros_perdidos, la cancelacion de afuera no se traga,
+          #   un bug nuestro en el registro no se traga, el SQL de peticiones excluye 'canario' y el de dinero no,
+          #   y 1 de integracion (una fila canario no cuenta en messages_today pero si en el costo). MEDIDO
+          #   sobre la rama, mismo comando del job, MariaDB 12.3.3 efimera --network none (socket + socat en
+          #   127.0.0.1:33992, base LIMPIA, jax en el pin 92452a69): 3999 passed / 1 skipped (SR2) / 0 failed
+          #   (3992 de la ronda 1 + 7; el +1 sobre el piso es el de secretos que el runner omite, ya documentado).
+          #   Vistas en rojo contra 14af0d6; los mutantes mueren. El runner tiene la ultima palabra.
+          PISO_PASSED = 3998
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4959,7 +4971,12 @@ jobs:
       #   MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true (env -i, jax en el pin 92452a69, mismo
       #   comando): master 2446 -> rama 2449 passed / 1544 skipped (1543 + la cuarta mia). El runner
       #   tiene la ultima palabra.
-      JAX_CI_MIN_PASSED: "2449"
+      # 2449 -> 2455 (GLM g1, ronda 2 de #212, 2026-10-07): +6 puras en tests/test_facet_canary_uso.py (las dos
+      #   de record_usage colgado, ni la cola puede, cancelacion no se traga, bug nuestro no se traga, SQL de
+      #   peticiones sin canario); la de integracion (messages_today) pide `client` y se salta. MEDIDO con
+      #   JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2455 passed /
+      #   1545 skipped. El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2455"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
