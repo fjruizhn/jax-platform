@@ -1463,21 +1463,25 @@ jobs:
         # 20 subidas al tope (escalonadas) y 5 turnos de chat por usuario MIENTRAS corren
         # el despacho y el sondeo reales, con MariaDB/workspace reales. Solo se simula
         # el servicio OCR remoto. Se mide por separado el p95 de CADA subida y el p95 de
-        # CADA turno de chat. Tope de subida RELATIVO a la máquina (2026-10-06, Hyde): la misma
-        # corrida mide el costo de una subida aislada y exige p95 <= 6 x aislado x usuarios, con
-        # techo absoluto de 8000 ms (ver la prueba y docs/carga-e3-respaldo-chat-2026-10-06.md);
-        # el tope fijo de 1500 ms se calibró con 32 CPU y el runner daba 1215-1669 ms sin
-        # regresión. Chat: peor línea base de hall9000 (1623 ms) x3 -> 5000 ms.
+        # CADA turno de chat. Lo que vigila la subida es que NO BLOQUEE el event loop de la
+        # app: un latido en ese loop (tarea que duerme 10 ms en bucle) mide el atraso de cada
+        # despertar y se exige p99 <= 40 ms, sin depender de los núcleos de la máquina. El p95
+        # de subida queda solo como techo absoluto de 8000 ms (el tope fijo de 1500 ms se
+        # calibró con 32 CPU y el runner daba 1215-1669 ms sin regresión). Ver la prueba y
+        # docs/carga-e3-respaldo-chat-2026-10-06.md. Chat: peor línea base de hall9000
+        # (1623 ms) x3 -> 5000 ms.
         env:
           JAX_E3_CHAT_P95_MAX_MS: '5000'
         run: python -m pytest -q -s tests/test_adjuntos_chat_endpoint.py -k carga_e3_20_usuarios
 
       - name: Comprobar que E3 rechaza el mutante sleep(0.5)
         # `time.sleep(0.5)` bloqueante en encolar_pdf_desde_chat: los 20 bloqueos se
-        # serializan en el event loop y la subida p95 pasa de ~60 ms a ~10000 ms. Ocho
-        # workers y su timeout máximo válido aíslan el bloqueo del límite del pool OCR:
-        # el job debe fallar por superar el tope de p95; un 503 de cola saturada no cuenta
-        # como prueba del mutante (el grep de abajo exige el mensaje del tope).
+        # serializan en el event loop y el p99 del atraso del latido pasa de unos 5-15 ms a
+        # 500-1500 ms. Ocho workers y su timeout máximo válido aíslan el bloqueo del límite del
+        # pool OCR: el job debe fallar por el latido del loop; un 503 de cola saturada no cuenta
+        # como prueba del mutante. El grep de abajo exige la línea de la AssertionError real
+        # (`E       AssertionError: E3 loop ...`); un `E3 loop` en el código fuente que pytest
+        # repite en el traceback NO la satisface (esa línea no empieza por `E`).
         env:
           JAX_E3_CHAT_P95_MAX_MS: '5000'
           JAX_E3_MUTANT_SLEEP_S: '0.5'
@@ -1493,7 +1497,7 @@ jobs:
             echo "El mutante sleep(0.5) pasó E3; la prueba de carga no detecta la regresión."
             exit 1
           fi
-          grep -E "E3 (subida|chat) p95 " e3-mutante.log
+          grep -E "^E +AssertionError: E3 loop: " e3-mutante.log
 
       - name: Diagnóstico de pruebas fallidas (sin contenido de excepciones)
         if: failure()

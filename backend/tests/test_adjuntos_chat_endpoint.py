@@ -7,12 +7,12 @@ cliente mandaba el base64 o el texto dentro del JSON. Desde RD3 manda solo
 dueño), lee el texto o codifica la imagen desde disco y la empalma en el
 cuerpo del proveedor. Un id que no es del usuario, vencido, desconocido o
 roto en disco es el MISMO 404, sin memoria, sin estado y sin proveedor."""
+import asyncio
 import base64
 import json
 import logging
 import math
 import os
-import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -456,12 +456,12 @@ def test_la_pregunta_de_identidad_del_usuario_sigue_recibiendo_el_aviso_con_adju
 
 
 # Topes de la prueba de carga E3 (ver el comentario dentro de la prueba y el informe).
-FACTOR_SUBIDA = 6         # veces (costo aislado x usuarios) que puede valer la subida p95 bajo carga
-TECHO_SUBIDA_MS = 8000    # red absoluta: por debajo del piso que deja `sleep(0.5)` (>= 18 x 500 ms)
+TECHO_SUBIDA_MS = 8000     # red absoluta de la subida p95 (ver el comentario en la prueba)
 TOPE_CHAT_MS = 5000
+LATIDO_P99_MAX_MS = 40     # retraso p99 tolerado del loop de la app (ver el comentario en la prueba)
+_LATIDO_S = 0.01           # el latido duerme 10 ms en bucle y mide cuánto se atrasa cada despertar
 _ESCALONADO_S = 0.05    # separación entre la llegada de un usuario y la del siguiente
 _SONDEO_S = 0.1         # pausa entre vueltas de despacho + sondeo
-_REPETICIONES_AISLADAS = 7  # subidas sin carga cuya mediana es el costo aislado
 _OCR_SIMULADO_S = 3.0  # lo que tarda el OCR remoto simulado: el PDF sigue en proceso mientras se chatea
 
 
@@ -483,9 +483,11 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     Un bloqueo del event loop en la ruta de subida (p. ej. `time.sleep` dentro de
     `encolar_pdf_desde_chat`) sube las dos cifras: los chats esperan el loop.
 
-    Topes: subida relativa al costo aislado medido en la misma corrida (FACTOR_SUBIDA,
-    TECHO_SUBIDA_MS; JAX_E3_SUBIDA_FACTOR / JAX_E3_SUBIDA_TECHO_MS); chat absoluto
-    (JAX_E3_CHAT_P95_MAX_MS). Ver los comentarios de los valores por defecto.
+    Qué falla: (1) el LATIDO del loop de la app (p99 del atraso de una tarea que duerme
+    10 ms en bucle en el mismo loop) -- vigila el bloqueo del loop sin depender de los núcleos;
+    (2) el techo absoluto de la subida p95 y (3) el tope de chat, como red.
+    Topes (JAX_E3_LATIDO_P99_MAX_MS / JAX_E3_SUBIDA_TECHO_MS / JAX_E3_CHAT_P95_MAX_MS): ver el
+    comentario de los valores por defecto y el informe.
     """
     import uuid
     from db.connection import get_pool
@@ -502,35 +504,32 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     #   chat   p95  1021-1623 ms (peor corrida: 1623 ms; es cola: 100 turnos en ~2 s sobre un loop)
     # TOPE DE CHAT = 1623 ms x 3 -> 5000 ms. La base ya es de cola, no de ruido absoluto.
     #
-    # TOPE DE SUBIDA, independiente de la máquina. Un tope absoluto (antes 1500 ms) mide la máquina,
-    # no el código: la subida p95 bajo carga depende de los núcleos. Con 32 CPU da 32-94 ms (los 20
-    # usuarios caben en el pool de hilos y las llegadas, escalonadas 50 ms, apenas se solapan); con
-    # 1, 2 y 4 CPU da 730-1440 ms, y en el runner de CI 1215 ms (master) y 1616-1669 ms (#210) sin
-    # que el código cambiara. Se mide en la MISMA corrida el costo de una subida aislada
-    # (mediana de `_REPETICIONES_AISLADAS`, sin concurrencia, sin despacho, ANTES de instalar el
-    # mutante) y el tope es:
-    #     subida p95 <= FACTOR_SUBIDA x costo_aislado x usuarios
-    # `usuarios` es la concurrencia efectiva MÁXIMA (los 20 suben a la vez; con pocos núcleos
-    # se serializan en el loop). Con 1, 2 y 4 CPU la razón p95/aislado medida fue 22-59; con 32
-    # CPU, 1,3-3,4. FACTOR_SUBIDA = 6 deja el tope en 120 x aislado: 2x sobre la peor razón
-    # medida (59) y 2,5x por debajo de la menor razón del mutante (305-410). El factor se
-    # re-mide, no se sube a ciegas.
-    # RED ABSOLUTA (TECHO_SUBIDA_MS = 8000): el `time.sleep(0.5)` bloqueante en
-    # `encolar_pdf_desde_chat` suma >= 18 x 500 ms a la subida p95 (medido 9828-10130 ms) sea cual
-    # sea la máquina; una máquina tan lenta que su costo aislado hiciera subir el tope relativo por
-    # encima de eso dejaría pasar el mutante, y el techo lo atrapa. 8000 ms está 5x por encima de
-    # lo que midió el runner sin mutante.
+    # LO QUE SE VIGILA es que la ruta de subida no BLOQUEE el event loop de la app. Se mide
+    # directo con un LATIDO: una tarea en el MISMO loop donde corre la app (el del portal de
+    # TestClient) duerme `_LATIDO_S` en bucle y registra cuánto se atrasa cada despertar. Un
+    # bloqueo síncrono de X ms en el loop atrasa el latido >= X ms con CUALQUIER número de
+    # núcleos, y el trabajo legítimo en `to_thread` no lo atrasa. Se exige el p99 de los atrasos
+    # <= `LATIDO_P99_MAX_MS` (40 ms): sin regresión el p99 midió 2-16 ms con 1, 2, 4 y 32 CPU;
+    # con un `time.sleep` de 0,05 s REAL dentro de `encolar_pdf_desde_chat`, 97-146 ms. El p99 (y
+    # no el máximo) tolera un tirón aislado del runner (GC, CPU robada) sin dejar pasar una
+    # regresión, que atrasa decenas de despertares (ver el informe).
+    # Un tope de p95 de subida NO sirve para esto: depende de los núcleos (hall9000 con 32 CPU
+    # 32-94 ms; runner de CI 1215-1669 ms sin regresión) y una vara tomada de la misma ruta
+    # (un costo aislado) se infla con la regresión igual que lo medido.
+    # RED ABSOLUTA: `TECHO_SUBIDA_MS` (8000 ms) sobre la subida p95. El `time.sleep(0.5)` en
+    # `encolar_pdf_desde_chat` da ~9800-10100 ms; el techo no ve regresiones pequeñas, para eso
+    # está el latido.
     # El `time.sleep(0.5)` da chat p95 2100-3900 ms (bajo su tope de 5000): el bloqueo
     # no está en la ruta del chat y esa cifra es cola; el tope de chat solo ve regresiones GRANDES de su ruta (ver «Límites conocidos de los topes» en el informe).
-    factor_subida = float(os.getenv("JAX_E3_SUBIDA_FACTOR", str(FACTOR_SUBIDA)))
     techo_subida_ms = int(os.getenv("JAX_E3_SUBIDA_TECHO_MS", str(TECHO_SUBIDA_MS)))
     tope_chat_ms = int(os.getenv("JAX_E3_CHAT_P95_MAX_MS", str(TOPE_CHAT_MS)))
+    latido_p99_max_ms = float(os.getenv("JAX_E3_LATIDO_P99_MAX_MS", str(LATIDO_P99_MAX_MS)))
     mutante_s = float(os.getenv("JAX_E3_MUTANT_SLEEP_S", "0"))
     # Los topes tienen que poder ver el mutante: con `time.sleep(0.5)` los 20 bloqueos se
-    # serializan en el loop y la subida 19 (p95 de 20) espera >= 18 x 0.5 s. Un techo por
-    # encima de eso no detectaría ni el mutante de referencia.
-    assert 0 < techo_subida_ms < 18 * 500
-    assert factor_subida > 0
+    # serializan en el loop y la subida 19 (p95 de 20) espera >= 19 x 0.5 s. Un techo por
+    # encima de eso no detectaría ni el mutante de referencia; un latido por encima de 500 ms tampoco.
+    assert 0 < techo_subida_ms < 19 * 500
+    assert 0 < latido_p99_max_ms < 500
     assert 0 < tope_chat_ms
 
     workspace = tmp_path / "workspace"
@@ -553,8 +552,9 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     identidades = [entorno.miembro(proyecto, f"load-{n}", "CONTRIBUTOR") for n in range(usuarios)]
     max_bytes = min(limites.max_bytes, int(client.portal.call(ajustes.valor, ajustes.DOC_MAX_BYTES_ARCHIVO)))
     assert max_bytes >= len(pdf_base)
-    def _payload_al_tope(etiqueta):
-        marca = f"{etiqueta} ".encode()
+    payloads = []
+    for n in range(usuarios):
+        marca = f"e3-user-{n} ".encode()
         relleno = max_bytes - len(pdf_base) - len(marca) - 3  # `% ` y salto de línea del comentario
         assert relleno > 0
         for _ in range(4):  # startxref crece de longitud al insertar el comentario
@@ -564,28 +564,7 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
                 break
             relleno += diferencia
         assert len(payload) == max_bytes
-        return payload
-
-    payloads = [_payload_al_tope(f"e3-user-{n}") for n in range(usuarios)]
-
-    # COSTO AISLADO de una subida, medido en ESTA corrida y ANTES de instalar el mutante: sin
-    # concurrencia, sin despacho, sin chats; mediana de `_REPETICIONES_AISLADAS` subidas distintas
-    # (el mismo contenido sería un duplicado y no recorrería la misma ruta). Es la vara de la
-    # máquina: la misma CPU, disco y MariaDB que luego sirven la carga. Las filas se borran para
-    # que el escenario arranque con el proyecto vacío y despache exactamente `usuarios` trabajos.
-    request.addfinalizer(lambda project_id=proyecto.id: client.portal.call(
-        sql, "DELETE FROM project_documents WHERE project_id=%s", (project_id,)))
-    aislados = []
-    for i in range(_REPETICIONES_AISLADAS):
-        carga = _payload_al_tope(f"e3-aislada-{i}")
-        inicio = time.perf_counter()
-        response = client.post("/api/chat/upload", headers=identidades[0],
-            data={"project_id": str(proyecto.id)},
-            files={"file": (f"aislada-{i}.pdf", carga, "application/pdf")})
-        aislados.append((time.perf_counter() - inicio) * 1000)
-        assert response.status_code == 200, response.text
-    client.portal.call(sql, "DELETE FROM project_documents WHERE project_id=%s", (proyecto.id,))
-    costo_aislado_ms = statistics.median(aislados)
+        payloads.append(payload)
 
     trabajos = {}
     despachado_en = {}
@@ -658,6 +637,14 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
         return documento["document_id"]
 
     pool = client.portal.call(get_pool)
+    atrasos_ms: list[float] = []
+    latido_activo = {"v": True}
+
+    async def latido():
+        while latido_activo["v"]:
+            t0 = time.perf_counter()
+            await asyncio.sleep(_LATIDO_S)
+            atrasos_ms.append((time.perf_counter() - t0 - _LATIDO_S) * 1000)
     pendientes: dict[int, float] = {}
     duraciones: list[float] = []
     estados_terminales: list[str] = []
@@ -667,6 +654,7 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
         # uno falla a mitad, no quedan filas de esta prueba en MariaDB.
         request.addfinalizer(lambda project_id=proyecto.id: client.portal.call(
             sql, "DELETE FROM project_documents WHERE project_id=%s", (project_id,)))
+        tarea_latido = client.portal.start_task_soon(latido)  # en el loop de la app
         futuros = [executor.submit(usuario, n) for n in range(usuarios)]
         # Mientras los usuarios suben y chatean: despacho real (POST durable a LAS MANOS),
         # sondeo real (GET externo + persistencia) y consulta de estado por documento.
@@ -696,19 +684,23 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
             time.sleep(_SONDEO_S)
         for futuro in futuros:
             futuro.result(timeout=60)  # propaga el fallo de un usuario
+        latido_activo["v"] = False
+        tarea_latido.result(timeout=10)
 
     def p95(valores):
         ordenados = sorted(valores)
         return ordenados[math.ceil(0.95 * len(ordenados)) - 1]
 
     subida_p95, chat_p95 = p95(lat_subida), p95(lat_chat)
-    tope_relativo_ms = factor_subida * costo_aislado_ms * usuarios
-    tope_subida_ms = min(tope_relativo_ms, techo_subida_ms)
+    assert len(atrasos_ms) >= 50, f"E3 loop: el latido casi no corrió ({len(atrasos_ms)} despertares)"
+    atraso_max = max(atrasos_ms)
+    atraso_p99 = sorted(atrasos_ms)[math.ceil(0.99 * len(atrasos_ms)) - 1]
+    atrasos_sobre_tope = sum(1 for a in atrasos_ms if a > latido_p99_max_ms)
     print(f"E3_LOAD users={usuarios} turns={turnos} pages={limites.max_paginas} upload_bytes={max_bytes} "
           f"dispatched={len(trabajos)} mutante_s={mutante_s} "
-          f"subida_aislada_ms={costo_aislado_ms:.1f} razon_p95_aislada={subida_p95 / costo_aislado_ms:.2f} "
-          f"subida_p95_ms={subida_p95:.1f} subida_max_ms={max(lat_subida):.1f} subida_tope_ms={tope_subida_ms:.0f} "
-          f"factor_subida={factor_subida:g} techo_subida_ms={techo_subida_ms} "
+          f"subida_p95_ms={subida_p95:.1f} subida_max_ms={max(lat_subida):.1f} subida_techo_ms={techo_subida_ms} "
+          f"latido_n={len(atrasos_ms)} latido_max_ms={atraso_max:.1f} latido_p99_ms={atraso_p99:.1f} "
+          f"latido_sobre_tope={atrasos_sobre_tope} latido_p99_tope_ms={latido_p99_max_ms:g} "
           f"chat_p95_ms={chat_p95:.1f} chat_max_ms={max(lat_chat):.1f} chat_tope_ms={tope_chat_ms} "
           f"chats_con_docs_abiertos={sum(chats_con_documentos_abiertos)}/{len(chats_con_documentos_abiertos)} "
           f"ciclos={ciclos_en_vuelo['n']} ciclos_durante_chats={ciclos_en_vuelo['durante_chats']} "
@@ -718,9 +710,10 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     assert sum(chats_con_documentos_abiertos) >= 0.9 * len(chats_con_documentos_abiertos), \
         "E3: los turnos de chat no ocurrieron mientras había documentos en proceso"
     assert ciclos_en_vuelo["durante_chats"] >= 3, "E3: el despacho y el sondeo no corrieron durante los chats"
-    assert subida_p95 <= tope_subida_ms, (
-        f"E3 subida p95 {subida_p95:.1f} ms supera el tope de {tope_subida_ms:.0f} ms "
-        f"(min(factor {factor_subida:g} x aislada {costo_aislado_ms:.1f} ms x {usuarios} usuarios, techo {techo_subida_ms} ms))")
+    assert atraso_p99 <= latido_p99_max_ms, (
+        f"E3 loop: el event loop de la app se bloqueó (p99 de atraso del latido {atraso_p99:.1f} ms, "
+        f"máx {atraso_max:.1f} ms; tope de p99 {latido_p99_max_ms:g} ms)")
+    assert subida_p95 <= techo_subida_ms, f"E3 subida p95 {subida_p95:.1f} ms supera el techo de {techo_subida_ms} ms"
     assert chat_p95 <= tope_chat_ms, f"E3 chat p95 {chat_p95:.1f} ms supera el tope de {tope_chat_ms} ms"
     assert len(trabajos) == usuarios, f"E3 despachó {len(trabajos)} de {usuarios} PDFs"
     assert len(estados_terminales) == usuarios and all(e == "listo" for e in estados_terminales), \
