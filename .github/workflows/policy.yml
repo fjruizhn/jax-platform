@@ -3800,7 +3800,19 @@ jobs:
           #   se corrige (misma cuenta). Base del runner 3934 + delta local +53 (master 6f5094b local 3932 -> rama 3985, mismo comando,
           #   MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan
           #   en los dos por el entorno local). Sin DB no suma (usan `client`). El runner confirma el absoluto.
-          PISO_PASSED = 3987
+          # 3987 -> 3991 (GLM g1, 2026-10-07, PR 8 del diseno del tablero de consumo: el canario registra
+          #   su uso): +4 con DB (tests/test_facet_canary_uso.py: 3 puras del contrato del registro --
+          #   registra como 'canario' con tenant/user None, no registra sin dispatch real, y un fallo del
+          #   registro no miente sobre la salud -- y 1 de integracion que verifica la fila REAL en
+          #   axioma_usage: costo desde el catalogo, tenant/user NULL, request_type 'canario'). MEDIDO
+          #   sobre la rama con el mismo comando del job (MariaDB 12.3.3 efimera --network none, socket
+          #   compartido + socat en 127.0.0.1:33991, plantilla jax_memory_test LIMPIA con init_tables de
+          #   jax y esquema de memoria, jax en el pin 92452a69, venv con requirements-archivos.txt):
+          #   3992 passed / 1 skipped (el SR2 gateado; el +1 sobre el piso es el test de secretos que el
+          #   runner omite por entorno, mismo desfase ya documentado arriba). Vista en ROJA contra
+          #   master: las 4 nuevas fallan. Mutante sin la llamada a record_usage: las 2 que fijan el
+          #   registro la matan. El runner tiene la ultima palabra.
+          PISO_PASSED = 3991
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4938,7 +4950,16 @@ jobs:
       #   +11 (master 2435 -> mezcla 2446, JAX_CI_NO_DB=1, 1501 -> 1540 skipped, mismo comando, jax en el head de #366). El runner confirma.
       # 2446 -> 2446 (ronda 8 de #210): sin cambio. Las 3 pruebas nuevas de despacho piden `client` y se saltan sin DB: medido con
       #   JAX_CI_NO_DB=1, mismo comando, 2446 passed / 1543 skipped (los 1540 de la mezcla + las 3 nuevas).
-      JAX_CI_MIN_PASSED: "2446"
+      # 2446 -> 2449 (GLM g1, 2026-10-07, PR 8 del diseno del tablero de consumo: el canario registra su
+      #   uso): +3 puras (tests/test_facet_canary_uso.py: registra como 'canario' con tenant/user None,
+      #   no registra sin dispatch real, y un fallo del registro no miente sobre la salud; la cuarta pide
+      #   `client` y se salta sin DB). La prueba del despacho de el_juez
+      #   (test_facet_canary_internas.py) ahora parchea record_usage para seguir probando SOLO el
+      #   despacho sin pedir pool: sin ese parche pasaba de pass a skip en este job y el delta era +2.
+      #   MEDIDO con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true (env -i, jax en el pin 92452a69, mismo
+      #   comando): master 2446 -> rama 2449 passed / 1544 skipped (1543 + la cuarta mia). El runner
+      #   tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2449"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
