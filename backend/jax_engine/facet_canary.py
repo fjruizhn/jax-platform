@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 import aiomysql
 
+from api.admin.usage import record_usage
 from api.chat import _invoke_facet, _load_config
 from config_entorno import url_requerida
 from db.connection import get_pool
@@ -111,6 +112,17 @@ CANARY_USER_ID = "__canary__"
 # cortocircuitea antes del dispatch y devolveria una respuesta enlatada, o
 # sea `ok` sin haber tocado al proveedor. Hay un test que lo verifica.
 CANARY_MESSAGE = "Respondé únicamente con la palabra: listo."
+
+# PR 8 del diseno del tablero de consumo (2026-10-06,
+# ~/encargos-codex/diseno-tablero-consumo.md #12): cada sonda es una llamada
+# PAGA y hasta hoy no dejaba fila en axioma_usage (~700 canary_periodic ok
+# por faceta y mes mientras Costos mostraba «sin consumo»). La fila va por
+# record_usage -- la MISMA via que el chat -- con este request_type propio,
+# y SIN usuario: el canario no es una persona, entra con tenant/user NULL y
+# no con el DEFAULT 1 de la columna, que le atribuiria el gasto de
+# infraestructura a un tenant de verdad. Mismo tratamiento que las llamadas
+# de sistema del repo jax (preflight_probe, jacobs/usage_writer.py).
+REQUEST_TYPE_CANARIO = "canario"
 
 # Tope de las dos lecturas de la base que hace la sonda (el conjunto de facetas
 # y la misión en curso). Mismo agujero que el Hallazgo 2: aiomysql no tiene
@@ -291,7 +303,14 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     Con el freno puesto no invoca ni escribe: devuelve SALTADA_POR_FRENO y
     lo deja en el log. Con una mision del Ejecutor en curso, igual, pero SOLO
     la sonda periodica: devuelve SALTADA_POR_MISION (el rebind, que es una
-    accion explicita de un admin, sondea siempre)."""
+    accion explicita de un admin, sondea siempre).
+
+    Si la invocacion tuvo exito y fue un dispatch REAL (usage no None),
+    registra la fila de uso como 'canario' (REQUEST_TYPE_CANARIO). Fuera del
+    try de arriba a proposito: la salud la decide _invoke_facet, el costo es
+    OTRO registro -- si record_usage fallara (rompe su promesa de no
+    propagar, pero por si sola), una sonda ya invocada y sana no puede
+    volverse probe_error por un problema de contabilidad."""
     if kill_switch.activo():
         logger.warning(
             "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
@@ -303,9 +322,8 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
             "Ejecutor en curso", facet, source)
         return SALTADA_POR_MISION
     try:
-        await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
-                            source=source)
-        return None
+        _, usage = await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
+                                       source=source)
     except Exception:  # fail-soft: _invoke_facet ya registró el evento clasificado antes de relanzar; se devuelve 'probe_error' explícito, sin segunda fila
         # NO se registra aca -- decision de diseno, no un olvido.
         #
@@ -331,6 +349,16 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         #
         # Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
         return OUTCOME_PROBE_ERROR
+    if usage is not None:
+        try:
+            await record_usage(None, None, facet, usage.provider_id,
+                               usage.model, usage.tokens_in,
+                               usage.tokens_out, REQUEST_TYPE_CANARIO)
+        except Exception:  # fail-soft: record_usage promete no propagar (fail-soft total); por si la promesa se rompe, el costo no puede tumbar el veredicto de salud que ya se emitio
+            logger.warning(
+                "facet_canary: no se pudo registrar el uso de la sonda de "
+                "%s (%s)", facet, source, exc_info=True)
+    return None
 
 
 async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None:
