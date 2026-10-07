@@ -43,12 +43,16 @@ def test_dispatch_uses_owner_headers_and_never_sends_usuario(monkeypatch):
     monkeypatch.setattr(despachador.repo, "marcar_despachadas", claimed)
     try:
         assert asyncio.run(despachador._despachar_trozo(
-            object(), "project-uuid", _owner(), [{"id": 1, "ruta_entrada": "proyectos/project-uuid/entrada/l/a.pdf"}]
+            object(), "project-uuid", _owner(),
+            # Las filas reales de `tomar_en_cola` traen `sha256` y `actualizado_at` (la clave de idempotencia).
+            [{"id": 1, "ruta_entrada": "proyectos/project-uuid/entrada/l/a.pdf", "sha256": "a" * 64,
+              "actualizado_at": "2026-10-06T12:00:00.000000"}]
         )) == "seguir"
     finally:
         asyncio.run(client.aclose())
     assert json.loads(seen[0].content) == {"project_uuid": "project-uuid", "rutas": ["proyectos/project-uuid/entrada/l/a.pdf"]}
     assert {key: seen[0].headers[key] for key in _expected_headers(token)} == _expected_headers(token)
+    assert seen[0].headers["Idempotency-Key"].startswith("jxp-doc-v1-")
 
 
 def test_status_get_uses_the_same_owner_headers(monkeypatch):

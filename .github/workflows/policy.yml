@@ -1384,7 +1384,10 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          PIN=0604754384adc95adc0a766e44cced8b20df825c
+          # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
+          # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
+          # jax#366, subir este pin al merge si cambia el SHA.
+          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -3753,7 +3756,51 @@ jobs:
           # (3854 - 3830, ver arriba); base del runner de master 3910 + 24 = 3934. MEDIDO local sobre la mezcla (MariaDB 12.3.3
           # efimera propia, en su netns; venv con los extractores; jax en el pin 0604754): 3935 passed / 1 skipped (el SR2 gateado); master solo daba 3911 local, 3910 en el runner; 3911 + 24 = 3935. Piso = medido - 1 (el skip de
           # entorno que el runner omite). A confirmar en el runner.
-          PISO_PASSED = 3934
+          # 3836 -> 3847 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +11 con DB, ninguna
+          #   cambia el conteo de las existentes: 5 puras (test_despachador_clave_idempotencia.py) + 6 en
+          #   test_proyectos_documentos_despachador.py (clave en el encabezado; el corte entre el 202 y
+          #   marcar_despachadas con reinicio produce UN solo trabajo, y su control negativo; un reencolado cambia
+          #   la clave; 409 y 422 de clave no marcan error). Vistas en rojo contra el despachador viejo (11 failed).
+          #   MEDIDO sobre la rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3848 passed, 1 skipped,
+          #   0 failed (sin la falla local de extractores que otras rondas anotaron: aqui esa maquina los tiene).
+          #   El piso es base + delta. El runner tiene la ultima palabra (regla 5).
+          # 3847 -> 3859 (ronda 2 de la auditoria de jax-platform#210): +12 con DB, ninguna cambia el conteo de
+          #   las existentes: 10 casos de la tabla de contrato de la falsa de LAS MANOS, 1 de que un 409 de clave
+          #   no frena a los demas proyectos y 1 de que ocultar/restaurar no cambia la clave (las dos vistas en
+          #   rojo contra el codigo de la ronda 1). Sin DB no suma (usan `client`): 2366 igual. MEDIDO sobre la
+          #   rama, mismo comando del job, MariaDB 12.3.3 efimera propia: 3860 passed, 1 skipped, 0 failed (+12 sobre los
+          #   3848 de la ronda 1); sin DB, 2366 passed / 1495 skipped. Piso = base + delta; el runner tiene la ultima palabra.
+          # 3859 -> 3866 (ronda 3 de la auditoria de jax-platform#210): +7 con DB: 1 caso mas de la tabla de
+          #   contrato (`rejected`), 1 de que un 409 que llena la ventana LIMITE no deja sin despacho al otro
+          #   proyecto, 1 EXPLAIN de tomar_en_cola con duenos excluidos, y las 4 puras de arriba. Ninguna existente
+          #   cambia de conteo. Las de ventana y EXPLAIN vistas en rojo contra la ronda 2. MEDIDO sobre la rama, mismo comando del job: 3867
+          #   passed, 1 skipped, 0 failed (piso = base + delta, como en las rondas anteriores).
+          # 3870 -> 3877 (ronda 5 de #210): +7 con DB: 3 de despacho (clave desconocida salta ese proyecto; no_disponible
+          #   corta sin envenenar el cursor; cortes sostenidos releen los ids bajos), 2 filas nuevas de la tabla de contrato
+          #   y 2 casos mas del EXPLAIN con volumen (ahora 50k/5%, 50k/100%, 200k/100%). MEDIDO en una base LIMPIA (sin la tabla de idempotencia):
+          #   3878 passed, 1 skipped, 0 failed; sin DB 2372 passed / 1507 skipped. Tambien: la prueba de par exacto crea el esquema de idempotencia que la ruta real necesita.
+          # 3866 -> 3870 (ronda 4 de #210): +4: 2 puras de arriba y 2 con DB (52 proyectos en 409 + 1 sano con cursor; un
+          #   ciclo cortado retoma en su ventana). El EXPLAIN con duenos excluidos se reemplaza por el de la consulta real
+          #   con cursor sobre 50k filas (mismo conteo). MEDIDO sobre la rama, mismo comando del job: 3871 passed, 1 skipped,
+          #   0 failed (3867 de la ronda 3 + 4). Piso = base + delta; el runner tiene la ultima palabra.
+          # 3910 -> 3955 (ronda 6 de #210, mezcla con master 39b3ef2 = #203): REGLA 5, base del runner 3910 + delta local +45
+          #   (master 39b3ef2 local 3911 -> mezcla 3956, mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA):
+          #   las pruebas de idempotencia/cursor/despacho de #210 (el EXPLAIN con volumen, la tabla de contrato, los saltos de
+          #   trozo, el aviso de clave desconocida, el cruce freno x cursor x salto). El runner confirma el absoluto.
+          # 3955 -> 3960 (ronda 7 de #210): REGLA 5, base del runner 3910 + delta local +50 (master 39b3ef2 local 3911 -> mezcla 3961,
+          #   mismo comando, MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366): +5 sobre la ronda 6 (conjunto de
+          #   trozos trabados con cota k + 1, error global sin POST doble, 422 de formato global, aviso agregado, y la prueba de los
+          #   ids bajos restaurada). El runner confirma el absoluto.
+          # 3960 -> 3984 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 3934 + delta
+          #   local +50 (master 6f5094b local 3932 -> mezcla 3982, mismo comando del job, MariaDB 12.3.3 efimera --network none, base
+          #   LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan en los dos por el entorno local). El runner confirma.
+          # 3984 -> 3987 (ronda 8 de #210): +3 con DB sobre la mezcla, ninguna cambia el conteo de las existentes: el corte global
+          #   sin progreso reinicia el cursor (sonda A del auditor), el rastro del conjunto de trabados (entrada, un log de saltos por
+          #   ciclo, vaciado) y el tope de ids del log; la prueba «restaurada» se reescribe (misma cuenta) y la de «un POST por ciclo»
+          #   se corrige (misma cuenta). Base del runner 3934 + delta local +53 (master 6f5094b local 3932 -> rama 3985, mismo comando,
+          #   MariaDB 12.3.3 efimera --network none, base LIMPIA, jax en el head de #366; las mismas 3 de test_base_por_sesion fallan
+          #   en los dos por el entorno local). Sin DB no suma (usan `client`). El runner confirma el absoluto.
+          PISO_PASSED = 3987
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4871,7 +4918,27 @@ jobs:
       # REMEZCLA con origin/master 39b3ef2 (regla 5): master trae #203 (piso del runner de master 2429). Delta de E3 = +6;
       # base del runner de master 2429 + 6 = 2435. MEDIDO local sobre la mezcla con JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true
       # (env -i): 2435 passed / 1501 skipped (2429 + 6). A confirmar en el runner.
-      JAX_CI_MIN_PASSED: "2435"
+      # 2361 -> 2366 (2026-10-06, Idempotency-Key del despacho, auditoria de E3): +5 puras
+      #   (tests/test_despachador_clave_idempotencia.py, ninguna pide `client`). Las 6 de despacho con
+      #   `client` (test_proyectos_documentos_despachador.py) se saltan sin DB. MEDIDO con JAX_CI_NO_DB=1 sobre
+      #   la rama (jax en el worktree de la rama hermana, CI=true GITHUB_ACTIONS=true, MariaDB 12.3.3 efimera
+      #   propia en su netns): 2366 passed / 1483 skipped / 0 failed. El runner tiene la ultima palabra.
+      # 2366 -> 2370 (ronda 3 de la auditoria de jax-platform#210): +4 puras (el vector fijo del hash corto y las 3 de
+      #   tests/test_contrato_idempotencia_con_las_manos.py, que leen la tabla de contrato de jax en JAX_REPO_PATH:
+      #   FALLAN CERRADO si ese checkout no la trae, asi que el pin de jax del job tiene que ser un commit que
+      #   incluya las_manos/_procesamiento_idempotencia_db_test.py). MEDIDO con JAX_CI_NO_DB=1 sobre la rama, jax
+      #   en el worktree hermano (CI=true, MariaDB efimera propia): 2370 passed / 1498 skipped / 0 failed. El runner
+      #   tiene la ultima palabra.
+      # 2370 -> 2372 (ronda 4 de #210): +2 puras (el contrato no se lee de /srv/jax-prod; el rojo dice la version de jax).
+      #   MEDIDO con JAX_CI_NO_DB=1 sobre la rama, jax en el head de #366: 2372 passed / 1500 skipped / 0 failed.
+      # 2429 -> 2440 (ronda 6 de #210, mezcla con master 39b3ef2): REGLA 5, base del runner 2429 + delta local +11 (master
+      #   2429 -> mezcla 2440, JAX_CI_NO_DB=1, 1483 -> 1517 skipped): las pruebas puras de #210 (clave de idempotencia, contrato
+      #   y su deriva con jax). Frontend sin cambio (1393 de master). El runner confirma el absoluto.
+      # 2440 -> 2446 (REMEZCLA de #210 con master 6f5094b = #208/E3, 2026-10-06): REGLA 5. Base del runner de master 2435 + delta local
+      #   +11 (master 2435 -> mezcla 2446, JAX_CI_NO_DB=1, 1501 -> 1540 skipped, mismo comando, jax en el head de #366). El runner confirma.
+      # 2446 -> 2446 (ronda 8 de #210): sin cambio. Las 3 pruebas nuevas de despacho piden `client` y se saltan sin DB: medido con
+      #   JAX_CI_NO_DB=1, mismo comando, 2446 passed / 1543 skipped (los 1540 de la mezcla + las 3 nuevas).
+      JAX_CI_MIN_PASSED: "2446"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -4891,7 +4958,10 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          PIN=0604754384adc95adc0a766e44cced8b20df825c
+          # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
+          # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
+          # jax#366, subir este pin al merge si cambia el SHA.
+          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

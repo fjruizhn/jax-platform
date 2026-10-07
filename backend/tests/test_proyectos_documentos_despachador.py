@@ -9,7 +9,9 @@ marcha (sin resultados) para no tocarlos.
 import asyncio
 import json
 import logging
+import time
 import os
+import re
 import threading
 import uuid
 
@@ -26,6 +28,42 @@ P = "/api/proyectos"
 CREDENCIAL = "c" * credencial_las_manos.LARGO_MINIMO
 
 
+# Contrato de idempotencia de LAS MANOS, COPIADO de jax: las_manos/_procesamiento_idempotencia_db_test.py
+# (CONTRATO_IDEMPOTENCIA, probado alli contra la ruta real con MariaDB). Cada fila: (estado del trabajo que ya tiene
+# esa clave o None, el pedido es el mismo, resultado). Si se cambia una tabla, se cambia la otra. La falsa de abajo
+# la cumple, y `test_la_falsa_de_las_manos_cumple_el_contrato_compartido` lo comprueba.
+CONTRATO_IDEMPOTENCIA = (
+    (None, True, "crea"),
+    ("pending", True, "mismo"),
+    ("running", True, "mismo"),
+    ("cancelling", True, "mismo"),
+    ("completed", True, "mismo"),
+    ("failed", True, "crea"),
+    ("cancelled", True, "crea"),
+    ("rejected", True, "crea"),
+    ("pending", False, "conflicto"),
+    ("failed", False, "conflicto"),
+    ("completed", False, "conflicto"),
+    # Desenlaces que NO son un trabajo (503 con codigo estable; ver la tabla de jax para su origen).
+    ("confirmado_ausente", True, "desconocido"),
+    ("almacen_sin_integridad", True, "no_disponible"),
+)
+ESTADOS_QUE_SE_REINTENTAN = frozenset({"failed", "cancelled", "rejected"})
+
+
+def decision_del_contrato(estado_previo, mismo_pedido):
+    """La regla del contrato, escrita una vez: la usa la falsa y la verifica la tabla."""
+    if estado_previo == "almacen_sin_integridad":      # global: antes que nada, como en la ruta real
+        return "no_disponible"
+    if estado_previo is None:
+        return "crea"
+    if not mismo_pedido:
+        return "conflicto"
+    if estado_previo == "confirmado_ausente":
+        return "desconocido"
+    return "crea" if estado_previo in ESTADOS_QUE_SE_REINTENTAN else "mismo"
+
+
 class LasManosFalsa:
     """Registra los POST de un proyecto y responde lo que la prueba decida."""
 
@@ -37,6 +75,11 @@ class LasManosFalsa:
         self.demora = 0.0
         self.sin_credencial = 0
         self.consultas = []                   # job_id de cada GET
+        self.claves = []                      # `Idempotency-Key` de cada POST de ESTE proyecto (None si no vino)
+        self.idempotente = False              # True: cumple el contrato de LAS MANOS (misma clave -> mismo trabajo)
+        self.trabajos_creados = []            # job_id de cada trabajo NUEVO que esta falsa creo
+        self._por_clave = {}                  # clave -> (job_id, huella del pedido)
+        self.estado_de_trabajo = {}           # job_id -> estado del trabajo que esta falsa creo
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.headers.get(credencial_las_manos.ENCABEZADO) != CREDENCIAL:
@@ -48,12 +91,32 @@ class LasManosFalsa:
             if self.demora:
                 await asyncio.sleep(self.demora)
             self.posts.append(cuerpo)
+            clave = request.headers.get("Idempotency-Key")
+            self.claves.append(clave)
             if self.post_respuestas:
                 siguiente = self.post_respuestas.pop(0)
                 if isinstance(siguiente, Exception):
                     raise siguiente
                 return httpx.Response(siguiente[0], json=siguiente[1])
-            return httpx.Response(202, json={"job_id": f"job-{uuid.uuid4().hex}"})
+            huella = json.dumps(sorted(cuerpo["rutas"]))
+            if self.idempotente and clave in self._por_clave:
+                previo_id, previo_huella = self._por_clave[clave]
+                resultado = decision_del_contrato(self.estado_de_trabajo[previo_id], previo_huella == huella)
+                if resultado == "conflicto":
+                    return httpx.Response(409, json={"detail": {"code": "idempotency_key_reuse"}})
+                if resultado == "desconocido":
+                    return httpx.Response(503, json={"detail": {"code": "idempotencia_estado_desconocido"}})
+                if resultado == "no_disponible":
+                    return httpx.Response(503, json={"detail": {"code": "procesamiento_no_disponible"}})
+                if resultado == "mismo":
+                    return httpx.Response(202, json={"job_id": previo_id, "estado": self.estado_de_trabajo[previo_id]},
+                                          headers={"Idempotent-Replayed": "true"})
+            job_id = f"job-{uuid.uuid4().hex}"
+            self.trabajos_creados.append(job_id)
+            self.estado_de_trabajo[job_id] = "pending"
+            if self.idempotente and clave is not None:
+                self._por_clave[clave] = (job_id, huella)
+            return httpx.Response(202, json={"job_id": job_id})
         job_id = request.url.path.rsplit("/", 1)[-1]
         if job_id in self.estados:
             self.consultas.append(job_id)
@@ -159,7 +222,13 @@ def e(client, workspace, monkeypatch):
     despachador._ultima_actividad_freno_incertidumbre = None
     despachador._pausa_previa_al_incidente = None
     entorno = Entorno(client, workspace, monkeypatch)
+    despachador._cursor_de_cola = 0
+    despachador._trozos_trabados.clear()
+    despachador._claves_desconocidas.clear()
     yield entorno
+    despachador._cursor_de_cola = 0
+    despachador._trozos_trabados.clear()
+    despachador._claves_desconocidas.clear()
     despachador._en_incertidumbre.clear()
     despachador._freno_incertidumbre_activo = False
     despachador._ultimo_aviso_freno_incertidumbre = None
@@ -850,9 +919,12 @@ def test_un_503_generico_sigue_cortando_el_ciclo_entero(e, caplog):
     e.ciclo()
     assert len(e.las_manos.posts) == 1
     assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+    # Un 503 es GLOBAL: en el segundo ciclo corta de nuevo en el MISMO primer trozo (el del pdf) y el del jpg no se envia;
+    # no hay salto ni trozo recordado. Un POST por ciclo.
     e.las_manos.post_respuestas = [(503, {"detail": "texto"})]
     e.ciclo()
-    assert len(e.las_manos.posts) == 2 and e.fila(jpg)[0] == "en_cola"
+    assert len(e.las_manos.posts) == 2 and e.fila(jpg)[0] == "en_cola" and e.fila(pdf)[0] == "en_cola"
+    assert despachador._trozos_trabados == set()
 
 
 def test_el_503_de_extractores_con_otro_estado_no_se_confunde(e):
@@ -1191,7 +1263,7 @@ def _ajuste_con_enfriamiento(segundos):
 
 
 async def _pasada_vacia(*_args):
-    return None
+    return None, 0, 0        # (accion, ultimo id, filas leidas): sin corte y cola recorrida
 
 
 def _activar_freno(e, primer_id, hasta):
@@ -1384,3 +1456,636 @@ async def test_start_despachador_forzado_corre_un_ciclo_y_se_cancela_limpio(monk
         tarea.cancel()
         with pytest.raises(asyncio.CancelledError):
             await tarea
+
+
+# ------------------------------------------------------------------ idempotencia del despacho (auditoria de E3)
+
+def test_el_post_lleva_una_clave_de_idempotencia_en_el_encabezado(e):
+    e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.ciclo()
+    assert len(e.las_manos.claves) == 1
+    clave = e.las_manos.claves[0]
+    assert clave and re.fullmatch(r"[A-Za-z0-9._:\-]{16,128}", clave), clave   # el formato que LAS MANOS acepta
+
+
+def test_cortar_entre_el_202_y_marcar_despachadas_y_reiniciar_produce_un_solo_trabajo(e, monkeypatch):
+    """EL RIESGO DE LA AUDITORIA: LAS MANOS acepto (202) y el proceso murio antes de atar las filas al job_id.
+    Al reiniciar, la memoria del proceso (`_en_incertidumbre`) esta vacia y las filas siguen `en_cola`: el
+    reenvio lleva la MISMA clave y LAS MANOS (que cumple el contrato) devuelve el MISMO trabajo."""
+    e.las_manos.idempotente = True
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(3)]
+
+    async def cortado(*a, **k):
+        raise RuntimeError("el proceso murio justo despues del 202")
+    real = despachador.repo.marcar_despachadas
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", cortado)
+    with pytest.raises(RuntimeError):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 3          # nada quedo atado
+    assert len(e.las_manos.trabajos_creados) == 1
+
+    # REINICIO: memoria del proceso vacia, codigo normal.
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", real)
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+
+    assert len(e.las_manos.posts) == 2 and e.las_manos.claves[0] == e.las_manos.claves[1]
+    assert len(e.las_manos.trabajos_creados) == 1, "el reenvio no debe crear un segundo trabajo (OCR duplicado)"
+    filas = [e.fila(i) for i in ids]
+    assert {f[0] for f in filas} == {"pendiente"} and {f[1] for f in filas} == {e.las_manos.trabajos_creados[0]}
+
+
+def test_sin_la_clave_estable_el_mismo_corte_si_duplica_el_trabajo(e, monkeypatch):
+    """Control negativo del test anterior: con una clave que cambia en cada envio (el comportamiento de antes)
+    el mismo corte deja DOS trabajos en LAS MANOS. Si este test dejara de fallar sin la clave, el de arriba
+    no probaria nada."""
+    e.las_manos.idempotente = True
+    e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    monkeypatch.setattr(despachador, "clave_de_idempotencia", lambda *a, **k: f"jxp-doc-v1-{uuid.uuid4().hex}")
+
+    async def cortado(*a, **k):
+        raise RuntimeError("el proceso murio justo despues del 202")
+    real = despachador.repo.marcar_despachadas
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", cortado)
+    with pytest.raises(RuntimeError):
+        e.ciclo()
+    monkeypatch.setattr(despachador.repo, "marcar_despachadas", real)
+    despachador._en_incertidumbre.clear()
+    e.ciclo()
+    assert len(e.las_manos.trabajos_creados) == 2
+
+
+def test_un_reencolado_es_otro_intento_logico_y_cambia_la_clave(e):
+    """Una fila que termino (error) y vuelve a `en_cola` (reprocesar / re-subida) es OTRO intento: con la
+    misma clave LAS MANOS devolveria el trabajo viejo ya terminado y el documento nunca se reprocesaria."""
+    e.las_manos.idempotente = True
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    e.ciclo()
+    primero = e.las_manos.trabajos_creados[0]
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='procesamiento_fallido' "
+                              "WHERE id=%s", (doc,))
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='en_cola', job_id=NULL, error=NULL "
+                              "WHERE id=%s", (doc,))                       # lo que hace repo.reprocesar
+    e.ciclo()
+    assert e.las_manos.claves[0] != e.las_manos.claves[1]
+    assert len(e.las_manos.trabajos_creados) == 2 and e.fila(doc)[1] == e.las_manos.trabajos_creados[1] != primero
+
+
+def test_409_de_clave_reusada_no_convierte_documentos_sanos_en_error(e, caplog):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2          # no es culpa del documento
+    assert any("idempotency_key_reuse" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+def test_422_de_clave_invalida_tampoco_marca_error(e):
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(422, {"detail": {"code": "idempotency_key_invalida"}})]
+    e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+
+
+@pytest.mark.parametrize("previo,mismo,esperado", CONTRATO_IDEMPOTENCIA)
+def test_la_falsa_de_las_manos_cumple_el_contrato_compartido(e, previo, mismo, esperado):
+    """La falsa se comporta como la ruta real de LAS MANOS (misma tabla que su prueba de contrato en jax)."""
+    falsa = e.las_manos
+    falsa.idempotente = True
+
+    def post(rutas):
+        req = httpx.Request("POST", "http://las-manos/procesamiento/trabajos", headers={"Idempotency-Key": "k" * 20},
+                            json={"project_uuid": e.uuid, "rutas": rutas})
+        return e.client.portal.call(falsa, req)
+    viejo = None
+    if previo is not None:
+        viejo = post(["a.pdf"]).json()["job_id"]
+        falsa.estado_de_trabajo[viejo] = previo
+    r = post(["a.pdf"] if mismo else ["otro.pdf"])
+    if esperado == "conflicto":
+        assert r.status_code == 409
+    elif esperado == "desconocido":
+        assert r.status_code == 503 and r.json()["detail"]["code"] == "idempotencia_estado_desconocido"
+    elif esperado == "no_disponible":
+        assert r.status_code == 503 and r.json()["detail"]["code"] == "procesamiento_no_disponible"
+    elif esperado == "mismo":
+        assert r.status_code == 202 and r.json()["job_id"] == viejo
+    else:
+        assert r.status_code == 202 and r.json()["job_id"] != viejo
+
+
+def test_un_409_de_clave_en_un_proyecto_no_frena_a_los_demas(e, caplog):
+    """El 409 de la clave salta ESE proyecto; el otro (otro tenant/proyecto) sigue despachando en la misma vuelta."""
+    mi = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    otro_id, otro_uuid = e.proyecto()
+    otro = _insertar(e.client, otro_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{otro_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(mi)[:2] == ("en_cola", None)                       # el trozo con clave rechazada no se toco
+    assert e.fila(otro)[0] == "pendiente"                            # el otro proyecto salio en la misma vuelta
+    msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert e.uuid in msg and "se salta el trozo del proyecto" in msg and "idempotency_key_reuse" in msg
+    # El hash corto de la clave (el mismo `abreviar` de LAS MANOS) une esta linea con la suya.
+    assert despachador.abreviar_clave(e.las_manos.claves[0]) in msg and e.las_manos.claves[0] not in msg
+
+
+def test_ocultar_y_restaurar_una_fila_en_cola_no_cambia_su_clave(e):
+    """Ocultar y restaurar no son un intento nuevo: la clave sigue igual. Un reencolado de verdad si la cambia."""
+    doc = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+
+    def clave():
+        filas = [f for f in _con_pool(e.client, lambda pool: repo.tomar_en_cola(pool, limite=100000))
+                 if f["id"] == doc]
+        return despachador.clave_de_idempotencia(e.uuid, filas)
+    antes = clave()
+    assert _con_pool(e.client, lambda pool: repo.ocultar(pool, project_id=e.project_id, documento_id=doc,
+                                                         user_id=e.usuario)) is True
+    assert clave() == antes
+    assert _con_pool(e.client, lambda pool: repo.restaurar(pool, project_id=e.project_id, documento_id=doc)) is True
+    assert clave() == antes
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', error='procesamiento_fallido' WHERE id=%s", (doc,))
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='en_cola', job_id=NULL, error=NULL WHERE id=%s", (doc,))
+    assert clave() != antes
+
+
+def test_el_hash_corto_de_la_clave_es_el_mismo_que_el_de_las_manos():
+    """Vector fijo, copiado de la prueba de jax (`abreviar` de procesamiento_idempotencia): si una de las dos
+    cambia, las lineas de log de las dos puntas dejan de unirse."""
+    assert despachador.abreviar_clave("jxp-doc-a2dad605d3914f47985f83924083ec04") == "776783dd9d97"
+
+
+def test_un_409_que_llena_la_ventana_no_deja_sin_despacho_al_otro_proyecto(e, monkeypatch):
+    """MINOR-D: con LIMITE=3 y tres filas del proyecto rechazado, la ventana se llenaba con filas que se saltaban
+    y el otro proyecto nunca entraba. Ahora la pasada siguiente excluye al (proyecto, dueno) saltado."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    mias = [e.insertar(e.ruta("l1", f"a{i}.pdf"), n=None) for i in range(3)]
+    otro_id, otro_uuid = e.proyecto()
+    otro = _insertar(e.client, otro_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{otro_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})] * 10
+    e.ciclo()                                           # UNA vuelta alcanza
+    assert [e.fila(i)[0] for i in mias] == ["en_cola"] * 3
+    assert e.fila(otro)[0] == "pendiente"
+
+
+class _Malos:
+    """La falsa compara `cuerpo["project_uuid"] != self.project_uuid`: con esto, los proyectos que estan en `s`
+    responden lo encolado (409) y el resto responde 202."""
+    def __init__(self):
+        self.s = set()
+
+    def __ne__(self, otro):
+        return otro not in self.s
+
+    def __eq__(self, otro):
+        return otro in self.s
+
+
+def test_52_proyectos_en_409_mas_uno_sano_el_sano_se_despacha_con_el_cursor(e, monkeypatch):
+    """MINOR-G: con LIMITE=3 y 52 proyectos de 3 filas cuyo trozo LAS MANOS rechaza, las listas de exclusion y el
+    tope de 50 pasadas dejaban al proyecto 53 sin despacho. El cursor por id recorre la cola entera en UNA vuelta."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    consultas = {"n": 0}
+    real = repo.tomar_en_cola
+
+    async def contada(pool, **kw):
+        consultas["n"] += 1
+        return await real(pool, **kw)
+    monkeypatch.setattr(repo, "tomar_en_cola", contada)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    base = uuid.uuid4().int % 10**12 * 10**6
+    for p in range(52):
+        pid, puuid = e.proyecto()
+        malos.s.add(puuid)
+        filas = ", ".join(f"({pid}, '{base + p * 1000 + i:064x}', 'a{i}.pdf', "
+                          f"'proyectos/{puuid}/entrada/l1/a{i}.pdf', 10, 'pdf', {e.usuario})" for i in range(3))
+        e.client.portal.call(sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, "
+                                  f"bytes, tipo, subido_por) VALUES {filas}")
+    sano_id, sano_uuid = e.proyecto()
+    sano = _insertar(e.client, sano_id, e.usuario, f"{uuid.uuid4().int:064x}"[-64:], "b.pdf",
+                     f"proyectos/{sano_uuid}/entrada/l1/b.pdf")
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})] * 1000
+    e.ciclo()
+    assert e.fila(sano)[0] == "pendiente"
+    # una consulta por ventana (157 filas / 3 = 53 ventanas, mas una final): no 50 consultas por cada pasada
+    assert consultas["n"] <= 60, consultas
+    assert despachador._cursor_de_cola == 0, "recorrida la cola, el cursor vuelve al principio"
+
+
+def test_un_ciclo_cortado_retoma_desde_el_inicio_de_la_ventana_cortada(e, monkeypatch):
+    """El cursor persiste entre vueltas: si LAS MANOS corta (429) en la ventana 2, la vuelta siguiente empieza ahi
+    y no se saltea las filas que no llegaron a despacharse."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(9)]
+    e.las_manos.post_respuestas = [(202, {"job_id": "job-1"}), (429, {"detail": "sin capacidad"})]
+    e.ciclo()                              # ventana 1 (ids 1-3) sale; ventana 2 (4-6) recibe 429 y corta
+    assert [e.fila(i)[0] for i in ids[:3]] == ["pendiente"] * 3
+    assert [e.fila(i)[0] for i in ids[3:]] == ["en_cola"] * 6
+    assert despachador._cursor_de_cola == ids[2], despachador._cursor_de_cola
+    e.ciclo()                              # retoma en la ventana 2: ahora si salen todas
+    assert {e.fila(i)[0] for i in ids} <= {"pendiente", "procesando"}          # la sincronizacion pudo avanzar el 1.o
+    assert [e.fila(i)[1] is not None for i in ids] == [True] * 9
+    assert despachador._cursor_de_cola == 0
+
+
+def _otro_proyecto_con_filas(e, k, estado_archivado=False):
+    """Un proyecto del mismo dueno con `k` filas en_cola (opcionalmente ARCHIVED despues de insertarlas)."""
+    pid, puuid = e.proyecto()
+    base = uuid.uuid4().int % 10**12 * 10**6
+    ids = [_insertar(e.client, pid, e.usuario, f"{base + i:064x}"[-64:], f"o{i}.pdf",
+                     f"proyectos/{puuid}/entrada/l1/o{i}.pdf") for i in range(k)]
+    if estado_archivado:
+        r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ARCHIVED"})
+        assert r.status_code == 200, r.text
+    return pid, puuid, ids
+
+
+def test_una_clave_desconocida_salta_ese_proyecto_y_no_frena_a_los_demas(e, caplog):
+    """MAJOR-A: el 503 `idempotencia_estado_desconocido` es PERMANENTE para esa clave (7 dias hasta la purga): cortar la
+    vuelta frenaria a todos los tenants en cada ciclo. Se salta el proyecto, el sano sale en la misma vuelta, el
+    cursor no se envenena y el log lleva el hash corto de la clave."""
+    mi = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    _pid, _puuid, otros = _otro_proyecto_con_filas(e, 1)
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert e.fila(mi)[:2] == ("en_cola", None)                          # el proyecto desconocido sigue esperando
+    assert e.fila(otros[0])[0] == "pendiente"                           # el otro salio en la MISMA vuelta
+    assert despachador._cursor_de_cola == 0
+    msg = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert "DESCONOCIDO" in msg and e.uuid in msg and despachador.abreviar_clave(e.las_manos.claves[0]) in msg
+    assert e.las_manos.claves[0] not in msg and "jax:docs/runbooks/idempotencia-clave-desconocida.md" in msg
+
+
+def test_no_disponible_corta_la_vuelta_pero_no_envenena_el_cursor(e, caplog):
+    """MAJOR-A: `procesamiento_no_disponible` es global y transitorio: corta (nada que despachar mientras dure), con el
+    hash corto en el log, y al volver el almacen la cola sale; el cursor no queda atrapado."""
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "procesamiento_no_disponible"}})]
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    assert [e.fila(i)[:2] for i in ids] == [("en_cola", None)] * 2
+    assert despachador._cursor_de_cola == 0
+    assert any(despachador.abreviar_clave(e.las_manos.claves[0]) in r.getMessage() and "sin integridad" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.ERROR)
+    e.ciclo()                                                            # el almacen volvio
+    assert {e.fila(i)[0] for i in ids} == {"pendiente"} and despachador._cursor_de_cola == 0
+
+
+def test_un_trozo_que_corta_por_un_500_de_su_proyecto_no_bloquea_la_cola(e, monkeypatch):
+    """A sano (ids 1-3), V con un 500 persistente (4-6) y B (7-12), con ventanas de 3. V corta el ciclo UNA vez y entra al
+    conjunto de trabados; en el ciclo siguiente se salta y B sale. Antes el corte caia siempre en V y B no salia nunca."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(3)]       # V = el proyecto de `e`: 500
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 6)
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 20
+    e.ciclo()
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"} and {e.fila(i)[0] for i in b_ids} == {"en_cola"}
+    assert despachador._trozos_trabados == {v_ids[0]} and despachador._cursor_de_cola == a_ids[-1]
+    posts = len(e.las_manos.posts)
+    e.ciclo()                                                          # V se salta SIN enviarse; B sale
+    assert len(e.las_manos.posts) == posts, "el trozo trabado no se vuelve a enviar en esta pasada"
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}
+    assert {e.fila(i)[:2] for i in v_ids} == {("en_cola", None)}       # V sigue esperando, no paso a error
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()    # pasada completa: se vacia
+
+
+def test_dos_trozos_trabados_en_la_misma_ventana_la_cola_sale_en_trabados_mas_uno_ciclos(e, monkeypatch):
+    """Escenario del auditor: A sano, V y W trabados (500) en la MISMA ventana y B detras. Cota: k trabados + 1 ciclos:
+    con k = 2, B sale en el ciclo 3 y NO antes."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 9)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)                    # A sano: ids 1-3
+    v, vu, v_ids = _otro_proyecto_con_filas(e, 3)
+    w, wu, w_ids = _otro_proyecto_con_filas(e, 3)
+    malos.s.update({vu, wu})                                           # V y W consumen los 500; el resto responde 202
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 6)                    # B detras: segunda ventana
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 50
+    e.ciclo()                                                          # A sale; V corta -> {V}
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"} and len(despachador._trozos_trabados) == 1
+    e.ciclo()                                                          # V saltado; W corta -> {V, W}
+    assert len(despachador._trozos_trabados) == 2 and {e.fila(i)[0] for i in b_ids} == {"en_cola"}
+    posts = len(e.las_manos.posts)
+    e.ciclo()                                                          # V y W saltados; B sale; pasada completa
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}, "B tenia que salir en el ciclo k + 1 = 3"
+    assert len(e.las_manos.posts) == posts and despachador._trozos_trabados == set() and despachador._cursor_de_cola == 0
+    assert {e.fila(i)[:2] for i in v_ids + w_ids} == {("en_cola", None)}
+
+
+def test_las_filas_de_id_bajo_reactivadas_detras_del_cursor_salen_en_k_mas_uno_ciclos(e, monkeypatch):
+    """Escenario del auditor (r7): un proyecto sano primero (cursor = su ultimo id), V con DOS trozos que dan 500 y un
+    proyecto reactivado con ids bajos DETRAS del cursor. Cota: con k = 2 trozos trabados, las filas bajas salen k + 1 = 3
+    ciclos despues de reactivarse (V1 se salta y V2 se traba; se completa la pasada y el cursor vuelve a 0; se leen)."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    pid, _puuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)         # ids bajos, fuera de la cola
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)                                     # sano: ventana 1
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(6)]          # V = proyecto de `e`: 2 trozos en 500
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 50
+    e.ciclo()                                                          # A sale; V1 corta y se traba
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"}
+    assert despachador._cursor_de_cola == a_ids[-1] > bajas[-1], "el cursor tiene que estar DETRAS de las filas bajas"
+    assert despachador._trozos_trabados == {v_ids[0]}
+    r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
+    assert r.status_code == 200, r.text                                # las de id bajo vuelven a la cola, detras del cursor
+    e.ciclo()                                                          # V1 se salta; V2 corta y se traba
+    assert despachador._trozos_trabados == {v_ids[0], v_ids[3]}
+    assert {e.fila(i)[:2] for i in bajas} == {("en_cola", None)}, "todavia detras del cursor"
+    e.ciclo()                                                          # V1 y V2 se saltan; pasada completa: cursor a 0
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()
+    e.ciclo()                                                          # k + 1 = 3 ciclos tras reactivar: las bajas salen
+    assert {e.fila(i)[0] for i in bajas} <= {"pendiente", "procesando"}
+    assert all(e.fila(i)[1] is not None for i in bajas), "las filas bajas tienen que haberse despachado"
+    assert {e.fila(i)[:2] for i in v_ids} == {("en_cola", None)}       # V sigue esperando, no paso a error
+
+
+def test_con_un_corte_global_sostenido_las_filas_reactivadas_detras_del_cursor_se_leen_al_recuperarse(e, monkeypatch):
+    """Sonda A del auditor (r7): un 429 sostenido con el cursor adelantado. Un corte global en la primera ventana del
+    ciclo no hace progreso: el cursor vuelve a 0, y las filas reactivadas con ids bajos se leen en la PRIMERA pasada tras
+    recuperarse (sin esto esperaban a que la pasada llegara al final de la cola, sin tope mientras el corte siguiera)."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    pid, bajas_uuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)
+    altas = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(6)]
+    afectados = _Malos()                                               # el 429 es de LAS MANOS entera: lo reciben los dos proyectos
+    afectados.s.update({e.uuid, bajas_uuid})
+    e.las_manos.project_uuid = afectados
+    e.las_manos.post_respuestas = [(202, {"job_id": "job-1"})] + [(429, {"detail": "sin capacidad"})] * 4
+    e.ciclo()                                                          # ventana 1 sale; la 2 recibe 429: corta con progreso
+    assert despachador._cursor_de_cola == altas[2] > bajas[-1]
+    r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
+    assert r.status_code == 200, r.text
+    for _ in range(3):                                                 # el 429 sigue: ningun POST sale
+        e.ciclo()
+    assert {e.fila(i)[:2] for i in bajas} == {("en_cola", None)}
+    assert despachador._cursor_de_cola == 0, "un corte global sin progreso reinicia el cursor"
+    e.ciclo()                                                          # LAS MANOS se recupero: primera pasada desde 0
+    assert all(e.fila(i)[1] is not None for i in bajas), "las bajas tienen que leerse en la primera pasada tras recuperar"
+    assert all(e.fila(i)[1] is not None for i in altas)
+
+
+def test_un_error_global_no_duplica_los_post_y_la_cota_cuenta_los_trozos_saltados(e):
+    """Un 429 (global) corta en el primer trozo que lo recibe y no entra al conjunto de trabados, asi que cada ciclo
+    no crece de un ciclo a otro. Sin claves desconocidas por delante, es UN POST por ciclo; con ellas, la cota es 1 + un
+    POST por cada trozo saltado en las ventanas recorridas en ese ciclo antes del corte (cada uno recibio su 503
+    `idempotencia_estado_desconocido`; no es un doble envio: es otro trozo). Si el cursor va y viene (corte en la primera
+    ventana -> 0), la cuenta por ciclo puede alternar entre esas dos cotas; nunca las supera."""
+    pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(429, {"detail": "sin capacidad"})] * 10
+    for ciclo in range(1, 5):
+        e.ciclo()
+        assert len(e.las_manos.posts) == ciclo, f"ciclo {ciclo}: {len(e.las_manos.posts)} POST"
+        assert despachador._trozos_trabados == set()
+    assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+    del e.las_manos.posts[:]
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}}),
+                                   (429, {"detail": "sin capacidad"})] * 5
+    for ciclo in range(1, 4):                                          # un trozo saltado (503) + el que corta (429) = 2
+        e.ciclo()
+        assert len(e.las_manos.posts) == 2 * ciclo, f"ciclo {ciclo}: {len(e.las_manos.posts)} POST (cota: 1 + 1 saltado)"
+        assert despachador._trozos_trabados == set()
+
+
+def test_el_conjunto_de_trabados_deja_rastro_al_entrar_al_saltar_y_al_vaciarse(e, monkeypatch, caplog):
+    """P-2: un trozo que entra al conjunto de trabados, cada ciclo que lo salta (UN log por ciclo, con el conteo y los ids
+    acotados) y el vaciado al completar la pasada se registran; el log del 500 ya no dice que «se reintenta» a secas."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(3)]
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 3)
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 20
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()                                                      # V corta y entra al conjunto
+    msgs = [r.getMessage() for r in caplog.records]
+    entrada = [m for m in msgs if "entra al conjunto de trabados" in m]
+    assert len(entrada) == 1 and str(v_ids[0]) in entrada[0] and e.uuid in entrada[0]
+    texto_500 = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "respondio 500" in r.getMessage()]
+    assert len(texto_500) == 1 and "trabado" in texto_500[0] and "se reintenta en la vuelta siguiente" not in texto_500[0]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()                                                      # V se salta; B sale; pasada completa
+    msgs = [r.getMessage() for r in caplog.records]
+    saltos = [m for m in msgs if "saltado(s) sin enviarse" in m]
+    assert len(saltos) == 1 and "1 trozo(s)" in saltos[0] and str(v_ids[0]) in saltos[0], msgs
+    vaciado = [m for m in msgs if "se vacia el conjunto de trabados" in m]
+    assert len(vaciado) == 1 and str(v_ids[0]) in vaciado[0], msgs
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}
+
+
+def test_el_log_de_trozos_saltados_es_uno_por_ciclo_y_acota_los_ids(e, monkeypatch, caplog):
+    """P-2: con mas trozos trabados que `MAXIMO_IDS_EN_EL_LOG` el log nombra solo los primeros y cuenta el resto, y es UNO
+    por ciclo (no uno por trozo). 120 filas = 3 trozos de [50, 50, 20], los tres trabados."""
+    monkeypatch.setattr(despachador, "MAXIMO_IDS_EN_EL_LOG", 2)
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]
+    despachador._trozos_trabados.update({ids[0], ids[50], ids[100]})
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    saltos = [r.getMessage() for r in caplog.records if "saltado(s) sin enviarse" in r.getMessage()]
+    assert len(saltos) == 1 and "3 trozo(s)" in saltos[0] and ", ..." in saltos[0], saltos
+    assert str(ids[0]) in saltos[0] and str(ids[50]) in saltos[0] and str(ids[100]) not in saltos[0]
+    assert e.las_manos.posts == []
+
+
+def test_el_422_de_formato_de_clave_es_global_y_da_un_solo_error(e, caplog):
+    """MINOR-3: el formato lo arma este codigo para todos los trozos: corta la vuelta y deja UN ERROR, no uno por trozo."""
+    e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
+    e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
+    e.las_manos.post_respuestas = [(422, {"detail": {"code": "idempotency_key_invalida"}})] * 5
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+    errores = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "FORMATO" in r.getMessage()]
+    assert len(errores) == 1 and len(e.las_manos.posts) == 1
+
+
+def test_con_mas_claves_que_el_tope_se_avisa_un_solo_agregado(e, monkeypatch):
+    """MINOR-1: llena la tabla de claves vistas, las nuevas NO expulsan a las viejas ni re-avisan: un aviso agregado, con el
+    mismo enfriamiento."""
+    enviados = []
+
+    async def enviar(mensaje):
+        enviados.append(mensaje)
+        return Desenlace.ENTREGADO
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", enviar)
+    monkeypatch.setattr(despachador, "MAXIMO_CLAVES_DESCONOCIDAS", 2)
+    malos = _Malos()
+    e.las_manos.project_uuid = malos
+    filas = []
+    for _ in range(5):
+        _p, puuid, ids = _otro_proyecto_con_filas(e, 1)
+        malos.s.add(puuid)
+        filas += ids
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}})] * 5
+    e.ciclo()
+    e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    individuales = [m for m in enviados if "mas de" not in m]
+    agregados = [m for m in enviados if "mas de 2 claves" in m]
+    assert len(individuales) == 2 and len(agregados) == 1, enviados          # 2 por clave + 1 agregado (las otras 3 no avisan)
+    assert set(despachador._claves_desconocidas) == {*list(despachador._claves_desconocidas)[:2], despachador.CLAVE_AGREGADA}
+    assert len(despachador._claves_desconocidas) == 3
+    assert {e.fila(i)[0] for i in filas} == {"en_cola"}
+
+
+def test_un_409_de_clave_salta_solo_ese_trozo_y_los_demas_del_proyecto_salen(e):
+    """MINOR-4b: 120 filas del mismo proyecto = 3 trozos de 50; el primero recibe el 409: los otros dos salen."""
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(120)]
+    e.las_manos.post_respuestas = [(409, {"detail": {"code": "idempotency_key_reuse"}})]
+    e.ciclo()
+    estados = [e.fila(i)[0] for i in ids]
+    assert estados[:50] == ["en_cola"] * 50 and set(estados[50:]) == {"pendiente"}, set(estados)
+
+
+def test_una_clave_desconocida_salta_solo_su_trozo_avisa_una_vez_y_agrupa_el_log(e, caplog, monkeypatch):
+    """MINOR-4a: la clave DESCONOCIDA dura 7+ dias. Una vez por clave: ERROR con el runbook de jax y UN Telegram por el canal
+    de #203; los ciclos siguientes no repiten ni el log ni el aviso hasta vencer el enfriamiento (con el contador de lo
+    omitido). Una clave distinta avisa aparte."""
+    enviados = []
+
+    async def enviar(mensaje):
+        enviados.append(mensaje)
+        return Desenlace.ENTREGADO
+    monkeypatch.setattr(despachador, "_enviar_telegram_con_desenlace", enviar)
+    ahora = [1000.0]
+    monkeypatch.setattr(despachador, "_reloj", lambda: ahora[0])
+    primero = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(2)]
+    desconocida = (503, {"detail": {"code": "idempotencia_estado_desconocido"}})
+    e.las_manos.post_respuestas = [desconocida] * 5
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+        e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+        for _ in range(3):
+            e.ciclo()                                # la misma clave, 3 ciclos mas
+            e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    errores = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "DESCONOCIDO" in r.getMessage()]
+    clave_corta = despachador.abreviar_clave(e.las_manos.claves[0])
+    assert len(errores) == 1 and clave_corta in errores[0] and "jax:docs/runbooks/idempotencia-clave-desconocida.md" in errores[0]
+    assert len(enviados) == 1 and clave_corta in enviados[0] and "jax:docs/runbooks/idempotencia-clave-desconocida.md" in enviados[0]
+    assert e.las_manos.claves[0] not in "".join(enviados) + "".join(errores)
+    assert {e.fila(i)[0] for i in primero} == {"en_cola"}
+    # vence el enfriamiento: UN log mas, con las repeticiones omitidas; el aviso NO se repite (ya se entrego)
+    enfriamiento = e.client.portal.call(despachador.ajustes.valor, despachador.ajustes.DOC_FRENO_INCERTIDUMBRE_ENFRIAMIENTO_S)
+    ahora[0] += enfriamiento + 1
+    with caplog.at_level(logging.ERROR):
+        e.ciclo()
+        e.client.portal.call(_esperar_tareas_de_aviso, despachador)
+    errores = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "DESCONOCIDO" in r.getMessage()]
+    assert len(errores) == 2 and "3 repeticion(es)" in errores[1] and len(enviados) == 1
+
+
+def test_cruce_freno_de_incertidumbre_cursor_y_trozos_trabados(e, monkeypatch):
+    """El freno de incertidumbre (#203) corta ANTES del cursor: no lee la cola ni mueve el cursor ni el conjunto de trabados.
+    Al vencer, el trozo trabado se salta SIN enviarse y un proyecto que llega detras sale."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 3)                    # ids bajos: ventana 1
+    mios = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(3)]     # ventana 2: el proyecto de `e`
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})]
+    e.ciclo()                                       # ventana 1 (B) sale; la 2 recibe 500: se traba y corta
+    cursor, trabados = despachador._cursor_de_cola, set(despachador._trozos_trabados)
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"} and cursor == b_ids[-1] and trabados == {mios[0]}
+    hasta = despachador._reloj() + 600
+    for i in range(100):                            # freno ACTIVO (>= 2 x rutas_por_trabajo en incertidumbre)
+        despachador._en_incertidumbre[10**12 + i] = hasta
+    posts = len(e.las_manos.posts)
+    e.ciclo()
+    assert len(e.las_manos.posts) == posts          # el freno no despacha nada...
+    assert (despachador._cursor_de_cola, despachador._trozos_trabados) == (cursor, trabados)    # ...ni toca el estado
+    despachador._en_incertidumbre.clear()           # vence la ventana
+    _c, _cu, c_ids = _otro_proyecto_con_filas(e, 3)  # un proyecto que llega detras
+    e.ciclo()                                       # retoma en la ventana 2: `mios` se salta sin enviarse; C sale
+    assert len(e.las_manos.posts) == posts, "el trozo trabado no se envio"
+    assert {e.fila(i)[0] for i in mios} == {"en_cola"} and {e.fila(i)[0] for i in c_ids} == {"pendiente"}
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()
+
+
+def test_no_disponible_corta_la_vuelta_y_no_deja_salir_a_otro_proyecto(e):
+    """MINOR-3: `procesamiento_no_disponible` es GLOBAL: con dos proyectos, el segundo NO se despacha en el ciclo cortado
+    (si se tratara como un salto de proyecto, saldria)."""
+    mio = e.insertar(e.ruta("l1", "a.pdf"), n=1)
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 1)
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "procesamiento_no_disponible"}})]
+    e.ciclo()
+    assert e.fila(mio)[:2] == ("en_cola", None) and e.fila(b_ids[0])[0] == "en_cola"
+    assert len(e.las_manos.posts) == 1
+    e.ciclo()                                       # el almacen volvio
+    assert e.fila(mio)[0] == "pendiente" and e.fila(b_ids[0])[0] == "pendiente"
+
+
+@pytest.mark.parametrize("filas,pct_en_cola,tope_s", [(50_000, 5, 3), (50_000, 100, 5), (200_000, 100, 15)])
+def test_explain_y_tiempo_de_la_consulta_real_con_cursor_con_la_cola_llena(e, filas, pct_en_cola, tope_s):
+    """MINOR-D, el PEOR caso: la cola llena. Sembrado con volumen (20 proyectos, 300 usuarios) se mide el EXPLAIN de la
+    consulta real y el recorrido COMPLETO de la cola por ventanas de 1000. Sin pistas (medido, segundos): 50k/5%: 0,32;
+    50k/100%: 15,62; 200k/5%: 3,96; 200k/100%: 276,71 (recorrido cuadratico: `Using temporary; Using filesort` en cada
+    ventana). Con STRAIGHT_JOIN + FORCE INDEX: 0,01 / 0,18 / 0,04 / 0,71. Los topes de aqui son 10 a 20 veces eso: un
+    runner lento no los rompe y volver al plan viejo, si."""
+    marca = uuid.uuid4().hex[:12]
+    limite = 1000
+    tenant_db = e.client.portal.call(sql, "SELECT tenant_id FROM jax_users WHERE user_id=%s", (e.usuario,), True)[0][0]
+    e.client.portal.call(sql, "INSERT INTO jax_users (tenant_id, email, password_hash) "
+                              "SELECT %s, CONCAT('vol-', %s, '-', seq, '@vol.test'), 'x' FROM seq_1_to_300",
+                         (tenant_db, marca))
+    usuarios = [r[0] for r in e.client.portal.call(
+        sql, "SELECT user_id FROM jax_users WHERE email LIKE %s ORDER BY user_id", (f"vol-{marca}-%",), True)]
+    assert len(usuarios) == 300
+    proyectos = [e.proyecto() for _ in range(20)]
+    por_proyecto = filas // 20
+    try:
+        for pid, puuid in proyectos:
+            e.client.portal.call(
+                sql, "INSERT INTO project_documents (project_id, sha256, nombre_original, ruta_entrada, bytes, tipo, "
+                     "subido_por, estado) SELECT %s, SHA2(CONCAT(%s, %s, seq), 256), CONCAT('a', seq, '.pdf'), "
+                     "CONCAT('proyectos/', %s, '/entrada/l1/a', seq, '.pdf'), 10, 'pdf', %s + (seq MOD 300), "
+                     "IF(seq MOD 100 < %s, 'en_cola', 'listo') FROM seq_1_to_" + str(por_proyecto),
+                (pid, marca, pid, puuid, usuarios[0], pct_en_cola))
+        e.client.portal.call(sql, "ANALYZE TABLE project_documents")
+        ids_propios = ",".join(str(p[0]) for p in proyectos)
+        en_cola = e.client.portal.call(
+            sql, f"SELECT COUNT(*) FROM project_documents WHERE project_id IN ({ids_propios}) AND estado='en_cola'",
+            (), True)[0][0]
+        assert en_cola == filas * pct_en_cola // 100
+        consulta = repo.sql_tomar_en_cola(frozenset({"excel"}), 2, True)
+        params = (10**12, 10**12 + 1, filas // 2, limite)
+        plan = e.client.portal.call(sql, "EXPLAIN " + consulta, params, True)
+        extra = " ".join(str(f[9]) for f in plan).lower()
+        assert "temporary" not in extra and "filesort" not in extra, plan
+        assert plan[0][2] == "d" and plan[0][5] == "idx_project_documents_despacho", plan      # `d` primero, por el indice
+        analisis = json.loads(e.client.portal.call(sql, "ANALYZE FORMAT=JSON " + consulta, params, True)[0][0])
+
+        def filas_leidas(nodo, salida):
+            if isinstance(nodo, dict):
+                t = nodo.get("table")
+                if isinstance(t, dict) and t.get("table_name") == "d":
+                    salida.append(float(t.get("r_rows") or 0))
+                for v in nodo.values():
+                    filas_leidas(v, salida)
+            elif isinstance(nodo, list):
+                for v in nodo:
+                    filas_leidas(v, salida)
+            return salida
+        leidas = filas_leidas(analisis, [])
+        assert leidas and max(leidas) <= 3 * limite, leidas              # del orden de la ventana, no de la tabla
+
+        async def recorrer(pool):
+            cursor, total, ventanas = 0, 0, 0
+            propios = {p[0] for p in proyectos}
+            q = repo.sql_tomar_en_cola(frozenset(), 0, True)
+            t0 = time.monotonic()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    while True:
+                        await cur.execute(q, (cursor, limite))
+                        lote = await cur.fetchall()
+                        ventanas += 1
+                        total += sum(1 for f in lote if f[1] in propios)
+                        if len(lote) < limite:
+                            return time.monotonic() - t0, total, ventanas
+                        cursor = lote[-1][0]
+        dt, total, ventanas = _con_pool(e.client, recorrer)
+        assert total == en_cola, (total, en_cola)
+        assert dt <= tope_s, f"recorrer {ventanas} ventanas tardo {dt:.2f}s (tope {tope_s}s): el plan volvio a ser cuadratico"
+    finally:
+        e.client.portal.call(sql, "DELETE FROM project_documents WHERE project_id IN ("
+                             + ",".join(str(p[0]) for p in proyectos) + ") AND bytes = %s", (10,))
+        e.client.portal.call(sql, "DELETE FROM jax_users WHERE email LIKE %s AND password_hash = %s",
+                             (f"vol-{marca}-%", "x"))

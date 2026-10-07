@@ -46,14 +46,18 @@ SQL_LISTAR_OCULTOS = _BASE_LISTA.format(nulo="NOT NULL", indice=_INDICE_LISTA)
 _EXTENSION_SQL = "LOWER(SUBSTRING_INDEX(d.ruta_entrada, '.', -1)) COLLATE utf8mb4_nopad_bin"
 
 
-def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0) -> str:
+def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_excluidos: int = 0,
+                      con_cursor: bool = False) -> str:
     """La consulta de la cola, SIN las filas de las clases de extension `excluir_clases` (las que LAS MANOS
     frena por falta de una biblioteca: sin esto un bloque de pdf atascados en los ids bajos llena la ventana de
     `LIMIT` y las imagenes que llegan despues nunca entran). `otro` es todo lo que no es pdf, excel ni word. Las
     extensiones son constantes de `tipos`, nunca texto del usuario. El `ORDER BY d.id` sigue en el indice de
     despacho: el filtro por extension se aplica a las filas que ese indice ya entrega en orden.
     `n_ids_excluidos`: cuantos `AND d.id NOT IN (%s, ...)` lleva (las filas con desenlace incierto del despachador,
-    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`)."""
+    que viven en la memoria del proceso y no en la base; el llamador pasa los ids antes del `LIMIT`).
+    `con_cursor`: agrega `AND d.id > %s` (un parametro, despues de los ids y antes del `LIMIT`): la cola se recorre por
+    ventanas de `LIMIT` filas avanzando por `id`, asi lo que el despachador salta (un proyecto cuyo trozo LAS MANOS
+    rechaza) no vuelve a llenar la ventana ni deja sin despacho a los demas."""
     desconocida = set(excluir_clases) - set(tipos.CLASES)
     if desconocida:
         raise ValueError(f"clases desconocidas: {sorted(desconocida)}")
@@ -67,10 +71,22 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
             condiciones.append(f"{_EXTENSION_SQL} NOT IN ({de_la_clase})")
     if n_ids_excluidos:
         condiciones.append(f"d.id NOT IN ({', '.join(['%s'] * n_ids_excluidos)})")
+    if con_cursor:
+        condiciones.append("d.id > %s")
     extra = "".join(f"AND {c} " for c in condiciones)
     return (
-        "SELECT d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id "
-        "FROM project_documents d "
+        # PLAN FORZADO, con medicion (2026-10-06; MariaDB 12.3.3, 20 proyectos, 300 usuarios, recorrido COMPLETO de la cola por
+        # ventanas de 1000, segundos; actual -> con STRAIGHT_JOIN + FORCE INDEX):
+        #     50k filas, 5% en cola:   0,32 ->   0,01     200k filas, 5% en cola:     3,96 ->   0,04
+        #     50k filas, 100% en cola: 15,62 ->  0,18     200k filas, 100% en cola: 276,71 ->   0,71
+        # Sin la pista el optimizador arranca por `projects`/`jax_project_scope`, une `d` por su FK y ordena con
+        # `Using temporary; Using filesort` EN CADA VENTANA: recorrido cuadratico con la cola llena. Con ella, `d` va
+        # primero por idx_project_documents_despacho (estado, job_id, id), que ya entrega las filas en el orden de
+        # `ORDER BY d.id` y deja el cursor `d.id > ?` como rango; `p`, `s` y `u` se resuelven por clave. (Probados por
+        # separado: cualquiera de las dos pistas arregla el 100%; FORCE INDEX solo evita ademas que a veces recorra
+        # PRIMARY. Se dejan las dos: el plan no depende de las estadisticas.) Test: EXPLAIN y tiempo en 50k/200k.
+        "SELECT STRAIGHT_JOIN d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
+        "FROM project_documents d FORCE INDEX (idx_project_documents_despacho) "
         "JOIN projects p ON p.id = d.project_id "
         "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
         "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
@@ -356,36 +372,48 @@ async def _actualizar_de_proyecto(pool, actualiza: str, args: tuple, project_id:
         return existe
 
 
+# Ocultar y restaurar NO son un intento nuevo de procesamiento: asignan `updated_at = updated_at` para que el
+# ON UPDATE CURRENT_TIMESTAMP no lo mueva. `updated_at` es parte de la clave de idempotencia del envio a LAS MANOS
+# (`despachador.clave_de_idempotencia`); si se moviera aqui, ocultar y restaurar una fila en_cola entre el 202 y
+# un reinicio cambiaria la clave y duplicaria el OCR. Un UPDATE nuevo que olvide esto solo cambia la clave de mas
+# (un OCR duplicado), nunca de menos.
 async def ocultar(pool, *, project_id: int, documento_id: int, user_id: int) -> bool:
     return await _actualizar_de_proyecto(
         pool,
         "UPDATE project_documents SET oculto_at = COALESCE(oculto_at, CURRENT_TIMESTAMP(6)), "
-        "oculto_por = COALESCE(oculto_por, %s) WHERE id = %s AND project_id = %s",
+        "oculto_por = COALESCE(oculto_por, %s), updated_at = updated_at WHERE id = %s AND project_id = %s",
         (user_id,), project_id, documento_id)
 
 
 async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
     return await _actualizar_de_proyecto(
         pool,
-        "UPDATE project_documents SET oculto_at = NULL, oculto_por = NULL WHERE id = %s AND project_id = %s",
+        "UPDATE project_documents SET oculto_at = NULL, oculto_por = NULL, updated_at = updated_at "
+        "WHERE id = %s AND project_id = %s",
         (), project_id, documento_id)
 
 
 async def tomar_en_cola(pool, *, limite: int, excluir_clases: frozenset[str] = frozenset(),
-                        excluir_ids: frozenset[int] = frozenset()) -> list[dict]:
+                        excluir_ids: frozenset[int] = frozenset(),
+                        despues_de_id: int | None = None) -> list[dict]:
     """Filas `en_cola` de proyectos ACTIVE, por `id`. `jax_project_scope.status` es
     la fuente de verdad del ciclo de vida (B9); `projects.status` solo lo refleja.
     El uploader canonico produce el contexto tipado de ownership que el despachador
     transmite a LAS MANOS en cabeceras cerradas. `excluir_clases`: clases de extension que no se piden
     (ver `sql_tomar_en_cola`); `excluir_ids`: filas que no se piden (las del desenlace incierto, que si no
-    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda."""
+    cuentan contra el `limite` y despues se saltan); el `limite` cuenta solo lo que queda; `despues_de_id`: solo filas con `id` mayor (cursor de la cola)."""
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             ids = sorted(excluir_ids)
-            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids)), (*ids, limite))
+            con_cursor = despues_de_id is not None
+            await cur.execute(sql_tomar_en_cola(frozenset(excluir_clases), len(ids), con_cursor),
+                              (*ids, *((despues_de_id,) if con_cursor else ()), limite))
             filas = await cur.fetchall()
+    # `sha256` y `actualizado_at` son lo que el despachador usa para la clave de idempotencia del envio
+    # (`despachador.clave_de_idempotencia`): `updated_at` se mueve con CADA UPDATE de la fila, asi que
+    # marca el intento logico (insertar, re-subir o reprocesar la dejan en_cola con otro `updated_at`).
     return [{"id": f[0], "project_id": f[1], "project_uuid": f[2], "ruta_entrada": f[3],
-             "owner": _owner(f[4], f[5], f[1])} for f in filas]
+             "owner": _owner(f[4], f[5], f[1]), "sha256": f[6], "actualizado_at": f[7]} for f in filas]
 
 
 async def marcar_despachadas(pool, *, ids: list[int], job_id: str,

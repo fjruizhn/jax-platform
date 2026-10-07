@@ -55,8 +55,16 @@ def test_todo_pedido_a_las_manos_salvo_health_lleva_la_credencial():
             continue
         headers = [k for k in n.keywords if k.arg == "headers"]
         secured = headers and ast.unparse(headers[0].value) == "encabezados_las_manos()"
+        # El despacho de documentos suma la `Idempotency-Key` (auditoria de E3, 2026-10-06) a los encabezados
+        # cerrados de procesamiento: la credencial y el dueno siguen saliendo de `encabezados_procesamiento`,
+        # y solo se admite ESTA forma exacta (el esparcido primero, la clave despues), no cualquier dict.
+        formas_de_procesamiento = {
+            "encabezados_procesamiento(contexto)",
+            "{**encabezados_procesamiento(contexto), ENCABEZADO_DE_IDEMPOTENCIA: "
+            "clave}",
+        }
         processing = (ruta == Path("proyectos_documentos/despachador.py") and headers
-                      and ast.unparse(headers[0].value) == "encabezados_procesamiento(contexto)")
+                      and ast.unparse(headers[0].value) in formas_de_procesamiento)
         if not secured and not processing:
             faltan.append(f"{ruta}:{n.lineno} {destino}")
     assert not faltan, "pedidos a LAS MANOS sin credencial de servicio:\n" + "\n".join(faltan)

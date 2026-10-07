@@ -228,7 +228,9 @@ def test_tomar_en_cola_ignora_proyectos_archivados(e):
              if f["project_id"] in (activo, archivado)]
     assert [f["id"] for f in filas] == [a]
     assert filas[0]["owner"] == e.owner(activo) and filas[0]["project_uuid"]
-    assert set(filas[0]) == {"id", "project_id", "project_uuid", "ruta_entrada", "owner"}
+    assert set(filas[0]) == {"id", "project_id", "project_uuid", "ruta_entrada", "owner", "sha256", "actualizado_at"}
+    # Lo que el despachador usa para la clave de idempotencia del envio.
+    assert filas[0]["sha256"] == "d" * 64 and filas[0]["actualizado_at"] is not None
 
 
 def test_tomar_en_cola_usa_el_scope_y_no_el_reflejo_de_projects(e):

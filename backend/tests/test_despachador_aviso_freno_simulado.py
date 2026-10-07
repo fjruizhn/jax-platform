@@ -37,7 +37,7 @@ _ESTADO_INICIAL = {
 
 
 async def _pasada_vacia(*_args):
-    return None
+    return None, 0, 0        # (accion, ultimo id, filas leidas): sin corte y cola recorrida
 
 
 class _Resp:
