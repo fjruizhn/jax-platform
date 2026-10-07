@@ -28,46 +28,63 @@ Mutante `time.sleep(0.5)` en `encolar_pdf_desde_chat`, con el entorno del paso d
 
 **Defecto original:** `tope_subida_ms=1500` era absoluto y se calibró en hall9000 (32 CPU, base 32-60 ms). La subida p95 bajo carga depende de los núcleos: en el runner de CI, **master** dio 1215 ms y los runs de **#210** 1616 y 1669 ms (verificado en los logs `E3_LOAD`) sin cambio en la ruta de subida. El control fallaba por la máquina, no por el código.
 
-**Intento descartado (45cb3e7, rechazado por la auditoría de #211):** un tope relativo `6 x costo_aislado x 20` con la subida aislada medida por la misma ruta vigilada. Era circular: una regresión real en `encolar_pdf_desde_chat` infla el costo aislado y el p95 por igual, el tope relativo subía hasta el techo de 8000 ms y un `sleep` de 0,05-0,3 s REAL pasaba 4 de 4 (el tope de 1500 ms antiguo atrapaba >= 0,1 s). Además la «subida aislada» no estaba aislada: cada subida disparaba `despachar_ahora` real. Se quitó entero (subida aislada, factor, tope relativo, la razón impresa).
+**Intento descartado (45cb3e7, rechazado por la auditoría de #211):** un tope relativo `6 x costo_aislado x 20` con la subida aislada medida por la misma ruta vigilada. Era circular: una regresión real en `encolar_pdf_desde_chat` infla el costo aislado y el p95 por igual, el tope relativo subía hasta el techo de 8000 ms y un `sleep` de 0,05-0,3 s REAL pasaba 4 de 4. Además la «subida aislada» no estaba aislada: cada subida disparaba `despachar_ahora` real. Se quitó entero.
 
-**Diseño vigente: un LATIDO en el loop de la app.** Lo que la prueba vigila es que la ruta de subida no BLOQUEE el event loop. Se mide directo: una tarea lanzada con `client.portal.start_task_soon` corre en el MISMO loop donde corre la app (el del portal de `TestClient`), duerme 10 ms en bucle y registra cuánto se atrasa cada despertar. Un bloqueo síncrono de X ms en el loop atrasa el latido >= X ms con cualquier número de núcleos; el trabajo legítimo en `to_thread` no lo atrasa.
+**Diseño vigente: un LATIDO en el loop de la app.** Lo que la prueba vigila es que la ruta de subida no BLOQUEE el event loop. Una tarea lanzada con `client.portal.start_task_soon` corre en el MISMO loop donde corre la app (el del portal de `TestClient`), duerme 10 ms en bucle y registra cuánto se atrasa cada despertar. Un bloqueo síncrono de X ms en el loop atrasa el latido >= X ms con cualquier número de núcleos; el trabajo legítimo en `to_thread` no lo atrasa (control negativo de la auditoría: `to_thread` de 0,2 s pasa).
 
-- **Aserción:** `p99(atraso del latido) <= LATIDO_P99_MAX_MS = 40 ms` (`JAX_E3_LATIDO_P99_MAX_MS`), con un mínimo de 50 despertares (si el latido no corrió, la prueba falla, no pasa en vacío). Mensaje: `E3 loop: el event loop de la app se bloqueó ...`.
-- **Por qué p99 y no el máximo:** con 1 CPU, sin regresión, el máximo llegó a 33,7 ms (tope de 40 con margen de 1,2x: flaky en un runner compartido), pero el p99 nunca pasó de 16,2 ms. Una regresión real atrasa varios despertares seguidos (bloquea 20 subidas), así que su p99 es alto aunque se tolere un tirón aislado. 40 ms es la media geométrica entre 16,2 (sin regresión) y 94 (la menor con `sleep(0.05)`): ~2,4x por cada lado.
-- **Por qué 10 ms de latido:** da ~330-560 despertares por corrida (p99 estable) sin cargar el loop.
-- **Red:** techo absoluto de subida p95 `TECHO_SUBIDA_MS = 8000` (`JAX_E3_SUBIDA_TECHO_MS`) y tope de chat 5000 ms. No detectan regresiones pequeñas; para eso está el latido. `JAX_E3_SUBIDA_P95_MAX_MS` ya no existe en la prueba ni en `policy.yml`.
-- **`policy.yml`:** el paso del mutante exige ahora la línea de la AssertionError real, `grep -E "^E +AssertionError: E3 loop: "`. Antes, `grep -E "E3 (subida|chat) p95 "` se satisfacía con el código fuente que pytest repite en el traceback. La línea del código fuente no empieza por `E`, y se comprobó contra el log real de un mutante.
-- **Qué imprime `E3_LOAD`:** `latido_n`, `latido_max_ms`, `latido_p99_ms`, `latido_sobre_tope`, `latido_p99_tope_ms`, `subida_p95_ms`, `subida_techo_ms` y los de chat: el runner deja su línea base registrada.
+**Aserciones (en este orden; todas con el prefijo `E3 loop:` que exige el grep del mutante en `policy.yml`):**
 
-**Mediciones (hall9000, MariaDB 12.3.3 efímera `--network none`, `taskset`; código final, `E3_LOAD` de cada corrida):**
+| Aserción | Tope | Sin regresión (36 corridas, 1/2/4/32 CPU) | Qué ve que las otras no |
+|---|---|---|---|
+| p99 del atraso | 40 ms (`JAX_E3_LATIDO_P99_MAX_MS`) | 2,4-19,6 ms | tolera un tirón aislado del runner; ve el bloqueo repartido en muchas subidas |
+| atraso máximo | 100 ms (`JAX_E3_LATIDO_MAX_MS`) | 4,0-33,7 ms | un bloqueo único de cualquier tamaño >= 100 ms (el p99 no ve <= 4 eventos) |
+| tiempo total bloqueado (suma de los atrasos > 20 ms) | 200 ms (`JAX_E3_LATIDO_BLOQUEADO_MAX_MS`) | 0-65,6 ms | la regresión chica y repartida (`sleep(0.03)` en todas las subidas) |
 
-Sin regresión (5 corridas por configuración; todas pasan):
+- **Por qué estos valores:** cada tope es aprox. la media geométrica entre lo peor sin regresión y lo menor con regresión que debe atrapar: p99 40 (19,6 vs 75 con `sleep(0.05)`); máximo 100 (33,7 vs 301, la menor con 4 subidas de 0,3 s; un bloqueo único de 1 s da 995-1000); total 200 (65,6 vs 520, la menor con `sleep(0.03)`).
+- **Mínimo detectable declarado:** un `sleep` de **0,03 s** en todas las subidas (6/6), un bloqueo único de **>= 100 ms**, o bloqueos que sumen **> 200 ms**. NO se ve: `sleep(0.02)` en todas las subidas (total 20-192 ms, máx 20-45 ms: 0/6) ni un bloqueo único menor a 100 ms.
+- **Que el latido nunca cuelgue la prueba:** el latido se detiene en un `finally` que envuelve todo lo que va entre su arranque y las aserciones, y tiene su propio tope de vida (180 s). Antes (cff1173), si un hilo de usuario fallaba (503/429, `TimeoutError`, assert), el latido seguía vivo y el cierre del portal de `TestClient` esperaba para siempre su tarea: la prueba se colgaba sin log (el job no tiene `timeout-minutes` por defecto: 6 h). **Verificado:** con un 500 inyectado en la 5.ª llamada a `encolar_pdf_desde_chat`, cff1173 se cuelga (rc=124 a los 60 s, sin una línea de log) y el código nuevo falla en 8 s con `AssertionError: {"detail":{"code":"inyectado_e3"}}` (`1 failed`).
+- **`timeout-minutes: 30` en el job `backend-tests-con-db`** (`policy.yml`): sin él, un cuelgue ocupaba el job hasta el tope por defecto de 6 h. Medido en hall9000 con 4 CPU y MariaDB efímera: suite completa 200 s (3931 pruebas pasan; en esa corrida fallaron 4: 3 pruebas de `test_base_de_test` que lanzan un subproceso sin `CI=true` y lo rechaza el guardia de producción del arnés local, y `test_no_fail_open_except`, que atrapó un `except Exception` sin marca en esta misma prueba y se corrigió antes del commit), E3 ~6 s y su mutante ~15 s; 30 min deja ~9x de margen para instalación, arranque de MariaDB y un runner más lento.
+- **El latido muerto tiene otro prefijo:** `E3 latido muerto: casi no corrió (N despertares)` (mínimo 50). Antes compartía el prefijo `E3 loop:` con el bloqueo real, y el paso del mutante lo habría dado por bueno. El grep exige `^E +AssertionError: E3 loop: `.
+- **Red:** techo absoluto de subida p95 `TECHO_SUBIDA_MS = 8000` y tope de chat 5000 ms. `JAX_E3_SUBIDA_P95_MAX_MS` ya no existe en la prueba ni en `policy.yml`.
+- **Qué imprime `E3_LOAD`:** `latido_n`, `latido_max_ms`, `latido_p99_ms`, `latido_sobre_tope`, `latido_bloqueado_ms`, sus topes, `subida_p95_ms`, `subida_techo_ms` y los de chat: el runner deja su línea base registrada.
 
-| CPU | p95 subida (ms) | p99 del latido (ms) | máx del latido (ms) | resultado |
+**Mediciones (hall9000, MariaDB 12.3.3 efímera `--network none`, `taskset`; código final):**
+
+Sin regresión (4 corridas por configuración; todas pasan):
+
+| CPU | p95 subida (ms) | p99 latido (ms) | máx latido (ms) | total bloqueado (ms) |
 |---|---|---|---|---|
-| 1 | 1197-1495 | 3,8 / 6,9 / 7,5 / 14,1 / 5,3 | 11,7-21,7 | 5/5 pasa |
-| 2 | 1023-1251 | 6,2 / 8,8 / 5,6 / 10,7 / 4,5 | 12,9-18,4 | 5/5 pasa |
-| 4 | 675-970 | 4,9 / 7,1 / 4,5 / 6,6 / 5,0 | 8,4-20,2 | 5/5 pasa |
-| 32 (sin restringir) | 41-50 | 5,0 / 3,5 / 8,6 / 7,9 / 11,3 | 15,5-22,2 | 5/5 pasa |
+| 1 | 973-1778 | 4,7 / 7,8 / 3,8 / 7,2 | 13,2-20,1 | 0 / 20,1 / 0 / 0 |
+| 2 | 1089-1410 | 4,1 / 3,4 / 2,4 / 3,2 | 8,1-19,7 | 0 |
+| 4 | 513-1009 | 5,0 / 4,2 / 5,1 / 4,0 | 18,4-23,4 | 23,4 / 20,3 / 41,0 / 0 |
+| 32 (sin restringir) | 37,5-47,5 | 3,2 / 5,5 / 3,1 / 2,6 | 12,6-22,2 | 0 / 42,3 / 21,9 / 0 |
 
-Una tanda previa con el mismo latido (4 corridas por configuración) dio p99 de 2,3 a 16,2 ms y máximos de 4,0 a 33,7 ms; todas pasaron. El p99 sin regresión, sobre las 36 corridas, va de 2,3 a 16,2 ms.
+Las otras 20 de esas 36 corridas (5 por configuración) dieron p99 2,4-19,6 ms, máximo 4,0-28,3 ms y total 0-65,6 ms; una tanda anterior llegó a un máximo de 33,7 ms.
 
-Regresión REAL en el código (`time.sleep(X)` insertado al inicio de `encolar_pdf_desde_chat`, en el árbol, no el mutante del test; 4 corridas por celda; 8 workers y 60 s como el paso de CI):
+Regresiones REALES en el código (inyectadas dentro de `encolar_pdf_desde_chat`, en el árbol, no el mutante del test), todas en 1 y 32 CPU:
 
-| `sleep` | CPU | p99 del latido (ms) | máx (ms) | falla por el latido |
-|---|---|---|---|---|
-| 0,03 | 1 | 55,9 / 39,6 / 31,2 / 28,6 | 61-92 | 1/4 |
-| 0,03 | 32 | 29,5 / 30,7 / 31,2 / 53,5 | 31-61 | 1/4 |
-| 0,05 | 1 | 103,6 / 94,1 / 102,2 / 100,5 | 110-196 | 4/4 |
-| 0,05 | 32 | 100,1 / 102,1 / 146,2 / 97,0 | 243-301 | 4/4 |
-| 0,1 | 1 | 203,9 / 204,3 / 197,1 / 201,9 | 218-412 | 4/4 |
-| 0,1 | 32 | 111,2 / 195,2 / 95,5 / 136,4 | 400-803 | 4/4 |
-| 0,5 | 1 | 1011 / 999 / 1495 / 1017 | 1502-4006 | 4/4 |
-| 0,5 | 32 | 994 / 993 / 501 / 1006 | 2999-3503 | 4/4 |
+| Regresión | Corridas | p99 (ms) | máx (ms) | total bloqueado (ms) | Falla |
+|---|---|---|---|---|---|
+| un solo bloqueo de 1 s (1 subida de 20) | 4 | 2,6-13,0 | 995-1000 | 1136-1177 | 4/4 |
+| un solo bloqueo de 3 s | 4 | 4,1-13,2 | 2994-3001 | 3141-3179 | 4/4 |
+| un solo bloqueo de 5 s | 4 | 2,8-15,6 | 4992-4995 | 5100-5164 | 4/4 |
+| cada 5.ª subida 0,3 s (4 subidas) | 4 | 30,6-299,7 | 301-603 | 1214-1313 | 4/4 |
+| cada 10.ª subida 1 s (2 subidas) | 4 | 5,8-14,8 | 994-1008 | 2067-2075 | 4/4 |
+| `sleep(0.05)` en todas | 6 | 74,8-124,3 | 118-298 | 990-1136 | 6/6 |
+| `sleep(0.03)` en todas | 6 | 30,1-55,1 | 31-64 | 520-654 | 6/6 |
+| `sleep(0.02)` en todas | 6 | 17,9-20,5 | 20-45 | 20-192 | 0/6 (no detectable) |
+| mutante del test (CI, `sleep(0.5)`) | 8 | 501-1011 | 2500-4022 | 10083-10214 | 8/8, por `E3 loop` |
 
-Mutante del test (`JAX_E3_MUTANT_SLEEP_S=0.5`, el del paso de CI): 1 CPU p99 557 / 512 / 1007 / 1009 ms, 32 CPU p99 525 / 994 / 1494 / 1019 ms; 8/8 fallan por `E3 loop` y el grep de `policy.yml` encuentra la línea real.
+Con solo el p99 (cff1173), los bloqueos únicos de 1, 3 y 5 s y la regresión de cada 10.ª subida pasaban siempre (p99 de 3 a 16 ms) y la de cada 5.ª subida de 0,3 s pasaba a veces (p99 30,6 en 1 de 4). El grep de `policy.yml` encuentra la línea real del mutante.
 
-**Mínimo detectable declarado: `sleep` de 0,05 s en la ruta de subida (16/16 con 0,05 y 0,1 s).** Con 0,03 s la prueba falla solo a veces (2/8) y con 0,02 s no es fiable (p99 de 18,8 a 28,9 ms en 6 corridas): no se promete detectarlo. El tope viejo de 1500 ms atrapaba >= 0,1 s en hall9000 solo por la máquina; el latido atrapa 0,05 s con cualquier número de núcleos.
+**Falsos fallos con contención fuerte (declarado, medido).** Con la prueba en 1 CPU y 2 o 3 procesos que consumen CPU en esa misma CPU (emulación extrema de un vecino ruidoso, mucho peor que el runner normal), el latido da falsos fallos:
+
+| Competidores en la CPU | Corridas | p99 (ms) | máx (ms) | total (ms) | Falsos fallos |
+|---|---|---|---|---|---|
+| 2 | 4 | 17,8-63,2 | 34-89 | 84-521 | 3/4 |
+| 3 | 4 | 39,8-61,8 | 68-135 | 444-703 | 4/4 |
+
+De los 7 fallos, 3 son solo por el tiempo total bloqueado (p99 <= 40 ms): **el tope total agrava los falsos fallos** (solo con el p99 y el máximo habrían sido 4 de 8; con el total, 7 de 8). Con 1 CPU y UN competidor (la emulación de runner lento anterior) no hubo falsos fallos en la prueba de entonces. Si el runner real se parece al caso de contención, hay que re-medir los topes, no subirlos a ciegas.
 
 El número de pruebas no cambia: `--collect-only` de `tests/test_adjuntos_chat_endpoint.py` da 32 antes y después.
 
