@@ -1319,10 +1319,9 @@ jobs:
   backend-tests-con-db:
     runs-on: ubuntu-latest
     # Sin esto el tope por defecto es de 6 h: una prueba colgada (p. ej. el cierre del portal de
-    # TestClient esperando una tarea) tendria el job ocupado media jornada. Medido el 2026-10-06 en
-    # hall9000 con 4 CPU y MariaDB efimera: suite completa 200 s (3931 pruebas); el paso E3 ~6 s y
-    # su mutante ~15 s. 30 min deja ~9x de margen sobre la suite medida para instalacion, arranque
-    # de MariaDB y un runner mas lento.
+    # TestClient esperando una tarea) tendria el job ocupado media jornada. Duracion REAL del job en
+    # el runner (2026-10-07, 6 corridas verdes de jax-platform): 4 min 41 s a 9 min 53 s. 30 min deja
+    # de 3x a 6x de margen sobre lo medido.
     timeout-minutes: 30
     defaults:
       run:
