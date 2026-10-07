@@ -483,8 +483,9 @@ def test_carga_e3_20_usuarios_chatean_mientras_se_procesan_sus_pdf(
     Un bloqueo del event loop en la ruta de subida (p. ej. `time.sleep` dentro de
     `encolar_pdf_desde_chat`) sube las dos cifras: los chats esperan el loop.
 
-    Topes (JAX_E3_SUBIDA_P95_MAX_MS / JAX_E3_CHAT_P95_MAX_MS): ver el comentario de
-    los valores por defecto, derivados de la línea base medida más un margen.
+    Topes: subida relativa al costo aislado medido en la misma corrida (FACTOR_SUBIDA,
+    TECHO_SUBIDA_MS; JAX_E3_SUBIDA_FACTOR / JAX_E3_SUBIDA_TECHO_MS); chat absoluto
+    (JAX_E3_CHAT_P95_MAX_MS). Ver los comentarios de los valores por defecto.
     """
     import uuid
     from db.connection import get_pool
