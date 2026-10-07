@@ -1777,27 +1777,61 @@ def test_dos_trozos_trabados_en_la_misma_ventana_la_cola_sale_en_trabados_mas_un
     assert {e.fila(i)[:2] for i in v_ids + w_ids} == {("en_cola", None)}
 
 
-def test_con_cortes_sostenidos_las_filas_de_id_bajo_se_leen_igual(e, monkeypatch):
-    """Cortes sostenidos por un 500 local: las filas con id bajo (un proyecto reactivado detras del cursor) se leen en un
-    numero acotado de ciclos, porque la pasada termina y el cursor vuelve a 0."""
+def test_las_filas_de_id_bajo_reactivadas_detras_del_cursor_salen_en_k_mas_uno_ciclos(e, monkeypatch):
+    """Escenario del auditor (r7): un proyecto sano primero (cursor = su ultimo id), V con DOS trozos que dan 500 y un
+    proyecto reactivado con ids bajos DETRAS del cursor. Cota: con k = 2 trozos trabados, las filas bajas salen k + 1 = 3
+    ciclos despues de reactivarse (V1 se salta y V2 se traba; se completa la pasada y el cursor vuelve a 0; se leen)."""
     monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
     pid, _puuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)         # ids bajos, fuera de la cola
-    altas = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(6)]          # el proyecto de `e`: 500 persistente
+    _a, _au, a_ids = _otro_proyecto_con_filas(e, 3)                                     # sano: ventana 1
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(6)]          # V = proyecto de `e`: 2 trozos en 500
     e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 50
-    e.ciclo()                                                          # ventana 1 (altas 1-3) corta y se traba
+    e.ciclo()                                                          # A sale; V1 corta y se traba
+    assert {e.fila(i)[0] for i in a_ids} == {"pendiente"}
+    assert despachador._cursor_de_cola == a_ids[-1] > bajas[-1], "el cursor tiene que estar DETRAS de las filas bajas"
+    assert despachador._trozos_trabados == {v_ids[0]}
     r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
-    assert r.status_code == 200, r.text                                # las de id bajo vuelven a la cola, DETRAS del cursor
-    for _ in range(3):                                                 # cota: trabados (2) + 1 ciclos, mas la pasada siguiente
+    assert r.status_code == 200, r.text                                # las de id bajo vuelven a la cola, detras del cursor
+    e.ciclo()                                                          # V1 se salta; V2 corta y se traba
+    assert despachador._trozos_trabados == {v_ids[0], v_ids[3]}
+    assert {e.fila(i)[:2] for i in bajas} == {("en_cola", None)}, "todavia detras del cursor"
+    e.ciclo()                                                          # V1 y V2 se saltan; pasada completa: cursor a 0
+    assert despachador._cursor_de_cola == 0 and despachador._trozos_trabados == set()
+    e.ciclo()                                                          # k + 1 = 3 ciclos tras reactivar: las bajas salen
+    assert {e.fila(i)[0] for i in bajas} <= {"pendiente", "procesando"}
+    assert all(e.fila(i)[1] is not None for i in bajas), "las filas bajas tienen que haberse despachado"
+    assert {e.fila(i)[:2] for i in v_ids} == {("en_cola", None)}       # V sigue esperando, no paso a error
+
+
+def test_con_un_corte_global_sostenido_las_filas_reactivadas_detras_del_cursor_se_leen_al_recuperarse(e, monkeypatch):
+    """Sonda A del auditor (r7): un 429 sostenido con el cursor adelantado. Un corte global en la primera ventana del
+    ciclo no hace progreso: el cursor vuelve a 0, y las filas reactivadas con ids bajos se leen en la PRIMERA pasada tras
+    recuperarse (sin esto esperaban a que la pasada llegara al final de la cola, sin tope mientras el corte siguiera)."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    pid, bajas_uuid, bajas = _otro_proyecto_con_filas(e, 3, estado_archivado=True)
+    altas = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1) for i in range(6)]
+    afectados = _Malos()                                               # el 429 es de LAS MANOS entera: lo reciben los dos proyectos
+    afectados.s.update({e.uuid, bajas_uuid})
+    e.las_manos.project_uuid = afectados
+    e.las_manos.post_respuestas = [(202, {"job_id": "job-1"})] + [(429, {"detail": "sin capacidad"})] * 4
+    e.ciclo()                                                          # ventana 1 sale; la 2 recibe 429: corta con progreso
+    assert despachador._cursor_de_cola == altas[2] > bajas[-1]
+    r = e.client.post(f"{P}/{pid}/estado", headers=e.h, json={"estado": "ACTIVE"})
+    assert r.status_code == 200, r.text
+    for _ in range(3):                                                 # el 429 sigue: ningun POST sale
         e.ciclo()
-    assert despachador._cursor_de_cola == 0
-    e.ciclo()                                                          # nueva pasada desde 0: lee las de id bajo
-    assert {e.fila(i)[0] for i in bajas} <= {"pendiente", "procesando"} and {e.fila(i)[1] is not None for i in bajas} == {True}
-    assert {e.fila(i)[:2] for i in altas} == {("en_cola", None)}
+    assert {e.fila(i)[:2] for i in bajas} == {("en_cola", None)}
+    assert despachador._cursor_de_cola == 0, "un corte global sin progreso reinicia el cursor"
+    e.ciclo()                                                          # LAS MANOS se recupero: primera pasada desde 0
+    assert all(e.fila(i)[1] is not None for i in bajas), "las bajas tienen que leerse en la primera pasada tras recuperar"
+    assert all(e.fila(i)[1] is not None for i in altas)
 
 
-def test_un_error_global_no_duplica_los_post_en_ciclos_alternos(e):
-    """Un 429 (global) corta SIEMPRE en el primer trozo y no entra al conjunto: exactamente UN POST por ciclo, nunca dos en
-    ciclos alternos (que era el efecto de saltar el trozo que cortaba dos veces)."""
+def test_un_error_global_no_duplica_los_post_y_la_cota_cuenta_los_trozos_saltados(e):
+    """Un 429 (global) corta en el primer trozo que lo recibe y no entra al conjunto de trabados, asi que cada ciclo
+    manda la MISMA cantidad de POST (no alternos ni crecientes). Sin claves desconocidas por delante, es UN POST por
+    ciclo; con ellas, la cota es 1 + un POST por cada trozo saltado de la ventana por delante del corte (cada uno recibio
+    su 503 `idempotencia_estado_desconocido`; no es un doble envio: es otro trozo)."""
     pdf = e.insertar(e.ruta("l1", "a.pdf"), n=1, nombre="a.pdf")
     jpg = e.insertar(e.ruta("l1", "a.jpg"), n=2, nombre="a.jpg")
     e.las_manos.post_respuestas = [(429, {"detail": "sin capacidad"})] * 10
@@ -1806,6 +1840,52 @@ def test_un_error_global_no_duplica_los_post_en_ciclos_alternos(e):
         assert len(e.las_manos.posts) == ciclo, f"ciclo {ciclo}: {len(e.las_manos.posts)} POST"
         assert despachador._trozos_trabados == set()
     assert e.fila(pdf)[0] == "en_cola" and e.fila(jpg)[0] == "en_cola"
+    del e.las_manos.posts[:]
+    e.las_manos.post_respuestas = [(503, {"detail": {"code": "idempotencia_estado_desconocido"}}),
+                                   (429, {"detail": "sin capacidad"})] * 5
+    for ciclo in range(1, 4):                                          # un trozo saltado (503) + el que corta (429) = 2
+        e.ciclo()
+        assert len(e.las_manos.posts) == 2 * ciclo, f"ciclo {ciclo}: {len(e.las_manos.posts)} POST (cota: 1 + 1 saltado)"
+        assert despachador._trozos_trabados == set()
+
+
+def test_el_conjunto_de_trabados_deja_rastro_al_entrar_al_saltar_y_al_vaciarse(e, monkeypatch, caplog):
+    """P-2: un trozo que entra al conjunto de trabados, cada ciclo que lo salta (UN log por ciclo, con el conteo y los ids
+    acotados) y el vaciado al completar la pasada se registran; el log del 500 ya no dice que «se reintenta» a secas."""
+    monkeypatch.setattr(despachador, "LIMITE_DE_FILAS_POR_CICLO", 3)
+    v_ids = [e.insertar(e.ruta("l1", f"v{i}.pdf"), n=i + 1) for i in range(3)]
+    _b, _bu, b_ids = _otro_proyecto_con_filas(e, 3)
+    e.las_manos.post_respuestas = [(500, {"detail": "boom"})] * 20
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()                                                      # V corta y entra al conjunto
+    msgs = [r.getMessage() for r in caplog.records]
+    entrada = [m for m in msgs if "entra al conjunto de trabados" in m]
+    assert len(entrada) == 1 and str(v_ids[0]) in entrada[0] and e.uuid in entrada[0]
+    texto_500 = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and "respondio 500" in r.getMessage()]
+    assert len(texto_500) == 1 and "trabado" in texto_500[0] and "se reintenta en la vuelta siguiente" not in texto_500[0]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()                                                      # V se salta; B sale; pasada completa
+    msgs = [r.getMessage() for r in caplog.records]
+    saltos = [m for m in msgs if "saltado(s) sin enviarse" in m]
+    assert len(saltos) == 1 and "1 trozo(s)" in saltos[0] and str(v_ids[0]) in saltos[0], msgs
+    vaciado = [m for m in msgs if "se vacia el conjunto de trabados" in m]
+    assert len(vaciado) == 1 and str(v_ids[0]) in vaciado[0], msgs
+    assert {e.fila(i)[0] for i in b_ids} == {"pendiente"}
+
+
+def test_el_log_de_trozos_saltados_es_uno_por_ciclo_y_acota_los_ids(e, monkeypatch, caplog):
+    """P-2: con mas trozos trabados que `MAXIMO_IDS_EN_EL_LOG` el log nombra solo los primeros y cuenta el resto, y es UNO
+    por ciclo (no uno por trozo). 120 filas = 3 trozos de [50, 50, 20], los tres trabados."""
+    monkeypatch.setattr(despachador, "MAXIMO_IDS_EN_EL_LOG", 2)
+    ids = [e.insertar(e.ruta("l1", f"{i}.pdf"), n=i + 1, nombre=f"{i}.pdf") for i in range(120)]
+    despachador._trozos_trabados.update({ids[0], ids[50], ids[100]})
+    with caplog.at_level(logging.WARNING):
+        e.ciclo()
+    saltos = [r.getMessage() for r in caplog.records if "saltado(s) sin enviarse" in r.getMessage()]
+    assert len(saltos) == 1 and "3 trozo(s)" in saltos[0] and ", ..." in saltos[0], saltos
+    assert str(ids[0]) in saltos[0] and str(ids[50]) in saltos[0] and str(ids[100]) not in saltos[0]
+    assert e.las_manos.posts == []
 
 
 def test_el_422_de_formato_de_clave_es_global_y_da_un_solo_error(e, caplog):

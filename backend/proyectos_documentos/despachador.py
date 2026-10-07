@@ -98,6 +98,8 @@ _trozos_trabados: set[int] = set()
 # usa UN registro agregado (`CLAVE_AGREGADA`) con el mismo enfriamiento, en vez de expulsar y re-avisar.
 _claves_desconocidas: dict[str, list] = {}
 MAXIMO_CLAVES_DESCONOCIDAS = 1000
+# Cota de ids en una linea de log del conjunto de trabados (los demas se cuentan, no se nombran).
+MAXIMO_IDS_EN_EL_LOG = 20
 CLAVE_AGREGADA = "*"
 
 # El nombre de GET_LOCK es global al SERVIDOR de MariaDB: lleva la base para que dos bases en
@@ -607,15 +609,22 @@ async def _despachar_trozo(pool, project_uuid: str, contexto, trozo: list[dict])
                      "trozo de %s fila(s) del proyecto %s; se corta la vuelta (falla todos los trozos: defecto de version "
                      "entre jax-platform y LAS MANOS)", estado, _codigo_de(respuesta), len(ids), project_uuid)
         return "cortar"
+    if estado == 500:
+        # Un 500 es un error interno al procesar ESTE pedido: puede ser de SU proyecto (un bug con sus archivos). Se corta
+        # la vuelta una vez y el trozo entra al conjunto de trabados (lo registra `_pasada_de_despacho`), para que los
+        # ciclos siguientes lo salten sin enviarlo hasta completar la pasada de la cola; ahi se reintenta.
+        logger.error("proyectos_documentos: LAS MANOS respondio 500 (%s) al despachar %s fila(s) del proyecto %s; siguen "
+                     "en_cola, el trozo queda trabado y se salta (sin enviarlo) hasta completar la pasada de la cola; "
+                     "entonces se reintenta", _codigo_de(respuesta), len(ids), project_uuid)
+        return "trabado"
     if estado in SIN_CULPA_DEL_DOCUMENTO or estado >= 500 or not 400 <= estado < 500:
         # Un fallo de configuracion o de capacidad (credencial, cupo, caida) no es culpa del
-        # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso.
+        # documento: nunca lo convierte en `error`. Queda en_cola y el log dice que paso. Es GLOBAL (429, 401/403/408,
+        # 502/503/504, sin respuesta): corta la vuelta sin entrar al conjunto de trabados.
         logger.error("proyectos_documentos: LAS MANOS respondio %s (%s) al despachar %s fila(s) del proyecto %s; "
-                     "siguen en_cola y se reintenta", estado, _codigo_de(respuesta), len(ids), project_uuid)
-        # Un 500 es un error interno al procesar ESTE pedido: puede ser de SU proyecto (un bug con sus archivos). Se corta
-        # la vuelta una vez y el trozo entra al conjunto de trabados, para que el ciclo siguiente lo salte. Todo lo demas
-        # (429, 401/403/408, 502/503/504, sin respuesta) es global: corta sin entrar al conjunto.
-        return "trabado" if estado == 500 else "cortar"
+                     "siguen en_cola y se reintenta en la vuelta siguiente", estado, _codigo_de(respuesta), len(ids),
+                     project_uuid)
+        return "cortar"
     logger.error("proyectos_documentos: LAS MANOS rechazo el trabajo del proyecto %s (%s, %s)",
                  project_uuid, estado, _codigo_de(respuesta))
     await repo.marcar_error_en_cola(pool, ids=ids, error="http_4xx", owner=contexto)
@@ -699,8 +708,10 @@ async def _despachar(pool) -> None:
     la ventana siguiente es la de los `id` que siguen, asi 1.000 pdf atascados en los ids bajos (MAJOR-N2) o 1.000
     filas de un proyecto rechazado no llenan la ventana para siempre y los demas salen en el mismo ciclo. Se
     recorre hasta el final de la cola (una ventana con menos filas que el limite) y el cursor vuelve a 0; si el
-    ciclo se corta (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada y la vuelta
-    siguiente la retoma desde ahi; un trozo que corta por un error LOCAL de su proyecto (un 500) entra a
+    ciclo se corta por un error GLOBAL (`cortar`: 429, caida, 5xx...) el cursor queda en el INICIO de la ventana cortada y la
+    vuelta siguiente la retoma desde ahi, salvo que haya cortado en la primera ventana del ciclo (sin progreso): entonces
+    vuelve a 0, para que lo que se reactive detras del cursor se lea en la primera pasada tras recuperarse; un trozo que
+    corta por un error LOCAL de su proyecto (un 500) entra a
     `_trozos_trabados` y se salta hasta completar la pasada, asi que no frena a los demas (cota: trabados + 1 ciclos). Con el
     freno de incertidumbre activo el ciclo no llega aca y el cursor no se toca. No hay listas de exclusion de
     proyectos ni tope de pasadas: una consulta por ventana, por indice, y la cola finita."""
@@ -775,17 +786,35 @@ async def _despachar(pool) -> None:
             _supresion_freno_incertidumbre_registrada = True
         return
     saltados: set[tuple[str, object]] = set()
-    cursor = _cursor_de_cola
-    while True:
-        accion, ultimo, cuantas = await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados, cursor)
-        if accion == "cortar":
-            _cursor_de_cola = cursor                 # la ventana cortada se retoma desde su inicio
-            return
-        if cuantas < LIMITE_DE_FILAS_POR_CICLO:      # ventana incompleta: se llego al final de la cola
-            _cursor_de_cola = 0
-            _trozos_trabados.clear()                 # pasada entera completada: los trabados se reintentan en la siguiente
-            return
-        cursor = ultimo
+    omitidos: list[int] = []                         # primera fila de cada trozo trabado que este ciclo saltó sin enviar
+    inicio_del_ciclo = cursor = _cursor_de_cola
+    try:
+        while True:
+            accion, ultimo, cuantas = await _pasada_de_despacho(pool, por_trabajo, frenadas, saltados, cursor, omitidos)
+            if accion == "trabado":
+                _cursor_de_cola = cursor             # error LOCAL: la ventana cortada se retoma desde su inicio
+                return
+            if accion == "cortar":
+                # Error GLOBAL. Si corto en la PRIMERA ventana del ciclo (no hubo progreso) y el cursor estaba adelantado, se
+                # reinicia: las filas que volvieron a la cola detras del cursor (un proyecto reactivado) no esperan sin tope
+                # a que el corte termine; al recuperarse, la pasada siguiente arranca desde 0. Si corto mas adelante, la
+                # ventana cortada se retoma desde su inicio.
+                _cursor_de_cola = 0 if (cursor == inicio_del_ciclo and inicio_del_ciclo > 0) else cursor
+                return
+            if cuantas < LIMITE_DE_FILAS_POR_CICLO:  # ventana incompleta: se llego al final de la cola
+                _cursor_de_cola = 0
+                if _trozos_trabados:
+                    logger.warning("proyectos_documentos: pasada de la cola completada: se vacia el conjunto de trabados "
+                                   "(%s trozo(s), primera fila de cada uno: %s); se reintentan en la pasada siguiente",
+                                   len(_trozos_trabados), sorted(_trozos_trabados)[:MAXIMO_IDS_EN_EL_LOG])
+                _trozos_trabados.clear()             # pasada entera completada: los trabados se reintentan en la siguiente
+                return
+            cursor = ultimo
+    finally:
+        if omitidos:                                 # UN log por ciclo, no uno por trozo y ventana
+            logger.warning("proyectos_documentos: %s trozo(s) trabado(s) saltado(s) sin enviarse en este ciclo (primera fila "
+                           "de cada uno: %s%s); siguen en_cola hasta que se complete la pasada de la cola",
+                           len(omitidos), omitidos[:MAXIMO_IDS_EN_EL_LOG], ", ..." if len(omitidos) > MAXIMO_IDS_EN_EL_LOG else "")
 
 
 def _programar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> None:
@@ -841,9 +870,11 @@ async def _enviar_aviso_freno_incertidumbre(cantidad: int, umbral: int) -> Desen
 
 
 async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltados: set,
-                              despues_de_id: int) -> tuple[str | None, int, int]:
+                              despues_de_id: int, omitidos: list[int] | None = None) -> tuple[str | None, int, int]:
     """Una ventana de la cola (las filas con `id` > `despues_de_id`). Devuelve (accion, ultimo id visto, filas
-    leidas); accion es 'cortar' si hay que dejar el ciclo; agrega a `frenadas` las clases que LAS MANOS frene."""
+    leidas); accion es 'cortar' (error GLOBAL: dejar el ciclo) o 'trabado' (error LOCAL de un proyecto: dejar el ciclo y
+    meter el trozo al conjunto de trabados); agrega a `frenadas` las clases que LAS MANOS frene y a `omitidos` la primera
+    fila de cada trozo trabado que salta sin enviarlo."""
     por_grupo: dict[tuple[str, object, str], list[dict]] = {}
     ajenas: list[tuple[int, object]] = []
     # Las filas con desenlace incierto no se piden: contarian contra el LIMIT y despues se saltarian, y con
@@ -871,13 +902,18 @@ async def _pasada_de_despacho(pool, por_trabajo: int, frenadas: set[str], saltad
         for i in range(0, len(filas), por_trabajo):
             trozo = filas[i:i + por_trabajo]
             if trozo[0]["id"] in _trozos_trabados:
+                if omitidos is not None:
+                    omitidos.append(trozo[0]["id"])         # lo registra `_despachar`, un log por ciclo
                 continue                                    # trabado en esta pasada de la cola: se reintenta en la proxima
             accion = await _despachar_trozo(pool, project_uuid, contexto, trozo)
             if accion == "cortar":
                 return "cortar", ultimo, len(leidas)
             if accion == "trabado":
                 _trozos_trabados.add(trozo[0]["id"])        # error LOCAL de su proyecto: el ciclo siguiente lo salta
-                return "cortar", ultimo, len(leidas)
+                logger.warning("proyectos_documentos: el trozo que empieza en la fila %s (proyecto %s, %s fila(s)) entra al "
+                               "conjunto de trabados (%s en total): se salta, sin enviarlo, hasta completar la pasada de la cola",
+                               trozo[0]["id"], project_uuid, len(trozo), len(_trozos_trabados))
+                return "trabado", ultimo, len(leidas)
             if accion == "saltar_trozo":
                 continue                                    # solo este trozo: los demas del proyecto siguen
             if accion == "saltar_grupo":
