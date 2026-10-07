@@ -11,6 +11,7 @@ _running_under_pytest). Precedente: 2026-08-24, correr pytest disparo 11
 dispatches reales a produccion."""
 import asyncio
 import logging
+import math
 import os
 import sys
 import uuid
@@ -137,10 +138,21 @@ CANARY_DB_TIMEOUT_SECONDS = 10
 # Una base lenta (pool agotado, metadata lock, commit lento) vence ESTE tope y
 # la fila se encola con su spool_id y su costo ya calculado, sin tocar la
 # salud. Configurable por entorno como CANARY_INTERVAL_SECONDS (segundos,
-# default 5); un valor ilegible o <= 0 es un error de arranque, no un tope mudo.
-CANARY_USAGE_TIMEOUT_SECONDS = float(os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5"))
-if CANARY_USAGE_TIMEOUT_SECONDS <= 0:
-    raise ValueError("CANARY_USAGE_TIMEOUT_SECONDS debe ser > 0")
+# default 5). Tiene que ser un numero FINITO y > 0: un valor ilegible, nan, inf
+# o <= 0 es un error de arranque claro, no un tope que nunca vence.
+def _leer_tope_de_uso(crudo: str) -> float:
+    try:
+        valor = float(crudo)
+    except ValueError:
+        raise ValueError(
+            f"CANARY_USAGE_TIMEOUT_SECONDS debe ser un numero finito > 0, no {crudo!r}") from None
+    if not (math.isfinite(valor) and valor > 0):
+        raise ValueError(
+            f"CANARY_USAGE_TIMEOUT_SECONDS debe ser un numero finito > 0, no {crudo!r}")
+    return valor
+
+
+CANARY_USAGE_TIMEOUT_SECONDS = _leer_tope_de_uso(os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5"))
 
 # hyde no se sondea: chat() lo corta antes del dispatch con una respuesta
 # enlatada, no hay nada que medir.

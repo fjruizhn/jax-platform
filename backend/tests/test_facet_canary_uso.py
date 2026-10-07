@@ -514,7 +514,7 @@ def test_si_el_precio_ya_se_calculo_antes_del_cuelgue_la_fila_encolada_lo_lleva(
 def test_el_tope_del_registro_se_lee_del_entorno_con_default_5():
     import inspect
     fuente = inspect.getsource(facet_canary)
-    assert 'os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5")' in fuente
+    assert '_leer_tope_de_uso(os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5"))' in fuente
     import os
     if "CANARY_USAGE_TIMEOUT_SECONDS" not in os.environ:
         assert facet_canary.CANARY_USAGE_TIMEOUT_SECONDS == 5.0
@@ -630,3 +630,14 @@ def test_A1_una_fila_con_request_type_NULL_sigue_contando_como_peticion(client):
     assert despues - antes == 1, "la fila con request_type NULL cuenta como peticion"
     assert sum(uso["chart_data"]["datasets"].get(faceta, [])) == 1, \
         "y entra en el grafico por faceta"
+
+
+@pytest.mark.parametrize("crudo", ["nan", "inf", "-inf", "0", "-1", "abc"])
+def test_un_tope_de_registro_invalido_es_un_error_de_arranque_claro(crudo):
+    """nan e inf pasaban `<= 0` y el tope nunca vencia."""
+    with pytest.raises(ValueError, match="CANARY_USAGE_TIMEOUT_SECONDS"):
+        facet_canary._leer_tope_de_uso(crudo)
+
+
+def test_un_tope_de_registro_valido_se_acepta():
+    assert facet_canary._leer_tope_de_uso("2.5") == 2.5

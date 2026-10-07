@@ -3835,7 +3835,9 @@ jobs:
           #   12.3.3 efimera --network none (socket + socat en 127.0.0.1:33993, base LIMPIA, jax en el pin 92452a69):
           #   4007 passed / 1 skipped (SR2) / 0 failed (3999 de la ronda 2 + 8; el +1 sobre el piso es el de
           #   secretos que el runner omite, ya documentado). Vistas en rojo contra f8def07; los mutantes mueren.
-          PISO_PASSED = 4006
+          # 4006 -> 4013 (ronda 4 de #212): +7 puras de la validacion de CANARY_USAGE_TIMEOUT_SECONDS (se cuentan
+          #   tambien con DB; delta sumado sobre el piso, no re-medido con DB).
+          PISO_PASSED = 4013
           MAX_SKIPS = 1
 
           print(f"colectados={total} passed={passed} skipped={skip} "
@@ -4992,7 +4994,12 @@ jobs:
       #   X2 y A1 piden `client` y se saltan sin DB. La prueba del despacho de el_juez parchea tambien
       #   calcular_costo (si no, el precio pide pool y la prueba pasaria de pass a skip). MEDIDO con JAX_CI_NO_DB=1
       #   CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2461 passed / 1547 skipped.
-      JAX_CI_MIN_PASSED: "2461"
+      # 2461 -> 2468 (GLM g1, ronda 4 de #212, 2026-10-07): +7 puras en tests/test_facet_canary_uso.py (la validacion
+      #   de CANARY_USAGE_TIMEOUT_SECONDS: 6 invalidos "nan","inf","-inf","0","-1","abc" + 1 valido). MEDIDO con
+      #   JAX_CI_NO_DB=1 CI=true GITHUB_ACTIONS=true, mismo comando, jax en el pin 92452a69: 2468 passed / 1547 skipped.
+      #   Con DB suman las mismas 7 (PISO_PASSED 4006 -> 4013 por la regla de piso = base + delta; NO re-medido con DB:
+      #   son puras y no tocan la base). El runner tiene la ultima palabra.
+      JAX_CI_MIN_PASSED: "2468"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
