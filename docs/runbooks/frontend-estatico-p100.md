@@ -1,0 +1,42 @@
+# Frontend estático de Hall9000 — P100 / OP#270
+
+**DECISIÓN · Fernando mediante Hyde, 2026-10-14 · documentada por Codex.** El frontend interno de Hall9000 debe servir el build compilado desde nginx, con reversión a la unidad Vite y carga antes/después. Fuente: encargo `/home/fruiz/ENCARGO-p100-jax-frontend-build-20261014.md`, OP#270. La implementación y pruebas se preparan por PR; Hyde ordena la activación sólo después de auditoría formal de escalón3. Esta preparación no constituye un despliegue.
+
+## Alcance y estado observado
+
+**VERDAD OPERACIONAL · inspección de sólo lectura de Codex, 2026-10-14.** `origin/master` y el checkout productivo observado coinciden en `5eac74efc08f4e8fa1b880ee5eb0fb566d2eb2f2`. El servicio `jax-platform-frontend.service` usa Vite en `:5173`, PID8108, cuenta `jaxsvc` y checkout `/srv/jax-prod/jax-platform`, con drop-ins `cuenta-de-servicio.conf` y `z-checkout-de-produccion.conf`. La base versionada de la unidad usa otra cuenta/ruta: no sirve como copia de reversión del estado instalado. Nginx global está inactivo; no se activa para esta migración.
+
+El sitio público de atem-ai ya sirve otro bundle estático y conserva su proxy de API. No se publica, reinstala ni cambia atem-ai en P100. Tampoco cambia el backend, la base de datos, autenticación, traducciones ni tema. Antes de actuar sobre producción, volver a medir el estado vivo; esta observación no acredita su estado futuro.
+
+## Artefactos y contratos
+
+El build toma una fuente Git limpia en el SHA exacto, archivada fuera del checkout, usa el lockfile con npmci y compara dos builds. El release contiene `dist/` y un manifiesto de sourceSHA, lockfile, versiones reales e inventario SHA256. La configuración implícita VITE_ y archivosenv se rechazan; la hora va en el recibo del sistema, no cambia los bytes reproducibles. Reutilizar el mismo SHA con otros bytes falla cerrado.
+
+Nginx usa una instancia independiente bajo la misma unidad frontend y un drop-in gestionado único. El renderer deriva el contrato de los proxies de Vite: prefijos `/api` y `/ws`, ruta/query sin reescribir, Host del destino por changeOrigin y Origin conservado. No añade cabeceras de confianza X-Forwarded que Vite no emite. API y WebSocket nunca reciben el fallback HTML. El body grande conserva la capacidad actual del proxy.
+
+`index.html` y las rutas SPA usan no-cache; los assets con hash usan caché immutable de31536000s. Los assets inexistentes responden404 sin HTML; los assets anteriores permanecen en un pool por nombre/hash sin GC durante aplicación o reversión. Un mismo nombre con bytes distintos aborta. El SHA del release aparece sólo en respuestas estáticas. El Host entrante respeta la lista permitida por Vite.
+
+## Aplicación y reversión
+
+El controlador preparado ofrece snapshot, configuración, aplicación y rollback bajo el mismo flock. Guarda la unidad base y todos sus drop-ins efectivos con bytes, dueño, grupo y modo, más configuración gestionada/current y estado operativo. Antes de mutar vuelve a medir y se niega ante cambios desconocidos. Sólo sustituye su propio drop-in/configuración/current; mantiene los archivos preexistentes y no desactiva nginx global.
+
+Valida nginx y la unidad antes de intercambiar el servicio que posee5173. El journal durable permite reconocer una transacción incompleta; la reentrada recupera Vite conocido antes de intentar un trabajo nuevo. Fallar la comprobación o el reinicio vuelve al estado previo; un fallo de recuperación queda declarado y no cuenta como éxito. Revertir se hace con un único comando del controlador, que restaura Vite incluyendo los drop-ins realmente instalados. El estado activo no reemplaza la comprobación HTTP y del proceso.
+
+La secuencia productiva concreta y sus comandos se entregan con el CLI validado y el informe de pruebas del PR; no se ejecutan durante la preparación. Antes de activación, Hyde verifica el SHA auditado, snapshot íntegro y restauración ensayada, realiza la medición del Vite actual y registra los resultados. Después mide nginx con el mismo guion; una mejora neutra o regresión se revierte, como exige la constitución.
+
+## Ensayo previo y límite de la evidencia
+
+El ensayo usa código frontend real del mismo SHA, puertos y unidades de usuario privados, nginx real, Vite real y API/WS sintéticos locales. Login, pantalla con datos marcador, español/inglés y modo claro/oscuro se verifican en navegador con perfil privado. El hostname permitido se resuelve a loopback sólo en el proceso del navegador; el fixture reemplaza explícitamente el upstream para evitar acceder a8080 real. Ninguna cuenta o sesión productiva participa.
+
+La comparación usa el mismo arnés y flujo lógico de navegación; incluye recursos dependientes para que medir un módulo Vite no equivalga injustamente a todo un bundle nginx. Registra RPS, p95, concurrencia y fallos, distinguiendo requests de navegaciones. Un ensayo HTTP no se presenta como p95 de render ni usuarios humanos. Si no se observa degradación dentro de los niveles ensayados, se declara el límite medido, no se inventa un umbral.
+
+La carga y reversión privadas no sustituyen mediciones de producción: OP#270 comentario734 reserva a Hyde la medición real antes/después y el despliegue. La entrega del PR registra por separado el ensayo y ese paso aún pendiente.
+
+## Fuentes técnicas
+
+- Vite6.4.3 instalado, build: https://github.com/vitejs/vite/blob/v6.4.3/docs/guide/build.md .
+- Vite6.4.3, proxy: https://github.com/vitejs/vite/blob/v6.4.3/docs/config/server-options.md .
+- npmci y lockfile: https://docs.npmjs.com/cli/commands/npm-ci/ .
+- nginx: https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass , https://nginx.org/en/docs/http/websocket.html , https://nginx.org/en/docs/http/ngx_http_core_module.html#try_files , https://nginx.org/en/docs/http/ngx_http_headers_module.html .
+
+**Las cuatro del rendimiento · diseño Codex.** Indexing: no introduce consultasDB. Cache: assets invalidados por nombre/hash y HTML revalidado; pool retiene versiones en vuelo. Async: no agrega trabajo bloqueante al backend. Load: medición privada reproducible y medición productiva reservada a Hyde; ningún resultado se estima.

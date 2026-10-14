@@ -1,0 +1,11 @@
+{
+  "service": "jax-platform-frontend.service",
+  "user": "jaxsvc",
+  "group": "jaxsvc",
+  "release_root": "/srv/jax-platform-frontend",
+  "nginx_root": "/etc/jax/frontend-nginx",
+  "dropin_name": "zz-nginx-estatico.conf",
+  "runtime_directory": "jax-platform-frontend-nginx",
+  "node_version": "24.16.0",
+  "npm_version": "11.13.0"
+}

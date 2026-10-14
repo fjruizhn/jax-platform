@@ -160,6 +160,8 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/api/admin/memoria
 
 ## 3 · Frontend interno (`:5173`)
 
+**Preparación P100 / OP#270 · Codex, 2026-10-14.** La migración de este servicio a nginx con releases compilados se prepara por PR. Sigue el runbook `frontend-estatico-p100.md` sólo después de auditoría de escalón3 y orden de despliegue de Hyde. Hasta activarla, los comandos Vite que siguen describen el modo actual. La migración del frontend interno no publica ni modifica el sitio de atem-ai; los pasos4 y5 conservan ese alcance independiente.
+
 ```bash
 sudo systemctl restart jax-platform-frontend
 ```

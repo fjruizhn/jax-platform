@@ -24,4 +24,4 @@ El cliente DEV usa WS:8080 con hostname localhost; el navegador del ensayo usar�
 ## Siguiente comando
 
 Desde esta rama: git status --short
-Ejecutar Task1 con implementador Terra y revisión Sol separada; después Task2 y Task3. Build base pasó; advertencia preexistente de chunk JS mayor de500kB permanece sin rebajar umbrales. Evidencia cruda: /home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/.
+Task1 Terra implementado, validación root7/7 y compilación Python; pendiente revisión independiente Sol de spec/calidad antes de Task2. El journal/rollback real se ensayará con unidades privadas en Task2; no se declara el PR completo. Build base pasó; advertencia preexistente de chunk JS mayor de500kB permanece sin rebajar umbrales. Evidencia cruda: /home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/.
