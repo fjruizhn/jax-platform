@@ -1147,6 +1147,53 @@ jobs:
               process.exit(1);
             }'
 
+  frontend-release-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: Exact npm and Vite dependencies
+        run: |
+          npm install --global npm@11.13.0
+          npm ci --prefix frontend --no-audit --no-fund
+      - name: Pinned nginx without a global service
+        # Source downloaded from https://nginx.org/en/download.html on 2026-10-14.
+        # Build/install happen only inside the disposable GitHub runner.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libpcre2-dev zlib1g-dev
+          curl --fail --silent --show-error --location https://nginx.org/download/nginx-1.28.3.tar.gz --output "$RUNNER_TEMP/nginx-1.28.3.tar.gz"
+          echo '2c96a946bfb0882a21744ed429770a2123ae1828c7c48665092993ddee91a918  nginx-1.28.3.tar.gz' > "$RUNNER_TEMP/nginx.sha256"
+          cd "$RUNNER_TEMP"
+          sha256sum --check nginx.sha256
+          tar -xzf nginx-1.28.3.tar.gz
+          cd nginx-1.28.3
+          ./configure --prefix="$RUNNER_TEMP/nginx" --sbin-path="$RUNNER_TEMP/nginx/nginx"
+          make -j2
+          mkdir -p "$RUNNER_TEMP/nginx/logs"
+          sudo install -o root -g root -m 0755 objs/nginx /usr/sbin/nginx
+          /usr/sbin/nginx -v
+      - name: Frontend release contracts (no skips)
+        run: |
+          python - <<'PY'
+          import sys, unittest
+          suite = unittest.defaultTestLoader.discover('ops/frontend/tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 34:
+              sys.exit('Frontend release contracts failed, skipped or below measured Phase A2 floor34')
+          PY
+      - name: Two real reproducible builds of the checked-out SHA
+        run: |
+          P100_BUILD_ROOT=$(mktemp -d /tmp/p100-ci-build-XXXXXXXX)
+          P100_SOURCE_SHA=$(git rev-parse HEAD)
+          python ops/frontend/build_release.py --repo "$GITHUB_WORKSPACE" --sha "$P100_SOURCE_SHA" --output "$P100_BUILD_ROOT/releases" --private
+
   no-fail-open-except:
     runs-on: ubuntu-latest
     defaults:
