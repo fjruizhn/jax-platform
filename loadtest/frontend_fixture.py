@@ -129,7 +129,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get('Cookie', ''))
-        except Exception:
+        except Exception:  # fail-soft: cookie parse failure means no fixture session; refresh denies with 401.
             return None
         return cookie['p100_refresh'].value if 'p100_refresh' in cookie else None
 
@@ -282,7 +282,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 elif opcode != 10:
                     self._send_frame(8, struct.pack('!H', 1003))
                     break
-        except (OSError, EOFError):
+        except (OSError, EOFError):  # fail-soft: disconnected WS is closed; auth_ok remains false unless already sent.
             pass
         except (ValueError, UnicodeDecodeError):
             self._send_frame(8, struct.pack('!H', 1002))
