@@ -57,6 +57,15 @@ def fingerprint(path, *, uid=None):
     return {**metadata,'sha256':hashlib.sha256(data).hexdigest(),'bytes':base64.b64encode(data).decode()}
 
 
+def directory_state(path,uid):
+    path=checked_path(Path(path))
+    if not path.exists(): return {'absent':True,'kind':'directory'}
+    check_controlled_directory(path,uid)
+    info=path.lstat()
+    return {'directory':True,'uid':info.st_uid,'gid':info.st_gid,'mode':stat.S_IMODE(info.st_mode),
+            'entries':sorted(child.name for child in path.iterdir())}
+
+
 def snapshot_managed(paths, *, uid=None):
     return {str(path):fingerprint(path,uid=uid) for path in paths}
 
@@ -85,7 +94,13 @@ def atomic_write(path,data, *, mode=0o600,uid=None,gid=None):
 
 def install_state(path,state):
     path=Path(path); checked_path(path.parent)
-    if state.get('absent'):
+    if state.get('kind')=='directory' and state.get('absent'):
+        if path.exists(): path.rmdir(); sync_dir(path.parent)
+    elif state.get('directory'):
+        if not path.exists(): path.mkdir(mode=state['mode'])
+        check_controlled_directory(path,state['uid'])
+        os.chown(path,state['uid'],state['gid']); os.chmod(path,state['mode']); sync_dir(path); sync_dir(path.parent)
+    elif state.get('absent'):
         if path.exists() or path.is_symlink(): path.unlink(); sync_dir(path.parent)
     elif 'symlink' in state:
         temporary=path.with_name('.'+path.name+'.'+os.urandom(12).hex())

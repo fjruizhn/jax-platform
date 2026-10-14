@@ -7,6 +7,7 @@ pipes to the inherited descriptors; the original PID execs nginx unchanged.
 No background service or checkout dependency is introduced.
 """
 import argparse
+import errno
 import os
 import sys
 
@@ -17,14 +18,22 @@ def pipe_to(destination,close_fds=()):
     if pid==0:
         os.close(writer)
         for descriptor in close_fds: os.close(descriptor)
+        status=1
         try:
             while True:
                 block=os.read(reader,65536)
                 if not block: break
                 while block:
                     count=os.write(destination,block); block=block[count:]
-        except OSError: pass
-        finally: os._exit(0)
+            status=0
+        except OSError as error:
+            # A failed log transport never substitutes for the controller's
+            # mandatory journal/process/HTTP proof. Report to the other sink.
+            try: os.write(2 if destination==1 else 1,('nginx log transport failed: '+str(error)+'\n').encode())
+            except OSError:  # fail-soft: both manager log sinks are closed; no remaining sink can report this child failure.
+                status=1
+        finally:
+            os.close(reader); os._exit(status)
     os.close(reader)
     return writer
 

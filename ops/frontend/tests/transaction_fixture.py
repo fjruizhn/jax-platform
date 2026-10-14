@@ -56,6 +56,7 @@ class Fixture:
         self.override={'scheme':'http','host':'localhost','port':self.backend.server_port}
         self.settings=json.loads((Path(__file__).resolve().parents[1]/'settings.json').read_text())
         self.settings.update(service=self.service,private_mode=True,owner_uid=os.getuid(),
+            nginx_sha256=hashlib.sha256(Path(self.settings['nginx_binary']).read_bytes()).hexdigest(),
             release_root=str(self.root/'frontend'),nginx_root=str(self.root/'nginx'),systemd_dir=str(self.root/'units'),
             user_runtime_dir=os.environ['XDG_RUNTIME_DIR'],runtime_directory=self.service.removesuffix('.service'),
             listen_host='127.0.0.1',listen_port=self.port)
@@ -70,6 +71,11 @@ class Fixture:
             ',strictPort:true,allowedHosts:["localhost"],proxy:{"/api":{target:"http://localhost:'+str(self.backend.server_port)+'",changeOrigin:true},'+
             '"/ws":{target:"ws://localhost:'+str(self.backend.server_port)+'",changeOrigin:true,ws:true}}}}); await s.listen();\n')
         self.node=os.path.realpath(shutil.which('node'))
+        vite_path=Path(vite)
+        self.settings['original_contract']={'kind':'private-vite-canary','node_binary':self.node,'entry':str(self.script),
+            'entry_sha256':hashlib.sha256(self.script.read_bytes()).hexdigest(),'vite_module':str(vite_path),
+            'vite_sha256':hashlib.sha256(vite_path.read_bytes()).hexdigest()}
+        self.settings_path.write_text(json.dumps(self.settings))
         self.unit.write_text('[Unit]\nDescription=P100 private transaction canary\n[Service]\nType=simple\nWorkingDirectory='+str(self.original_dir)+
                             '\nExecStart='+self.node+' '+str(self.script)+'\n[Install]\nWantedBy=default.target\n'); self.unit.chmod(0o644)
         dropdir=self.unit.with_name(self.service+'.d'); dropdir.mkdir(mode=0o755)
@@ -107,14 +113,18 @@ class Fixture:
     def cleanup(self):
         if self.real:
             for args in (('stop',self.service),('disable','--runtime',self.service)):
-                try: self.manager.ctl(*args)
-                except RuntimeError: pass
-            try: self.manager.ctl('reset-failed',self.service)
-            except RuntimeError: pass
+                self.manager.ctl(*args)
+            try:
+                self.manager.ctl('reset-failed',self.service)
+            except RuntimeError as error:
+                # fail-soft: stop/disable may have unloaded this private unit
+                # before reset-failed; any other manager failure is material.
+                if 'not loaded' not in str(error): raise
             self.unit.unlink(missing_ok=True)
             shutil.rmtree(self.unit.with_name(self.service+'.d'),ignore_errors=True)
             self.manager.reload()
         self.backend.shutdown(); self.backend.server_close(); self.thread.join()
+        if hasattr(self,'controller'): self.controller.lock_path.unlink(missing_ok=True)
         self.tmp.cleanup(); os.umask(self.umask)
 
 
@@ -128,20 +138,29 @@ class Backend(http.server.BaseHTTPRequestHandler):
 class FakeManager:
     """Simulates ONLY the external manager; controller and every file remain real."""
     def __init__(self,settings,unit,active):
-        self.s=settings; self.unit=unit; self.active='active' if active else 'inactive'; self.enabled='disabled'; self.pid=400
-        self.old={'ExecStart':'original Vite invocation','ExecStartPre':'original check', 'User':'','Group':'','WorkingDirectory':str(unit.parent.parent/'original'),'Type':'simple','KillMode':'control-group'}
-        self.effective=dict(self.old); self.process_kind='vite'; self.bad_http=False; self.bad_process=False; self.fail_verify=False
+        self.s=settings; self.settings=settings; self.unit=unit; self.active='active' if active else 'inactive'; self.enabled='disabled'; self.pid=400
+        contract=settings['original_contract']; start='{ path='+contract['node_binary']+' ; argv[]='+contract['node_binary']+' '+contract['entry']+' ; ignore_errors=no ; }'
+        self.old={'ExecStart':start,'ExecStartPre':'', 'User':'','Group':'','WorkingDirectory':str(unit.parent.parent/'original'),'Type':'simple','KillMode':'control-group','RuntimeDirectory':'','RuntimeDirectoryMode':'0755','StandardOutput':'journal','StandardError':'inherit'}
+        self.effective=dict(self.old); self.loaded_drops=[str(p) for p in sorted(unit.with_name(unit.name+'.d').glob('*.conf'))]
+        self.loaded_files=self.unit_files({'FragmentPath':str(unit),'DropInPaths':' '.join(self.loaded_drops)})
+        self.process_kind='vite'; self.bad_http=False; self.bad_process=False; self.bad_gid=False; self.bad_hash=False; self.fail_verify=False; self.stop_calls=0; self.restart_calls=0; self.config=Path(self.s['nginx_root'])/'nginx.conf'
     def properties(self):
-        return {**self.effective,'FragmentPath':str(self.unit),'DropInPaths':' '.join(str(p) for p in sorted(self.unit.with_name(self.unit.name+'.d').glob('*.conf'))),
-                'ActiveState':self.active,'UnitFileState':self.enabled,'MainPID':str(self.pid) if self.active=='active' else '0'}
-    def unit_files(self,properties): return snapshot_managed([self.unit,*sorted(self.unit.with_name(self.unit.name+'.d').glob('*.conf'))],uid=self.s['owner_uid'])
+        return {**self.effective,'FragmentPath':str(self.unit),'DropInPaths':' '.join(self.loaded_drops),'NeedDaemonReload':'yes' if self.unit_files({'FragmentPath':str(self.unit),'DropInPaths':''})!=self.loaded_files else 'no',
+                'ActiveState':self.active,'SubState':'running' if self.active=='active' else 'dead','Result':'success','UnitFileState':self.enabled,
+                'MainPID':str(self.pid) if self.active=='active' else '0','ControlPID':'0','ControlGroup':'/private/'+self.s['service'],'InvocationID':'fixture-'+str(self.pid)}
+    def unit_paths(self): return [str(self.unit.parent)]
+    def unit_files(self,properties): return Manager.unit_files(self,properties)
+    def coherent(self,capture,**kwargs): return Manager.coherent(self,capture,**kwargs)
     def process(self,properties):
         if self.active=='inactive': return None
-        config=Path(self.s['nginx_root'])/'nginx.conf'
+        config=self.config
         nginx=self.s['nginx_binary']
-        return {'pid':self.pid,'uid':os.getuid(),'exe':nginx if self.process_kind=='nginx' else '/usr/bin/node',
-                'argv':['wrong'] if self.bad_process else ([nginx,'-g','daemon off;','-c',str(config)] if self.process_kind=='nginx' else ['/usr/bin/node','vite-canary']),
-                'starttime':str(self.pid),'cgroup':'/private/'+self.s['service']}
+        executable=nginx if self.process_kind=='nginx' else self.s['original_contract']['node_binary']
+        stat=os.stat(executable)
+        return {'pid':self.pid,'uid':os.getuid(),'gid':os.getgid()+int(self.bad_gid),'exe':executable,'exe_dev':stat.st_dev,'exe_ino':stat.st_ino,
+                'exe_sha256':'0'*64 if self.bad_hash else hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
+                'argv':['wrong'] if self.bad_process else ([nginx,'-g','daemon off;','-c',str(config)] if self.process_kind=='nginx' else [self.s['original_contract']['node_binary'],self.s['original_contract']['entry']]),
+                'starttime':str(self.pid),'cgroup':'/private/'+self.s['service'],'boot_id':'fixture-boot','invocation_id':'fixture-'+str(self.pid)}
     def http(self,path='/index.html'):
         if self.process_kind=='vite' or self.bad_http:
             return {'status':200,'mime':'text/html','sha':None,'digest':hashlib.sha256(b'Vite original').hexdigest()}
@@ -150,19 +169,22 @@ class FakeManager:
         return {'status':200,'mime':'text/html','sha':current.resolve().name,'digest':hashlib.sha256((current/'dist/index.html').read_bytes()).hexdigest()}
     def capture(self, *, http=True):
         properties=self.properties()
-        return {'properties':properties,'files':self.unit_files(properties),'process':self.process(properties),
+        return {'properties':properties,'files':self.unit_files(properties),'process':self.process(properties),'unit_paths':self.unit_paths(),
                 'http':self.http() if http and self.active=='active' else None}
     def reload(self):
+        self.loaded_files=self.unit_files({'FragmentPath':str(self.unit),'DropInPaths':''})
+        self.loaded_drops=[str(p) for p in sorted(self.unit.with_name(self.unit.name+'.d').glob('*.conf'))]
         drop=self.unit.with_name(self.unit.name+'.d')/'zz-nginx-estatico.conf'
         if not drop.exists(): self.effective=dict(self.old); return
         lines=drop.read_text().splitlines()
         starts=[line.partition('=')[2] for line in lines if line.startswith('ExecStart=') and line!='ExecStart=']
         pres=[line.partition('=')[2] for line in lines if line.startswith('ExecStartPre=') and line!='ExecStartPre=']
         show=lambda value:'{ path='+shlex.split(value)[0]+' ; argv[]='+' '.join(shlex.split(value))+' ; ignore_errors=no ; }'
-        self.effective={'ExecStart':show(starts[0]),'ExecStartPre':' '.join(show(value) for value in pres),'User':'','Group':'','WorkingDirectory':'/','Type':'simple','KillMode':'control-group'}
-    def stop(self): self.active='inactive'
+        argv=shlex.split(starts[0]); self.config=Path(argv[argv.index('--config')+1])
+        self.effective={'ExecStart':show(starts[0]),'ExecStartPre':' '.join(show(value) for value in pres),'User':'','Group':'','WorkingDirectory':'/','Type':'simple','KillMode':'control-group','RuntimeDirectory':self.s['runtime_directory'],'RuntimeDirectoryMode':'0700','StandardOutput':'journal','StandardError':'journal'}
+    def stop(self): self.stop_calls+=1; self.active='inactive'
     def restart(self):
-        self.active='active'; self.pid+=1; self.process_kind='nginx' if self.effective['WorkingDirectory']=='/' else 'vite'
+        self.restart_calls+=1; self.active='active'; self.pid+=1; self.process_kind='nginx' if self.effective['WorkingDirectory']=='/' else 'vite'
         self.bad_process=False; self.bad_http=False
     def verify_unit(self,path):
         if self.fail_verify: raise RuntimeError('injected systemd verify failure')

@@ -14,6 +14,7 @@ import subprocess
 sys.path.insert(0,str(Path(__file__).absolute().parent))
 from release_manifest import check_controlled_directory, check_object, verify_release
 from nginx_config import render
+from runtime_state import verify_served
 
 
 def verify(settings_path,release_dir,config,metadata_path):
@@ -25,6 +26,7 @@ def verify(settings_path,release_dir,config,metadata_path):
     version=re.search(r'nginx/([0-9.]+)',result.stdout+result.stderr)
     if not version or version[1]!=settings['nginx_version']: raise ValueError('runtime nginx version mismatch')
     manifest=verify_release(release_dir,settings)
+    verify_served(settings,release_dir,manifest)
     metadata=json.loads(metadata_path.read_text())
     expected,rendered=render(settings=settings,manifest=manifest,override_backend=metadata['override_backend'])
     if metadata!=rendered or config.read_bytes()!=expected.encode(): raise ValueError('config/metadata/release mismatch')

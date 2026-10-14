@@ -69,13 +69,13 @@ class Transactions(unittest.TestCase):
             if process: process['uid']=65534
             return process
         f.manager.process=wrong
-        with self.assertRaisesRegex(ValueError,'expected Node/Vite'): f.controller.prepare(f.release,f.stage(),f.override)
+        with self.assertRaisesRegex(ValueError,'original MainPID'): f.controller.prepare(f.release,f.stage(),f.override)
         self.assertFalse(f.controller.state.exists())
 
     def test_other_process_cannot_acquire_cli_lock(self):
         import subprocess
         f=self.fixture(); f.apply()
-        with locked(f.controller.state/'lock',os.getuid()):
+        with locked(f.controller.lock_path,os.getuid()):
             result=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'frontend_release.py'),
                                    'rollback','--settings',str(f.settings_path),'--user'],capture_output=True,text=True)
         self.assertEqual(result.returncode,1); self.assertIn('already locked',result.stderr)
@@ -95,10 +95,14 @@ class Transactions(unittest.TestCase):
         f=self.fixture()
         def old_process(boundary):
             if boundary=='after_switch': f.manager.process_kind='vite'
-        f.controller.fault=old_process
-        with self.assertRaisesRegex(RuntimeError,'MainPID/argv mismatch.*restored'): f.apply()
-        self.assertEqual(f.controller._capture()['http'],f.original['http'])
-        self.assertFalse(f.controller.drop.exists())
+        f.controller.fault=old_process; stops=f.manager.stop_calls
+        with self.assertRaisesRegex(RuntimeError,'MainPID/argv mismatch; restoration ALSO FAILED.*unknown process'): f.apply()
+        self.assertTrue(f.controller.drop.exists())
+        self.assertEqual(f.manager.active,'active')
+        self.assertEqual(f.manager.stop_calls,stops)
+        journal=json.loads((f.controller.state/'journal.json').read_text())
+        self.assertEqual(journal['phase'],'service_switched')
+        self.assertTrue(journal['switch_intent'])
 
     def test_postcheck_wrong_mainpid_is_active_but_no_unknown_signal(self):
         f=self.fixture()
@@ -130,11 +134,11 @@ class Transactions(unittest.TestCase):
                 self.assertEqual(f.controller._managed(),before); self.assertEqual(f.manager.pid,pid)
     def test_lock_is_shared_by_apply_and_rollback(self):
         f=self.fixture(); f.apply()
-        with locked(f.controller.state/'lock',os.getuid()):
+        with locked(f.controller.lock_path,os.getuid()):
             for operation in (f.apply,f.controller.rollback):
                 with self.assertRaisesRegex(ValueError,'locked'): operation()
     def test_all_apply_write_and_phase_crashes_recover_once_and_retry(self):
-        boundaries=['journal_prepared','installed_nginx.conf','installed_zz-nginx-estatico.conf','installed_current',
+        boundaries=['journal_prepared','installed_config','installed_zz-nginx-estatico.conf','installed_current',
                     'journal_files_installed','after_reload','journal_daemon_reloaded','after_switch',
                     'journal_service_switched','journal_verified','after_last']
         class Cut(BaseException): pass
@@ -142,7 +146,7 @@ class Transactions(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 f=self.fixture()
                 def cut(at):
-                    if at==boundary: raise Cut()
+                    if at==boundary or (boundary=='installed_config' and at.startswith('installed_nginx-')): raise Cut()
                 f.controller.fault=cut
                 with self.assertRaises(Cut): f.apply()
                 f.controller.fault=lambda at:None
@@ -152,17 +156,19 @@ class Transactions(unittest.TestCase):
                 f.apply(); f.controller.rollback()
     def test_all_rollback_crashes_recover_once_without_restart_loop(self):
         class Cut(BaseException): pass
-        for boundary in ('journal_prepared','restore_stopped','restored_nginx.conf','restored_zz-nginx-estatico.conf','restored_current','restore_files','restore_reloaded','restore_service',
+        for boundary in ('journal_prepared','restore_stopped','restored_config','restored_zz-nginx-estatico.conf','restored_current','restore_files','restore_reloaded','restore_service',
                          'journal_files_installed','journal_daemon_reloaded','journal_service_switched','journal_verified','journal_rolled_back'):
             with self.subTest(boundary=boundary):
                 f=self.fixture(); f.apply()
                 def cut(at):
-                    if at==boundary: raise Cut()
+                    if at==boundary or (boundary=='restored_config' and at.startswith('restored_nginx-')): raise Cut()
                 f.controller.fault=cut
                 with self.assertRaises(Cut): f.controller.rollback()
                 f.controller.fault=lambda at:None
-                try: f.controller.rollback()
-                except RetryRequired: pass
+                if boundary=='journal_rolled_back':
+                    f.controller.rollback()
+                else:
+                    with self.assertRaises(RetryRequired): f.controller.rollback()
                 self.assertTrue(f.controller.rollback()['idempotent'])
                 self.assertEqual(f.controller._capture()['http'],f.original['http'])
     def test_base_drift_between_prepare_and_apply_is_not_overwritten(self):
@@ -173,7 +179,7 @@ class Transactions(unittest.TestCase):
             f.unit.write_text('human replacement')
             return result
         f.controller.prepare=prepare_then_drift
-        with self.assertRaisesRegex(ValueError,'base/dropins drift'): f.apply()
+        with self.assertRaisesRegex(ValueError,'NeedDaemonReload|base/dropins drift'): f.apply()
         self.assertEqual(f.unit.read_text(),'human replacement')
         self.assertFalse(f.controller.drop.exists())
         self.assertFalse((f.controller.state/'journal.json').exists())

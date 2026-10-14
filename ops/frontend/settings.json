@@ -2,6 +2,7 @@
   "service": "jax-platform-frontend.service",
   "user": "jaxsvc",
   "group": "jaxsvc",
+  "systemd_dir": "/etc/systemd/system",
   "release_root": "/srv/jax-platform-frontend",
   "nginx_root": "/etc/jax/frontend-nginx",
   "dropin_name": "zz-nginx-estatico.conf",
@@ -15,5 +16,50 @@
   "worker_connections": 128,
   "nginx_binary": "/usr/sbin/nginx",
   "worker_processes": 1,
-  "websocket_read_timeout_seconds": 3600
+  "websocket_read_timeout_seconds": 3600,
+  "original_contract": {
+    "kind": "system-vite",
+    "node_binary": "/home/fruiz/.nvm/versions/node/v24.16.0/bin/node",
+    "node_sha256": "b2959781cc5a74c357ffa02367efa8a0330cbb1c9cb347732fdfaaaca381cbcd",
+    "node_owner_uid": 1000,
+    "node_owner_gid": 1000,
+    "node_mode": "0755",
+    "checkout": "/srv/jax-prod/jax-platform",
+    "checkout_branch": "master",
+    "working_directory": "/srv/jax-prod/jax-platform/frontend",
+    "entry": "/srv/jax-prod/jax-platform/frontend/node_modules/.bin/vite",
+    "entry_target": "../vite/bin/vite.js",
+    "vite_package": "/srv/jax-prod/jax-platform/frontend/node_modules/vite/package.json",
+    "lockfile": "/srv/jax-prod/jax-platform/frontend/package-lock.json",
+    "guard": "/usr/local/sbin/jax-checkout-de-produccion-sano.sh",
+    "guard_sha256": "6dee635e613ff59cf08bc92ccbf4f0bd4bf253fe70e8b21bc185aa7bb7614f45",
+    "guard_owner_uid": 0,
+    "guard_owner_gid": 0,
+    "guard_mode": "0755",
+    "argv": [
+      "dev",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "5173"
+    ],
+    "exec_start_pre": [
+      {
+        "path": "/usr/local/sbin/jax-checkout-de-produccion-sano.sh",
+        "argv": [
+          "/usr/local/sbin/jax-checkout-de-produccion-sano.sh",
+          "/srv/jax-prod/jax-platform"
+        ],
+        "ignore_errors": false
+      }
+    ],
+    "user": "jaxsvc",
+    "group": "jaxsvc",
+    "npm_cli": "/home/fruiz/.nvm/versions/node/v24.16.0/lib/node_modules/npm/bin/npm-cli.js",
+    "npm_cli_sha256": "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7",
+    "npm_cli_owner_uid": 1000,
+    "npm_cli_owner_gid": 1000,
+    "npm_cli_mode": "0755"
+  },
+  "nginx_sha256": "94eb839f1cdc7f3f42062d352b504fe406e2f888d83b554af7ea25bcdc9506f5"
 }
