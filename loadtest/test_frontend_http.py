@@ -13,8 +13,8 @@ import assert from 'node:assert/strict';
 import {validatePlan, coldNavigation} from MODULE;
 const config={base_url:'http://axioma-ia.io:49001',allowed_ports:[49001],fixture_credentials:{email:'p100@example.invalid',password:'synthetic'},marker:'p100-marker'};
 const plan=[{path:'/main.js',mime:'text/javascript',sha256:'a'.repeat(64),bytes:20},{path:'/deep/module.js?v=abc',mime:'text/javascript',sha256:'b'.repeat(64),bytes:20},{path:'/font.woff2',mime:'font/woff2',sha256:'c'.repeat(64),bytes:20}];
-let counters={requests:0,errors:0,navigations:0,failed:0};
-const stats={request:(r,ok)=>{counters.requests++;if(!ok)counters.errors++;},navigation:(duration,ok)=>{counters.navigations++;if(!ok)counters.failed++;}};
+let counters={requests:0,errors:0,started:0,navigations:0,failed:0};
+const stats={start:()=>{counters.started++;},terminal:(duration,ok)=>{counters.navigations++;if(!ok)counters.failed++;},request:(r,ok)=>{counters.requests++;if(!ok)counters.errors++;},navigation:(duration,ok)=>{counters.navigations++;if(!ok)counters.failed++;}};
 const transport={clearCookies:()=>{},request:(method,target,body,headers)=>{
  let payload, status=200, mime='application/json',hash='';
  if(target==='/login'||target==='/proyectos'){payload='<html><div id="root"></div><script type="module"></script></html>';mime='text/html';}
@@ -36,7 +36,7 @@ CASE
         self.run_node('''
 validatePlan(config,plan);
 assert.equal(coldNavigation(config,plan,transport,stats),true);
-assert.equal(counters.navigations,1);assert.equal(counters.failed,0);assert.equal(counters.errors,0);
+assert.equal(counters.started,1);assert.equal(counters.navigations,1);assert.equal(counters.failed,0);assert.equal(counters.errors,0);
 assert.equal(counters.requests,15); // two documents+two complete graphs+seven logical API operations
 ''')
 
@@ -69,6 +69,13 @@ transport.request=original;
 transport.batch=()=>[];
 assert.throws(()=>coldNavigation(config,plan,transport,stats));
 assert.equal(counters.failed,2);
+''')
+
+    def test_started_is_recorded_before_first_request_and_errors_have_one_terminal_outcome(self):
+        self.run_node('''
+transport.request=()=>{assert.equal(counters.started,1);throw new Error('synthetic transport failure');};
+assert.throws(()=>coldNavigation(config,plan,transport,stats));
+assert.equal(counters.started,1);assert.equal(counters.navigations,1);assert.equal(counters.failed,1);
 ''')
 
     def test_unreviewed_destinations_or_resource_graph_fail_before_transport(self):

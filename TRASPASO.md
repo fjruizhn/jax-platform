@@ -1,5 +1,9 @@
 # OP#270 / P100 — frontend compilado en Hall9000
 
+## Retoma de cola · Codex · 2026-10-14 21:56 UTC
+
+Tras entregar #175 R3 para auditoría de Hyde, P100 vuelve a estar activo. #177 permanece sin integrar mientras Hyde lo audita; no cambia el alcance de P100. La fase B del controlador sigue RECHAZADA (9 BLOCK, 1 MAJOR) y está en corrección separada. Task2 continúa en PREP: su arnés k6 v2 distingue navegaciones iniciadas, exitosas, fallidas e incompletas; una interrupción deja p95 de navegación nulo. Matriz fijada antes de carga real en 30 s medidos, 5 s de warm-up y 30 s de gracia. Codex repitió 33 pruebas `test_frontend_*.py` sin fallos, `py_compile`, `node --check` y `git diff --check`; el canario aislado real está en `veredictos-ensayo/p100-jax-frontend-20261014/prep-counter-canary-v2*.json`. Aún no se ejecutan navegador, app ni carga integrados, ni despliegue. Los cambios B locales de otro ejecutor se preservan y no entran en este commit de Task2.
+
 Codex · 2026-10-14. Encargo: /home/fruiz/ENCARGO-p100-jax-frontend-build-20261014.md; OP#270. Decisión de servidor estático ya tomada por Fernando mediante Hyde; despliegue reservado a Hyde después de auditoría de escalón 3.
 
 ## Hecho

@@ -38,8 +38,8 @@ function html(response) {
 export function coldNavigation(config, resources, transport, stats) {
   validatePlan(config,resources);
   const started = Date.now();
-  let success = true, completed = false;
-  transport.clearCookies();
+  stats.start();
+  let success = true;
   const consume = (response, condition) => {
     const ok = Boolean(condition(response));
     stats.request(response,ok);
@@ -54,6 +54,7 @@ export function coldNavigation(config, resources, transport, stats) {
       mediaType(current.mime)===mediaType(resources[index].mime) && current.sha256===resources[index].sha256));
   };
   try {
+    transport.clearCookies();
     request('GET','/login',null,{},html);
     staticResources();
     request('GET','/api/apariencia',null,{},r=>r.status===200&&typeof json(r)?.system_name==='string'&&
@@ -62,7 +63,7 @@ export function coldNavigation(config, resources, transport, stats) {
     const login = request('POST','/api/auth/login',JSON.stringify(config.fixture_credentials),
       {'Content-Type':'application/json'},r=>r.status===200&&typeof json(r)?.access_token==='string'&&json(r)?.user_id!=null);
     const token = json(login)?.access_token;
-    if (!token) return false;
+    if (!token) {stats.terminal(Date.now()-started,false);return false;}
     const auth = {Authorization:`Bearer ${token}`};
     request('GET','/api/state',null,auth,r=>r.status===200&&typeof json(r)?.facets==='object'&&
       typeof json(r)?.active_pipelines==='object'&&typeof json(r)?.las_manos_alive==='boolean'&&
@@ -74,10 +75,12 @@ export function coldNavigation(config, resources, transport, stats) {
     staticResources();
     request('GET','/api/auth/me',null,auth,r=>r.status===200&&json(r)?.email===config.fixture_credentials.email&&json(r)?.user_id!=null);
     request('GET','/api/proyectos?vista=activos&limite=50',null,auth,marker);
-    completed = true;
+    stats.terminal(Date.now()-started,success);
     return success;
-  } finally {
-    // Exceptions, incomplete batches and missing login payload must also count.
-    stats.navigation(Date.now()-started,success && completed);
+  } catch (error) {
+    // Normal JS errors terminate as failure; Sobek interruption bypasses catch
+    // and is reconciled later as started-successful-failed, not partial success.
+    stats.terminal(Date.now()-started,false);
+    throw error;
   }
 }

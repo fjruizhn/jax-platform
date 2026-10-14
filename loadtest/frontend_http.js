@@ -7,6 +7,7 @@ import http from 'k6/http';
 import crypto from 'k6/crypto';
 import {Counter, Rate, Trend} from 'k6/metrics';
 import {coldNavigation, validatePlan} from './frontend_http_flow.mjs';
+import {buildRunResult} from './frontend_http_result.mjs';
 
 if (!__ENV.P100_RUN_CONFIG) throw new Error('P100_RUN_CONFIG explicit JSON file required');
 const config = JSON.parse(open(__ENV.P100_RUN_CONFIG));
@@ -25,20 +26,31 @@ if (discovery.variant!==config.variant || crypto.sha256(JSON.stringify(resources
   throw new Error('invalid run matrix/discovery identity');
 }
 
+const canary = config.synthetic_counter_canary === true;
+if (typeof config.synthetic_counter_canary !== 'boolean' ||
+    (canary ? config.variant!=='synthetic-counter-canary' || config.vus!==1 || config.duration_seconds!==1 ||
+      config.graceful_stop_seconds!==1 || config.source_sha!=='a'.repeat(40) || config.harness_sha!=='b'.repeat(40)
+    : config.duration_seconds!==(config.warmup?5:30) || config.graceful_stop_seconds!==30)) {
+  throw new Error('run timing must match predeclared schema2 matrix or explicit synthetic counter canary');
+}
 export const options = {
-  scenarios: {workflow: {executor:'constant-vus',vus:config.vus,duration:`${config.duration_seconds}s`,gracefulStop:'5s'}},
+  scenarios: {workflow: {executor:'constant-vus',vus:config.vus,duration:`${config.duration_seconds}s`,
+    gracefulStop:`${config.graceful_stop_seconds}s`}},
   maxRedirects: 0, batch: 6, batchPerHost: 6, noCookiesReset: false,
   hosts: {[hostname]: '127.0.0.1'},
-  summaryTrendStats: ['avg','min','med','max','p(95)'],
-  thresholds: {p100_request_errors: ['rate<=0.001'], p100_navigation_errors: ['rate<=0.001']},
+  summaryTrendStats: ['count','avg','min','med','max','p(95)'],
+  thresholds: {p100_request_errors: ['rate<=0.001'], p100_terminal_navigation_errors: ['rate<=0.001']},
 };
 
-const requests = new Counter('p100_requests');
-const navigations = new Counter('p100_navigations');
+const requests = new Counter('p100_validated_requests');
+const validationFailures = new Counter('p100_validation_failures');
+const started = new Counter('p100_nav_started');
+const successful = new Counter('p100_nav_successful');
+const failed = new Counter('p100_nav_failed');
 const requestErrors = new Rate('p100_request_errors');
-const navigationErrors = new Rate('p100_navigation_errors');
-const requestDuration = new Trend('p100_request_duration',true);
-const navigationDuration = new Trend('p100_navigation_duration',true);
+const terminalErrors = new Rate('p100_terminal_navigation_errors');
+const requestDuration = new Trend('p100_validated_request_duration',true);
+const successfulDuration = new Trend('p100_successful_nav_duration',true);
 
 function wrapped(response) {
   return {status:response.status, body:response.body,
@@ -58,19 +70,20 @@ const transport = {
   ])).map(wrapped),
 };
 const stats = {
-  request: (response,ok)=>{requests.add(1);requestErrors.add(!ok);requestDuration.add(response.duration_ms);},
-  navigation: (duration,ok)=>{navigations.add(1);navigationErrors.add(!ok);navigationDuration.add(duration);},
+  start: ()=>started.add(1),
+  request: (response,ok)=>{
+    requests.add(1);if(!ok)validationFailures.add(1);
+    requestErrors.add(!ok);requestDuration.add(response.duration_ms);
+  },
+  terminal: (duration,ok)=>{
+    if(ok) {successful.add(1);successfulDuration.add(duration);} else failed.add(1);
+    terminalErrors.add(!ok);
+  },
 };
 
 export default function() {coldNavigation(config,resources,transport,stats);}
 
 export function handleSummary(data) {
-  // Legacy metric schema is deliberately selected on the pinned k6 CLI.
-  if (!data.metrics || !data.metrics.p100_navigations?.values) throw new Error('unsupported k6 summary schema');
-  const result = {schema:'p100-k6-run-v1',variant:config.variant,vus:config.vus,
-    repetition:config.repetition,warmup:config.warmup,duration_seconds:config.duration_seconds,
-    source_sha:config.source_sha,harness_sha:config.harness_sha,resource_digest:discovery.resource_digest,
-    browser_concurrent:false,resource_count:resources.length,
-    metrics:data.metrics};
+  const result=buildRunResult(config,discovery,data);
   return {[config.summary_file]:JSON.stringify(result,null,2)+'\n'};
 }
