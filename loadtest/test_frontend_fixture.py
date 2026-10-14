@@ -150,8 +150,16 @@ class FixtureTests(unittest.TestCase):
         self.assertIn(b'404', header)
 
     def test_body_bound_and_malformed_login_fail_without_exposing_input(self):
-        status, _, _ = self.request('POST', '/api/missing', b'x' * (config()['max_body_bytes'] + 1))
-        self.assertEqual(status, 413)
+        # The server rejects from Content-Length before reading a body. Sending
+        # 2 MiB first races its close and can raise BrokenPipe on CI runners.
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        try:
+            conn.putrequest('POST', '/api/missing')
+            conn.putheader('Content-Length', str(config()['max_body_bytes'] + 1))
+            conn.endheaders()
+            self.assertEqual(conn.getresponse().status, 413)
+        finally:
+            conn.close()
         self.assertEqual(self.request('POST', '/api/auth/login', 'not json')[0], 400)
         self.assertEqual(self.request('POST', '/api/auth/login', '[]')[0], 401)
         self.assertNotIn('not json', json.dumps(self.server.events()))
