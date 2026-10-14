@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse, base64, fcntl, hashlib, json, os, shutil, stat, subprocess, sys
 from pathlib import Path
+from nginx_config import render as render_nginx_config
 
 def atomic_write(path, value):
     if path.is_symlink(): raise ValueError("managed destination is symlink")
@@ -39,9 +40,32 @@ def update_asset_pool(dist,pool):
         else: target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(source,target)
 
 def render_nginx(*,release_root,release_sha,runtime_directory,proxy_contract,listen=5173):
-    hosts=" ".join(proxy_contract["allowed_hosts"]); api=proxy_contract["api_prefix"]; ws=proxy_contract["ws_prefix"]; port=proxy_contract["target_port"]; host=str(proxy_contract["target_host"])+":"+str(port)
-    # nginx.org/r/try_files and nginx.org/r/proxy_pass: no URI suffix preserves URI/query.
-    return "\n".join(["worker_processes 1;",f"pid {runtime_directory}/nginx.pid;","error_log /dev/stderr notice;","events { worker_connections 128; }","http {"," include /etc/nginx/mime.types;"," default_type application/octet-stream;"," access_log /dev/stdout;"," map $http_upgrade $connection_upgrade { default upgrade; '' close; }"," server {",f"  listen {listen}; server_name {hosts}; root {release_root}/current/dist; client_max_body_size 0;",f"  location ^~ {api} {{ proxy_pass http://127.0.0.1:{port}; proxy_http_version 1.1; proxy_set_header Host {host}; proxy_set_header Origin $http_origin; proxy_request_buffering off; proxy_buffering off; }}",f"  location ^~ {ws} {{ proxy_pass http://127.0.0.1:{port}; proxy_http_version 1.1; proxy_set_header Host {host}; proxy_set_header Origin $http_origin; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_read_timeout 3600s; proxy_request_buffering off; proxy_buffering off; }}",f"  location ^~ /assets/ {{ root {release_root}/pool; try_files $uri =404; add_header Cache-Control \"public, max-age=31536000, immutable\" always; add_header X-JAX-Frontend-SHA \"{release_sha}\" always; }}",f"  location = /index.html {{ try_files /index.html =404; add_header Cache-Control \"no-cache\" always; add_header X-JAX-Frontend-SHA \"{release_sha}\" always; }}","  location ~ /\\. { return 404; }","  location / { try_files $uri $uri/ /index.html; add_header Cache-Control \"no-cache\" always; add_header X-JAX-Frontend-SHA \""+release_sha+"\" always; }"," }","}",""])
+    """Compatibility adapter; all config text comes from the shared renderer.
+
+    Legacy callers may pass an absolute runtime path. Phase B uses settings/manifest
+    directly and must validate the associated on-disk release before calling render.
+    """
+    defaults=json.loads(Path(__file__).with_name("settings.json").read_text())
+    settings={**defaults,"release_root":str(release_root),"listen_port":listen}
+    if Path(runtime_directory).is_absolute():
+        settings.update(private_mode=True,runtime_path=str(runtime_directory))
+    else:
+        settings["runtime_directory"]=runtime_directory
+    contract={"api_prefix":proxy_contract["api_prefix"],"ws_prefix":proxy_contract["ws_prefix"],
+              "scheme":proxy_contract.get("scheme","http"),"ws_scheme":proxy_contract.get("ws_scheme","ws"),
+              "host":proxy_contract.get("host",proxy_contract.get("target_host")),
+              "port":proxy_contract.get("port",proxy_contract.get("target_port")),
+              "allowed_hosts":proxy_contract["allowed_hosts"]}
+    empty=hashlib.sha256(b"").hexdigest()
+    manifest={"schema_version":1,"source_sha":release_sha,
+              **{key:settings[key] for key in ("node_version","npm_version","vite_version")},
+              "lockfile_sha256":empty,"tree_digest":empty,"files":{"index.html":empty},
+              "proxy_contract":contract}
+    return render_nginx_config(settings=settings,manifest=manifest)[0]
+
+def render_nginx_from_manifest(*, settings, manifest, override_backend=None):
+    """Phase-A renderer entrypoint; no transaction or filesystem side effect."""
+    return render_nginx_config(settings=settings, manifest=manifest, override_backend=override_backend)
 
 def journal(path,phase,**extra): atomic_write(path,json.dumps({"phase":phase,**extra},sort_keys=True)+"\n")
 def ctl(user,*args): subprocess.run(["systemctl",*(["--user"] if user else []),*args],check=True)
@@ -61,7 +85,7 @@ def main():
                 previous=json.loads(state.read_text()).get("snapshot")
                 if not previous: raise ValueError("journal has no rollback snapshot")
                 restore_snapshot(previous); ctl(a.user,"daemon-reload"); ctl(a.user,"restart",s["service"]); journal(state,"committed",snapshot=previous); print(json.dumps({"rolled_back":True})); return 0
-            config=render_nginx(release_root=s["release_root"],release_sha=m["source_sha"],runtime_directory=s["runtime_directory"],proxy_contract=m["proxy_contract"],listen=int(s.get("listen",5173))); dropin="[Service]\nUser="+s.get("user","jaxsvc")+"\nGroup="+s.get("group","jaxsvc")+"\nWorkingDirectory="+s["release_root"]+"/current\nRuntimeDirectory="+s["runtime_directory"]+"\nExecStart=\nExecStartPre=\nExecStartPre=/usr/sbin/nginx -t -c "+str(nginx)+"\nExecStart=/usr/sbin/nginx -g 'daemon off;' -c "+str(nginx)+"\n"
+            config,render_metadata=render_nginx_from_manifest(settings=s,manifest=m); dropin="[Service]\nUser="+s.get("user","jaxsvc")+"\nGroup="+s.get("group","jaxsvc")+"\nWorkingDirectory="+s["release_root"]+"/current\nRuntimeDirectory="+s["runtime_directory"]+"\nExecStart=\nExecStartPre=\nExecStartPre=/usr/sbin/nginx -t -c "+str(nginx)+"\nExecStart=/usr/sbin/nginx -g 'daemon off;' -c "+str(nginx)+"\n"
             atomic_write(nginx,config); atomic_write(drop,dropin); journal(state,"prepared",snapshot=snap)
             if a.action in ("render","prepare"): print(json.dumps({"nginx_config":str(nginx),"dropin":str(drop)})); return 0
             release=Path(s["release_root"])/"releases"/m["source_sha"]
