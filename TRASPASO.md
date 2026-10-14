@@ -9,7 +9,7 @@ Codex · 2026-10-14. Encargo: /home/fruiz/ENCARGO-p100-jax-frontend-build-202610
 - No hay CONTEXT.md/CLAUDE.md/AGENTS.md en raíz de jax-platform ni en origin/master. Se leyeron la documentación de migración y el runbook de despliegue.
 - npm ci limpio: Node24.16.0, npm11.13.0, Vite6.4.3, React19.2.7; baseline frontend1414passed/0failed.
 - Unidad viva frontend PID8108, Userjaxsvc, checkout /srv/jax-prod, dos drop-ins efectivos; nginx global inactivo. Inventario sólo lectura. g1 no intervenida.
-- Explorador y arquitecto son agentes distintos de sólo lectura; diseño técnico de build/release/proxies/reversión en análisis.
+- Explorador y arquitecto son agentes distintos de sólo lectura; diseño técnico de Sol recibido; contrato en docs/superpowers/plans/2026-10-14-p100-frontend-build.md.
 
 ## Falta
 
@@ -24,4 +24,4 @@ El cliente DEV usa WS:8080 con hostname localhost; el navegador del ensayo usar�
 ## Siguiente comando
 
 Desde esta rama: git status --short
-Leer el veredicto de /root/p100_diseno y registrar interfaces antes de despachar al implementador. Evidencia cruda: /home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/.
+Ejecutar Task1 con implementador Terra y revisión Sol separada; después Task2 y Task3. Build base pasó; advertencia preexistente de chunk JS mayor de500kB permanece sin rebajar umbrales. Evidencia cruda: /home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/.
