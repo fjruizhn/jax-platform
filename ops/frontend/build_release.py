@@ -15,7 +15,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-from release_manifest import (SHA40, check_object, checked_path, digest, expected_owner,
+from release_manifest import (SHA40, check_object, check_controlled_directory, checked_path, digest, expected_owner,
                               inventory, tree_digest, validate_contract, verify_release)
 
 
@@ -144,8 +144,9 @@ def create_release(repo: Path, sha: str, output: Path, settings: dict) -> Path:
     if uid != os.getuid():
         raise ValueError('build owner does not match artifact owner policy; use --private for a user rehearsal')
     output = checked_path(output)
-    output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    check_object(output, uid)
+    output.mkdir(parents=True, exist_ok=True, mode=0o755)
+    check_controlled_directory(output, uid)
+    check_object(output, uid, public=True)
     fd = os.open(output / '.build.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -167,6 +168,8 @@ def create_release(repo: Path, sha: str, output: Path, settings: dict) -> Path:
                     raise ValueError('existing release differs from rebuilt source')
                 return destination
             with tempfile.TemporaryDirectory(prefix='.' + sha + '.staging-', dir=output) as staging:
+                # This is our temporary publication parent, not an arbitrary existing path.
+                Path(staging).chmod(0o755)
                 release = Path(staging) / sha
                 release.mkdir(mode=0o755)
                 shutil.copytree(dist, release / 'dist')

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
 import subprocess
+import tempfile
 from urllib.parse import urlsplit
 
-from release_manifest import checked_path, valid_host, valid_port, validate_manifest, verify_release
+from build_release import publish_noreplace, sync_tree
+from release_manifest import check_controlled_directory, checked_path, valid_host, valid_port, validate_manifest, verify_release
 
 
 def absolute_path(value: object) -> str:
@@ -65,14 +68,14 @@ def render(*, settings: dict, manifest: dict, override_backend: dict | None = No
     workers = settings['worker_connections']
     if type(workers) is not int or not 16 <= workers <= 65536:
         raise ValueError('invalid worker_connections')
-    hosts = [r'localhost', r'(?:[a-z0-9-]+\.)+localhost']
+    hosts = [r'localhost', r'(?:[A-Za-z0-9_-]+\.)+localhost']
     for host in contract['allowed_hosts']:
         host = valid_host(host, allowed=True)
-        hosts.append(r'(?:[a-z0-9-]+\.)*' + re.escape(host[1:]) if host.startswith('.') else re.escape(host))
+        hosts.append(r'(?:[A-Za-z0-9_-]+\.)*' + re.escape(host[1:]) if host.startswith('.') else re.escape(host))
     octet = r'(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
     ipv4 = rf'{octet}(?:\.{octet}){{3}}'
     # All valid compressed/full IPv6 forms, including an embedded IPv4 suffix.
-    hextet = '[0-9a-f]{1,4}'
+    hextet = '[0-9a-fA-F]{1,4}'
     ipv6 = [rf'(?:{hextet}:){{7}}{hextet}', rf'(?:{hextet}:){{1,7}}:',
             rf':(?:(?::{hextet}){{1,7}}|:)', rf'(?:{hextet}:){{6}}{ipv4}',
             rf'::(?:{hextet}:){{0,5}}{ipv4}']
@@ -82,6 +85,7 @@ def render(*, settings: dict, manifest: dict, override_backend: dict | None = No
         ipv6.append(rf'(?:{hextet}:){{1,{5-right}}}:(?:{hextet}:){{{right}}}{ipv4}')
     hosts.extend([ipv4, r'\[(?:' + '|'.join(ipv6) + r')\]'])
     host_pattern = '|'.join(hosts)
+    port_pattern = r'(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])'
     processes = settings['worker_processes']
     timeout = settings['websocket_read_timeout_seconds']
     if type(processes) is not int or not 1 <= processes <= 64:
@@ -120,9 +124,9 @@ http {{
   uwsgi_temp_path {runtime}/uwsgi;
   scgi_temp_path {runtime}/scgi;
   map $http_upgrade $connection_upgrade {{ default upgrade; '' close; }}
-  map $host $allowed_host {{
+  map $http_host $allowed_host {{
     default 0;
-    "~^(?:{host_pattern})$" 1;
+    "~^(?:{host_pattern})(?::{port_pattern})?$" 1;
   }}
   map $uri $hashed_asset {{
     default 0;
@@ -131,6 +135,8 @@ http {{
   server {{
     listen {listen_host}:{listen_port};
     server_name _;
+    # Only origin-form requests: never trust request-target authority instead of Host.
+    if ($request ~ "^[^ ]+ [A-Za-z][A-Za-z0-9+.-]*://") {{ return 403; }}
     if ($allowed_host = 0) {{ return 403; }}
     if ($uri ~ "(?:^|/)\\.|^/(?:src|node_modules)(?:/|$)|^/(?:package(?:-lock)?\\.json|vite\\.config\\.[^/]+)$") {{ return 404; }}
     root {root}/current/dist;
@@ -161,7 +167,8 @@ http {{
 '''
     metadata = {'source_sha': source, 'upstream_original': original,
                 'override_backend': override_backend, 'runtime_directory': settings['runtime_directory'],
-                'runtime_path': runtime, 'nginx_version_required': settings['nginx_version']}
+                'runtime_path': runtime, 'nginx_version_required': settings['nginx_version'],
+                'config_sha256': hashlib.sha256(text.encode()).hexdigest()}
     return text, metadata
 
 
@@ -180,12 +187,44 @@ def staging_write(path: Path, data: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def check_package_parent(parent: Path, *, owner_uid: int | None = None) -> Path:
+    """The existing package parent must be controlled by the publishing UID."""
+    return check_controlled_directory(parent, os.getuid() if owner_uid is None else owner_uid)
+
+
+def publish_staging(staging_dir: Path, config: str, metadata: dict) -> Path:
+    """Publish the correlated config/receipt pair as one new, immutable staging package."""
+    staging_dir = checked_path(staging_dir)
+    if staging_dir.exists() or staging_dir.is_symlink():
+        raise ValueError('staging package destination must be new')
+    if metadata.get('config_sha256') != hashlib.sha256(config.encode()).hexdigest():
+        raise ValueError('render metadata does not match config bytes')
+    check_package_parent(staging_dir.parent)
+    with tempfile.TemporaryDirectory(prefix='.' + staging_dir.name + '.prepare-', dir=staging_dir.parent) as temporary:
+        package = Path(temporary) / 'package'
+        package.mkdir(mode=0o700)
+        staging_write(package / 'nginx.conf', config)
+        staging_write(package / 'render.json', json.dumps(metadata, sort_keys=True, indent=2) + '\n')
+        # Verify the completed pair before making its directory visible to any consumer.
+        persisted = json.loads((package / 'render.json').read_text())
+        actual_digest = hashlib.sha256((package / 'nginx.conf').read_bytes()).hexdigest()
+        if persisted != metadata or persisted.get('config_sha256') != actual_digest:
+            raise ValueError('staging package correlation failed')
+        sync_tree(package)
+        publish_noreplace(package, staging_dir)
+        fd = os.open(staging_dir.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return staging_dir
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--release-dir', required=True, type=Path)
     parser.add_argument('--settings', type=Path, default=Path(__file__).with_name('settings.json'))
-    parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--metadata', required=True, type=Path)
+    parser.add_argument('--staging-dir', required=True, type=Path, help='New directory to publish nginx.conf and render.json atomically')
     parser.add_argument('--private', action='store_true')
     parser.add_argument('--override-backend')
     args = parser.parse_args()
@@ -203,13 +242,13 @@ def main() -> int:
             raise ValueError('nginx version mismatch')
         override = backend_url(args.override_backend) if args.override_backend else None
         config, metadata = render(settings=settings, manifest=manifest, override_backend=override)
-        outputs = [checked_path(args.output), checked_path(args.metadata)]
+        target = checked_path(args.staging_dir)
         release = checked_path(args.release_dir)
-        if outputs[0] == outputs[1] or any(path.is_relative_to(release) for path in outputs):
-            raise ValueError('render outputs must be distinct staging files outside the immutable release')
-        staging_write(outputs[0], config)
-        staging_write(outputs[1], json.dumps(metadata, sort_keys=True, indent=2) + '\n')
-        print(json.dumps({'nginx_config': str(outputs[0]), 'render_metadata': str(outputs[1])}))
+        if target.is_relative_to(release):
+            raise ValueError('staging package must be outside the immutable release')
+        package = publish_staging(target, config, metadata)
+        print(json.dumps({'staging_dir': str(package), 'nginx_config': str(package / 'nginx.conf'),
+                          'render_metadata': str(package / 'render.json')}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print('nginx render refused: ' + str(error), file=sys.stderr)

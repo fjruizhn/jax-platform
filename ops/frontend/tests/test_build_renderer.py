@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
@@ -102,7 +103,7 @@ class ManifestTests(unittest.TestCase):
         conf=self.root/'staging/nginx.conf'; meta=self.root/'staging/render.json'; sf=self.root/'settings.json'
         sf.write_text(json.dumps(self.settings))
         result=subprocess.run([sys.executable,str(TOOLS/'nginx_config.py'),'--release-dir',str(self.release),
-                               '--settings',str(sf),'--output',str(conf),'--metadata',str(meta),'--private',
+                               '--settings',str(sf),'--staging-dir',str(conf.parent),'--private',
                                '--override-backend','http://localhost:18098'],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(meta.read_text())['override_backend']['port'],18098)
@@ -115,10 +116,24 @@ class ManifestTests(unittest.TestCase):
         sf=self.root/'settings.json'; bad={**self.settings,'nginx_version':'0.0.0'}
         sf.write_text(json.dumps(bad)); output=self.root/'nginx.conf'
         result=subprocess.run([sys.executable,str(TOOLS/'nginx_config.py'),'--release-dir',str(self.release),
-                               '--settings',str(sf),'--output',str(output),'--metadata',str(self.root/'meta.json'),'--private'],
+                               '--settings',str(sf),'--staging-dir',str(output),'--private'],
                               capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0); self.assertIn('nginx version',result.stderr)
         self.assertFalse(output.exists())
+
+    def test_public_modes_reject_restrictive_objects(self):
+        for name,mode in [('dist/index.html',0o600),('dist',0o700),('',0o700),('../',0o700),('manifest.json',0o600)]:
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); release,_=fixture(root); path=release/name
+                path.chmod(mode)
+                with self.assertRaises(ValueError): verify_release(release,settings(root))
+
+    def test_release_under_writable_ancestor_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); ancestor=root/'unsafe'; ancestor.mkdir(mode=0o775); ancestor.chmod(0o775)
+            private=ancestor/'private'; private.mkdir(mode=0o700)
+            release,_=fixture(private)
+            with self.assertRaises(ValueError): verify_release(release,settings(private))
 
 class RenderInputTests(unittest.TestCase):
     def test_rejects_injection_bad_ports_paths_sha_and_override(self):
@@ -213,6 +228,32 @@ else:
                 self.assertNotEqual(result.returncode,0); self.assertIn('version mismatch',result.stderr)
                 self.assertFalse((self.out/self.head).exists())
         node.write_text(original)
+
+    def test_parent_mode_is_public_and_existing_private_parent_is_not_changed(self):
+        result=self.run_build(); self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.out.stat().st_mode&0o7777,0o755)
+        self.out.chmod(0o700)
+        result=self.run_build(); self.assertNotEqual(result.returncode,0)
+        self.assertEqual(self.out.stat().st_mode&0o7777,0o700)
+
+    def test_distinct_uid_can_read_built_release(self):
+        # A disposable public ancestor contains fixture bytes only, never credentials.
+        result=self.run_build(); self.assertEqual(result.returncode,0,result.stderr)
+        self.root.chmod(0o755)
+        try:
+            reader="import os,pathlib,sys; assert (os.getuid(),os.getgid(),os.getgroups())==(65534,65534,[]); print(pathlib.Path(sys.argv[1]).read_text())"
+            result=subprocess.run(['sudo','-n','setpriv','--reuid=65534','--regid=65534','--clear-groups',
+                                   sys.executable,'-c',reader,str(self.out/self.head/'dist/index.html')],
+                                  capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr); self.assertEqual(result.stdout.strip(),'SPA')
+        finally: self.root.chmod(0o700)
+
+    def test_publication_rejects_an_unsafe_ancestor(self):
+        ancestor=self.root/'unsafe'; ancestor.mkdir(mode=0o775); ancestor.chmod(0o775)
+        self.out=ancestor/'releases'
+        result=self.run_build(); self.assertNotEqual(result.returncode,0)
+        self.assertFalse((self.out/self.head).exists())
+        self.assertEqual(ancestor.stat().st_mode&0o7777,0o775)
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
@@ -319,6 +360,60 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(len(self.calls),before)
         for host in ['localhost','sub.localhost','127.0.0.1','10.20.30.40','[::1]','[2001:db8::1]','[::ffff:127.0.0.1]','www.axioma-ia.io']:
             with self.subTest(host=host): self.assertEqual(self.request('/api/yes',headers={'Host':host})[0],200)
+    def raw_request(self,port,target,host):
+        with socket.create_connection(('127.0.0.1',port),timeout=5) as sock:
+            sock.sendall((f'GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n').encode())
+            response=b''
+            while chunk:=sock.recv(4096): response+=chunk
+        return int(response.split(b' ',2)[1])
+
+    def test_absolute_target_always_rejected_before_upstream(self):
+        for target,host in [('http://axioma-ia.io/apix/absolute?x=1','evil.example'),
+                            ('http://evil.example/apix/absolute?x=1','axioma-ia.io'),
+                            ('http://axioma-ia.io/apix/absolute?x=1','axioma-ia.io')]:
+            with self.subTest(target=target,host=host):
+                before=len(self.calls)
+                self.assertEqual(self.raw_request(self.port,target,host),403)
+                self.assertEqual(len(self.calls),before)
+
+    def test_header_case_dot_port_matches_actual_vite(self):
+        with socket.socket() as sock: sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
+        probe="""import {createServer} from 'vite';
+const server=await createServer({configFile:false,root:process.argv[1],
+server:{host:'127.0.0.1',port:Number(process.argv[2]),strictPort:true,
+allowedHosts:['axioma-ia.io','www.axioma-ia.io'],
+proxy:{'/api':{target:'http://localhost:'+process.argv[3],changeOrigin:true}}}});
+await server.listen();"""
+        log=(self.root/'vite.log').open('w')
+        env={key:value for key,value in os.environ.items() if not key.startswith(('VITE_','__VITE_'))}
+        process=subprocess.Popen(['node','--input-type=module','-e',probe,str(self.root),str(port),str(self.server.server_port)],
+                                 cwd=TOOLS.parents[1]/'frontend',env=env,stdout=log,stderr=log)
+        try:
+            for attempt in range(100):
+                try:
+                    with socket.create_connection(('127.0.0.1',port),timeout=.1): break
+                except OSError:
+                    if process.poll() is not None: self.fail('Vite failed: '+(self.root/'vite.log').read_text())
+                    time.sleep(.02)
+            for host in ['axioma-ia.io','www.axioma-ia.io','localhost','sub.localhost','UPPER.localhost',
+                         '127.0.0.1','[::1]','[2001:DB8::1]','axioma-ia.io:12345',
+                         'AXIOMA-IA.IO','axioma-ia.io.','evil.example']:
+                with self.subTest(host=host):
+                    vite=self.raw_request(port,'/apix/parity?x=1',host)
+                    before=len(self.calls); nginx=self.raw_request(self.port,'/apix/parity?x=1',host)
+                    self.assertEqual(nginx,vite)
+                    if vite==403: self.assertEqual(len(self.calls),before)
+            for host in ['axioma-ia.io:0','axioma-ia.io:65536','axioma-ia.io:abc','axioma-ia.io\r\nHost: evil.example']:
+                before=len(self.calls)
+                self.assertIn(self.raw_request(self.port,'/apix/no',host),(400,403))
+                self.assertEqual(len(self.calls),before)
+            # Vite checks the allowed header but its origin-form proxy does not handle the absolute URL (404).
+            # nginx deliberately denies every absolute target (403).
+            self.assertEqual(self.raw_request(port,'http://axioma-ia.io/apix/absolute','axioma-ia.io'),404)
+            self.assertEqual(self.raw_request(port,'http://axioma-ia.io/apix/absolute','evil.example'),403)
+        finally:
+            process.terminate(); process.wait(timeout=5); log.close()
+
     def test_websocket_upgrade_and_override_record(self):
         key='dGhlIHNhbXBsZSBub25jZQ=='
         with socket.create_connection(('127.0.0.1',self.port),timeout=5) as sock:
@@ -375,3 +470,112 @@ class ViteLoaderTests(unittest.TestCase):
                 with self.subTest(config=altered):
                     (source/'vite.config.js').write_text(altered)
                     with self.assertRaises(ValueError): proxy_contract(source,os.environ.copy())
+
+class StagingPackageTests(unittest.TestCase):
+    def test_digest_correlates_pure_render_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); _,manifest=fixture(root)
+            config,meta=render(settings=settings(root),manifest=manifest)
+            self.assertEqual(meta.get('config_sha256'),sha(config.encode()))
+
+    def test_second_write_and_publication_failure_leave_no_package(self):
+        import nginx_config
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); _,manifest=fixture(root)
+            config,meta=render(settings=settings(root),manifest=manifest)
+            write=nginx_config.staging_write
+            def fail_second(path,data):
+                if path.name=='render.json': raise OSError('second write failure')
+                write(path,data)
+            for boundary in ('write','publish'):
+                with self.subTest(boundary=boundary):
+                    target=root/'package'
+                    patcher=patch.object(nginx_config,'staging_write',side_effect=fail_second) if boundary=='write' else patch.object(nginx_config,'publish_noreplace',side_effect=OSError('before publish'))
+                    with patcher,self.assertRaises(OSError): nginx_config.publish_staging(target,config,meta)
+                    self.assertFalse(target.exists()); self.assertEqual(list(root.glob('.package.prepare-*')),[])
+
+    def test_existing_package_and_publication_race_preserve_previous_bytes(self):
+        import nginx_config
+        from build_release import publish_noreplace
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); _,manifest=fixture(root)
+            config,meta=render(settings=settings(root),manifest=manifest)
+            known=root/'known'; nginx_config.publish_staging(known,config,meta)
+            previous={path.name:path.read_bytes() for path in known.iterdir()}
+            changed=config+'# changed config\n'; changed_meta={**meta,'config_sha256':sha(changed.encode())}
+            with self.assertRaises((OSError,ValueError)): nginx_config.publish_staging(known,changed,changed_meta)
+            self.assertEqual({path.name:path.read_bytes() for path in known.iterdir()},previous)
+            target=root/'package'; target.mkdir(); (target/'nginx.conf').write_text('previous')
+            with self.assertRaises((OSError,ValueError)): nginx_config.publish_staging(target,config,meta)
+            self.assertEqual((target/'nginx.conf').read_text(),'previous')
+            target=root/'race'
+            def collide(source,destination):
+                destination.mkdir(); (destination/'sentinel').write_text('unknown')
+                publish_noreplace(source,destination)
+            with patch.object(nginx_config,'publish_noreplace',side_effect=collide),self.assertRaises(OSError):
+                nginx_config.publish_staging(target,config,meta)
+            self.assertEqual(list(p.name for p in target.iterdir()),['sentinel'])
+            self.assertEqual(list(root.glob('.race.prepare-*')),[])
+
+    def test_cli_second_write_failure_has_no_stdout_or_published_half(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); release,_=fixture(root); sf=root/'settings.json'; sf.write_text(json.dumps(settings(root)))
+            script="""import sys
+sys.path.insert(0,sys.argv.pop(1))
+import nginx_config
+original=nginx_config.staging_write
+def fail_second(path,data):
+ if path.name=='render.json': raise OSError('injected second write')
+ original(path,data)
+nginx_config.staging_write=fail_second
+raise SystemExit(nginx_config.main())
+"""
+            target=root/'package'
+            result=subprocess.run([sys.executable,'-c',script,str(TOOLS),'--release-dir',str(release),
+                                   '--settings',str(sf),'--staging-dir',str(target),'--private'],capture_output=True,text=True)
+            self.assertEqual(result.returncode,1); self.assertEqual(result.stdout,'')
+            self.assertIn('injected second write',result.stderr)
+            self.assertFalse(target.exists()); self.assertEqual(list(root.glob('.package.prepare-*')),[])
+
+    def test_kill_at_publication_boundaries_never_exposes_a_partial_pair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); _,manifest=fixture(root)
+            config,meta=render(settings=settings(root),manifest=manifest)
+            data=root/'input.json'; data.write_text(json.dumps({'config':config,'meta':meta}))
+            script="""import json,os,signal,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1]); import nginx_config
+value=json.loads(Path(sys.argv[2]).read_text()); after=sys.argv[4]=='after'
+original=nginx_config.publish_noreplace
+def cut(source,destination):
+ if after: original(source,destination)
+ os.kill(os.getpid(),signal.SIGKILL)
+nginx_config.publish_noreplace=cut
+nginx_config.publish_staging(Path(sys.argv[3]),value['config'],value['meta'])
+"""
+            for boundary in ['before','after']:
+                with self.subTest(boundary=boundary):
+                    target=root/boundary
+                    result=subprocess.run([sys.executable,'-c',script,str(TOOLS),str(data),str(target),boundary],capture_output=True,text=True)
+                    self.assertEqual(result.returncode,-9)
+                    if boundary=='before': self.assertFalse(target.exists())
+                    else:
+                        self.assertEqual(set(path.name for path in target.iterdir()),{'nginx.conf','render.json'})
+                        persisted=json.loads((target/'render.json').read_text())
+                        self.assertEqual(persisted['config_sha256'],sha((target/'nginx.conf').read_bytes()))
+
+    def test_unsafe_parent_and_ancestor_modes_are_refused_without_chmod(self):
+        import nginx_config
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); _,manifest=fixture(root)
+            config,meta=render(settings=settings(root),manifest=manifest)
+            for mode in [0o775,0o777]:
+                with self.subTest(mode=oct(mode)):
+                    parent=root/str(mode); parent.mkdir(mode=mode); parent.chmod(mode)
+                    with self.assertRaises(ValueError): nginx_config.publish_staging(parent/'package',config,meta)
+                    self.assertEqual(parent.stat().st_mode&0o7777,mode); self.assertEqual(list(parent.iterdir()),[])
+            ancestor=root/'unsafe'; ancestor.mkdir(mode=0o775); ancestor.chmod(0o775)
+            parent=ancestor/'private'; parent.mkdir(mode=0o700)
+            with self.assertRaises(ValueError): nginx_config.publish_staging(parent/'package',config,meta)
+            self.assertFalse((parent/'package').exists()); self.assertEqual(ancestor.stat().st_mode&0o7777,0o775)
+            with self.assertRaises(ValueError): nginx_config.check_package_parent(root,owner_uid=os.getuid()+1)

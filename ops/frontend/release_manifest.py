@@ -36,6 +36,29 @@ def checked_path(path: Path) -> Path:
     return path
 
 
+def check_controlled_directory(path: Path, owner_uid: int) -> Path:
+    """Require a stable DAC namespace, including ancestors; never repair foreign modes.
+
+    A root-owned sticky directory (e.g. /tmp) may contain our no-go+w child:
+    sticky semantics prevent other UIDs renaming that child even when it is0755.
+    Same-UID writers and root/sudo are outside this DAC protection contract.
+    """
+    path = checked_path(path)
+    chain = [*reversed(path.parents), path]
+    for index, part in enumerate(chain):
+        info = part.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('controlled path must contain directories: ' + str(part))
+        if info.st_uid not in (0, owner_uid) or (part == path and info.st_uid != owner_uid):
+            raise ValueError('controlled directory owner mismatch: ' + str(part))
+        if info.st_mode & 0o022:
+            sticky = bool(info.st_mode & stat.S_ISVTX) and info.st_uid == 0 and index < len(chain)-1
+            child = chain[index+1].lstat() if sticky else None
+            if not (sticky and child.st_uid == owner_uid and not child.st_mode & 0o022):
+                raise ValueError('writable ancestor of publication directory: ' + str(part))
+    return path
+
+
 def expected_owner(settings: dict) -> int:
     if settings.get('private_mode'):
         uid = settings.get('owner_uid')
@@ -47,27 +70,31 @@ def expected_owner(settings: dict) -> int:
     return 0
 
 
-def check_object(path: Path, owner_uid: int | None = None) -> os.stat_result:
+def check_object(path: Path, owner_uid: int | None = None, *, public: bool = False) -> os.stat_result:
     info = path.lstat()
     if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
         raise ValueError('non-regular release object: ' + str(path))
     if info.st_mode & 0o022:
         raise ValueError('group/world writable release object: ' + str(path))
+    if public:
+        expected_mode = 0o755 if stat.S_ISDIR(info.st_mode) else 0o644
+        if stat.S_IMODE(info.st_mode) != expected_mode:
+            raise ValueError('public artifact mode must be directories0755/files0644: ' + str(path))
     if owner_uid is not None and info.st_uid != owner_uid:
         raise ValueError('release owner mismatch: ' + str(path))
     return info
 
 
-def inventory(root: Path, owner_uid: int | None = None) -> dict[str, str]:
+def inventory(root: Path, owner_uid: int | None = None, *, public: bool = False) -> dict[str, str]:
     root = checked_path(root)
-    if not stat.S_ISDIR(check_object(root, owner_uid).st_mode):
+    if not stat.S_ISDIR(check_object(root, owner_uid, public=public).st_mode):
         raise ValueError('dist must be a directory')
     files = {}
     directories = set()
     for directory, dirs, names in os.walk(root, followlinks=False):
         for name in sorted(dirs + names):
             path = Path(directory) / name
-            info = check_object(path, owner_uid)
+            info = check_object(path, owner_uid, public=public)
             if stat.S_ISDIR(info.st_mode):
                 directories.add(path.relative_to(root).as_posix())
                 continue
@@ -154,13 +181,14 @@ def validate_manifest(manifest: dict, settings: dict, expected_sha: str | None =
 def verify_release(release_dir: Path, settings: dict, expected_sha: str | None = None) -> dict:
     release_dir = checked_path(release_dir)
     uid = expected_owner(settings)
-    check_object(release_dir.parent, uid)
-    if not stat.S_ISDIR(check_object(release_dir, uid).st_mode):
+    check_controlled_directory(release_dir.parent, uid)
+    check_object(release_dir.parent, uid, public=True)
+    if not stat.S_ISDIR(check_object(release_dir, uid, public=True).st_mode):
         raise ValueError('release must be a directory')
     if set(p.name for p in release_dir.iterdir()) != {'manifest.json', 'dist', 'package-lock.json'}:
         raise ValueError('unexpected or missing release files')
     for name in ('manifest.json', 'package-lock.json'):
-        if not stat.S_ISREG(check_object(release_dir / name, uid).st_mode):
+        if not stat.S_ISREG(check_object(release_dir / name, uid, public=True).st_mode):
             raise ValueError('release metadata must be regular files')
     manifest = json.loads((release_dir / 'manifest.json').read_text())
     validate_manifest(manifest, settings, expected_sha)
@@ -168,7 +196,7 @@ def verify_release(release_dir: Path, settings: dict, expected_sha: str | None =
         raise ValueError('release directory SHA identity mismatch')
     if digest(release_dir / 'package-lock.json') != manifest['lockfile_sha256']:
         raise ValueError('archived lockfile digest mismatch')
-    files = inventory(release_dir / 'dist', uid)
+    files = inventory(release_dir / 'dist', uid, public=True)
     if files != manifest['files'] or tree_digest(files) != manifest['tree_digest']:
         raise ValueError('release inventory mismatch')
     return manifest
