@@ -94,6 +94,19 @@ ln -s ../vite/bin/vite.js node_modules/.bin/vite
         with self.assertRaisesRegex(ValueError,'npm_cli pin differs'):
             generate(self.checkout,s2,self.root/'npm-mutated.json',self.settings)
 
+    def test_generated_contract_survives_partial_writes(self):
+        original_write=os.write
+        calls=[]
+        def short_write(descriptor,data):
+            calls.append(len(data))
+            return original_write(descriptor,data[:7])
+        output=self.root/'short-write.json'
+        with patch('origin_contract.os.write',side_effect=short_write):
+            payload=generate(self.checkout,self.s1,output,self.settings)
+        self.assertGreater(len(calls),1)
+        self.assertEqual(output.read_text(),canonical(payload))
+        self.assertEqual(load(output,self.s1,owner_uid=os.getuid())[0],payload)
+
     def test_install_contract_validates_operator_source_before_root_publication(self):
         source=self.root/'source.json'
         payload=generate(self.checkout,self.s1,source,self.settings)

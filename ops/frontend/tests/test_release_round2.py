@@ -238,6 +238,65 @@ class RoundTwo(unittest.TestCase):
                     f.apply()
                 self.assertEqual(f.manager.stop_calls,stops)
 
+    def test_candidate_from_another_boot_cannot_authorize_restore_signal(self):
+        f=self.fixture(); process=f.manager.process; stops=f.manager.stop_calls
+        def other_boot(properties):
+            value=process(properties)
+            if value is not None and f.manager.process_kind=='nginx': value={**value,'boot_id':'other-boot'}
+            return value
+        f.manager.process=other_boot
+        with self.assertRaisesRegex(RuntimeError,'candidate boot identity differs'):
+            f.apply()
+        self.assertEqual(f.manager.stop_calls,stops)
+
+    def test_rollback_rechecks_loaded_dropins_after_reload_before_restart(self):
+        f=self.fixture(); f.apply(); restarts=f.manager.restart_calls
+        def drift(boundary):
+            if boundary=='restore_reloaded':
+                (f.controller.dropdir/'40-external.conf').write_text('[Service]\nEnvironment=ALIEN=1\n')
+                f.manager.reload()
+        f.controller.fault=drift
+        with self.assertRaisesRegex(RuntimeError,'base/dropins drift before restart'):
+            f.controller.rollback()
+        self.assertEqual(f.manager.restart_calls,restarts)
+
+    def test_rollback_rechecks_process_immediately_before_restart(self):
+        f=self.fixture(); f.apply(); restarts=f.manager.restart_calls
+        def drift(boundary):
+            if boundary=='restart_intent_persisted':
+                f.manager.active='active'; f.manager.process_kind='vite'; f.manager.pid+=100
+        f.controller.fault=drift
+        with self.assertRaisesRegex(RuntimeError,'external process before restart'):
+            f.controller.rollback()
+        self.assertEqual(f.manager.restart_calls,restarts)
+
+    def test_rollback_witnesses_exact_original_already_active_before_restart(self):
+        f=self.fixture(); f.apply(); restarts=f.manager.restart_calls; original=copy.deepcopy(f.original['process'])
+        def drift(boundary):
+            if boundary=='restart_intent_persisted':
+                f.manager.active='active'; f.manager.process_kind='vite'; f.manager.pid=original['pid']
+        f.controller.fault=drift
+        self.assertEqual(f.controller.rollback(),{'rolled_back':True,'idempotent':False})
+        self.assertEqual(f.manager.restart_calls,restarts)
+        receipt=json.loads((f.controller.state/'last.json').read_text())
+        self.assertTrue(receipt['restore_without_signal'])
+        self.assertEqual(receipt['restored_identity'],original)
+        self.assertEqual(f.controller.rollback(),{'rolled_back':True,'idempotent':True})
+
+    def test_candidate_capture_waits_for_nginx_stable_argv(self):
+        f=self.fixture(); f.manager.process_kind='nginx'; f.manager.config=f.controller.config
+        capture=f.controller._capture; calls=0
+        def transitional(*args,**kwargs):
+            nonlocal calls
+            value=capture(*args,**kwargs); calls+=1
+            if calls==1:
+                value={**value,'process':{**value['process'],'argv':[f.settings['nginx_binary'],'-c',str(f.controller.config)]}}
+            return value
+        f.controller._capture=transitional
+        observed=f.controller._candidate_capture()
+        self.assertGreaterEqual(calls,2)
+        self.assertEqual(observed['process']['argv'],[f.settings['nginx_binary'],'-g','daemon off;','-c',str(f.controller.config)])
+
     def test_candidate_process_identity_is_durable_before_commit(self):
         f=self.fixture(); f.apply()
         receipt=json.loads((f.controller.state/'last.json').read_text())

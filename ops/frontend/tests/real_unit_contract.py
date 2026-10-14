@@ -98,7 +98,9 @@ raise SystemExit(frontend_release.main())
         result=subprocess.run(arguments,capture_output=True,text=True,env={**os.environ,'P100_CUT':boundary})
         self.assertEqual(result.returncode,-signal.SIGKILL,result.stderr)
     def test_real_sigkill_apply_and_rollback_recover_and_retry(self):
-        for action,boundary in (('apply','installed_current'),('apply','switch_intent_persisted'),('apply','after_switch'),('rollback','restore_files')):
+        for action,boundary in (('apply','installed_current'),('apply','switch_intent_persisted'),('apply','after_switch'),
+                                ('rollback','restore_files'),('rollback','restore_reload_intent_persisted'),
+                                ('rollback','restart_intent_persisted')):
             with self.subTest(action=action,boundary=boundary):
                 f=self.fixture()
                 if action=='rollback': f.apply()

@@ -335,8 +335,18 @@ class Controller:
         # signal a process requires a fully coherent no-reload observation.
         pre_reload=((isinstance(state,str) and state.startswith(('INSTALLING_','RESTORE_INSTALLING_'))) or state in (FILES_INSTALLED,RELOAD_INTENT,RESTORE_FILES) or
                     state in (STOP_INTENT,STOPPED) and receipt.get('restore_allows_unloaded_drop',False))
-        capture=self._capture(http=False,exclude_managed_drop=pre_reload)
-        self.manager.coherent(capture,allowed_drop=str(self.drop) if pre_reload else None)
+        # A reload intent is the one manager transition whose disk PRE has
+        # already been restored while systemd still has the candidate loaded.
+        # Persist that complete PRE observation before daemon-reload.  On
+        # recovery, accept only those bytes or the fully coherent POST.
+        if state==RESTORE_RELOAD_INTENT:
+            capture=self._capture(http=False,exclude_managed_drop=False)
+            reload_pre=receipt.get('restore_reload_pre')
+            if capture!=reload_pre:
+                self.manager.coherent(capture)
+        else:
+            capture=self._capture(http=False,exclude_managed_drop=pre_reload)
+            self.manager.coherent(capture,allowed_drop=str(self.drop) if pre_reload else None)
         if {path:value for path,value in capture['files'].items() if path!=str(self.drop)}!=receipt['origin']['files']:
             raise ValueError('CAS base/dropins drift')
         if capture['properties']['UnitFileState']!=receipt['origin']['properties']['UnitFileState']:
@@ -375,8 +385,14 @@ class Controller:
             launcher=['/usr/bin/python3','-I','-B',str(Path(self.configroot/'helpers'))]
             # The helper path has a content address, so match the full stable
             # suffix instead of treating a Python MainPID as nginx.
-            if not (process and process['exe']==os.path.realpath('/usr/bin/python3') and
-                    process['argv'][:3]==launcher[:3] and any(Path(arg).name=='launch_nginx.py' for arg in process['argv'])):
+            bootstrap=(process and process['exe']==os.path.realpath('/usr/bin/python3') and
+                       process['argv'][:3]==launcher[:3] and any(Path(arg).name=='launch_nginx.py' for arg in process['argv']))
+            # systemd can expose nginx's MainPID after exec but before nginx
+            # gives itself its stable master-process argv.  That PID is not
+            # an authority to stop yet; wait for the exact invocation.
+            settling=(process and process['exe']==self.s['nginx_binary'] and
+                      not nginx_process(process,self.s,self.config))
+            if not bootstrap and not settling:
                 return capture
             if time.monotonic()>=deadline: raise ValueError('nginx launcher did not exec')
             time.sleep(.02)
@@ -390,6 +406,8 @@ class Controller:
             raise ValueError('candidate control/invocation identity is incomplete')
         if origin['process'] is not None and properties['InvocationID']==origin['properties']['InvocationID']:
             raise ValueError('candidate did not receive a new InvocationID')
+        if origin['process'] is not None and process['boot_id']!=origin['process']['boot_id']:
+            raise ValueError('candidate boot identity differs from origin')
         if not self._nginx_effective(properties,receipt): raise ValueError('candidate effective invocation mismatch')
         if not nginx_process(process,self.s,self.config): raise ValueError('candidate MainPID/argv mismatch')
         if process['gid']!=self.s['process_gid'] or properties['ControlGroup'] not in process['cgroup']:
@@ -421,7 +439,7 @@ class Controller:
         initial=self._known(receipt)
         pre_restore_state=receipt.get('state')
         receipt['restore_start_prefix']=self._managed_prefix(receipt)
-        pre_reload=(isinstance(pre_restore_state,str) and pre_restore_state.startswith(('INSTALLING_','RESTORE_INSTALLING_'))) or pre_restore_state in (FILES_INSTALLED,RELOAD_INTENT,RESTORE_FILES)
+        pre_reload=(isinstance(pre_restore_state,str) and pre_restore_state.startswith(('INSTALLING_','RESTORE_INSTALLING_'))) or pre_restore_state in (FILES_INSTALLED,RELOAD_INTENT,RESTORE_FILES,RESTORE_RELOAD_INTENT)
         untouched_original=(pre_reload or pre_restore_state in (READY_TO_SWITCH,SWITCH_INTENT)) and same_process(initial['process'],receipt['origin']['process'])
         receipt['restore_without_signal']=untouched_original
         receipt['restore_allows_unloaded_drop']=pre_reload
@@ -450,14 +468,28 @@ class Controller:
             self._journal(receipt,receipt['phase'],'RESTORE_INSTALLING_'+str(current-1))
         self.fault('restore_files')
         self._journal(receipt,receipt['phase'],RESTORE_FILES)
-        self._journal(receipt,receipt['phase'],RESTORE_RELOAD_INTENT); self.manager.reload(); self.fault('restore_reloaded')
+        receipt['restore_reload_pre']=self._capture(http=False,exclude_managed_drop=False)
+        self._journal(receipt,receipt['phase'],RESTORE_RELOAD_INTENT)
+        self.fault('restore_reload_intent_persisted')
+        self.manager.reload(); self.fault('restore_reloaded')
         self._journal(receipt,receipt['phase'],RESTORE_READY)
+        self.fault('restore_ready')
+        self._restore_ready(receipt,untouched_original=untouched_original)
         if receipt['origin']['properties']['ActiveState']=='active' and not untouched_original:
             self._journal(receipt,receipt['phase'],RESTART_INTENT)
-            self.manager.restart()
-            self._journal(receipt,receipt['phase'],RESTORED_UNWITNESSED)
+            self.fault('restart_intent_persisted')
+            # Journal intent is durable before the signal; recapture after it
+            # so an external Vite cannot be restarted by this controller.  A
+            # process that is byte-for-byte the original is already the
+            # desired service, though: witness it durably and do not signal.
+            ready=self._restore_ready(receipt,untouched_original=False,allow_exact_original=True)
+            if same_process(ready['process'],receipt['origin']['process']):
+                receipt['restore_without_signal']=True
+            else:
+                self.manager.restart()
+                self._journal(receipt,receipt['phase'],RESTORED_UNWITNESSED)
         self.fault('restore_service')
-        restored=self._verify_original(receipt,restarted=receipt['origin']['properties']['ActiveState']=='active' and not untouched_original)
+        restored=self._verify_original(receipt,restarted=receipt['origin']['properties']['ActiveState']=='active' and not receipt.get('restore_without_signal',False))
         receipt['restored_identity']=restored['process']
         self._journal(receipt,'restored_identified',RESTORED_WITNESSED)
         self.fault('restored_identity_persisted')
@@ -465,6 +497,10 @@ class Controller:
     def _verify_original(self,receipt, *, restarted=False):
         actual=self._capture()
         self.manager.coherent(actual)
+        if actual['unit_paths']!=receipt['origin']['unit_paths']:
+            raise ValueError('original UnitPath drift')
+        if actual['files']!=receipt['origin']['files']:
+            raise ValueError('original base/dropins drift')
         for key in (*STATIC,'UnitFileState','ActiveState'):
             if actual['properties'][key]!=receipt['origin']['properties'][key]: raise ValueError('original effective/state drift: '+key)
         old=receipt['origin']['process']; current=actual['process']
@@ -485,6 +521,30 @@ class Controller:
         self._validate_original(actual,receipt['manifest']['source_sha'])
         if self._managed()!=receipt['before']: raise ValueError('restoration files mismatch')
         if actual['http']!=receipt['origin']['http']: raise ValueError('original HTTP proof mismatch')
+        return actual
+
+    def _restore_ready(self,receipt, *, untouched_original,allow_exact_original=False):
+        """CAS restored disk and unit selection immediately before restart."""
+        actual=self._capture(http=False,exclude_managed_drop=False)
+        self.manager.coherent(actual)
+        if actual['unit_paths']!=receipt['origin']['unit_paths']:
+            raise ValueError('restored UnitPath drift before restart')
+        if actual['files']!=receipt['origin']['files']:
+            raise ValueError('restored base/dropins drift before restart')
+        for key in (*STATIC,'UnitFileState'):
+            if actual['properties'][key]!=receipt['origin']['properties'][key]:
+                raise ValueError('restored effective/state drift before restart: '+key)
+        original=receipt['origin']['process']; process=actual['process']
+        if untouched_original:
+            if not same_process(process,original):
+                raise ValueError('restored original process drift before restart')
+        elif allow_exact_original and same_process(process,original):
+            # The controller did not start this process.  Its complete
+            # original identity is the only active state safe to witness
+            # between RESTART_INTENT and the restart signal.
+            pass
+        elif actual['properties']['ActiveState']!='inactive' or process is not None:
+            raise ValueError('restored unit acquired external process before restart')
         return actual
 
     def _journal(self,receipt,phase,state=None):
@@ -817,7 +877,7 @@ class Controller:
             receipt=read_json(self.state/'last.json',self.uid)
             self._bind_receipt(receipt)
             if receipt['phase']=='rolled_back':
-                self._verify_original(receipt,restarted=True); return {'rolled_back':True,'idempotent':True}
+                self._verify_original(receipt,restarted=not receipt.get('restore_without_signal',False)); return {'rolled_back':True,'idempotent':True}
             if receipt['phase']!='committed': raise ValueError('no committed migration to roll back')
             self._verify_applied(receipt)
             receipt={**receipt,'operation':'rollback','switch_intent':False}
@@ -825,7 +885,7 @@ class Controller:
                 self._journal(receipt,'prepared',COMMITTED)
                 self._restore(receipt); self._journal(receipt,'files_installed',RESTORED_WITNESSED)
                 self._journal(receipt,'daemon_reloaded',RESTORED_WITNESSED); self._journal(receipt,'service_switched',RESTORED_WITNESSED)
-                self._verify_original(receipt,restarted=True); self._journal(receipt,'verified',RESTORED_WITNESSED)
+                self._verify_original(receipt,restarted=not receipt.get('restore_without_signal',False)); self._journal(receipt,'verified',RESTORED_WITNESSED)
                 self._journal(receipt,'rolled_back',ROLLED_BACK); write_json(self.state/'last.json',receipt)
                 return {'rolled_back':True,'idempotent':False}
             except Exception as error:

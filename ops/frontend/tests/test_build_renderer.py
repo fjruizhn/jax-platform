@@ -192,6 +192,25 @@ else:
         (self.out/self.head/'dist/index.html').write_text('tamper')
         self.assertNotEqual(self.run_build().returncode,0)
         self.assertEqual((self.out/self.head/'dist/index.html').read_text(),'tamper')
+
+    def test_root_can_build_from_checkout_owned_by_service_user(self):
+        # Production runs as root while its clean checkout belongs to jaxsvc.
+        # Remove sudo's UID hint so Git exercises its actual dubious-owner check.
+        script = '''import json, pathlib, sys, tempfile
+from build_release import check_source, build_once
+repo=pathlib.Path(sys.argv[1]); sha=sys.argv[2]
+check_source(repo, sha)
+with tempfile.TemporaryDirectory() as temp:
+    work=pathlib.Path(temp)
+    dist, metadata=build_once(repo, sha, work, {'node_version':'24.16.0','npm_version':'11.13.0','vite_version':'6.4.3'})
+    assert (dist/'index.html').read_text() == 'SPA'
+    assert metadata['vite_version'] == '6.4.3'
+'''
+        result=subprocess.run(['sudo','-n','env','-u','SUDO_UID','-u','SUDO_GID',
+                               'PYTHONPATH='+str(TOOLS), 'PATH='+self.env['PATH'],
+                               sys.executable,'-c',script,str(self.repo),self.head],
+                              capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
     def test_dirty_correct_sha_rejected(self):
         (self.repo/'frontend/vite.config.js').write_text('dirty')
         result=self.run_build(); self.assertNotEqual(result.returncode,0)

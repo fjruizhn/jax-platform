@@ -156,7 +156,7 @@ class Transactions(unittest.TestCase):
                 f.apply(); f.controller.rollback()
     def test_all_rollback_crashes_recover_once_without_restart_loop(self):
         class Cut(BaseException): pass
-        for boundary in ('journal_prepared','restore_stopped','restored_config','restored_zz-nginx-estatico.conf','restored_current','restore_files','restore_reloaded','restore_service',
+        for boundary in ('journal_prepared','restore_stopped','restored_config','restored_zz-nginx-estatico.conf','restored_current','restore_files','restore_reload_intent_persisted','restore_reloaded','restore_service',
                          'journal_files_installed','journal_daemon_reloaded','journal_service_switched','journal_verified','journal_rolled_back'):
             with self.subTest(boundary=boundary):
                 f=self.fixture(); f.apply()

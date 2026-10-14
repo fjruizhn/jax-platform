@@ -26,13 +26,22 @@ def run(command: list[str], cwd: Path, env: dict) -> str:
     return result.stdout.strip()
 
 
+def git_command(repo: Path, *args: str) -> list[str]:
+    # The production builder runs as root against the jaxsvc-owned checkout.
+    # Trust this exact checkout for this invocation only; never change global Git config.
+    checkout = repo.resolve(strict=True)
+    if not checkout.is_dir():
+        raise ValueError('source checkout is not a directory')
+    return ['git', '-c', 'safe.directory=' + str(checkout), '-C', str(checkout), *args]
+
+
 def check_source(repo: Path, sha: str) -> None:
     if not SHA40.fullmatch(sha):
         raise ValueError('--sha must be a lowercase SHA40')
     env = os.environ.copy()
-    if run(['git', 'rev-parse', 'HEAD'], repo, env) != sha:
+    if run(git_command(repo, 'rev-parse', 'HEAD'), repo, env) != sha:
         raise ValueError('HEAD must equal --sha')
-    if run(['git', 'status', '--porcelain', '--untracked-files=all'], repo, env):
+    if run(git_command(repo, 'status', '--porcelain', '--untracked-files=all'), repo, env):
         raise ValueError('repo must be clean')
 
 
@@ -81,7 +90,7 @@ console.log(JSON.stringify(server, (key,value)=>{
 
 
 def build_once(repo: Path, sha: str, work: Path, settings: dict) -> tuple[Path, dict]:
-    archive = subprocess.run(['git', 'archive', sha, 'frontend'], cwd=repo,
+    archive = subprocess.run(git_command(repo, 'archive', sha, 'frontend'), cwd=repo,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
     subprocess.run(['tar', '-x', '-C', str(work)], input=archive, check=True)
     source = work / 'frontend'

@@ -23,6 +23,14 @@ def canonical(value):
 def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _write_all(descriptor, data):
+    offset=0
+    while offset<len(data):
+        count=os.write(descriptor,data[offset:])
+        if count<=0: raise OSError('contract write made no progress')
+        offset+=count
+
+
 def settings_digest(settings):
     """The receipt binds semantics, not whitespace in its settings file."""
     if not isinstance(settings,dict): raise ValueError('settings must be an object')
@@ -79,7 +87,7 @@ def generate(checkout, source_sha, output, settings):
     descriptor=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_CLOEXEC,0o644)
     try:
         data=canonical(payload).encode()
-        os.write(descriptor,data); os.fsync(descriptor)
+        _write_all(descriptor,data); os.fsync(descriptor)
     finally: os.close(descriptor)
     directory=os.open(output.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
     try: os.fsync(directory)
@@ -127,8 +135,7 @@ def _root_publish(output,payload):
     # controlled root-owned leaf below its disposable test tree.
     fd=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     try:
-        data=canonical(payload).encode(); offset=0
-        while offset<len(data): offset+=os.write(fd,data[offset:])
+        _write_all(fd,canonical(payload).encode())
         os.fsync(fd)
     finally: os.close(fd)
     fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
