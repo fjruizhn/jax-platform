@@ -6,6 +6,10 @@ Tras entregar #175 R3 para auditoría de Hyde, P100 vuelve a estar activo. #177 
 
 La CI previa del arnés falló por `BrokenPipeError` al enviar un cuerpo mayor del límite mientras el servidor lo rechazaba temprano. La prueba ahora envía sólo `Content-Length` excesivo y observa 413 sin carrera de escritura; repetición local con Python 3.12 y Python por defecto: 33/33. Los otros fallos CI previos derivaban de cuatro `except` en B y siguen con el ejecutor B.
 
+**CORRECCIÓN ABIERTA · 22:04 UTC.** El ejecutor B R2 entregó cambios WIP: Codex repitió 79 pruebas operativas PASS en 38.270 s, cuatro pruebas con unidades privadas reales PASS en 13.026 s, scanner de excepciones PASS y `py_compile`/`diff --check` rc0; no quedaron unidades `p100-contract-*` cargadas. Esto **no cierra B**: la identidad de proceso aún carece de GID, huella dev/inode/hash del ejecutable, boot/InvocationID y testigo durable completo del candidato tras restart; `_known` permite equivalencia por argv durante una ventana de corte. Tampoco hay canarios reales de drift/tamper justo antes de restart. Arquitecto Sol read-only revisa esos huecos antes de la próxima edición. No se ha cometido ni auditado B R2.
+
+**VERDAD OPERACIONAL · sólo lectura, 22:03 UTC.** `systemctl cat/show jax-platform-frontend.service` mostró User/Group `jaxsvc`, WD `/srv/jax-prod/jax-platform/frontend`, ExecStart Node24.16.0 + `/srv/jax-prod/jax-platform/frontend/node_modules/.bin/vite dev --host 0.0.0.0 --port 5173`, ExecStartPre del guard, InvocationID y MainPID8108. `.bin/vite` es enlace a `../vite/bin/vite.js`. El B WIP espera `[node, entry]` sin argumentos y `ops/frontend/settings.json` aún no declara `original_contract` ni `systemd_dir`; por ello la preparación productiva no está lista. Esta observación es temporal y se re-mide antes de actuar. No se tocó servicio ni checkout productivo.
+
 Codex · 2026-10-14. Encargo: /home/fruiz/ENCARGO-p100-jax-frontend-build-20261014.md; OP#270. Decisión de servidor estático ya tomada por Fernando mediante Hyde; despliegue reservado a Hyde después de auditoría de escalón 3.
 
 ## Hecho
