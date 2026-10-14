@@ -38,8 +38,8 @@ name: policy
 #     migraciones, seed, usage/pricing...). Se saltan con motivo visible y
 #     `-rs` los lista uno por uno en el log: nadie puede leer "verde" acá
 #     creyendo que corrió la suite entera.
-#   - El build de producción del frontend ni su despliegue (se hacen a mano,
-#     ver CLAUDE.md del repo).
+#   - El despliegue del frontend. frontend-release-tests sí prueba el build
+#     reproducible del SHA y la migración/reversión en unidades privadas.
 #   - Cualquier cosa que dependa de credenciales reales (/etc/jax/.env no
 #     existe en el runner; el job inyecta un JAX_JWT_SECRET dummy).
 # ---------------------------------------------------------------------------
@@ -1152,6 +1152,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1185,14 +1187,30 @@ jobs:
           import sys, unittest
           suite = unittest.defaultTestLoader.discover('ops/frontend/tests')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if not result.wasSuccessful() or result.skipped or result.testsRun < 34:
-              sys.exit('Frontend release contracts failed, skipped or below measured Phase A2 floor34')
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 68:
+              sys.exit('Frontend release contracts failed, skipped or below measured A+B floor68')
           PY
       - name: Two real reproducible builds of the checked-out SHA
         run: |
           P100_BUILD_ROOT=$(mktemp -d /tmp/p100-ci-build-XXXXXXXX)
           P100_SOURCE_SHA=$(git rev-parse HEAD)
           python ops/frontend/build_release.py --repo "$GITHUB_WORKSPACE" --sha "$P100_SOURCE_SHA" --output "$P100_BUILD_ROOT/releases" --private
+          echo "P100_TEST_RELEASE_DIR=$P100_BUILD_ROOT/releases/$P100_SOURCE_SHA" >> "$GITHUB_ENV"
+      - name: Actual Vite/nginx/Vite private user-unit contracts (no skips)
+        run: |
+          # This disposable VM owns its manager; never starts nginx.service.
+          P100_RUNNER_UID=$(id -u)
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR="/run/user/$P100_RUNNER_UID"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          for P100_WAIT in $(seq 1 50); do
+            if systemctl --user show-environment >/dev/null 2>&1; then break; fi
+            sleep 0.1
+          done
+          systemctl --user show-environment >/dev/null
+          export P100_TEST_VITE_MODULE="$GITHUB_WORKSPACE/frontend/node_modules/vite/dist/node/index.js"
+          export P100_REAL_EVIDENCE_DIR="$RUNNER_TEMP/p100-real-unit-evidence"
+          python ops/frontend/tests/real_unit_contract.py
 
   no-fail-open-except:
     runs-on: ubuntu-latest
