@@ -1212,6 +1212,27 @@ jobs:
           export P100_REAL_EVIDENCE_DIR="$RUNNER_TEMP/p100-real-unit-evidence"
           python ops/frontend/tests/real_unit_contract.py
 
+  frontend-harness-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: Private fixture, network guards, HTTP workflow and statistics
+        run: |
+          python - <<'PY'
+          import sys, unittest
+          suite = unittest.defaultTestLoader.discover('loadtest', pattern='test_frontend_*.py')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 26:
+              sys.exit('Frontend harness failed, skipped or below measured floor26')
+          PY
+
   no-fail-open-except:
     runs-on: ubuntu-latest
     defaults:
