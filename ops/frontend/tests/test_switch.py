@@ -137,7 +137,10 @@ Restart=no
         switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
         self.wait_for(b"<html>static-release</html>")
+        self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url).stdout)
         self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url + "index.html").stdout)
+        self.assertEqual(command("curl", "-fsS", self.url + "client/route").stdout,
+                         b"<html>static-release</html>")
         self.assertIn(b"immutable", command("curl", "-fsSI", self.url + "assets/index-12345678.js").stdout)
         self.assertNotIn(b"immutable", command("curl", "-fsSI", self.url + "assets/plain.js").stdout)
         self.assertEqual(subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
