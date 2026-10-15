@@ -89,7 +89,9 @@ def load_plan(raw):
     refuse(not isinstance(raw.get('service'), str) or not re.fullmatch(r'p100-[A-Za-z0-9_-]+\.service', raw['service']),
            'private p100 service required')
     raw['listen_port'] = private_port(raw.get('listen_port'), 'listen_port')
-    settings = json.loads(Path(raw['settings']).read_text())
+    settings_bytes = Path(raw['settings']).read_bytes()
+    settings = json.loads(settings_bytes)
+    raw['settings_sha256'] = hashlib.sha256(settings_bytes).hexdigest()
     refuse(settings.get('listen_port') != raw['listen_port'], 'private settings listen_port differs from rehearsal port')
     runtime = Path(os.environ.get('XDG_RUNTIME_DIR', '')).resolve(strict=True)
     expected_systemd = runtime / 'systemd' / 'user'
@@ -124,6 +126,16 @@ def load_plan(raw):
     unit = Path(raw['systemd_dir']) / raw['service']
     refuse(unit.exists(), 'private base unit already exists; refuse to overwrite')
     return raw
+
+
+def validate_private_settings(plan, settings):
+    refuse(settings.get('listen_port') != plan['listen_port'], 'private settings listen_port differs from rehearsal port')
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR', '')).resolve(strict=True)
+    required = {'private_mode': True, 'owner_uid': os.getuid(), 'service': plan['service'],
+                'systemd_dir': str(runtime / 'systemd' / 'user'), 'user_runtime_dir': str(runtime),
+                'listen_host': '127.0.0.1', 'proof_connect_host': '127.0.0.1'}
+    if any(settings.get(key) != value for key, value in required.items()):
+        raise ValueError('private settings critical properties differ')
 
 
 def _git_archive(repository, sha, paths, destination):
@@ -162,12 +174,24 @@ def bootstrap_inputs(plan, artifact_dir):
     _git_archive(repository, plan['release_source_sha'], ['frontend'], source_root)
     source_frontend = source_root / 'frontend'
     run_checked(['npm', 'ci', '--ignore-scripts'], cwd=source_frontend)
+    settings_copy = root / 'settings.json'
+    settings_bytes = Path(plan['settings']).read_bytes()
+    if hashlib.sha256(settings_bytes).hexdigest() != plan['settings_sha256']:
+        raise ValueError('validated settings changed before sealed copy')
+    descriptor = os.open(settings_copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        _write_all(descriptor, settings_bytes)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     copied = dict(plan)
     copied.update({'controller': str(controller_root / 'ops/frontend/frontend_release.py'),
                    'browser_script': str(harness_root / 'loadtest/frontend_browser.mjs'),
                    'harness_dir': str(harness_root / 'loadtest'),
                    'source_checkout': str(source_root),
+                   'settings': str(settings_copy),
                    'vite_module': str(source_frontend / 'node_modules/vite/dist/node/index.js')})
+    validate_private_settings(copied, json.loads(settings_copy.read_text()))
     runtime_config = root / 'sealed-runtime.json'
     _atomic_json(runtime_config, {**copied, '_sealed_runtime': True,
                                   '_sealed_manifest': str(root / 'manifest.json')})
@@ -179,9 +203,11 @@ def bootstrap_inputs(plan, artifact_dir):
     # Playwright's external module is executable browser code too.  It stays
     # in place (third-party ownership is not altered), but its full tree is
     # an audited input and every action verifies it for drift.
-    manifest = seal_inputs([runtime_config], root / 'manifest.json',
+    manifest = seal_inputs([runtime_config, settings_copy, Path(plan['node_binary']),
+                            Path(plan['k6_binary']), Path(plan['chromium_binary'])], root / 'manifest.json',
                            trees=[controller_root, harness_root, source_root, Path(plan['browser_module'])])
     os.chmod(runtime_config, 0o400)
+    os.chmod(settings_copy, 0o400)
     os.chmod(root / 'manifest.json', 0o400)
     os.chmod(root, 0o500)
     return copied, manifest, runtime_config
@@ -403,6 +429,25 @@ def assert_private_unit_absent(manager, service):
                 raise ValueError('private unit drop-in directory is a symlink')
             if directory.exists() and any(directory.glob('*.conf')):
                 raise ValueError('private unit drop-in already exists in Manager UnitPath')
+
+
+def assert_owned_vite_capture(capture, unit, identity):
+    """Do not adopt a coherent unit if any foreign drop-in raced creation."""
+    properties = capture['properties']
+    if properties['FragmentPath'] != str(Path(unit)) or properties['DropInPaths'].split():
+        raise ValueError('private ownership witness has foreign base or drop-in')
+    unit = Path(unit)
+    base = capture['files'].get(str(unit))
+    # Manager fingerprints carry content/owner/mode; bind device+inode from
+    # the live no-follow identity as well, because its API omits them.
+    if _file_identity(unit) != identity or not base or base.get('sha256') != identity['sha256']:
+        raise ValueError('private ownership witness base bytes differ')
+    for path, state in capture['files'].items():
+        candidate = Path(path)
+        if candidate.name == unit.name and candidate != unit and not state.get('absent'):
+            raise ValueError('private ownership witness has another service base')
+    if any(path.endswith('.conf') for path, state in capture['files'].items() if not state.get('absent')):
+        raise ValueError('private ownership witness includes a drop-in')
 
 
 def _atomic_json(path, value):
@@ -664,8 +709,11 @@ def _execute_sealed(plan, sealed_inputs):
         unit, identity = write_unit(plan, entry, fixture_url)
         run(['systemctl', '--user', 'daemon-reload'])
         run(['systemctl', '--user', 'start', plan['service']])
-        ownership = manager.capture(http=False)
-        manager.coherent(ownership)
+        candidate = manager.capture(http=False)
+        manager.coherent(candidate)
+        assert_owned_vite_capture(candidate, unit, identity)
+        validate_restored_vite(plan, json.loads(private_settings.read_text()), manager, candidate)
+        ownership = candidate
         browser_runs = {}
         # Both implementations use the same port.  The controller replaces
         # Vite only after every Vite browser/probe/k6 row is durable.
@@ -818,14 +866,18 @@ def execute(plan):
         invalidate_terminal_receipt(artifacts, 'post-H sealed input drift or failure: ' + type(error).__name__)
         raise
     summary = artifacts / 'summary.json'; receipt = artifacts / 'terminal-receipt.json'
-    if not summary.is_file() or not receipt.is_file():
-        raise RuntimeError('sealed coordinator returned without terminal summary')
-    terminal = json.loads(receipt.read_text())
-    if terminal.get('summary_sha256') != _sha256_file(summary) or terminal.get('cleanup_sha256') != _sha256_file(artifacts / 'cleanup.json'):
-        raise RuntimeError('terminal receipt does not bind completed cleanup and summary')
-    expected = {key: runtime_plan[key] for key in ('phase_b_controller_sha', 'harness_audited_sha', 'release_source_sha')}
-    if any(terminal.get(key) != value for key, value in expected.items()) or terminal.get('harness_inputs_sha256') != harness_inputs_sha256(runtime_plan):
-        raise RuntimeError('terminal receipt provenance differs from sealed B/H/S inputs')
+    try:
+        if not summary.is_file() or not receipt.is_file():
+            raise RuntimeError('sealed coordinator returned without terminal summary')
+        terminal = json.loads(receipt.read_text())
+        if terminal.get('summary_sha256') != _sha256_file(summary) or terminal.get('cleanup_sha256') != _sha256_file(artifacts / 'cleanup.json'):
+            raise RuntimeError('terminal receipt does not bind completed cleanup and summary')
+        expected = {key: runtime_plan[key] for key in ('phase_b_controller_sha', 'harness_audited_sha', 'release_source_sha')}
+        if any(terminal.get(key) != value for key, value in expected.items()) or terminal.get('harness_inputs_sha256') != harness_inputs_sha256(runtime_plan):
+            raise RuntimeError('terminal receipt provenance differs from sealed B/H/S inputs')
+    except Exception as error:
+        invalidate_terminal_receipt(artifacts, 'post-H terminal validation: ' + type(error).__name__)
+        raise
     return json.loads(summary.read_text())
 
 

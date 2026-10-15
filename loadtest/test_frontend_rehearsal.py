@@ -176,6 +176,19 @@ class RehearsalPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'sealed tree drift'):
             rehearsal.verify_sealed_inputs(manifest)
 
+    def test_sealed_settings_and_executable_mutants_are_detected(self):
+        plan = load_plan(dict(self.raw))
+        settings = Path(plan['settings']); node = Path(plan['node_binary']); k6 = Path(plan['k6_binary']); chromium = Path(plan['chromium_binary'])
+        manifest = rehearsal.seal_inputs([settings, node, k6, chromium], Path(plan['artifact_dir']) / 'tooling-manifest.json',
+                                         trees=[Path(plan['browser_module'])])
+        original = k6.read_bytes()
+        try:
+            k6.write_bytes(original + b'mutant')
+            with self.assertRaisesRegex(ValueError, 'sealed input drift'):
+                rehearsal.verify_sealed_inputs(manifest)
+        finally:
+            k6.write_bytes(original)
+
     def test_sealed_command_refuses_drift_before_invocation(self):
         plan = load_plan(dict(self.raw))
         paths = rehearsal.harness_input_paths(plan)
@@ -248,6 +261,14 @@ class RehearsalPlanTests(unittest.TestCase):
         with patch.object(rehearsal, '_git_archive', side_effect=archive), patch.object(rehearsal, 'run_checked', side_effect=checked):
             _, manifest, _ = rehearsal.bootstrap_inputs(plan, artifacts)
         rehearsal.verify_sealed_inputs(manifest)
+
+    def test_bootstrap_rejects_settings_changed_after_plan_validation(self):
+        plan = load_plan(dict(self.raw))
+        changed = json.loads(Path(plan['settings']).read_text()); changed['listen_host'] = '0.0.0.0'
+        Path(plan['settings']).write_text(json.dumps(changed))
+        with patch.object(rehearsal, '_git_archive'), patch.object(rehearsal, 'run_checked'):
+            with self.assertRaisesRegex(ValueError, 'validated settings changed'):
+                rehearsal.bootstrap_inputs(plan, Path(plan['artifact_dir']))
 
     def test_freeze_tree_preserves_execution_and_removes_only_writes(self):
         root = Path(self.temp.name) / 'freeze'; root.mkdir(mode=0o755)
@@ -441,6 +462,7 @@ class RehearsalPlanTests(unittest.TestCase):
              patch.object(rehearsal, 'run_checked', side_effect=fake_checked), \
              patch.object(rehearsal, 'run_probes', return_value=[]), \
              patch.object(rehearsal, 'bundled_manager', return_value=self.manager_stub()), \
+             patch.object(rehearsal, 'assert_owned_vite_capture'), patch.object(rehearsal, 'validate_restored_vite'), \
              self.assertRaisesRegex(RuntimeError, 'apply failed'):
             rehearsal._execute_sealed(plan, self.sealed(plan))
         self.assertTrue(unit.exists())
@@ -475,6 +497,7 @@ class RehearsalPlanTests(unittest.TestCase):
              patch.object(rehearsal, 'run_checked', side_effect=fake_checked), \
              patch.object(rehearsal, 'run_probes', side_effect=RuntimeError('pre-switch probe failed')), \
              patch.object(rehearsal, 'bundled_manager', return_value=self.manager_stub()), \
+             patch.object(rehearsal, 'assert_owned_vite_capture'), patch.object(rehearsal, 'validate_restored_vite'), \
              patch.object(rehearsal, 'manager_cas'), patch.object(rehearsal, 'stopped_matches', return_value=True), \
              self.assertRaisesRegex(RuntimeError, 'pre-switch probe failed'):
             rehearsal._execute_sealed(plan, self.sealed(plan))
@@ -483,6 +506,44 @@ class RehearsalPlanTests(unittest.TestCase):
         self.assertFalse(entry.exists())
         self.assertFalse(any(len(cmd) > 2 and cmd[2] == 'rollback' for cmd in calls))
         self.assertFalse(unit.exists())
+
+    def test_foreign_post_start_dropin_rejection_preserves_recovery_without_stop(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        entry = artifacts / 'override.mjs'; entry.write_text('override')
+        settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
+        unit = Path(plan['systemd_dir']) / plan['service']; unit.write_text('owned')
+        identity = rehearsal._file_identity(unit)
+        class Fixture:
+            base_url = 'http://127.0.0.1:49003'
+            def __init__(self, address, config): self.config = config
+            def start(self): return self
+            def close(self): pass
+        class Manager:
+            stopped = False
+            def unit_paths(self): return []
+            def capture(self, **kwargs):
+                return {'properties': {'DropInPaths': '/foreign/90-foreign.conf'},
+                        'files': {'/foreign/90-foreign.conf': {'sha256': 'x'}}, 'unit_paths': [], 'process': None}
+            def coherent(self, capture): pass
+            def stop(self): self.stopped = True
+            def reload(self): pass
+        manager = Manager()
+        def checked(command, **kwargs):
+            return type('Result', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+        with patch.object(rehearsal, 'FixtureServer', Fixture), \
+             patch.object(rehearsal, 'write_unit', return_value=(unit, identity)), \
+             patch.object(rehearsal, 'write_private_vite_entry', return_value=entry), \
+             patch.object(rehearsal, 'write_private_settings', return_value=settings), \
+             patch.object(rehearsal, 'bundled_manager', return_value=(manager, lambda left, right: left == right)), \
+             patch.object(rehearsal, 'assert_owned_vite_capture', side_effect=ValueError('foreign drop-in')), \
+             patch.object(rehearsal, 'run_checked', side_effect=checked), \
+             self.assertRaisesRegex(ValueError, 'foreign drop-in'):
+            rehearsal._execute_sealed(plan, self.sealed(plan))
+        self.assertFalse(manager.stopped)
+        self.assertTrue(unit.exists())
+        self.assertTrue(settings.exists())
+        self.assertTrue(entry.exists())
+        self.assertTrue((artifacts / 'incomplete-receipt.json').is_file())
 
     def test_execute_sequences_all_vite_rows_before_apply_then_nginx_rows_then_rollback(self):
         plan = load_plan(dict(self.raw)); calls = []
@@ -515,6 +576,7 @@ class RehearsalPlanTests(unittest.TestCase):
              patch.object(rehearsal, 'run_checked', side_effect=fake_checked), \
              patch.object(rehearsal, 'run_probes', return_value=[]), \
              patch.object(rehearsal, 'bundled_manager', return_value=self.manager_stub()), \
+             patch.object(rehearsal, 'assert_owned_vite_capture'), \
              patch.object(rehearsal, 'manager_cas'), patch.object(rehearsal, 'stopped_matches', return_value=True), \
              patch.object(rehearsal, 'validate_restored_vite'), \
              patch.object(rehearsal, 'summarize', return_value={'ok': True}):
