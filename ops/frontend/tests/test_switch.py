@@ -11,12 +11,16 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 
 MODULE = Path(__file__).resolve().parents[1] / "switch.py"
 spec = importlib.util.spec_from_file_location("frontend_switch", MODULE)
 switch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(switch)
+build_spec = importlib.util.spec_from_file_location("frontend_build", MODULE.with_name("build.py"))
+build = importlib.util.module_from_spec(build_spec)
+build_spec.loader.exec_module(build)
 
 
 def command(*argv):
@@ -24,6 +28,11 @@ def command(*argv):
 
 
 class ReleaseValidationTest(unittest.TestCase):
+    def test_undeclared_vite_build_input_is_rejected(self):
+        with patch.dict(os.environ, {"VITE_CHAT_PDF_POLL_INITIAL_MS": "999"}):
+            with self.assertRaisesRegex(ValueError, "VITE_CHAT_PDF_POLL_INITIAL_MS"):
+                build.build(Path("."), Path("/tmp/unused-p100-release"), "HEAD")
+
     def test_manifest_detects_mutated_index(self):
         with tempfile.TemporaryDirectory() as temp:
             release = Path(temp) / ("a" * 40)

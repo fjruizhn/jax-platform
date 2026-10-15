@@ -6,7 +6,7 @@
 
 ## Preparar el release tras integrar el PR
 
-Ejecutar como operador en Hall9000. Estos comandos usan el checkout productivo **ya actualizado al commit aprobado**; el SHA se obtiene en vivo. `npm` y `node` deben estar en `PATH` del operador. `build.py` extrae exactamente el árbol Git de ese SHA y ejecuta `npm ci && npm run build` fuera del checkout. El manifiesto guarda SHA de fuente, SHA-256 del lockfile, versiones Node/npm y SHA-256 de cada archivo. No reescribe un release existente.
+Ejecutar como operador en Hall9000. Estos comandos usan el checkout productivo **ya actualizado al commit aprobado**; el SHA se obtiene en vivo. `npm` y `node` deben estar en `PATH` del operador. `build.py` extrae exactamente el árbol Git de ese SHA y ejecuta `npm ci --include=dev && npm run build` fuera del checkout. Rechaza variables `VITE_*` externas no declaradas; los `.env` versionados, si existen, quedan cubiertos por el SHA de fuente. El manifiesto guarda SHA de fuente, SHA-256 del lockfile, versiones Node/npm y SHA-256 de cada archivo. No reescribe un release existente.
 
 ```bash
 ROOT=/srv/jax-prod/jax-platform

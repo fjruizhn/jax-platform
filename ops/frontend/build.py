@@ -25,6 +25,9 @@ def digest(path):
 
 
 def build(repo, releases, revision):
+    injected = sorted(name for name in os.environ if name.startswith("VITE_"))
+    if injected:
+        raise ValueError(f"undeclared Vite build variables: {', '.join(injected)}")
     git = ["git", "-C", str(repo), "-c", f"safe.directory={repo}"]
     sha = subprocess.check_output(
         [*git, "rev-parse", "--verify", f"{revision}^{{commit}}"],
@@ -45,7 +48,7 @@ def build(repo, releases, revision):
         run("tar", "-xf", str(archive), "-C", str(workspace))
         frontend = workspace / "frontend"
         lock_digest = digest(frontend / "package-lock.json")
-        run("npm", "ci", cwd=frontend)
+        run("npm", "ci", "--include=dev", cwd=frontend)
         run("npm", "run", "build", cwd=frontend)
         dist = frontend / "dist"
         if not (dist / "index.html").is_file():
