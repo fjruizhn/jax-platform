@@ -95,7 +95,7 @@ class IsolatedSystemdTest(unittest.TestCase):
         }))
         for path in (cls.release, dist, assets):
             path.chmod(0o755)
-        user = pwd.getpwuid(int(os.environ.get("SUDO_UID", os.getuid()))).pw_name
+        user = os.environ.get("SUDO_USER") or pwd.getpwuid(os.getuid()).pw_name
         cls.unit_path.write_text(f"""[Unit]
 Description=Disposable P100 test service
 [Service]
@@ -166,6 +166,8 @@ Restart=no
         switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
         command("systemctl", "kill", "--signal=SIGKILL", "--kill-who=main", self.unit)
+        self.assertEqual(command("systemctl", "show", "--property=ActiveState", "--value",
+                                 self.unit).stdout.strip(), b"failed")
         switch.rollback(self.dropin_dir, self.unit)
         self.wait_for(b"original-vite-mode")
 
