@@ -145,7 +145,7 @@ export default function AdminCosts() {
             <table className="w-full text-sm">
               <thead className="bg-hundido border-b border-borde">
                 <tr>
-                  {[t.adminCostsFacet, t.adminCostsModel, t.adminCostsTokensIn, t.adminCostsTokensOut, t.adminCostsCost, t.adminCostsRequests].map(h => (
+                  {[t.adminCostsFacet, t.adminCostsModel, t.adminCostsTipo, t.adminCostsTokensIn, t.adminCostsTokensOut, t.adminCostsCost, t.adminCostsRequests].map(h => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-texto-suave uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -158,6 +158,7 @@ export default function AdminCosts() {
                         style={{ color: colorToken(tokenDeFaceta(r.facet)), borderColor: colorToken(tokenDeFaceta(r.facet), 0.4) }}>{r.facet}</span>
                     </td>
                     <td className="px-4 py-3 text-xs text-texto-suave font-mono">{r.model}</td>
+                    <td className="px-4 py-3 text-xs text-texto-suave">{t.adminCostsTipos[r.request_type] ?? r.request_type ?? '—'}</td>
                     {/* Re-revisión acotada (2026-09-15, sin diferidos): sin locale,
                         estos números seguían el locale del navegador, no el idioma
                         activo de la app -- mismo defecto que I-1 en las fechas. */}
@@ -181,7 +182,7 @@ export default function AdminCosts() {
               </tbody>
               <tfoot className="bg-hundido border-t border-borde">
                 <tr>
-                  <td colSpan={4} className="px-4 py-3 text-xs font-semibold text-texto-suave uppercase">{t.adminCostsTotal}</td>
+                  <td colSpan={5} className="px-4 py-3 text-xs font-semibold text-texto-suave uppercase">{t.adminCostsTotal}</td>
                   <td className="px-4 py-3 text-sm font-bold text-exito font-mono" title={hasPartialTotal ? t.adminCostsPartialNote : undefined}>
                     {hasPartialTotal ? '~' : ''}${totalCost.toFixed(6)}{hasPartialTotal ? t.adminCostsPartialMarker : ''}
                   </td>

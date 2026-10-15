@@ -11,13 +11,16 @@ _running_under_pytest). Precedente: 2026-08-24, correr pytest disparo 11
 dispatches reales a produccion."""
 import asyncio
 import logging
+import math
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import aiomysql
 
+from api.admin.usage import calcular_costo, encolar_o_contar_perdida, record_usage
 from api.chat import _invoke_facet, _load_config
 from config_entorno import url_requerida
 from db.connection import get_pool
@@ -112,11 +115,44 @@ CANARY_USER_ID = "__canary__"
 # sea `ok` sin haber tocado al proveedor. Hay un test que lo verifica.
 CANARY_MESSAGE = "Respondé únicamente con la palabra: listo."
 
+# PR 8 del diseno del tablero de consumo (2026-10-06,
+# ~/encargos-codex/diseno-tablero-consumo.md #12): cada sonda es una llamada
+# PAGA y hasta hoy no dejaba fila en axioma_usage (~700 canary_periodic ok
+# por faceta y mes mientras Costos mostraba «sin consumo»). La fila va por
+# record_usage -- la MISMA via que el chat -- con este request_type propio,
+# y SIN usuario: el canario no es una persona, entra con tenant/user NULL y
+# no con el DEFAULT 1 de la columna, que le atribuiria el gasto de
+# infraestructura a un tenant de verdad. Mismo tratamiento que las llamadas
+# de sistema del repo jax (preflight_probe, jacobs/usage_writer.py).
+REQUEST_TYPE_CANARIO = "canario"
+
 # Tope de las dos lecturas de la base que hace la sonda (el conjunto de facetas
 # y la misión en curso). Mismo agujero que el Hallazgo 2: aiomysql no tiene
 # timeout propio de consulta, y sin este tope una MariaDB que no contesta se
 # come el barrido entero antes de sondear nada.
 CANARY_DB_TIMEOUT_SECONDS = 10
+
+# Tope PROPIO y corto del registro de uso de la sonda (precio + INSERT). El
+# registro corre DESPUES de cerrar el tope de salud (CANARY_FACET_TIMEOUT_SECONDS)
+# y blindado con asyncio.shield: ni ese tope ni el del barrido lo cancelan.
+# Una base lenta (pool agotado, metadata lock, commit lento) vence ESTE tope y
+# la fila se encola con su spool_id y su costo ya calculado, sin tocar la
+# salud. Configurable por entorno como CANARY_INTERVAL_SECONDS (segundos,
+# default 5). Tiene que ser un numero FINITO y > 0: un valor ilegible, nan, inf
+# o <= 0 es un error de arranque claro, no un tope que nunca vence.
+def _leer_tope_de_uso(crudo: str) -> float:
+    try:
+        valor = float(crudo)
+    except ValueError:
+        raise ValueError(
+            f"CANARY_USAGE_TIMEOUT_SECONDS debe ser un numero finito > 0, no {crudo!r}") from None
+    if not (math.isfinite(valor) and valor > 0):
+        raise ValueError(
+            f"CANARY_USAGE_TIMEOUT_SECONDS debe ser un numero finito > 0, no {crudo!r}")
+    return valor
+
+
+CANARY_USAGE_TIMEOUT_SECONDS = _leer_tope_de_uso(os.getenv("CANARY_USAGE_TIMEOUT_SECONDS", "5"))
 
 # hyde no se sondea: chat() lo corta antes del dispatch con una respuesta
 # enlatada, no hay nada que medir.
@@ -268,8 +304,11 @@ async def _mision_en_curso() -> bool:
         return False
 
 
-async def probe_facet(facet: str, config: dict, source: str) -> str | None:
-    """Sondea UN facet. Devuelve None si logro invocar, 'probe_error' si no.
+async def _sondear(facet: str, config: dict, source: str) -> tuple:
+    """Sondea UN facet y devuelve `(resultado, usage)`: el resultado es None si
+    logro invocar, 'probe_error' si no (o SALTADA_*); `usage` es el UsageInfo de
+    un dispatch REAL (None si no hubo gasto). NO registra el uso: lo hace quien
+    llama, DESPUES de cerrar el tope de salud (ver _registrar_blindado).
 
     NUNCA devuelve 'ok'. El resultado real de la invocacion ya lo registro
     _invoke_facet en la tabla (Task 3); si la sonda ademas dijera 'ok' por
@@ -291,21 +330,36 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
     Con el freno puesto no invoca ni escribe: devuelve SALTADA_POR_FRENO y
     lo deja en el log. Con una mision del Ejecutor en curso, igual, pero SOLO
     la sonda periodica: devuelve SALTADA_POR_MISION (el rebind, que es una
-    accion explicita de un admin, sondea siempre)."""
+    accion explicita de un admin, sondea siempre).
+
+    Si la invocacion tuvo exito y fue un dispatch REAL (usage no None), lo
+    devuelve para que se registre la fila de uso como 'canario'
+    (REQUEST_TYPE_CANARIO) FUERA del tope de salud: la salud la decide
+    _invoke_facet, el costo es OTRO registro -- un problema de contabilidad
+    no puede volver probe_error a una sonda ya invocada y sana.
+
+    LIMITE CONOCIDO (auditoria de #212, 2026-10-07; viene del chat, no se
+    arregla aqui): una sonda que FALLA DESPUES DE PAGAR no deja fila. Las
+    funciones `_call_*` de api/chat.py (p. ej. la lectura de la respuesta
+    tras `raise_for_status()`, ~983-985 y ~1017-1021) lanzan si el cuerpo
+    llega malformado o el proveedor corta tras facturar, y el UsageInfo solo
+    existe cuando la llamada vuelve completa: la sonda es probe_error y el
+    gasto de esa llamada no se registra. El subregistro es solo de las
+    sondas que fallan despues de pagar; las que vuelven se registran todas.
+    Pendiente fechado 2026-10-09 (PENDIENTES.md)."""
     if kill_switch.activo():
         logger.warning(
             "facet_canary: sonda de %s (%s) saltada: el freno esta puesto, "
             "JAX no invoca proveedores", facet, source)
-        return SALTADA_POR_FRENO
+        return SALTADA_POR_FRENO, None
     if source == SOURCE_CANARY_PERIODIC and await _mision_en_curso():
         logger.warning(
             "facet_canary: sonda de %s (%s) saltada: hay una mision del "
             "Ejecutor en curso", facet, source)
-        return SALTADA_POR_MISION
+        return SALTADA_POR_MISION, None
     try:
-        await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
-                            source=source)
-        return None
+        _, usage = await _invoke_facet(facet, config, CANARY_USER_ID, CANARY_MESSAGE,
+                                       source=source)
     except Exception:  # fail-soft: _invoke_facet ya registró el evento clasificado antes de relanzar; se devuelve 'probe_error' explícito, sin segunda fila
         # NO se registra aca -- decision de diseno, no un olvido.
         #
@@ -330,18 +384,86 @@ async def probe_facet(facet: str, config: dict, source: str) -> str | None:
         # probe_after_rebind, que sigue registrando.
         #
         # Ver docs/superpowers/specs/2026-08-28-alerta-capa-equivocada-design.md
-        return OUTCOME_PROBE_ERROR
+        return OUTCOME_PROBE_ERROR, None
+    return None, usage
+
+
+async def probe_facet(facet: str, config: dict, source: str) -> str | None:
+    """Sondea un facet y registra su uso. Devuelve lo que `_sondear` (None si
+    logro invocar, 'probe_error', SALTADA_*). Para quien sondea FUERA de un
+    tope (el rebind y las pruebas); el barrido usa `_sondear` dentro de su tope
+    y registra despues (_sondear_con_tope)."""
+    resultado, usage = await _sondear(facet, config, source)
+    if usage is not None:
+        await _registrar_blindado(facet, source, usage)
+    return resultado
+
+
+# Tareas de registro en vuelo: asyncio solo guarda referencia debil de las
+# tareas, y una tarea blindada que nadie mas referencia podria recogerla el
+# recolector a mitad de camino. Se sueltan al terminar.
+_registros_en_vuelo: set = set()
+
+
+async def _registrar_blindado(facet: str, source: str, usage) -> None:
+    """Corre el registro de uso en una tarea PROPIA y blindada (asyncio.shield):
+    ni el tope de faceta ni el del barrido ni un cierre pueden cancelarlo a la
+    mitad. Quien espera SI puede ser cancelado (la cancelacion de afuera se
+    propaga, nunca se traga), pero la tarea sigue y termina por su cuenta con
+    su propio tope (CANARY_USAGE_TIMEOUT_SECONDS) y su encolado."""
+    tarea = asyncio.ensure_future(_registrar_uso_de_la_sonda(facet, source, usage))
+    _registros_en_vuelo.add(tarea)
+    tarea.add_done_callback(_registros_en_vuelo.discard)
+    await asyncio.shield(tarea)
+
+
+async def _registrar_uso_de_la_sonda(facet: str, source: str, usage) -> None:
+    """Registra el uso pagado de una sonda ya invocada, sin tocar su salud.
+
+    Tope propio (CANARY_USAGE_TIMEOUT_SECONDS) sobre precio + INSERT. Cada
+    sonda lleva su `spool_id` (uuid4): entra en la fila de axioma_usage y, si
+    el tope vence o la base falla, la fila se ENCOLA con ese mismo id y con el
+    costo ya calculado si alcanzo a calcularse (None = «sin precio», nunca un
+    numero inventado). Si el INSERT SI llego a confirmarse antes del corte
+    (commit lento), el drenaje (`INSERT IGNORE` contra el UNIQUE del spool_id)
+    no la duplica. Solo si tampoco se pudo encolar cuenta en registros_perdidos
+    (encolar_o_contar_perdida). Un fallo de la base (_ERRORES_DE_BASE) o el tope
+    NO cambian la salud; un bug nuestro (AttributeError, TypeError) sube. La
+    cancelacion de afuera no se traga: asyncio.timeout solo convierte SU
+    vencimiento en TimeoutError, y esta funcion corre blindada (ver
+    _registrar_blindado), asi que ni el tope de faceta ni el del barrido la
+    cancelan."""
+    spool_id = str(uuid.uuid4())
+    costo = None
+    try:
+        async with asyncio.timeout(CANARY_USAGE_TIMEOUT_SECONDS):
+            costo = await calcular_costo(
+                usage.provider_id, usage.model, usage.tokens_in, usage.tokens_out)
+            await record_usage(None, None, facet, usage.provider_id,
+                               usage.model, usage.tokens_in,
+                               usage.tokens_out, REQUEST_TYPE_CANARIO,
+                               cost_usd_override=costo, spool_id=spool_id)
+    except _ERRORES_DE_BASE as e:  # fail-soft: la contabilidad no es la salud; el tope o la base caida no convierten una sonda sana en fallida, y la fila pagada se encola (o se cuenta perdida) en vez de desaparecer
+        logger.warning(
+            "facet_canary: el registro de uso de la sonda de %s (%s) no "
+            "termino (%s): se encola en el respaldo durable", facet, source,
+            type(e).__name__, exc_info=True)
+        await encolar_o_contar_perdida(
+            None, None, facet, usage.model, usage.tokens_in, usage.tokens_out,
+            costo, REQUEST_TYPE_CANARIO,
+            f"{type(e).__name__}: el registro de uso de la sonda no termino",
+            spool_id)
 
 
 async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None:
-    """probe_facet con el tope por faceta. Si lo excede: WARNING y OUTCOME_PROBE_ERROR
+    """_sondear con el tope por faceta (el registro de uso va DESPUES, fuera del tope). Si lo excede: WARNING y OUTCOME_PROBE_ERROR
     como valor de retorno, y escribe UNA fila probe_error "tope de faceta" (la
     cancelacion no pasa por el `except Exception` de _invoke_facet, asi que si
     no la escribe esta funcion no la escribe nadie). El barrido sigue con las
     demas."""
     try:
         async with asyncio.timeout(CANARY_FACET_TIMEOUT_SECONDS):
-            return await probe_facet(facet, config, source)
+            resultado, usage = await _sondear(facet, config, source)
     except TimeoutError:
         logger.warning(
             "facet_canary: la sonda de %s (%s) excedio su tope de %ss y se "
@@ -360,6 +482,12 @@ async def _sondear_con_tope(facet: str, config: dict, source: str) -> str | None
                 "facet_canary: no se pudo registrar el tope de faceta de %s "
                 "(la base no contesto en %ss)", facet, CANARY_DB_TIMEOUT_SECONDS)
         return OUTCOME_PROBE_ERROR
+    # DESPUES de cerrar el tope de salud, a proposito: el registro de uso no es
+    # parte de la salud y no puede consumir ni heredar su tope (MAJOR-1 de la
+    # auditoria de #212). Blindado: tampoco lo corta el tope del barrido.
+    if usage is not None:
+        await _registrar_blindado(facet, source, usage)
+    return resultado
 
 
 async def _reintentar_diferidas(config: dict, facets: list[str],
