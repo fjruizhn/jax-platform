@@ -1,5 +1,11 @@
 # OP#270 / P100 — frontend compilado en Hall9000
 
+## Fase B R4 en preparación · 2026-10-14 18:33 America/Tegucigalpa
+
+**HECHO · auditor Sol independiente del SHA B R3 `9c0d1f7ddbe2c7a9fc881b1b9823ad2b6d5c83b7`: hallazgo preliminar BLOCK, sin veredicto final por agotamiento de cuota del agente.** El testigo de Vite original exacto activo se escribía después de `restore_service`; una caída antes del journal dejaba `RESTART_INTENT` sin marca y recovery enviaba stop+restart. La corrección conserva un testigo durable antes de ese punto y, en el hueco inevitable antes de escribirlo, el reintento reconoce y verifica el proceso original exacto sin emitir señales. Dos tests de corte cubren ambas fronteras. Codex corrió discover `ops/frontend/tests`: **112/112 OK**, 106,400 s, sin skips. Falta auditoría formal del próximo SHA. No se activó nginx productivo ni se tocó `/srv` o `/etc`.
+
+**DECISIÓN de Hyde, 2026-10-14 18:17 local:** prioridad externa: medir una hora RSS real de GLM g1 bajo ZCode `f18a5c3`, luego #175 y por último P100. #175 ya estaba corregido y auditado Sol en `f9c4985b0273a5c49716046a821ea624e2af0376` (0/0/0), pendiente de integración previa de #177 por Fernando. G1 apareció a las 00:21 UTC; observador corregido de Node principal comenzó 00:23:57 UTC en `/home/fruiz/veredictos-ensayo/zcode-g1-node-rss-20261014.jsonl`, muestreo15s. P100 sólo hace código/pruebas locales durante esa medición, sin despliegue antes del APROBADO de Hyde.
+
 ## Fase B R3 preparada · 2026-10-14 23:51 UTC
 
 **CORREGIDA · auditoría formal Sol B R2 del SHA `8958e7f68d9d82658aba6e4dacb9982fbc87df6f`: RECHAZADO, 4 BLOCK/0 MAJOR/1 MINOR.** Informe fiel archivado en `/home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/formal-phase-b-r2-8958e7f.md`. Se corrigieron el Git `safe.directory` exacto del checkout para build root, la frontera durable `RESTORE_RELOAD_INTENT`, el CAS de archivos/UnitPath/proceso antes de reiniciar y al verificar restauración, el candidato de otro boot y los writes parciales del contrato. La repetición real aislada halló y corrigió además la carrera de `argv` nginx antes de acreditarlo. El mismo Vite original exacto ya activo se testimonia sin otra señal; cualquier proceso ajeno falla cerrado.

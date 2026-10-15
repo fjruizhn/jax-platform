@@ -283,6 +283,45 @@ class RoundTwo(unittest.TestCase):
         self.assertEqual(receipt['restored_identity'],original)
         self.assertEqual(f.controller.rollback(),{'rolled_back':True,'idempotent':True})
 
+    def test_restart_intent_exact_original_witness_survives_restore_service_cut(self):
+        class Cut(BaseException): pass
+        f=self.fixture(); f.apply(); original=copy.deepcopy(f.original['process'])
+        def cut(boundary):
+            if boundary=='restart_intent_persisted':
+                f.manager.active='active'; f.manager.process_kind='vite'; f.manager.pid=original['pid']
+            if boundary=='restore_service': raise Cut()
+        f.controller.fault=cut
+        with self.assertRaises(Cut): f.controller.rollback()
+        journal=json.loads((f.controller.state/'journal.json').read_text())
+        self.assertEqual(journal['state'],'RESTORED_WITNESSED')
+        self.assertTrue(journal['restore_without_signal'])
+        self.assertEqual(journal['restored_identity'],original)
+        stops,restarts=f.manager.stop_calls,f.manager.restart_calls
+        f.controller.fault=lambda boundary:None
+        with self.assertRaises(RetryRequired): f.controller.rollback()
+        self.assertEqual((f.manager.stop_calls,f.manager.restart_calls),(stops,restarts))
+        self.assertTrue(f.controller.rollback()['idempotent'])
+
+    def test_restart_intent_exact_original_before_witness_never_signals_on_retry(self):
+        class Cut(BaseException): pass
+        f=self.fixture(); f.apply(); original=copy.deepcopy(f.original['process'])
+        def cut(boundary):
+            if boundary=='restart_intent_persisted':
+                f.manager.active='active'; f.manager.process_kind='vite'; f.manager.pid=original['pid']
+            if boundary=='exact_original_before_witness': raise Cut()
+        f.controller.fault=cut
+        with self.assertRaises(Cut): f.controller.rollback()
+        journal=json.loads((f.controller.state/'journal.json').read_text())
+        self.assertEqual(journal['state'],'RESTART_INTENT')
+        self.assertFalse(journal['restore_without_signal'])
+        stops,restarts=f.manager.stop_calls,f.manager.restart_calls
+        f.controller.fault=lambda boundary:None
+        with self.assertRaises(RetryRequired): f.controller.rollback()
+        self.assertEqual((f.manager.stop_calls,f.manager.restart_calls),(stops,restarts))
+        persisted=json.loads((f.controller.state/'journal.json').read_text())
+        self.assertTrue(persisted['restore_without_signal'])
+        self.assertTrue(f.controller.rollback()['idempotent'])
+
     def test_candidate_capture_waits_for_nginx_stable_argv(self):
         f=self.fixture(); f.manager.process_kind='nginx'; f.manager.config=f.controller.config
         capture=f.controller._capture; calls=0

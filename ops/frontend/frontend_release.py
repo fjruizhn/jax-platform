@@ -475,6 +475,7 @@ class Controller:
         self._journal(receipt,receipt['phase'],RESTORE_READY)
         self.fault('restore_ready')
         self._restore_ready(receipt,untouched_original=untouched_original)
+        witnessed_without_signal=False
         if receipt['origin']['properties']['ActiveState']=='active' and not untouched_original:
             self._journal(receipt,receipt['phase'],RESTART_INTENT)
             self.fault('restart_intent_persisted')
@@ -485,13 +486,21 @@ class Controller:
             ready=self._restore_ready(receipt,untouched_original=False,allow_exact_original=True)
             if same_process(ready['process'],receipt['origin']['process']):
                 receipt['restore_without_signal']=True
+                receipt['restored_identity']=ready['process']
+                # RESTART_INTENT was written before the recapture.  Publish
+                # the exact-original witness before any subsequent fault
+                # boundary, so recovery has no authority to stop/restart it.
+                self.fault('exact_original_before_witness')
+                self._journal(receipt,'restored_identified',RESTORED_WITNESSED)
+                witnessed_without_signal=True
             else:
                 self.manager.restart()
                 self._journal(receipt,receipt['phase'],RESTORED_UNWITNESSED)
         self.fault('restore_service')
         restored=self._verify_original(receipt,restarted=receipt['origin']['properties']['ActiveState']=='active' and not receipt.get('restore_without_signal',False))
         receipt['restored_identity']=restored['process']
-        self._journal(receipt,'restored_identified',RESTORED_WITNESSED)
+        if not witnessed_without_signal:
+            self._journal(receipt,'restored_identified',RESTORED_WITNESSED)
         self.fault('restored_identity_persisted')
 
     def _verify_original(self,receipt, *, restarted=False):
@@ -575,6 +584,16 @@ class Controller:
                 write_json(self.state/'last.json',{**receipt,'phase':resolved})
                 self._journal(receipt,resolved,RESTORED_WITNESSED if resolved=='recovered' else ROLLED_BACK)
                 raise RetryRequired('incomplete '+receipt['operation']+' already restored; retry explicitly')
+        # A cut can occur after observing the original exact process but
+        # before its no-signal witness reaches disk.  RESTART_INTENT must
+        # reprove that identity on every retry and persist it without signal.
+        if receipt.get('state')==RESTART_INTENT:
+            observed=self._capture(http=False)
+            if same_process(observed['process'],receipt['origin']['process']):
+                restored=self._verify_original(receipt,restarted=False)
+                receipt['restore_without_signal']=True
+                receipt['restored_identity']=restored['process']
+                self._journal(receipt,'restored_identified',RESTORED_WITNESSED)
         # If restoration had already restarted the original but the process
         # died before its witness journal, recognize that complete restored
         # state before considering any further signal.
