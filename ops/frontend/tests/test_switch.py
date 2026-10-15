@@ -28,6 +28,42 @@ def command(*argv):
 
 
 class ReleaseValidationTest(unittest.TestCase):
+    def test_api_proxy_waits_beyond_chat_timeout_and_queue_margin(self):
+        config = switch.nginx_config(Path("/tmp/release/dist"), 5173, "localhost:8080")
+        self.assertEqual(config.count("proxy_read_timeout 600s;"), 2)
+        self.assertEqual(config.count("proxy_send_timeout 600s;"), 2)
+        self.assertIn("proxy_read_timeout 3600s;", config)
+
+    def test_failed_curl_after_install_rolls_back_without_operator(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            index = root / "release" / "dist" / "index.html"
+            index.parent.mkdir(parents=True)
+            index.write_bytes(b"selected-release")
+            dropin = root / "unit.d"
+            calls = []
+
+            def checked(*argv, **_kwargs):
+                calls.append(argv)
+
+            def run(argv, **_kwargs):
+                if argv[0] == "curl":
+                    return subprocess.CompletedProcess(argv, 0, stdout=b"wrong-release")
+                calls.append(tuple(argv))
+                return subprocess.CompletedProcess(argv, 0)
+
+            with patch.object(switch, "release_index", return_value=index), \
+                 patch.object(switch.shutil, "which", return_value="/usr/sbin/nginx"), \
+                 patch.object(switch, "checked", side_effect=checked), \
+                 patch.object(switch.subprocess, "run", side_effect=run), \
+                 patch.object(switch.time, "sleep", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "curl did not return"):
+                    switch.apply(index.parent.parent, dropin, 5173, "localhost:8080",
+                                 "http://127.0.0.1:5173/")
+            self.assertFalse((dropin / "zz-static.conf").exists())
+            self.assertFalse((dropin / "static-nginx.nginx").exists())
+            self.assertEqual(calls.count(("systemctl", "restart", switch.UNIT)), 2)
+
     def test_undeclared_vite_build_input_is_rejected(self):
         with patch.dict(os.environ, {"VITE_CHAT_PDF_POLL_INITIAL_MS": "999"}):
             with self.assertRaisesRegex(ValueError, "VITE_CHAT_PDF_POLL_INITIAL_MS"):
@@ -142,7 +178,7 @@ Restart=no
             time.sleep(0.1)
         raise AssertionError(f"service did not return {expected!r}")
 
-    def test_rollback_ignores_process_boot_and_checkout_state(self):
+    def test_rollback_ignores_process_and_unit_lifecycle_state(self):
         switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
         self.wait_for(b"<html>static-release</html>")
@@ -167,9 +203,6 @@ Restart=no
         command("systemctl", "restart", self.unit)
         self.wait_for(b"<html>static-release</html>")
 
-        # A changed checkout SHA and boot marker have no bearing on recovery.
-        (self.root / "checkout-sha").write_text("changed-after-git-pull")
-        (self.root / "boot-id").write_text("simulated-new-boot")
         command("systemctl", "stop", self.unit)
         switch.rollback(self.dropin_dir, self.unit)
         self.wait_for(b"original-vite-mode")

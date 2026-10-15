@@ -64,8 +64,18 @@ http {{
             add_header Cache-Control "public, immutable";
         }}
         location /assets/ {{ try_files $uri =404; add_header Cache-Control "no-cache"; }}
-        location = /api {{ proxy_pass http://{backend}; proxy_set_header Host {backend}; }}
-        location ^~ /api/ {{ proxy_pass http://{backend}; proxy_set_header Host {backend}; }}
+        location = /api {{
+            proxy_pass http://{backend};
+            proxy_set_header Host {backend};
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }}
+        location ^~ /api/ {{
+            proxy_pass http://{backend};
+            proxy_set_header Host {backend};
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }}
         location = /ws {{
             proxy_pass http://{backend};
             proxy_http_version 1.1;
