@@ -343,6 +343,65 @@ class RehearsalPlanTests(unittest.TestCase):
         self.assertTrue((artifacts / 'raw-k6.json').exists())
         self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
 
+    def test_execute_rejects_substituted_dynamic_manifest_and_preserves_raw_measurement(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        runtime = dict(plan); manifest = self.sealed(runtime)
+        def substituted_dynamic_manifest(*args, **kwargs):
+            (artifacts / 'cleanup.json').write_text('{}')
+            (artifacts / 'summary.json').write_text('{"ok": true}')
+            (artifacts / 'raw-k6.json').write_text('{"raw": true}')
+            entry = artifacts / 'vite.mjs'; entry.write_text('entry')
+            settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
+            dynamic = rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+            # Reproduce the attempted weakening: omit settings and bind the
+            # receipt to the replacement file's own digest.
+            weakened = {**dynamic, 'inputs': [dynamic['inputs'][0]]}
+            dynamic_path = artifacts / 'dynamic-inputs.json'
+            dynamic_path.write_bytes(rehearsal._canonical_json_bytes(weakened))
+            (artifacts / 'terminal-receipt.json').write_text(json.dumps({
+                'summary_sha256': hashlib.sha256((artifacts / 'summary.json').read_bytes()).hexdigest(),
+                'cleanup_sha256': hashlib.sha256((artifacts / 'cleanup.json').read_bytes()).hexdigest(),
+                'phase_b_controller_sha': runtime['phase_b_controller_sha'],
+                'harness_audited_sha': runtime['harness_audited_sha'],
+                'release_source_sha': runtime['release_source_sha'],
+                'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
+                'dynamic_inputs_manifest_sha256': rehearsal.sealed_manifest_sha256(weakened)}))
+        with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
+             patch.object(rehearsal, 'run_sealed', side_effect=substituted_dynamic_manifest), \
+             self.assertRaisesRegex(ValueError, 'dynamic sealed manifest input set differs'):
+            rehearsal.execute(plan)
+        self.assertFalse((artifacts / 'summary.json').exists())
+        self.assertFalse((artifacts / 'terminal-receipt.json').exists())
+        self.assertTrue((artifacts / 'raw-k6.json').exists())
+        self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
+
+    def test_execute_rejects_dynamic_manifest_replaced_after_original_digest_bound(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        runtime = dict(plan); manifest = self.sealed(runtime)
+        def replace_after_seal(*args, **kwargs):
+            (artifacts / 'cleanup.json').write_text('{}')
+            (artifacts / 'summary.json').write_text('{"ok": true}')
+            (artifacts / 'raw-k6.json').write_text('{"raw": true}')
+            entry = artifacts / 'vite.mjs'; entry.write_text('entry')
+            settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
+            dynamic = rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+            (artifacts / 'dynamic-inputs.json').write_bytes(rehearsal._canonical_json_bytes({**dynamic, 'inputs': [dynamic['inputs'][0]]}))
+            (artifacts / 'terminal-receipt.json').write_text(json.dumps({
+                'summary_sha256': hashlib.sha256((artifacts / 'summary.json').read_bytes()).hexdigest(),
+                'cleanup_sha256': hashlib.sha256((artifacts / 'cleanup.json').read_bytes()).hexdigest(),
+                'phase_b_controller_sha': runtime['phase_b_controller_sha'],
+                'harness_audited_sha': runtime['harness_audited_sha'],
+                'release_source_sha': runtime['release_source_sha'],
+                'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
+                'dynamic_inputs_manifest_sha256': rehearsal.sealed_manifest_sha256(dynamic)}))
+        with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
+             patch.object(rehearsal, 'run_sealed', side_effect=replace_after_seal), \
+             self.assertRaisesRegex(RuntimeError, 'dynamic input provenance differs'):
+            rehearsal.execute(plan)
+        self.assertFalse((artifacts / 'summary.json').exists())
+        self.assertTrue((artifacts / 'raw-k6.json').exists())
+        self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
+
     def test_derived_settings_drift_blocks_b_command_before_invocation(self):
         plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
         entry = artifacts / 'vite.mjs'; entry.write_text('entry')
@@ -497,7 +556,7 @@ class RehearsalPlanTests(unittest.TestCase):
 
     def test_failed_rollback_preserves_private_unit_and_recovery_inputs(self):
         plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
-        entry = artifacts / 'override.mjs'; entry.write_text('override')
+        entry = artifacts / 'vite.mjs'; entry.write_text('override')
         settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
         unit = Path(plan['systemd_dir']) / plan['service']; unit.write_text('owned')
         identity = rehearsal._file_identity(unit)
@@ -537,7 +596,7 @@ class RehearsalPlanTests(unittest.TestCase):
 
     def test_failure_before_apply_stops_owned_private_vite_without_rollback(self):
         plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
-        entry = artifacts / 'override.mjs'; entry.write_text('override')
+        entry = artifacts / 'vite.mjs'; entry.write_text('override')
         settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
         unit = Path(plan['systemd_dir']) / plan['service']; unit.write_text('owned')
         identity = rehearsal._file_identity(unit)
@@ -572,7 +631,7 @@ class RehearsalPlanTests(unittest.TestCase):
 
     def test_foreign_post_start_dropin_rejection_preserves_recovery_without_stop(self):
         plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
-        entry = artifacts / 'override.mjs'; entry.write_text('override')
+        entry = artifacts / 'vite.mjs'; entry.write_text('override')
         settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
         unit = Path(plan['systemd_dir']) / plan['service']; unit.write_text('owned')
         identity = rehearsal._file_identity(unit)
@@ -620,8 +679,8 @@ class RehearsalPlanTests(unittest.TestCase):
 
         unit = artifacts / 'owned.service'; unit.write_text('owned')
         identity = rehearsal._file_identity(unit)
-        override = artifacts / 'override.mjs'; override.write_text('override')
-        (artifacts / 'private-settings.json').write_text('{}')
+        override = artifacts / 'vite.mjs'; override.write_text('override')
+        (artifacts / 'controller-settings.json').write_text('{}')
 
         def fake_checked(command, **kwargs):
             calls.append(command)
@@ -634,7 +693,7 @@ class RehearsalPlanTests(unittest.TestCase):
         with patch.object(rehearsal, 'FixtureServer', Fixture), \
              patch.object(rehearsal, 'write_unit', return_value=(unit, identity)), \
              patch.object(rehearsal, 'write_private_vite_entry', return_value=override), \
-             patch.object(rehearsal, 'write_private_settings', return_value=artifacts / 'private-settings.json'), \
+             patch.object(rehearsal, 'write_private_settings', return_value=artifacts / 'controller-settings.json'), \
              patch.object(rehearsal, 'run_checked', side_effect=fake_checked), \
              patch.object(rehearsal, 'run_probes', return_value=[]), \
              patch.object(rehearsal, 'bundled_manager', return_value=self.manager_stub()), \

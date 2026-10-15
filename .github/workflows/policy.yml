@@ -1230,8 +1230,8 @@ jobs:
           import sys, unittest
           suite = unittest.defaultTestLoader.discover('loadtest', pattern='test_frontend_*.py')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if not result.wasSuccessful() or result.skipped or result.testsRun < 69:
-              sys.exit('Frontend harness failed, skipped or below measured floor69')
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 71:
+              sys.exit('Frontend harness failed, skipped or below measured floor71')
           PY
 
   no-fail-open-except:

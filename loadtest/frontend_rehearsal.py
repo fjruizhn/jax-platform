@@ -325,7 +325,7 @@ def seal_inputs(paths, manifest_path, *, trees=()):
     manifest_path = Path(manifest_path)
     descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
-        _write_all(descriptor, (json.dumps(manifest, sort_keys=True) + '\n').encode())
+        _write_all(descriptor, _canonical_json_bytes(manifest))
         os.fsync(descriptor)
     except BaseException:
         manifest_path.unlink(missing_ok=True)
@@ -333,6 +333,36 @@ def seal_inputs(paths, manifest_path, *, trees=()):
     finally:
         os.close(descriptor)
     return manifest
+
+
+def _canonical_json_bytes(value):
+    """Stable manifest bytes, so a receipt can bind the object we sealed."""
+    return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode('utf8')
+
+
+def sealed_manifest_sha256(manifest):
+    return hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
+
+
+def verify_dynamic_inputs(manifest, artifacts):
+    """Accept only the exact two derived files, never a manifest-selected subset."""
+    artifacts = Path(artifacts).resolve(strict=True)
+    expected = {str((artifacts / name).resolve()) for name in ('vite.mjs', 'controller-settings.json')}
+    if manifest.get('schema') != 'p100-rehearsal-inputs-v2' or manifest.get('trees') != {}:
+        raise ValueError('dynamic sealed manifest schema differs')
+    entries = manifest.get('inputs')
+    if not isinstance(entries, list) or len(entries) != len(expected):
+        raise ValueError('dynamic sealed manifest input set differs')
+    paths = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {'path', 'sha256'}:
+            raise ValueError('dynamic sealed manifest entry differs')
+        if not isinstance(entry['path'], str) or not isinstance(entry['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', entry['sha256']):
+            raise ValueError('dynamic sealed manifest entry differs')
+        paths.append(entry['path'])
+    if set(paths) != expected or len(set(paths)) != len(paths):
+        raise ValueError('dynamic sealed manifest input set differs')
+    verify_sealed_inputs(manifest)
 
 
 def verify_sealed_inputs(manifest):
@@ -702,18 +732,21 @@ def _execute_sealed(plan, sealed_inputs):
     report = None
     manager = same_process = ownership = None
     dynamic_inputs = None
+    dynamic_inputs_sha256 = None
     try:
         entry = write_private_vite_entry(plan, fixture_url, artifacts)
         private_settings = write_private_settings(plan, entry, artifacts)
         for path in (entry, private_settings):
             os.chmod(path, path.stat().st_mode & ~0o222)
         dynamic_inputs = seal_inputs([entry, private_settings], artifacts / 'dynamic-inputs.json')
+        dynamic_inputs_sha256 = sealed_manifest_sha256(dynamic_inputs)
+        verify_dynamic_inputs(dynamic_inputs, artifacts)
         def run(command, **kwargs):
-            verify_sealed_inputs(dynamic_inputs)
+            verify_dynamic_inputs(dynamic_inputs, artifacts)
             try:
                 return run_sealed(sealed_inputs, command, **kwargs)
             finally:
-                verify_sealed_inputs(dynamic_inputs)
+                verify_dynamic_inputs(dynamic_inputs, artifacts)
         manager, same_process = bundled_manager(plan, json.loads(private_settings.read_text()))
         assert_private_unit_absent(manager, plan['service'])
         unit, identity = write_unit(plan, entry, fixture_url)
@@ -837,7 +870,9 @@ def _execute_sealed(plan, sealed_inputs):
             # teardown both completed.  The two receipts bind that fact.
             try:
                 verify_sealed_inputs(sealed_inputs)
-                verify_sealed_inputs(dynamic_inputs)
+                verify_dynamic_inputs(dynamic_inputs, artifacts)
+                if _sha256_file(artifacts / 'dynamic-inputs.json') != dynamic_inputs_sha256:
+                    raise ValueError('dynamic sealed manifest drift')
             except Exception as error:
                 invalidate_terminal_receipt(artifacts, 'pre-terminal sealed input drift: ' + type(error).__name__)
                 raise
@@ -849,7 +884,7 @@ def _execute_sealed(plan, sealed_inputs):
                        'harness_audited_sha': plan['harness_audited_sha'],
                        'release_source_sha': plan['release_source_sha'],
                        'harness_inputs_sha256': harness_inputs_sha256(plan),
-                       'dynamic_inputs_manifest_sha256': _sha256_file(artifacts / 'dynamic-inputs.json')}
+                       'dynamic_inputs_manifest_sha256': dynamic_inputs_sha256}
             _atomic_json(artifacts / 'terminal-receipt.json', receipt)
         elif primary is not None or cleanup_errors:
             _atomic_json(artifacts / 'incomplete-receipt.json', {
@@ -882,10 +917,12 @@ def execute(plan):
         if any(terminal.get(key) != value for key, value in expected.items()) or terminal.get('harness_inputs_sha256') != harness_inputs_sha256(runtime_plan):
             raise RuntimeError('terminal receipt provenance differs from sealed B/H/S inputs')
         dynamic_path = artifacts / 'dynamic-inputs.json'
-        dynamic = json.loads(dynamic_path.read_text())
-        verify_sealed_inputs(dynamic)
-        if terminal.get('dynamic_inputs_manifest_sha256') != _sha256_file(dynamic_path):
+        expected_dynamic_digest = terminal.get('dynamic_inputs_manifest_sha256')
+        dynamic_bytes = dynamic_path.read_bytes()
+        if not isinstance(expected_dynamic_digest, str) or hashlib.sha256(dynamic_bytes).hexdigest() != expected_dynamic_digest:
             raise RuntimeError('terminal receipt dynamic input provenance differs')
+        dynamic = json.loads(dynamic_bytes)
+        verify_dynamic_inputs(dynamic, artifacts)
     except Exception as error:
         invalidate_terminal_receipt(artifacts, 'post-H terminal validation: ' + type(error).__name__)
         raise
