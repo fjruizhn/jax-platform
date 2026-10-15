@@ -153,7 +153,7 @@ RuntimeDirectory={runtime}
         if installed:
             try:
                 rollback(dropin_dir, unit)
-            except Exception as recovery_error:
+            except Exception as recovery_error:  # fail-soft: report rollback failure, then re-raise the original apply error
                 print(f"automatic rollback also failed: {recovery_error}", file=sys.stderr)
         else:
             config_path.unlink(missing_ok=True)
