@@ -35,6 +35,7 @@ class RehearsalPlanTests(unittest.TestCase):
         node = Path(shutil.which('node')).resolve()
         node_version = subprocess.run([str(node), '--version'], capture_output=True, text=True, check=True).stdout.strip().removeprefix('v')
         self.files['settings'].write_text(json.dumps({'listen_port': 49001, 'node_version': node_version,
+            'listen_host': '127.0.0.1', 'proof_connect_host': '127.0.0.1',
             'private_mode': True, 'owner_uid': os.getuid(), 'service': 'p100-rehearsal.service',
             'systemd_dir': str(runtime / 'systemd' / 'user'), 'user_runtime_dir': str(runtime),
             'release_root': str(root / 'release-root'), 'nginx_root': str(root / 'nginx-root')}))
@@ -115,6 +116,16 @@ class RehearsalPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'audited checkout'):
             load_plan(raw)
 
+    def test_private_nginx_and_proof_must_bind_only_ipv4_loopback(self):
+        settings_path = self.files['settings']
+        baseline = json.loads(settings_path.read_text())
+        for field, value in (('listen_host', '0.0.0.0'), ('listen_host', '::'),
+                             ('proof_connect_host', '0.0.0.0')):
+            settings_path.write_text(json.dumps({**baseline, field: value}))
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, 'private user rehearsal'):
+                load_plan(dict(self.raw))
+        settings_path.write_text(json.dumps(baseline))
+
     def test_harness_digest_changes_with_the_explicit_harness_files(self):
         plan = load_plan(dict(self.raw))
         # The temporary browser script is an intentional explicit input; the
@@ -152,6 +163,23 @@ class RehearsalPlanTests(unittest.TestCase):
             run_probes(49001, 'vite', fixture, 403)
         self.assertTrue(all(port == 49001 for port, *_ in calls))
         self.assertEqual(calls[0][3]['origin'], 'http://axioma-ia.io:49001')
+
+    def test_oversized_probe_sends_only_headers_and_reliably_receives_413(self):
+        from loadtest.frontend_fixture import FixtureServer
+        config = {**self.raw['fixture'], 'allowed_origins': ['http://axioma-ia.io:49001'],
+                  'max_body_bytes': 2 * 1024 * 1024, 'event_limit': 60}
+        fixture = FixtureServer(('127.0.0.1', 0), config).start()
+        try:
+            port = fixture.server_address[1]
+            for _ in range(50):
+                result = rehearsal._http_probe(port, 'POST', '/api/auth/login?via=ui',
+                    host=f'localhost:{port}', origin='http://axioma-ia.io:49001',
+                    declared_length=config['max_body_bytes'] + 1)
+                self.assertEqual(result['status'], 413)
+            self.assertEqual(len(fixture.observations()), 50)
+            self.assertTrue(all(item['request_bytes'] == 0 for item in fixture.observations()))
+        finally:
+            fixture.close()
 
     def test_execute_requires_actual_checkout_head_to_match_the_formal_approval(self):
         plan = load_plan(dict(self.raw))

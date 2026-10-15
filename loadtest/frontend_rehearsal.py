@@ -84,7 +84,8 @@ def load_plan(raw):
     refuse(Path(raw['systemd_dir']) != expected_systemd or expected_systemd.stat().st_uid != os.getuid(),
            'systemd_dir must be the canonical current-user manager directory')
     required_settings = {'private_mode': True, 'owner_uid': os.getuid(), 'service': raw['service'],
-                         'systemd_dir': str(expected_systemd), 'user_runtime_dir': str(runtime)}
+                         'systemd_dir': str(expected_systemd), 'user_runtime_dir': str(runtime),
+                         'listen_host': '127.0.0.1', 'proof_connect_host': '127.0.0.1'}
     if any(settings.get(key) != value for key, value in required_settings.items()):
         raise ValueError('settings do not describe this private user rehearsal')
     for key in ('release_root', 'nginx_root'):
@@ -281,16 +282,23 @@ def k6_row(plan, row, browser_result, fixture):
     return config, summary
 
 
-def _http_probe(port, method, path, *, host='axioma-ia.io', origin=None, body=None):
+def _http_probe(port, method, path, *, host='axioma-ia.io', origin=None, body=None, declared_length=None):
     """Persist only status/cache metadata, never a response body or headers wholesale."""
     connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
     try:
         headers = {'Host': host}
         if origin is not None:
             headers['Origin'] = origin
+        if body is not None and declared_length is not None:
+            raise ValueError('probe cannot provide both a body and a declared-only length')
         if body is not None:
             headers['Content-Type'] = 'application/json'
             headers['Content-Length'] = str(len(body))
+        if declared_length is not None:
+            if type(declared_length) is not int or declared_length < 0:
+                raise ValueError('probe declared length must be a non-negative integer')
+            headers['Content-Type'] = 'application/json'
+            headers['Content-Length'] = str(declared_length)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         response.read()
@@ -306,7 +314,7 @@ def run_probes(port, variant, fixture, invalid_host_status):
     before = len(fixture.observations())
     results = [_http_probe(port, 'GET', '/api/p100-not-found?via=ui', origin=origin),
                _http_probe(port, 'POST', '/api/auth/login?via=ui', origin=origin,
-                           body=b'x' * (fixture.config['max_body_bytes'] + 1)),
+                           declared_length=fixture.config['max_body_bytes'] + 1),
                _http_probe(port, 'GET', '/assets/p100-missing.js'),
                _http_probe(port, 'GET', '/api/apariencia', host='invalid.p100.example', origin=origin)]
     expected = [404, 413, 404, invalid_host_status]

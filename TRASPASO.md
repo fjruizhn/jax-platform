@@ -1,5 +1,9 @@
 # OP#270 / P100 — frontend compilado en Hall9000
 
+## Arnés R1 rechazado · corrección R2 WIP · 2026-10-15 00:48 UTC
+
+**HECHO:** auditor Sol independiente rechazó el delta `8f52927..ace4d1af080dd712ac886cca8f316c84b571ab8c`: **4 BLOCK, 1 MAJOR, 1 MINOR**, ver `/home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/formal-rehearsal-r1-ace4d1a.md`. B R4 sigue aprobado en su SHA; este rechazo es sólo arnés/CI/docs. En WIP sin commit se cerraron preliminarmente BLOCK1 y BLOCK2: el probe 413 envía sólo Content-Length sin body y respondió 50/50 en fixture loopback; settings privados exigen `listen_host` y `proof_connect_host` 127.0.0.1. Discover del arnés **53/53** verde; piso CI WIP53. Quedan BLOCK3 (CAS completo antes de stop), BLOCK4 (procedencia SHA de controlador/arnés/release), MAJOR (checkout mutable durante ensayo) y MINOR (resumen prematuro). Arquitecto Sol diseña el cierre mínimo; no se ejecutó ensayo integrado ni producción. La medición g1 de una hora sigue corriendo por prioridad de Hyde.
+
 ## B R4 aprobado · 2026-10-15 ~00:42 UTC
 
 **HECHO:** auditor Sol independiente `/root/p100_b4_formal_audit` aprobó B R4 SHA `8f5292791e08c831b1940a604af2fd73ac6f6e33` con 0 BLOCK/MAJOR/MINOR. Repitió 112/112 tests en 105,955 s y reprodujo el corte más cercano al testigo durable sin señales adicionales. Veredicto archivado en `/home/fruiz/veredictos-ensayo/p100-jax-frontend-20261014/formal-phase-b-r4-8f52927.md`. Alcance sólo B: arnés, CI adicional y ensayo integrado siguen sin auditoría. Hyde exige su APROBADO antes de cualquier despliegue; no se ejecutó `apply` privado ni productivo.
