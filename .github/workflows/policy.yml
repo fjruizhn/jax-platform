@@ -1187,8 +1187,8 @@ jobs:
           import sys, unittest
           suite = unittest.defaultTestLoader.discover('ops/frontend/tests')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if not result.wasSuccessful() or result.skipped or result.testsRun < 68:
-              sys.exit('Frontend release contracts failed, skipped or below measured A+B floor68')
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 112:
+              sys.exit('Frontend release contracts failed, skipped or below measured A+B floor112')
           PY
       - name: Two real reproducible builds of the checked-out SHA
         run: |
@@ -1211,6 +1211,7 @@ jobs:
           export P100_TEST_VITE_MODULE="$GITHUB_WORKSPACE/frontend/node_modules/vite/dist/node/index.js"
           export P100_REAL_EVIDENCE_DIR="$RUNNER_TEMP/p100-real-unit-evidence"
           python ops/frontend/tests/real_unit_contract.py
+          python ops/frontend/tests/real_activation_contract.py
 
   frontend-harness-tests:
     runs-on: ubuntu-latest
@@ -1229,8 +1230,8 @@ jobs:
           import sys, unittest
           suite = unittest.defaultTestLoader.discover('loadtest', pattern='test_frontend_*.py')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if not result.wasSuccessful() or result.skipped or result.testsRun < 33:
-              sys.exit('Frontend harness failed, skipped or below measured floor33')
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 51:
+              sys.exit('Frontend harness failed, skipped or below measured floor51')
           PY
 
   no-fail-open-except:
