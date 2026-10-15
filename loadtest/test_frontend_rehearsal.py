@@ -288,13 +288,17 @@ class RehearsalPlanTests(unittest.TestCase):
         runtime = {**plan, 'browser_script': str(browser)}
         (artifacts / 'summary.json').write_text('{}')
         (artifacts / 'cleanup.json').write_text('{}')
+        dynamic_entry = artifacts / 'vite.mjs'; dynamic_entry.write_text('entry')
+        dynamic_settings = artifacts / 'controller-settings.json'; dynamic_settings.write_text('{}')
+        dynamic = rehearsal.seal_inputs([dynamic_entry, dynamic_settings], artifacts / 'dynamic-inputs.json')
         (artifacts / 'terminal-receipt.json').write_text(json.dumps({
             'summary_sha256': hashlib.sha256((artifacts / 'summary.json').read_bytes()).hexdigest(),
             'cleanup_sha256': hashlib.sha256((artifacts / 'cleanup.json').read_bytes()).hexdigest(),
             'phase_b_controller_sha': runtime['phase_b_controller_sha'],
             'harness_audited_sha': runtime['harness_audited_sha'],
             'release_source_sha': runtime['release_source_sha'],
-            'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime)}))
+            'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
+            'dynamic_inputs_manifest_sha256': hashlib.sha256((artifacts / 'dynamic-inputs.json').read_bytes()).hexdigest()}))
         with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, self.sealed(runtime), artifacts / 'sealed-runtime.json')), \
              patch.object(rehearsal, 'run_sealed') as run:
             rehearsal.execute(plan)
@@ -319,6 +323,65 @@ class RehearsalPlanTests(unittest.TestCase):
         self.assertFalse((artifacts / 'terminal-receipt.json').exists())
         self.assertEqual(raw.read_text(), '{"raw": true}')
         self.assertEqual(json.loads((artifacts / 'incomplete-receipt.json').read_text())['cause'], 'test drift')
+
+    def test_execute_invalidates_terminal_claim_when_parent_hash_validation_fails(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        runtime = dict(plan); manifest = self.sealed(runtime)
+        def complete(*args, **kwargs):
+            (artifacts / 'cleanup.json').write_text('{}')
+            (artifacts / 'summary.json').write_text('{"ok": true}')
+            (artifacts / 'raw-k6.json').write_text('{"raw": true}')
+            entry = artifacts / 'vite.mjs'; entry.write_text('entry')
+            settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
+            rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+            (artifacts / 'terminal-receipt.json').write_text(json.dumps({'summary_sha256': 'wrong'}))
+        with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
+             patch.object(rehearsal, 'run_sealed', side_effect=complete), \
+             self.assertRaisesRegex(RuntimeError, 'terminal receipt'):
+            rehearsal.execute(plan)
+        self.assertFalse((artifacts / 'summary.json').exists())
+        self.assertTrue((artifacts / 'raw-k6.json').exists())
+        self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
+
+    def test_derived_settings_drift_blocks_b_command_before_invocation(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        entry = artifacts / 'vite.mjs'; entry.write_text('entry')
+        settings = artifacts / 'controller-settings.json'; settings.write_text('{"listen_host":"127.0.0.1"}')
+        unit = Path(plan['systemd_dir']) / plan['service']; unit.write_text('owned')
+        identity = rehearsal._file_identity(unit)
+        class Fixture:
+            base_url = 'http://127.0.0.1:49003'
+            def __init__(self, address, config): self.config = config
+            def start(self): return self
+            def close(self): pass
+        class Manager:
+            def unit_paths(self): return []
+            def capture(self, **kwargs): return {'properties': {}, 'files': {}, 'unit_paths': [], 'process': None}
+            def coherent(self, capture): pass
+        def manager_after_seal(*args):
+            # Simula un escritor ajeno con permiso para alterar un archivo sellado.
+            settings.chmod(0o600)
+            settings.write_text('{"listen_host":"0.0.0.0"}')
+            return Manager(), (lambda left, right: left == right)
+        with patch.object(rehearsal, 'FixtureServer', Fixture), \
+             patch.object(rehearsal, 'write_private_vite_entry', return_value=entry), \
+             patch.object(rehearsal, 'write_private_settings', return_value=settings), \
+             patch.object(rehearsal, 'write_unit', return_value=(unit, identity)), \
+             patch.object(rehearsal, 'bundled_manager', side_effect=manager_after_seal), \
+             patch.object(rehearsal, 'assert_owned_vite_capture'), patch.object(rehearsal, 'validate_restored_vite'), \
+             patch.object(rehearsal, 'run_sealed') as command, \
+             self.assertRaisesRegex(ValueError, 'sealed input drift'):
+            rehearsal._execute_sealed(plan, self.sealed(plan))
+        command.assert_not_called()
+
+    def test_dynamic_seal_detects_derived_vite_entry_drift(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        entry = artifacts / 'vite.mjs'; entry.write_text('export default {}')
+        settings = artifacts / 'controller-settings.json'; settings.write_text('{"listen_host":"127.0.0.1"}')
+        dynamic = rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+        entry.write_text('export default { mutated: true }')
+        with self.assertRaisesRegex(ValueError, 'sealed input drift'):
+            rehearsal.verify_sealed_inputs(dynamic)
 
     def test_private_nginx_and_proof_must_bind_only_ipv4_loopback(self):
         settings_path = self.files['settings']
@@ -502,8 +565,8 @@ class RehearsalPlanTests(unittest.TestCase):
              self.assertRaisesRegex(RuntimeError, 'pre-switch probe failed'):
             rehearsal._execute_sealed(plan, self.sealed(plan))
         self.assertFalse(unit.exists())
-        self.assertFalse(settings.exists())
-        self.assertFalse(entry.exists())
+        self.assertTrue(settings.exists())
+        self.assertTrue(entry.exists())
         self.assertFalse(any(len(cmd) > 2 and cmd[2] == 'rollback' for cmd in calls))
         self.assertFalse(unit.exists())
 
@@ -522,7 +585,7 @@ class RehearsalPlanTests(unittest.TestCase):
             stopped = False
             def unit_paths(self): return []
             def capture(self, **kwargs):
-                return {'properties': {'DropInPaths': '/foreign/90-foreign.conf'},
+                return {'properties': {'FragmentPath': str(unit), 'DropInPaths': '/foreign/90-foreign.conf'},
                         'files': {'/foreign/90-foreign.conf': {'sha256': 'x'}}, 'unit_paths': [], 'process': None}
             def coherent(self, capture): pass
             def stop(self): self.stopped = True
@@ -535,9 +598,8 @@ class RehearsalPlanTests(unittest.TestCase):
              patch.object(rehearsal, 'write_private_vite_entry', return_value=entry), \
              patch.object(rehearsal, 'write_private_settings', return_value=settings), \
              patch.object(rehearsal, 'bundled_manager', return_value=(manager, lambda left, right: left == right)), \
-             patch.object(rehearsal, 'assert_owned_vite_capture', side_effect=ValueError('foreign drop-in')), \
              patch.object(rehearsal, 'run_checked', side_effect=checked), \
-             self.assertRaisesRegex(ValueError, 'foreign drop-in'):
+             self.assertRaisesRegex(ValueError, 'foreign base or drop-in'):
             rehearsal._execute_sealed(plan, self.sealed(plan))
         self.assertFalse(manager.stopped)
         self.assertTrue(unit.exists())
@@ -581,7 +643,7 @@ class RehearsalPlanTests(unittest.TestCase):
              patch.object(rehearsal, 'validate_restored_vite'), \
              patch.object(rehearsal, 'summarize', return_value={'ok': True}):
             rehearsal._execute_sealed(plan, self.sealed(plan))
-        browser_positions = [i for i, call in enumerate(calls) if isinstance(call, list) and call[0] == 'node']
+        browser_positions = [i for i, call in enumerate(calls) if isinstance(call, list) and call[0] == plan['node_binary']]
         apply_position = next(i for i, call in enumerate(calls) if isinstance(call, list) and len(call) > 2 and call[2] == 'apply')
         k6_positions = [i for i, call in enumerate(calls) if isinstance(call, list) and call[0] == plan['k6_binary']]
         self.assertEqual(len(k6_positions), 40)

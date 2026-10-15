@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import struct
+import time
 import unittest
 
 try:
@@ -134,7 +135,16 @@ class FixtureTests(unittest.TestCase):
         opcode, payload = self.websocket(token)
         self.assertEqual(opcode, 1)
         self.assertEqual(json.loads(payload), {'type': 'auth_ok'})
-        observation = [x for x in self.server.observations() if x['type'] == 'websocket'][-1]
+        # The server sends auth_ok before recording the observation; wait for
+        # that condition rather than racing the handler thread after recv().
+        deadline = time.monotonic() + 3
+        observation = None
+        while observation is None and time.monotonic() < deadline:
+            records = [x for x in self.server.observations() if x['type'] == 'websocket']
+            observation = records[-1] if records else None
+            if observation is None:
+                time.sleep(0.01)
+        self.assertIsNotNone(observation, 'WebSocket acceptance was not recorded')
         self.assertEqual(observation['target'], '/ws/270?probe=a%2Fb')
         self.assertEqual(observation['host'], f'localhost:{self.port}')
         self.assertEqual(observation['origin'], config()['allowed_origins'][0])

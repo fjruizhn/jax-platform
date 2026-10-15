@@ -336,13 +336,13 @@ def seal_inputs(paths, manifest_path, *, trees=()):
 
 
 def verify_sealed_inputs(manifest):
-    if not manifest.get('inputs') or not manifest.get('trees'):
+    if not manifest.get('inputs'):
         raise ValueError('sealed manifest is incomplete')
     for entry in manifest.get('inputs', []):
         path = Path(entry['path'])
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
             raise ValueError('sealed input drift: ' + str(path))
-    for root, expected in manifest['trees'].items():
+    for root, expected in manifest.get('trees', {}).items():
         if _tree_inventory(root) != expected:
             raise ValueError('sealed tree drift: ' + root)
 
@@ -701,9 +701,19 @@ def _execute_sealed(plan, sealed_inputs):
     apply_attempted = False
     report = None
     manager = same_process = ownership = None
+    dynamic_inputs = None
     try:
         entry = write_private_vite_entry(plan, fixture_url, artifacts)
         private_settings = write_private_settings(plan, entry, artifacts)
+        for path in (entry, private_settings):
+            os.chmod(path, path.stat().st_mode & ~0o222)
+        dynamic_inputs = seal_inputs([entry, private_settings], artifacts / 'dynamic-inputs.json')
+        def run(command, **kwargs):
+            verify_sealed_inputs(dynamic_inputs)
+            try:
+                return run_sealed(sealed_inputs, command, **kwargs)
+            finally:
+                verify_sealed_inputs(dynamic_inputs)
         manager, same_process = bundled_manager(plan, json.loads(private_settings.read_text()))
         assert_private_unit_absent(manager, plan['service'])
         unit, identity = write_unit(plan, entry, fixture_url)
@@ -723,7 +733,7 @@ def _execute_sealed(plan, sealed_inputs):
                 json.dump(config, handle); config_path = Path(handle.name)
             try:
                 config_path.chmod(0o600)
-                run(['node', plan['browser_script'], '--config', str(config_path)])
+                run([plan['node_binary'], plan['browser_script'], '--config', str(config_path)])
             finally:
                 config_path.unlink(missing_ok=True)
             browser_runs[variant] = {'base_url': config['base_url'], 'port': port}
@@ -753,7 +763,7 @@ def _execute_sealed(plan, sealed_inputs):
             json.dump(config, handle); config_path = Path(handle.name)
         try:
             config_path.chmod(0o600)
-            run(['node', plan['browser_script'], '--config', str(config_path)])
+            run([plan['node_binary'], plan['browser_script'], '--config', str(config_path)])
         finally:
             config_path.unlink(missing_ok=True)
         browser_runs['nginx'] = {'base_url': config['base_url'], 'port': plan['listen_port']}
@@ -816,12 +826,6 @@ def _execute_sealed(plan, sealed_inputs):
                             assert_private_unit_absent(manager, plan['service'])
                     except Exception as error:  # fail-soft: preserve recovery inputs and record incomplete cleanup without masking the primary error
                         cleanup_errors.append('unit cleanup: ' + type(error).__name__)
-        # A failed rollback or uncertain base-unit identity needs the canary
-        # settings and entry intact for a later, evidence-based recovery.
-        if not cleanup_errors:
-            for path in (private_settings, entry):
-                if path is not None:
-                    path.unlink(missing_ok=True)
         fixture.close()
         cleanup = {'primary_error': None if primary is None else type(primary).__name__, 'cleanup_errors': cleanup_errors}
         artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -833,6 +837,7 @@ def _execute_sealed(plan, sealed_inputs):
             # teardown both completed.  The two receipts bind that fact.
             try:
                 verify_sealed_inputs(sealed_inputs)
+                verify_sealed_inputs(dynamic_inputs)
             except Exception as error:
                 invalidate_terminal_receipt(artifacts, 'pre-terminal sealed input drift: ' + type(error).__name__)
                 raise
@@ -843,7 +848,8 @@ def _execute_sealed(plan, sealed_inputs):
                        'phase_b_controller_sha': plan['phase_b_controller_sha'],
                        'harness_audited_sha': plan['harness_audited_sha'],
                        'release_source_sha': plan['release_source_sha'],
-                       'harness_inputs_sha256': harness_inputs_sha256(plan)}
+                       'harness_inputs_sha256': harness_inputs_sha256(plan),
+                       'dynamic_inputs_manifest_sha256': _sha256_file(artifacts / 'dynamic-inputs.json')}
             _atomic_json(artifacts / 'terminal-receipt.json', receipt)
         elif primary is not None or cleanup_errors:
             _atomic_json(artifacts / 'incomplete-receipt.json', {
@@ -875,6 +881,11 @@ def execute(plan):
         expected = {key: runtime_plan[key] for key in ('phase_b_controller_sha', 'harness_audited_sha', 'release_source_sha')}
         if any(terminal.get(key) != value for key, value in expected.items()) or terminal.get('harness_inputs_sha256') != harness_inputs_sha256(runtime_plan):
             raise RuntimeError('terminal receipt provenance differs from sealed B/H/S inputs')
+        dynamic_path = artifacts / 'dynamic-inputs.json'
+        dynamic = json.loads(dynamic_path.read_text())
+        verify_sealed_inputs(dynamic)
+        if terminal.get('dynamic_inputs_manifest_sha256') != _sha256_file(dynamic_path):
+            raise RuntimeError('terminal receipt dynamic input provenance differs')
     except Exception as error:
         invalidate_terminal_receipt(artifacts, 'post-H terminal validation: ' + type(error).__name__)
         raise
