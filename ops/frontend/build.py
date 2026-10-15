@@ -25,8 +25,9 @@ def digest(path):
 
 
 def build(repo, releases, revision):
+    git = ["git", "-C", str(repo), "-c", f"safe.directory={repo}"]
     sha = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "--verify", f"{revision}^{{commit}}"],
+        [*git, "rev-parse", "--verify", f"{revision}^{{commit}}"],
         text=True,
     ).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -40,7 +41,7 @@ def build(repo, releases, revision):
         workspace = Path(temp)
         archive = workspace / "frontend.tar"
         with archive.open("wb") as output:
-            run("git", "-C", str(repo), "archive", "--format=tar", sha, "frontend", stdout=output)
+            run(*git, "archive", "--format=tar", sha, "frontend", stdout=output)
         run("tar", "-xf", str(archive), "-C", str(workspace))
         frontend = workspace / "frontend"
         lock_digest = digest(frontend / "package-lock.json")

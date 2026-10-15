@@ -42,7 +42,7 @@ def release_index(release):
 def nginx_config(dist, port, backend):
     if not 1 <= port <= 65535 or not re.fullmatch(r"[A-Za-z0-9.-]+:[0-9]{1,5}", backend):
         raise ValueError("invalid port or backend")
-    return f"""worker_processes auto;
+    return f"""worker_processes 2;
 pid nginx.pid;
 error_log stderr warn;
 events {{ worker_connections 1024; }}
@@ -50,17 +50,20 @@ http {{
     access_log off;
     client_body_temp_path client_body_temp;
     proxy_temp_path proxy_temp;
+    server {{ listen 0.0.0.0:{port} default_server; return 444; }}
     server {{
         listen 0.0.0.0:{port};
         server_name axioma-ia.io www.axioma-ia.io localhost 127.0.0.1;
+        client_max_body_size 0;
         root {dist};
         index index.html;
         location = /index.html {{ add_header Cache-Control "no-cache"; }}
-        location /assets/ {{
+        location ~ "^/assets/.+-[A-Za-z0-9_-]{{8,}}\\.[A-Za-z0-9]+$" {{
             try_files $uri =404;
             expires 1y;
             add_header Cache-Control "public, immutable";
         }}
+        location /assets/ {{ try_files $uri =404; add_header Cache-Control "no-cache"; }}
         location = /api {{ proxy_pass http://{backend}; proxy_set_header Host {backend}; }}
         location ^~ /api/ {{ proxy_pass http://{backend}; proxy_set_header Host {backend}; }}
         location = /ws {{
@@ -152,6 +155,8 @@ RuntimeDirectory={runtime}
                 rollback(dropin_dir, unit)
             except Exception as recovery_error:
                 print(f"automatic rollback also failed: {recovery_error}", file=sys.stderr)
+        else:
+            config_path.unlink(missing_ok=True)
         raise
 
 
@@ -163,7 +168,7 @@ if __name__ == "__main__":
                         default=None)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--port", type=int, default=5173)
-    parser.add_argument("--backend", default="127.0.0.1:8080")
+    parser.add_argument("--backend", default="localhost:8080")
     parser.add_argument("--health-url", default="http://127.0.0.1:5173/")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9_.@-]+\.service", args.unit):

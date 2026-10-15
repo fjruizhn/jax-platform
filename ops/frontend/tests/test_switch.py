@@ -1,4 +1,5 @@
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -56,6 +58,22 @@ class IsolatedSystemdTest(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             cls.port = sock.getsockname()[1]
         cls.url = f"http://127.0.0.1:{cls.port}/"
+        class Backend(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = (f"{self.path}|{self.headers.get('Host')}|"
+                        f"{self.headers.get('Origin')}|{self.headers.get('Upgrade')}").encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        cls.backend = ThreadingHTTPServer(("127.0.0.1", 0), Backend)
+        cls.backend_host = f"127.0.0.1:{cls.backend.server_port}"
+        cls.backend_thread = threading.Thread(target=cls.backend.serve_forever, daemon=True)
+        cls.backend_thread.start()
         base = cls.root / "base"
         base.mkdir(mode=0o755)
         (base / "index.html").write_bytes(b"original-vite-mode")
@@ -66,11 +84,16 @@ class IsolatedSystemdTest(unittest.TestCase):
         index = dist / "index.html"
         index.write_bytes(b"<html>static-release</html>")
         index.chmod(0o644)
+        assets = dist / "assets"
+        assets.mkdir(mode=0o755)
+        (assets / "index-12345678.js").write_bytes(b"const release = 1;")
+        (assets / "plain.js").write_bytes(b"const plain = 1;")
         (cls.release / "manifest.json").write_text(json.dumps({
             "source_sha": cls.release.name,
-            "files": {"index.html": hashlib.sha256(index.read_bytes()).hexdigest()},
+            "files": {path.relative_to(dist).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                      for path in dist.rglob("*") if path.is_file()},
         }))
-        for path in (cls.release, dist):
+        for path in (cls.release, dist, assets):
             path.chmod(0o755)
         user = pwd.getpwuid(int(os.environ.get("SUDO_UID", os.getuid()))).pw_name
         cls.unit_path.write_text(f"""[Unit]
@@ -94,6 +117,9 @@ Restart=no
         if cls.dropin_dir.exists():
             cls.dropin_dir.rmdir()
         command("systemctl", "daemon-reload")
+        cls.backend.shutdown()
+        cls.backend.server_close()
+        cls.backend_thread.join(timeout=2)
         cls.temp.cleanup()
 
     @classmethod
@@ -108,9 +134,22 @@ Restart=no
         raise AssertionError(f"service did not return {expected!r}")
 
     def test_rollback_ignores_process_boot_and_checkout_state(self):
-        switch.apply(self.release, self.dropin_dir, self.port, "127.0.0.1:8080",
+        switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
         self.wait_for(b"<html>static-release</html>")
+        self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url + "index.html").stdout)
+        self.assertIn(b"immutable", command("curl", "-fsSI", self.url + "assets/index-12345678.js").stdout)
+        self.assertNotIn(b"immutable", command("curl", "-fsSI", self.url + "assets/plain.js").stdout)
+        self.assertEqual(subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                                         self.url + "assets/missing.js"], capture_output=True).stdout, b"404")
+        self.assertEqual(command("curl", "-fsS", "-H", "Origin: https://axioma-ia.io",
+                                 self.url + "api/ping?x=1").stdout,
+                         f"/api/ping?x=1|{self.backend_host}|https://axioma-ia.io|None".encode())
+        self.assertEqual(command("curl", "-fsS", "-H", "Upgrade: websocket",
+                                 self.url + "ws?x=1").stdout,
+                         f"/ws?x=1|{self.backend_host}|None|websocket".encode())
+        self.assertNotEqual(subprocess.run(["curl", "-fsS", "-H", "Host: invalid.example",
+                                           self.url], capture_output=True).returncode, 0)
 
         # A new nginx PID must not invalidate rollback.
         command("systemctl", "restart", self.unit)
@@ -124,7 +163,7 @@ Restart=no
         self.wait_for(b"original-vite-mode")
 
         # Failed units are reset before the same unconditional restart.
-        switch.apply(self.release, self.dropin_dir, self.port, "127.0.0.1:8080",
+        switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
         command("systemctl", "kill", "--signal=SIGKILL", "--kill-who=main", self.unit)
         switch.rollback(self.dropin_dir, self.unit)
