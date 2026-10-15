@@ -11,12 +11,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import io
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -57,20 +60,29 @@ def private_port(value, label):
 def load_plan(raw):
     """Validate the explicit, private invocation contract before any process starts."""
     refuse(not isinstance(raw, dict), 'runner configuration must be an object')
-    for key in ('phase_b_approved_sha', 'audited_checkout_sha', 'source_sha'):
-        refuse(not isinstance(raw.get(key), str) or not SHA40.fullmatch(raw[key]), f'invalid {key}')
-    refuse(len({raw['phase_b_approved_sha'], raw['audited_checkout_sha'], raw['source_sha']}) != 1,
-           'formal B approval, audited checkout and release source SHA differ')
-    for key in ('controller', 'settings', 'release_dir', 'staging_root', 'systemd_dir',
-                'artifact_dir', 'source_checkout', 'k6_binary', 'browser_script',
-                'browser_module', 'chromium_binary'):
+    # Never normalize aliases by mutating the caller's parsed configuration.
+    raw = dict(raw)
+    identities = ('phase_b_controller_sha', 'harness_audited_sha', 'release_source_sha')
+    if all(key in raw for key in identities):
+        for key in identities:
+            refuse(not isinstance(raw.get(key), str) or not SHA40.fullmatch(raw[key]), f'invalid {key}')
+        for legacy, declared in (('phase_b_approved_sha', raw['phase_b_controller_sha']),
+                                 ('audited_checkout_sha', raw['harness_audited_sha']),
+                                 ('source_sha', raw['release_source_sha'])):
+            refuse(legacy in raw and raw[legacy] != declared, f'legacy {legacy} contradicts explicit B/H/S identity')
+        # Compatibility for existing private configs.  These aliases are
+        # provenance labels only; execution uses the three explicit identities.
+        raw['phase_b_approved_sha'] = raw['phase_b_controller_sha']
+        raw['audited_checkout_sha'] = raw['harness_audited_sha']
+        raw['source_sha'] = raw['release_source_sha']
+        refuse(not isinstance(raw.get('git_repository'), str) or not raw['git_repository'], 'explicit git_repository required')
+        raw['git_repository'] = str(private_path(raw['git_repository'], 'git_repository', directory=True))
+    else:
+        raise ValueError('explicit B/H/S identities and git_repository are required')
+    for key in ('settings', 'release_dir', 'staging_root', 'systemd_dir',
+                'artifact_dir', 'k6_binary', 'browser_module', 'chromium_binary'):
         raw[key] = str(private_path(raw.get(key, ''), key, directory=key in {
-            'release_dir', 'staging_root', 'systemd_dir', 'artifact_dir', 'source_checkout', 'browser_module'}))
-    checkout = Path(raw['source_checkout'])
-    expected_code = {'controller': checkout / 'ops' / 'frontend' / 'frontend_release.py',
-                     'browser_script': checkout / 'loadtest' / 'frontend_browser.mjs'}
-    for key, expected in expected_code.items():
-        refuse(Path(raw[key]) != expected, f'{key} must come from the audited checkout')
+            'release_dir', 'staging_root', 'systemd_dir', 'artifact_dir', 'browser_module'}))
     refuse(any(Path(raw['artifact_dir']).iterdir()), 'artifact_dir must be empty for a new rehearsal')
     release = Path(raw['release_dir'])
     refuse(release.name != raw['source_sha'], 'release directory must be named by its exact source SHA')
@@ -97,10 +109,8 @@ def load_plan(raw):
     except json.JSONDecodeError as error:
         raise ValueError('release manifest is unreadable') from error
     refuse(release_identity != raw['source_sha'], 'release manifest source SHA differs')
-    for key in ('node_binary', 'vite_module'):
+    for key in ('node_binary',):
         raw[key] = str(private_path(raw.get(key, ''), key))
-    expected_vite = Path(raw['source_checkout']) / 'frontend' / 'node_modules' / 'vite' / 'dist' / 'node' / 'index.js'
-    refuse(Path(raw['vite_module']) != expected_vite.resolve(strict=True), 'vite_module must be the exact source checkout module')
     fixture = raw.get('fixture')
     refuse(not isinstance(fixture, dict), 'explicit synthetic fixture required')
     for key in ('email', 'password', 'user', 'project', 'appearance', 'state', 'max_body_bytes', 'event_limit'):
@@ -114,6 +124,84 @@ def load_plan(raw):
     unit = Path(raw['systemd_dir']) / raw['service']
     refuse(unit.exists(), 'private base unit already exists; refuse to overwrite')
     return raw
+
+
+def _git_archive(repository, sha, paths, destination):
+    """Materialize only named Git-object bytes, never a mutable checkout."""
+    verified = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', sha + '^{commit}'],
+                              capture_output=True, text=True)
+    if verified.returncode or verified.stdout.strip() != sha:
+        raise ValueError('Git object is not the declared commit: ' + sha)
+    result = subprocess.run(['git', '-C', str(repository), 'archive', '--format=tar', sha, '--', *paths],
+                            capture_output=True)
+    if result.returncode:
+        raise RuntimeError('git archive failed for sealed input')
+    with tarfile.open(fileobj=io.BytesIO(result.stdout), mode='r:') as archive:
+        for member in archive.getmembers():
+            relative = Path(member.name)
+            if relative.is_absolute() or '..' in relative.parts or member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                raise ValueError('unsafe Git archive member')
+        archive.extractall(destination, filter='data')
+
+
+def bootstrap_inputs(plan, artifact_dir):
+    """Construct B/H/S execution roots from immutable Git objects before service start."""
+    if 'git_repository' not in plan:
+        raise ValueError('--execute requires git_repository and explicit B/H/S identities')
+    root = Path(artifact_dir) / 'inputs'
+    root.mkdir(mode=0o700)
+    controller_root, harness_root, source_root = (root / name for name in ('controller', 'harness', 'source'))
+    for directory in (controller_root, harness_root, source_root):
+        directory.mkdir(mode=0o700)
+    repository = plan['git_repository']
+    _git_archive(repository, plan['phase_b_controller_sha'], ['ops/frontend'], controller_root)
+    _git_archive(repository, plan['harness_audited_sha'], [
+        'loadtest/frontend_rehearsal.py', 'loadtest/frontend_fixture.py', 'loadtest/frontend_metrics.py',
+        'loadtest/frontend_browser.mjs', 'loadtest/frontend_http.js', 'loadtest/frontend_http_flow.mjs',
+        'loadtest/frontend_http_result.mjs'], harness_root)
+    _git_archive(repository, plan['release_source_sha'], ['frontend'], source_root)
+    source_frontend = source_root / 'frontend'
+    run_checked(['npm', 'ci', '--ignore-scripts'], cwd=source_frontend)
+    copied = dict(plan)
+    copied.update({'controller': str(controller_root / 'ops/frontend/frontend_release.py'),
+                   'browser_script': str(harness_root / 'loadtest/frontend_browser.mjs'),
+                   'harness_dir': str(harness_root / 'loadtest'),
+                   'source_checkout': str(source_root),
+                   'vite_module': str(source_frontend / 'node_modules/vite/dist/node/index.js')})
+    runtime_config = root / 'sealed-runtime.json'
+    _atomic_json(runtime_config, {**copied, '_sealed_runtime': True,
+                                  '_sealed_manifest': str(root / 'manifest.json')})
+    # The inventory includes modes.  Freeze the three executable trees before
+    # sealing, otherwise the post-bootstrap permission hardening would itself
+    # look like drift on the first command.
+    for tree in (controller_root, harness_root, source_root):
+        freeze_tree(tree)
+    # Playwright's external module is executable browser code too.  It stays
+    # in place (third-party ownership is not altered), but its full tree is
+    # an audited input and every action verifies it for drift.
+    manifest = seal_inputs([runtime_config], root / 'manifest.json',
+                           trees=[controller_root, harness_root, source_root, Path(plan['browser_module'])])
+    os.chmod(runtime_config, 0o400)
+    os.chmod(root / 'manifest.json', 0o400)
+    os.chmod(root, 0o500)
+    return copied, manifest, runtime_config
+
+
+def freeze_tree(root):
+    """Remove write permission while retaining executable dependency binaries."""
+    for directory, _, files in os.walk(root):
+        directory_path = Path(directory)
+        directory_mode = directory_path.stat().st_mode & 0o777
+        refuse(not directory_mode & 0o400 or not directory_mode & 0o100,
+               'sealed directory lacks owner read/traverse permission: ' + str(directory_path))
+        for filename in files:
+            path = directory_path / filename
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode & 0o777
+            refuse(not mode & 0o400, 'sealed file lacks owner read permission: ' + str(path))
+            os.chmod(path, mode & ~0o222)
+        os.chmod(directory_path, directory_mode & ~0o222)
 
 
 def command_for_controller(plan, action, fixture_url=None, staging=None, settings=None):
@@ -130,16 +218,221 @@ def command_for_controller(plan, action, fixture_url=None, staging=None, setting
 
 def matrix_plan(plan):
     rows = build_matrix(['vite', 'nginx'], MEASURED_SECONDS, WARMUP_SECONDS, GRACEFUL_STOP_SECONDS)
-    return {'schema': 'p100-rehearsal-plan-v1', 'source_sha': plan['source_sha'],
+    return {'schema': 'p100-rehearsal-plan-v2', 'source_sha': plan['source_sha'],
             'phase_b_approved_sha': plan['phase_b_approved_sha'], 'audited_checkout_sha': plan['audited_checkout_sha'], 'service': plan['service'],
+            'controller_sha': plan['phase_b_controller_sha'], 'harness_sha': plan['harness_audited_sha'],
+            'release_source_sha': plan['release_source_sha'],
             'rows': rows, 'controller': {'prepare_requires_fixture': True,
                                           'apply_requires_fixture': True,
                                           'rollback': command_for_controller(plan, 'rollback')}}
 
 
+def sealed_coordinator_timeout(plan):
+    """Bound the one H coordinator process; its child commands retain 180 s.
+
+    The matrix owns every k6 duration plus graceful stop. Fifteen minutes
+    covers the two browser passes, build/apply/rollback, probes and startup.
+    """
+    rows = matrix_plan(plan)['rows']
+    return sum(row['duration_seconds'] + row['graceful_stop_seconds'] for row in rows) + 15 * 60
+
+
 def _file_identity(path):
     info = path.stat()
     return {'device': info.st_dev, 'inode': info.st_ino, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def harness_input_paths(plan):
+    """The complete H executable surface; keep this list aligned with R2's contract."""
+    here = Path(plan.get('harness_dir', Path(__file__).resolve().parent))
+    return [Path(plan['browser_script']), here / 'frontend_rehearsal.py', here / 'frontend_fixture.py',
+            here / 'frontend_metrics.py', here / 'frontend_http.js',
+            here / 'frontend_http_flow.mjs', here / 'frontend_http_result.mjs']
+
+
+def _tree_inventory(root):
+    root = Path(root).resolve(strict=True)
+    entries = []
+    for directory, dirs, files in os.walk(root):
+        dirs.sort(); files.sort()
+        for name in list(dirs):
+            path = Path(directory) / name
+            if path.is_symlink():
+                dirs.remove(name)
+                entries.append(_internal_link_inventory(root, path))
+        for name in files:
+            path = Path(directory) / name
+            if path.is_symlink():
+                entries.append(_internal_link_inventory(root, path))
+            else:
+                refuse(not path.is_file(), 'sealed tree contains non-regular file: ' + str(path))
+                entries.append({'kind': 'file', 'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                                'mode': path.stat().st_mode & 0o777})
+    return sorted(entries, key=lambda item: item['path'])
+
+
+def _internal_link_inventory(root, path):
+    """Permit only a literal link whose resolved target is inside this tree."""
+    literal = os.readlink(path)
+    try:
+        target = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError('sealed tree contains dangling or cyclic symlink: ' + str(path)) from error
+    if target != root and root not in target.parents:
+        raise ValueError('sealed tree symlink escapes root: ' + str(path))
+    if not (target.is_file() or target.is_dir()):
+        raise ValueError('sealed tree symlink target is unsupported: ' + str(path))
+    return {'kind': 'symlink', 'path': str(path), 'target': literal,
+            'resolved': str(target), 'mode': path.lstat().st_mode & 0o777}
+
+
+def seal_inputs(paths, manifest_path, *, trees=()):
+    """Write an immutable provenance manifest before starting a private service."""
+    entries = []
+    for path in paths:
+        path = Path(path)
+        refuse(path.is_symlink() or not path.is_file(), 'sealed input must be a regular file: ' + str(path))
+        entries.append({'path': str(path.resolve()), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    roots = [str(Path(root).resolve(strict=True)) for root in trees]
+    manifest = {'schema': 'p100-rehearsal-inputs-v2', 'inputs': entries,
+                'trees': {root: _tree_inventory(root) for root in roots}}
+    manifest_path = Path(manifest_path)
+    descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        _write_all(descriptor, (json.dumps(manifest, sort_keys=True) + '\n').encode())
+        os.fsync(descriptor)
+    except BaseException:
+        manifest_path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+    return manifest
+
+
+def verify_sealed_inputs(manifest):
+    if not manifest.get('inputs') or not manifest.get('trees'):
+        raise ValueError('sealed manifest is incomplete')
+    for entry in manifest.get('inputs', []):
+        path = Path(entry['path'])
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
+            raise ValueError('sealed input drift: ' + str(path))
+    for root, expected in manifest['trees'].items():
+        if _tree_inventory(root) != expected:
+            raise ValueError('sealed tree drift: ' + root)
+
+
+def run_sealed(manifest, command, **kwargs):
+    """Guard executable invocation at both sides of the subprocess boundary."""
+    verify_sealed_inputs(manifest)
+    try:
+        return run_checked(command, **kwargs)
+    finally:
+        verify_sealed_inputs(manifest)
+
+
+def bundled_manager(plan, settings):
+    """Load Manager only from B's extracted controller bundle."""
+    directory = str(Path(plan['controller']).resolve().parent)
+    module_path = Path(directory) / 'release_systemd.py'
+    if not module_path.is_file() or module_path.is_symlink():
+        raise ValueError('sealed B Manager is missing')
+    sys.path.insert(0, directory)
+    try:
+        spec = importlib.util.spec_from_file_location('_p100_sealed_release_systemd', module_path)
+        if spec is None or spec.loader is None:
+            raise ValueError('sealed B Manager cannot be loaded')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    manager = module.Manager(settings, True)
+    return manager, module.same_process
+
+
+def validate_restored_vite(plan, settings, manager, capture):
+    """Use B's Controller contract before accepting rollback's new Vite PID."""
+    directory = str(Path(plan['controller']).resolve().parent)
+    module_path = Path(directory) / 'frontend_release.py'
+    spec = importlib.util.spec_from_file_location('_p100_sealed_frontend_release', module_path)
+    if spec is None or spec.loader is None:
+        raise ValueError('sealed B Controller cannot be loaded')
+    sys.path.insert(0, directory)
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    controller = module.Controller(settings, user=True, manager=manager)
+    controller._validate_original(capture, plan['release_source_sha'])
+
+
+def stopped_matches(before, stopped):
+    if stopped['properties']['ActiveState'] != 'inactive' or stopped['process'] is not None:
+        return False
+    stable = ('FragmentPath', 'DropInPaths', 'ExecStart', 'ExecStartPre', 'User', 'Group',
+              'WorkingDirectory', 'UnitFileState', 'Type', 'KillMode', 'RuntimeDirectory',
+              'RuntimeDirectoryMode', 'StandardOutput', 'StandardError')
+    return (before['unit_paths'] == stopped['unit_paths'] and before['files'] == stopped['files'] and
+            all(before['properties'][key] == stopped['properties'][key] for key in stable))
+
+
+def manager_cas(manager, same_process, expected):
+    """Two complete coherent observations immediately before an owned stop."""
+    first = manager.capture(http=False); manager.coherent(first)
+    second = manager.capture(http=False); manager.coherent(second)
+    if (first['properties'] != expected['properties'] or first['files'] != expected['files'] or
+            first['unit_paths'] != expected['unit_paths'] or not same_process(first['process'], expected['process']) or
+            second['properties'] != first['properties'] or second['files'] != first['files'] or
+            second['unit_paths'] != first['unit_paths'] or not same_process(second['process'], first['process'])):
+        raise ValueError('private unit Manager CAS drift; no stop or unlink')
+    return second
+
+
+def assert_private_unit_absent(manager, service):
+    """Refuse any base unit or drop-in in every user-manager search path."""
+    stem = service.removesuffix('.service')
+    names = {service + '.d', 'service.d'}
+    names.update(stem[:index + 1] + '.service.d' for index, char in enumerate(stem) if char == '-')
+    for parent in manager.unit_paths():
+        root = Path(parent)
+        if (root / service).exists() or (root / service).is_symlink():
+            raise ValueError('private base unit already exists in Manager UnitPath')
+        for name in names:
+            directory = root / name
+            if directory.is_symlink():
+                raise ValueError('private unit drop-in directory is a symlink')
+            if directory.exists() and any(directory.glob('*.conf')):
+                raise ValueError('private unit drop-in already exists in Manager UnitPath')
+
+
+def _atomic_json(path, value):
+    """Publish a private receipt only after its preceding operation completed."""
+    path = Path(path)
+    encoded = (json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + '\n').encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        _write_all(descriptor, encoded)
+        os.fsync(descriptor)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def invalidate_terminal_receipt(artifacts, cause):
+    """Remove a terminal claim after post-run drift; retain raw measurements."""
+    artifacts = Path(artifacts)
+    for name in ('summary.json', 'terminal-receipt.json'):
+        (artifacts / name).unlink(missing_ok=True)
+    receipt = artifacts / 'incomplete-receipt.json'
+    if not receipt.exists():
+        _atomic_json(receipt, {'schema': 'p100-rehearsal-incomplete-v2', 'cause': cause,
+                               'cleanup_sha256': _sha256_file(artifacts / 'cleanup.json') if (artifacts / 'cleanup.json').is_file() else None})
 
 
 def _write_all(descriptor, data):
@@ -187,6 +480,7 @@ def write_private_vite_entry(plan, fixture_url, directory):
     entry = Path(directory) / 'vite.mjs'
     source_url = source.resolve().as_uri()
     vite_url = Path(plan['vite_module']).resolve().as_uri()
+    cache_dir = (Path(directory) / 'vite-cache').resolve()
     code = f'''import {{createServer}} from {vite_url!r};
 import sourceConfig from {source_url!r};
 const fixture = process.env.P100_FIXTURE_URL;
@@ -194,7 +488,7 @@ if (fixture !== {fixture_url!r}) throw new Error('private fixture environment di
 const sourceServer = sourceConfig.server || {{}};
 const sourceProxy = sourceServer.proxy || {{}};
 if (!sourceProxy['/api'] || !sourceProxy['/ws'] || !Array.isArray(sourceServer.allowedHosts)) throw new Error('source proxy/host contract missing');
-const server = await createServer({{...sourceConfig, configFile: false, root: {str((Path(plan['source_checkout']) / 'frontend').resolve())!r}, server: {{...sourceServer, host: '127.0.0.1', port: {plan['listen_port']}, strictPort: true,
+const server = await createServer({{...sourceConfig, configFile: false, root: {str((Path(plan['source_checkout']) / 'frontend').resolve())!r}, cacheDir: {str(cache_dir)!r}, server: {{...sourceServer, host: '127.0.0.1', port: {plan['listen_port']}, strictPort: true,
   allowedHosts: [...sourceServer.allowedHosts], proxy: {{...sourceProxy,
     '/api': {{...sourceProxy['/api'], target: {fixture_url!r}, changeOrigin: true}},
     '/ws': {{...sourceProxy['/ws'], target: {target!r}, ws: true, changeOrigin: true}}
@@ -232,14 +526,6 @@ def write_private_settings(plan, entry_path, directory):
     return output
 
 
-def verify_audited_head(plan):
-    result = run_checked(['git', '-C', plan['source_checkout'], 'rev-parse', 'HEAD'])
-    if result.stdout.strip() != plan['audited_checkout_sha']:
-        raise ValueError('checkout HEAD is not the exact audited B SHA')
-    dirty = run_checked(['git', '-C', plan['source_checkout'], 'status', '--porcelain', '--untracked-files=all']).stdout
-    refuse(bool(dirty), 'audited source checkout has tracked or untracked edits')
-
-
 def run_checked(command, *, allowed=(0,), cwd=None):
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=180)
     if result.returncode not in allowed:
@@ -258,13 +544,20 @@ def browser_config(plan, variant, port, fixture):
 
 
 def harness_sha(plan):
-    paths = [Path(plan['browser_script']), Path(__file__).with_name('frontend_http.js'),
-             Path(__file__).with_name('frontend_http_flow.mjs'), Path(__file__).with_name('frontend_http_result.mjs')]
+    paths = harness_input_paths(plan)
     # Both browser and k6 contracts deliberately use Git-SHA1-shaped,
     # 40-character provenance values.  This is a content digest of the exact
     # harness inputs, not a claim that they are a Git commit.
     digest = hashlib.sha1()
     for path in paths:
+        digest.update(path.name.encode() + b'\0' + path.read_bytes())
+    return digest.hexdigest()
+
+
+def harness_inputs_sha256(plan):
+    """SHA-256 provenance of the seven sealed H sources, distinct from legacy SHA-1."""
+    digest = hashlib.sha256()
+    for path in harness_input_paths(plan):
         digest.update(path.name.encode() + b'\0' + path.read_bytes())
     return digest.hexdigest()
 
@@ -345,10 +638,12 @@ def run_probes(port, variant, fixture, invalid_host_status):
     return results
 
 
-def execute(plan):
+def _execute_sealed(plan, sealed_inputs):
     """Run the private Vite -> nginx -> Vite rehearsal after formal B approval."""
-    verify_audited_head(plan)
     artifacts = Path(plan['artifact_dir']); artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    verify_sealed_inputs(sealed_inputs)
+    def run(command, **kwargs):
+        return run_sealed(sealed_inputs, command, **kwargs)
     fixture_config = dict(plan['fixture'])
     fixture_config['allowed_origins'] = [f"http://axioma-ia.io:{plan['listen_port']}"]
     fixture_config['_artifact_dir'] = plan['artifact_dir']
@@ -359,12 +654,18 @@ def execute(plan):
     primary = None
     cleanup_errors = []
     apply_attempted = False
+    report = None
+    manager = same_process = ownership = None
     try:
         entry = write_private_vite_entry(plan, fixture_url, artifacts)
         private_settings = write_private_settings(plan, entry, artifacts)
+        manager, same_process = bundled_manager(plan, json.loads(private_settings.read_text()))
+        assert_private_unit_absent(manager, plan['service'])
         unit, identity = write_unit(plan, entry, fixture_url)
-        run_checked(['systemctl', '--user', 'daemon-reload'])
-        run_checked(['systemctl', '--user', 'start', plan['service']])
+        run(['systemctl', '--user', 'daemon-reload'])
+        run(['systemctl', '--user', 'start', plan['service']])
+        ownership = manager.capture(http=False)
+        manager.coherent(ownership)
         browser_runs = {}
         # Both implementations use the same port.  The controller replaces
         # Vite only after every Vite browser/probe/k6 row is durable.
@@ -374,7 +675,7 @@ def execute(plan):
                 json.dump(config, handle); config_path = Path(handle.name)
             try:
                 config_path.chmod(0o600)
-                run_checked(['node', plan['browser_script'], '--config', str(config_path)])
+                run(['node', plan['browser_script'], '--config', str(config_path)])
             finally:
                 config_path.unlink(missing_ok=True)
             browser_runs[variant] = {'base_url': config['base_url'], 'port': port}
@@ -386,9 +687,9 @@ def execute(plan):
             with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, dir=artifacts) as handle:
                 json.dump(config, handle); run_input = Path(handle.name)
             try:
-                result = run_checked([plan['k6_binary'], 'run', '--config', str(empty_k6), '--include-system-env-vars=false',
+                result = run([plan['k6_binary'], 'run', '--config', str(empty_k6), '--include-system-env-vars=false',
                                       '--no-usage-report', '--new-machine-readable-summary=false', '--env',
-                                      'P100_RUN_CONFIG=' + str(run_input), str(Path(__file__).with_name('frontend_http.js'))], allowed=(0, 99))
+                                      'P100_RUN_CONFIG=' + str(run_input), str(Path(plan.get('harness_dir', Path(__file__).resolve().parent)) / 'frontend_http.js')], allowed=(0, 99))
                 (summary.with_suffix('.k6.txt')).write_text(result.stdout + result.stderr, encoding='utf8')
                 raw_runs.append(json.loads(summary.read_text()))
             finally:
@@ -396,15 +697,15 @@ def execute(plan):
         # B's apply deliberately prepares a fresh package itself, but this
         # explicit prepare validates the accredited Vite identity before any
         # release switch and leaves no active mutation.
-        run_checked(command_for_controller(plan, 'prepare', fixture_url, settings=private_settings))
+        run(command_for_controller(plan, 'prepare', fixture_url, settings=private_settings))
         apply_attempted = True
-        run_checked(command_for_controller(plan, 'apply', fixture_url, settings=private_settings))
+        run(command_for_controller(plan, 'apply', fixture_url, settings=private_settings))
         config = browser_config(plan, 'nginx', plan['listen_port'], fixture_config)
         with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, dir=artifacts) as handle:
             json.dump(config, handle); config_path = Path(handle.name)
         try:
             config_path.chmod(0o600)
-            run_checked(['node', plan['browser_script'], '--config', str(config_path)])
+            run(['node', plan['browser_script'], '--config', str(config_path)])
         finally:
             config_path.unlink(missing_ok=True)
         browser_runs['nginx'] = {'base_url': config['base_url'], 'port': plan['listen_port']}
@@ -414,17 +715,15 @@ def execute(plan):
             with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, dir=artifacts) as handle:
                 json.dump(config, handle); run_input = Path(handle.name)
             try:
-                result = run_checked([plan['k6_binary'], 'run', '--config', str(empty_k6), '--include-system-env-vars=false',
+                result = run([plan['k6_binary'], 'run', '--config', str(empty_k6), '--include-system-env-vars=false',
                                       '--no-usage-report', '--new-machine-readable-summary=false', '--env',
-                                      'P100_RUN_CONFIG=' + str(run_input), str(Path(__file__).with_name('frontend_http.js'))], allowed=(0, 99))
+                                      'P100_RUN_CONFIG=' + str(run_input), str(Path(plan.get('harness_dir', Path(__file__).resolve().parent)) / 'frontend_http.js')], allowed=(0, 99))
                 (summary.with_suffix('.k6.txt')).write_text(result.stdout + result.stderr, encoding='utf8')
                 raw_runs.append(json.loads(summary.read_text()))
             finally:
                 run_input.unlink(missing_ok=True)
         report = summarize(raw_runs)
         report['fixture_events'] = fixture.events()
-        (artifacts / 'summary.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + '\n', encoding='utf8')
-        return report
     except BaseException as error:
         primary = error
         raise
@@ -439,15 +738,34 @@ def execute(plan):
                 restored = not apply_attempted
                 if apply_attempted:
                     try:
-                        run_checked(command_for_controller(plan, 'rollback', settings=private_settings))
+                        run(command_for_controller(plan, 'rollback', settings=private_settings))
                         restored = True
                     except Exception as error:  # fail-soft: preserve the canary unit and recovery inputs; record failure alongside the primary error
                         cleanup_errors.append('rollback: ' + type(error).__name__)
                 if restored:
                     try:
-                        run_checked(['systemctl', '--user', 'stop', plan['service']])
-                        unit.unlink()
-                        run_checked(['systemctl', '--user', 'daemon-reload'])
+                        if manager is None or same_process is None or ownership is None:
+                            raise ValueError('sealed Manager ownership witness missing')
+                        else:
+                            # Rollback legitimately replaces nginx with Vite,
+                            # so obtain the Vite witness only after rollback.
+                            if apply_attempted:
+                                ownership = manager.capture(http=False)
+                                manager.coherent(ownership)
+                                validate_restored_vite(plan, json.loads(private_settings.read_text()), manager, ownership)
+                            manager_cas(manager, same_process, ownership)
+                            verify_sealed_inputs(sealed_inputs)
+                            manager.stop()
+                            verify_sealed_inputs(sealed_inputs)
+                            stopped = manager.capture(http=False)
+                            manager.coherent(stopped)
+                            if not stopped_matches(ownership, stopped):
+                                raise ValueError('private unit stop changed effective ownership witness')
+                            unit.unlink()
+                            verify_sealed_inputs(sealed_inputs)
+                            manager.reload()
+                            verify_sealed_inputs(sealed_inputs)
+                            assert_private_unit_absent(manager, plan['service'])
                     except Exception as error:  # fail-soft: preserve recovery inputs and record incomplete cleanup without masking the primary error
                         cleanup_errors.append('unit cleanup: ' + type(error).__name__)
         # A failed rollback or uncertain base-unit identity needs the canary
@@ -459,25 +777,92 @@ def execute(plan):
         fixture.close()
         cleanup = {'primary_error': None if primary is None else type(primary).__name__, 'cleanup_errors': cleanup_errors}
         artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (artifacts / 'cleanup.json').write_text(json.dumps(cleanup, indent=2) + '\n', encoding='utf8')
+        _atomic_json(artifacts / 'cleanup.json', cleanup)
         if cleanup_errors and primary is None:
             raise RuntimeError('rehearsal cleanup incomplete: ' + '; '.join(cleanup_errors))
+        if primary is None and not cleanup_errors and report is not None:
+            # The measurement is not a result until rollback and private-unit
+            # teardown both completed.  The two receipts bind that fact.
+            try:
+                verify_sealed_inputs(sealed_inputs)
+            except Exception as error:
+                invalidate_terminal_receipt(artifacts, 'pre-terminal sealed input drift: ' + type(error).__name__)
+                raise
+            _atomic_json(artifacts / 'summary.json', report)
+            receipt = {'schema': 'p100-rehearsal-terminal-v2',
+                       'cleanup_sha256': _sha256_file(artifacts / 'cleanup.json'),
+                       'summary_sha256': _sha256_file(artifacts / 'summary.json'),
+                       'phase_b_controller_sha': plan['phase_b_controller_sha'],
+                       'harness_audited_sha': plan['harness_audited_sha'],
+                       'release_source_sha': plan['release_source_sha'],
+                       'harness_inputs_sha256': harness_inputs_sha256(plan)}
+            _atomic_json(artifacts / 'terminal-receipt.json', receipt)
+        elif primary is not None or cleanup_errors:
+            _atomic_json(artifacts / 'incomplete-receipt.json', {
+                'schema': 'p100-rehearsal-incomplete-v1',
+                'cleanup_sha256': _sha256_file(artifacts / 'cleanup.json'),
+                'primary_error': None if primary is None else type(primary).__name__})
+    return report
+
+
+def execute(plan):
+    """Bootstrap immutable B/H/S inputs, then execute only H's coordinator bytes."""
+    artifacts = Path(plan['artifact_dir']); artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    runtime_plan, manifest, runtime_config = bootstrap_inputs(plan, artifacts)
+    # This process has no authority to operate the rehearsal after bootstrap:
+    # invoke the coordinator that was extracted from H's Git object.
+    try:
+        run_sealed(manifest, [sys.executable, runtime_plan['browser_script'].replace('frontend_browser.mjs', 'frontend_rehearsal.py'),
+                              '--sealed-runtime', str(runtime_config)], timeout=sealed_coordinator_timeout(runtime_plan))
+    except Exception as error:
+        invalidate_terminal_receipt(artifacts, 'post-H sealed input drift or failure: ' + type(error).__name__)
+        raise
+    summary = artifacts / 'summary.json'; receipt = artifacts / 'terminal-receipt.json'
+    if not summary.is_file() or not receipt.is_file():
+        raise RuntimeError('sealed coordinator returned without terminal summary')
+    terminal = json.loads(receipt.read_text())
+    if terminal.get('summary_sha256') != _sha256_file(summary) or terminal.get('cleanup_sha256') != _sha256_file(artifacts / 'cleanup.json'):
+        raise RuntimeError('terminal receipt does not bind completed cleanup and summary')
+    expected = {key: runtime_plan[key] for key in ('phase_b_controller_sha', 'harness_audited_sha', 'release_source_sha')}
+    if any(terminal.get(key) != value for key, value in expected.items()) or terminal.get('harness_inputs_sha256') != harness_inputs_sha256(runtime_plan):
+        raise RuntimeError('terminal receipt provenance differs from sealed B/H/S inputs')
+    return json.loads(summary.read_text())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', required=True, type=Path)
+    parser.add_argument('--config', type=Path)
     parser.add_argument('--plan', action='store_true')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--phase-b-approved-sha')
+    parser.add_argument('--harness-audited-sha')
+    parser.add_argument('--release-source-sha')
+    parser.add_argument('--sealed-runtime', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.sealed_runtime is not None:
+        if args.plan or args.execute or args.phase_b_approved_sha or args.harness_audited_sha or args.release_source_sha:
+            parser.error('--sealed-runtime is internal and exclusive')
+        raw = json.loads(args.sealed_runtime.read_text())
+        if raw.pop('_sealed_runtime', False) is not True:
+            parser.error('sealed runtime marker required')
+        manifest_path = Path(raw.pop('_sealed_manifest', ''))
+        if not manifest_path.is_file():
+            parser.error('sealed input manifest missing')
+        manifest = json.loads(manifest_path.read_text())
+        verify_sealed_inputs(manifest)
+        _execute_sealed(raw, manifest)
+        return 0
     if args.plan == args.execute:
         parser.error('choose exactly one of --plan or --execute')
+    if args.config is None:
+        parser.error('--config is required outside sealed runtime')
     plan = load_plan(json.loads(args.config.read_text()))
     if args.plan:
         print(json.dumps(matrix_plan(plan), indent=2)); return 0
-    if args.phase_b_approved_sha != plan['phase_b_approved_sha']:
-        parser.error('--execute requires the exact formally approved B SHA from the private config')
+    if (args.phase_b_approved_sha != plan['phase_b_controller_sha'] or
+            args.harness_audited_sha != plan['harness_audited_sha'] or
+            args.release_source_sha != plan['release_source_sha']):
+        parser.error('--execute requires exact B/H/S identities from the private config')
     execute(plan)
     return 0
 
