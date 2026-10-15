@@ -71,6 +71,10 @@ class RehearsalPlanTests(unittest.TestCase):
                                      trees=[Path(plan['source_checkout'])])
 
     @staticmethod
+    def child_witness(digest):
+        return type('Result', (), {'stdout': 'P100_DYNAMIC_INPUTS_SHA256=' + digest + '\n'})()
+
+    @staticmethod
     def manager_stub():
         class Manager:
             def unit_paths(self): return []
@@ -300,7 +304,7 @@ class RehearsalPlanTests(unittest.TestCase):
             'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
             'dynamic_inputs_manifest_sha256': hashlib.sha256((artifacts / 'dynamic-inputs.json').read_bytes()).hexdigest()}))
         with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, self.sealed(runtime), artifacts / 'sealed-runtime.json')), \
-             patch.object(rehearsal, 'run_sealed') as run:
+             patch.object(rehearsal, 'run_sealed', return_value=self.child_witness(rehearsal.sealed_manifest_sha256(dynamic))) as run:
             rehearsal.execute(plan)
         self.assertEqual(Path(run.call_args.args[1][1]), coordinator)
         self.assertGreater(run.call_args.kwargs['timeout'], 40 * 60)
@@ -333,8 +337,9 @@ class RehearsalPlanTests(unittest.TestCase):
             (artifacts / 'raw-k6.json').write_text('{"raw": true}')
             entry = artifacts / 'vite.mjs'; entry.write_text('entry')
             settings = artifacts / 'controller-settings.json'; settings.write_text('{}')
-            rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+            dynamic = rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
             (artifacts / 'terminal-receipt.json').write_text(json.dumps({'summary_sha256': 'wrong'}))
+            return self.child_witness(rehearsal.sealed_manifest_sha256(dynamic))
         with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
              patch.object(rehearsal, 'run_sealed', side_effect=complete), \
              self.assertRaisesRegex(RuntimeError, 'terminal receipt'):
@@ -366,6 +371,7 @@ class RehearsalPlanTests(unittest.TestCase):
                 'release_source_sha': runtime['release_source_sha'],
                 'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
                 'dynamic_inputs_manifest_sha256': rehearsal.sealed_manifest_sha256(weakened)}))
+            return self.child_witness(rehearsal.sealed_manifest_sha256(weakened))
         with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
              patch.object(rehearsal, 'run_sealed', side_effect=substituted_dynamic_manifest), \
              self.assertRaisesRegex(ValueError, 'dynamic sealed manifest input set differs'):
@@ -394,11 +400,47 @@ class RehearsalPlanTests(unittest.TestCase):
                 'release_source_sha': runtime['release_source_sha'],
                 'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
                 'dynamic_inputs_manifest_sha256': rehearsal.sealed_manifest_sha256(dynamic)}))
+            return self.child_witness(rehearsal.sealed_manifest_sha256(dynamic))
         with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
              patch.object(rehearsal, 'run_sealed', side_effect=replace_after_seal), \
              self.assertRaisesRegex(RuntimeError, 'dynamic input provenance differs'):
             rehearsal.execute(plan)
         self.assertFalse((artifacts / 'summary.json').exists())
+        self.assertTrue((artifacts / 'raw-k6.json').exists())
+        self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
+
+    def test_execute_rejects_full_dynamic_and_terminal_forgery_against_child_witness(self):
+        plan = load_plan(dict(self.raw)); artifacts = Path(plan['artifact_dir'])
+        runtime = dict(plan); manifest = self.sealed(runtime)
+        def forge_terminal_and_manifest(*args, **kwargs):
+            (artifacts / 'cleanup.json').write_text('{}')
+            (artifacts / 'summary.json').write_text('{"ok": true}')
+            (artifacts / 'raw-k6.json').write_text('{"raw": true}')
+            entry = artifacts / 'vite.mjs'; entry.write_text('entry')
+            settings = artifacts / 'controller-settings.json'; settings.write_text('{"listen_host":"127.0.0.1"}')
+            original = rehearsal.seal_inputs([entry, settings], artifacts / 'dynamic-inputs.json')
+            settings.write_text('{"listen_host":"0.0.0.0"}')
+            forged = {**original, 'inputs': [
+                original['inputs'][0],
+                {**original['inputs'][1], 'sha256': hashlib.sha256(settings.read_bytes()).hexdigest()}]}
+            (artifacts / 'dynamic-inputs.json').write_bytes(rehearsal._canonical_json_bytes(forged))
+            (artifacts / 'terminal-receipt.json').write_text(json.dumps({
+                'summary_sha256': hashlib.sha256((artifacts / 'summary.json').read_bytes()).hexdigest(),
+                'cleanup_sha256': hashlib.sha256((artifacts / 'cleanup.json').read_bytes()).hexdigest(),
+                'phase_b_controller_sha': runtime['phase_b_controller_sha'],
+                'harness_audited_sha': runtime['harness_audited_sha'],
+                'release_source_sha': runtime['release_source_sha'],
+                'harness_inputs_sha256': rehearsal.harness_inputs_sha256(runtime),
+                'dynamic_inputs_manifest_sha256': rehearsal.sealed_manifest_sha256(forged)}))
+            # This is the child pipe, captured before the attacker can alter
+            # either artifact.  It must not agree with the forged receipt.
+            return self.child_witness(rehearsal.sealed_manifest_sha256(original))
+        with patch.object(rehearsal, 'bootstrap_inputs', return_value=(runtime, manifest, artifacts / 'sealed-runtime.json')), \
+             patch.object(rehearsal, 'run_sealed', side_effect=forge_terminal_and_manifest), \
+             self.assertRaisesRegex(RuntimeError, 'dynamic input provenance differs'):
+            rehearsal.execute(plan)
+        self.assertFalse((artifacts / 'summary.json').exists())
+        self.assertFalse((artifacts / 'terminal-receipt.json').exists())
         self.assertTrue((artifacts / 'raw-k6.json').exists())
         self.assertTrue((artifacts / 'incomplete-receipt.json').exists())
 

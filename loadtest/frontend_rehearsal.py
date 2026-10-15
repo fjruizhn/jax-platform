@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - exercised by direct CLI use.
     from frontend_metrics import GRACEFUL_STOP_SECONDS, MEASURED_SECONDS, WARMUP_SECONDS, build_matrix, summarize
 
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
+DYNAMIC_DIGEST_LINE = re.compile(r"\AP100_DYNAMIC_INPUTS_SHA256=([0-9a-f]{64})\n\Z")
 FORBIDDEN_PREFIXES = (Path('/srv'), Path('/etc'))
 FORBIDDEN_PORTS = {8080, 5173}
 
@@ -342,6 +343,16 @@ def _canonical_json_bytes(value):
 
 def sealed_manifest_sha256(manifest):
     return hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest()
+
+
+def sealed_child_dynamic_digest(stdout):
+    """The parent accepts exactly one child-produced dynamic-manifest witness."""
+    if not isinstance(stdout, str):
+        raise RuntimeError('sealed coordinator did not return a dynamic input witness')
+    matched = DYNAMIC_DIGEST_LINE.fullmatch(stdout)
+    if matched is None:
+        raise RuntimeError('sealed coordinator dynamic input witness is malformed')
+    return matched.group(1)
 
 
 def verify_dynamic_inputs(manifest, artifacts):
@@ -891,7 +902,7 @@ def _execute_sealed(plan, sealed_inputs):
                 'schema': 'p100-rehearsal-incomplete-v1',
                 'cleanup_sha256': _sha256_file(artifacts / 'cleanup.json'),
                 'primary_error': None if primary is None else type(primary).__name__})
-    return report
+    return report, dynamic_inputs_sha256
 
 
 def execute(plan):
@@ -901,8 +912,9 @@ def execute(plan):
     # This process has no authority to operate the rehearsal after bootstrap:
     # invoke the coordinator that was extracted from H's Git object.
     try:
-        run_sealed(manifest, [sys.executable, runtime_plan['browser_script'].replace('frontend_browser.mjs', 'frontend_rehearsal.py'),
-                              '--sealed-runtime', str(runtime_config)], timeout=sealed_coordinator_timeout(runtime_plan))
+        child_result = run_sealed(manifest, [sys.executable, runtime_plan['browser_script'].replace('frontend_browser.mjs', 'frontend_rehearsal.py'),
+                                            '--sealed-runtime', str(runtime_config)], timeout=sealed_coordinator_timeout(runtime_plan))
+        child_dynamic_digest = sealed_child_dynamic_digest(child_result.stdout)
     except Exception as error:
         invalidate_terminal_receipt(artifacts, 'post-H sealed input drift or failure: ' + type(error).__name__)
         raise
@@ -919,7 +931,8 @@ def execute(plan):
         dynamic_path = artifacts / 'dynamic-inputs.json'
         expected_dynamic_digest = terminal.get('dynamic_inputs_manifest_sha256')
         dynamic_bytes = dynamic_path.read_bytes()
-        if not isinstance(expected_dynamic_digest, str) or hashlib.sha256(dynamic_bytes).hexdigest() != expected_dynamic_digest:
+        if (not isinstance(expected_dynamic_digest, str) or child_dynamic_digest != expected_dynamic_digest
+                or hashlib.sha256(dynamic_bytes).hexdigest() != expected_dynamic_digest):
             raise RuntimeError('terminal receipt dynamic input provenance differs')
         dynamic = json.loads(dynamic_bytes)
         verify_dynamic_inputs(dynamic, artifacts)
@@ -950,7 +963,9 @@ def main():
             parser.error('sealed input manifest missing')
         manifest = json.loads(manifest_path.read_text())
         verify_sealed_inputs(manifest)
-        _execute_sealed(raw, manifest)
+        _, dynamic_digest = _execute_sealed(raw, manifest)
+        sys.stdout.write('P100_DYNAMIC_INPUTS_SHA256=' + dynamic_digest + '\n')
+        sys.stdout.flush()
         return 0
     if args.plan == args.execute:
         parser.error('choose exactly one of --plan or --execute')
