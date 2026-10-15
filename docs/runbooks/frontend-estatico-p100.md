@@ -25,18 +25,17 @@ sudo -u jaxsvc test -r "/opt/jax-frontend-releases/$SHA/dist/index.html"
 rm -r -- "$BUILD_DIR"
 ```
 
-Instalar la herramienta **desde el SHA exacto que Hyde auditó**, no desde un archivo del checkout vivo. `SWITCH_SHA` es ese SHA, copiado del veredicto; un avance posterior de `HEAD` no lo cambia. `git show` sólo lee el objeto Git; root ejecuta exclusivamente la copia bajo `/usr/local/libexec`. El segundo `git show` compara sus bytes con los instalados, y `stat` verifica dueño y modo. Si cualquiera falla, no activar.
+Instalar la herramienta **desde el SHA exacto que Hyde auditó**, usando `gh api` con la cuenta del operador para descargarla de GitHub. `SWITCH_SHA` es el SHA completo copiado del veredicto; este paso no lee el almacén Git ni ejecuta archivos del checkout productivo, que `jaxsvc` puede modificar. Root ejecuta exclusivamente la copia bajo `/usr/local/libexec`. `cmp` coteja los bytes instalados con la descarga privada del operador, y `stat` verifica dueño y modo. Si cualquiera falla, no activar.
 
 ```bash
 set -euo pipefail
-ROOT=/srv/jax-prod/jax-platform
 SWITCH_SHA='PEGAR_SHA_AUDITADO'
 SWITCH=/usr/local/libexec/jax-frontend-switch.py
 SWITCH_TMP=$(mktemp)
-git -C "$ROOT" show "$SWITCH_SHA:ops/frontend/switch.py" > "$SWITCH_TMP"
+gh api "repos/fjruizhn/jax-platform/contents/ops/frontend/switch.py?ref=$SWITCH_SHA" -H 'Accept: application/vnd.github.raw' > "$SWITCH_TMP"
 sudo install -d -o root -g root -m 0755 /usr/local/libexec
 sudo install -o root -g root -m 0755 "$SWITCH_TMP" "$SWITCH"
-git -C "$ROOT" show "$SWITCH_SHA:ops/frontend/switch.py" | sudo cmp - "$SWITCH"
+sudo cmp "$SWITCH_TMP" "$SWITCH"
 sudo test "$(stat -c '%U:%G:%a' "$SWITCH")" = root:root:755
 rm -- "$SWITCH_TMP"
 ```
