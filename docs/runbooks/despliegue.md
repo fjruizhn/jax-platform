@@ -160,6 +160,12 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/api/admin/memoria
 
 ## 3 · Frontend interno (`:5173`)
 
+**P100 / OP#270:** la transición a un build compilado servido por nginx tiene
+comandos de preparación, activación y reversión en
+[`frontend-estatico-p100.md`](frontend-estatico-p100.md). Ejecutarlos sólo
+después de auditoría y orden de despliegue de Hyde. Hasta entonces, el servicio
+actual sigue en Vite; esto no publica el sitio de atem-ai.
+
 ```bash
 sudo systemctl restart jax-platform-frontend
 ```
