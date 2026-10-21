@@ -28,15 +28,15 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
             "WorkingDirectory": backend, "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
             "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"],
             "EnvironmentFiles": [["/etc/jax/runtime.env", False]],
-            "ExecStart": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--log-level", "warning"], False, 0, 0, 0, 0, 0, 0, 0]],
-            "ExecStartPre": [], "ExecStartPost": [], "ExecCondition": [], "Type": "simple", "RemainAfterExit": False,
+            "ExecStartEx": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
         },
         "jax-platform-migrate.service": {
             "WorkingDirectory": backend, "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
             "Environment": [], "EnvironmentFiles": [["/etc/jax/migrate.env", False]],
-            "ExecStart": [[f"{backend}/.venv/bin/python", [f"{backend}/.venv/bin/python", "-m", "db.migrate"], False, 0, 0, 0, 0, 0, 0, 0]],
-            "ExecStartPre": [], "ExecStartPost": [], "ExecCondition": [], "Type": "oneshot", "RemainAfterExit": False,
+            "ExecStartEx": [[f"{backend}/.venv/bin/python", [f"{backend}/.venv/bin/python", "-m", "db.migrate"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
         },
     }
@@ -54,7 +54,7 @@ def _fake_busctl(tmp_path: Path, contract: dict[str, dict[str, object]]) -> Path
         " unit=args[-1]; print(json.dumps({'type':'o','data':['/org/freedesktop/systemd1/unit/'+unit.replace('-', '_2d').replace('.', '_2e')]})); raise SystemExit(0)\n"
         "if args[:3] == ['--json=short', 'get-property', 'org.freedesktop.systemd1']:\n"
         " prop=args[-1]; unit='jax-platform-migrate.service' if 'migrate' in args[3] else 'jax-platform.service'; value=contract[unit][prop]\n"
-        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','ExecStart':'a(sasbttttuii)','ExecStartPre':'a(sasbttttuii)','ExecStartPost':'a(sasbttttuii)','ExecCondition':'a(sasbttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
+        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','ExecStartEx':'a(sasasttttuii)','ExecStartPreEx':'a(sasasttttuii)','ExecStartPostEx':'a(sasasttttuii)','ExecConditionEx':'a(sasasttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
         " print(json.dumps({'type':types[prop],'data':value})); raise SystemExit(0)\nraise SystemExit(9)\n",
         encoding="utf-8",
     )
@@ -77,18 +77,23 @@ def test_restore_accepts_complete_effective_source_unit_contract(tmp_path: Path)
 
 def test_restore_rejects_effective_contract_tampering(tmp_path: Path) -> None:
     cases = {
-        "wrong argv": lambda c: c["jax-platform.service"]["ExecStart"][0][1].append("--reload"),
-        "ignored start command": lambda c: c["jax-platform.service"]["ExecStart"][0].__setitem__(2, True),
+        "wrong argv": lambda c: c["jax-platform.service"]["ExecStartEx"][0][1].append("--reload"),
+        "privileged start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["full-privileges"]),
+        "no setuid start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["no-setuid"]),
+        "ignored start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["ignore-failure"]),
+        "argv zero start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["argv0"]),
         "wrong user": lambda c: c["jax-platform.service"].__setitem__("User", "root"),
         "wrong group": lambda c: c["jax-platform.service"].__setitem__("Group", "root"),
         "legacy credential group": lambda c: c["jax-platform.service"].__setitem__("SupplementaryGroups", ["jaxlegacy"]),
         "common and extra environment": lambda c: c["jax-platform.service"].__setitem__("EnvironmentFiles", [["/etc/jax/runtime.env", False], ["/etc/jax/.env", False]]),
         "injected environment": lambda c: c["jax-platform.service"].__setitem__("Environment", ["JAX_DB_PASSWORD=unexpected"]),
         "ignored environment file": lambda c: c["jax-platform.service"].__setitem__("EnvironmentFiles", [["/etc/jax/runtime.env", True]]),
-        "additional start command": lambda c: c["jax-platform.service"].__setitem__("ExecStart", c["jax-platform.service"]["ExecStart"] * 2),
-        "pre command": lambda c: c["jax-platform.service"].__setitem__("ExecStartPre", [["/bin/true", ["/bin/true"], False, 0, 0, 0, 0, 0, 0, 0]]),
-        "post command": lambda c: c["jax-platform.service"].__setitem__("ExecStartPost", [["/bin/true", ["/bin/true"], False, 0, 0, 0, 0, 0, 0, 0]]),
-        "condition command": lambda c: c["jax-platform.service"].__setitem__("ExecCondition", [["/bin/true", ["/bin/true"], False, 0, 0, 0, 0, 0, 0, 0]]),
+        "additional start command": lambda c: c["jax-platform.service"].__setitem__("ExecStartEx", c["jax-platform.service"]["ExecStartEx"] * 2),
+        "legacy start property only": lambda c: c["jax-platform.service"].__setitem__("ExecStart", c["jax-platform.service"].pop("ExecStartEx")),
+        "pre command": lambda c: c["jax-platform.service"].__setitem__("ExecStartPreEx", [["/bin/true", ["/bin/true"], [], 0, 0, 0, 0, 0, 0, 0]]),
+        "post command": lambda c: c["jax-platform.service"].__setitem__("ExecStartPostEx", [["/bin/true", ["/bin/true"], [], 0, 0, 0, 0, 0, 0, 0]]),
+        "condition command": lambda c: c["jax-platform.service"].__setitem__("ExecConditionEx", [["/bin/true", ["/bin/true"], [], 0, 0, 0, 0, 0, 0, 0]]),
+        "legacy pre property only": lambda c: c["jax-platform.service"].__setitem__("ExecStartPre", c["jax-platform.service"].pop("ExecStartPreEx")),
         "missing migration dependency": lambda c: c["jax-platform.service"].__setitem__("Requires", []),
         "missing docker dependency": lambda c: c["jax-platform-migrate.service"].__setitem__("After", []),
         "wrong type": lambda c: c["jax-platform-migrate.service"].__setitem__("Type", "simple"),

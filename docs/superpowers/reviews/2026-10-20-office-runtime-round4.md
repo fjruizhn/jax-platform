@@ -58,3 +58,6 @@ or incomplete replies.
 
 ## Independent root verification
 2026-10-20 · Codex: 77 focused/runtime/authority/migration/auth/project tests passed in6.32s against disposable MariaDB33991; 1093 expected idempotent-DDL warnings hidden. Read-only live busctl scalar/array formats matched fixture JSON type/data transport; live service remains legacy and was not changed. No OS isolation/boot or production claim; Task6 remains.
+
+## Independent verdict
+Sol office_authority_review **RECHAZADO** exact5e308fc37e970cfdf7967c6c7811b4716ac26d51. BLOCK: legacy ExecStart representation omits systemd +/! execution flags, accepting sameargv that bypasses User/Group. Require ExecStartEx (a(sasasttttuii)) exactsinglecommand with emptyflags and allhooks *Ex, no fallback. Finalround5 assignedfreshTier2; no releaseapproval. Source: independentreviewconfirmedreadonlyhostlegacy-vs-Exdifferenceandlocalofficialmanual.

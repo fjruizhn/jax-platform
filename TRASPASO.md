@@ -27,3 +27,5 @@ Task1fixround2 listo: fixture raíz real deprovisiónDB pasó contempfiles/princ
 Task1fixround3 listo: readinessv2/upgradeascii/CHECKexacto y arranqueDocker/restoreartefacto coherente. Raíz78passed2.37s+fixtureprovisiónDBexit0. ScopeopsOSlive sigueTask6, ninguna activación. ScopedSolreview antes deTask2barreras.
 
 Task1fixround4 congelado: verificador usa busctlJSON/LoadUnit y contrato efectivo completo de argv/identidad/env/hooks/dependencias. Raíz77passed6.32s sobreMariaDB33991; transporteD-Bus scalar/array contrastado readonly. Fuente docs/superpowers/reviews/2026-10-20-office-runtime-round4.md. ScopedSol exactSHA siguiente, noactivación niOS/prodmutados.
+
+Task1finalround5: Excommandproperties preserveprefixflags; exactargv+emptyflags+emptyExhooks, nolegacyfallback. Worker77broadpassed7.17s, rootfocused6passed and actualhostExformatverifiedreadonly. ExactSHAreviewnext; cap5 thenadjudicate. NoOS/prodchange.

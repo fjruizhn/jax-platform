@@ -11,9 +11,9 @@ from pathlib import Path
 
 SERVICE_PROPERTIES = {
     "WorkingDirectory": "s", "User": "s", "Group": "s", "SupplementaryGroups": "as",
-    "Environment": "as", "EnvironmentFiles": "a(sb)", "ExecStart": "a(sasbttttuii)",
-    "ExecStartPre": "a(sasbttttuii)", "ExecStartPost": "a(sasbttttuii)",
-    "ExecCondition": "a(sasbttttuii)", "Type": "s", "RemainAfterExit": "b",
+    "Environment": "as", "EnvironmentFiles": "a(sb)", "ExecStartEx": "a(sasasttttuii)",
+    "ExecStartPreEx": "a(sasasttttuii)", "ExecStartPostEx": "a(sasasttttuii)",
+    "ExecConditionEx": "a(sasasttttuii)", "Type": "s", "RemainAfterExit": "b",
 }
 UNIT_PROPERTIES = {"Requires": "as", "After": "as"}
 UNITS = ("jax-platform.service", "jax-platform-migrate.service")
@@ -121,19 +121,24 @@ def verify(artifact: Path, command: list[str]) -> None:
         for field in ("WorkingDirectory", "User", "Group", "SupplementaryGroups", "Environment", "EnvironmentFiles", "Type", "RemainAfterExit"):
             if actual[field] != wanted[field]:
                 raise fail(unit, field)
-        starts = actual["ExecStart"]
+        # ExecStart deliberately has no privilege-prefix information.  The
+        # *Ex properties retain it as the third tuple member (an array of
+        # flags), so accepting the legacy property could silently run a
+        # different command as root or with no-setuid/ignore-failure flags.
+        starts = actual["ExecStartEx"]
         if not isinstance(starts, list) or len(starts) != 1 or not isinstance(starts[0], list) or len(starts[0]) != 10:
-            raise fail(unit, "ExecStart")
+            raise fail(unit, "ExecStartEx")
         if (
             not isinstance(starts[0][0], str)
             or not isinstance(starts[0][1], list)
             or not all(isinstance(argument, str) for argument in starts[0][1])
+            or not isinstance(starts[0][2], list)
+            or starts[0][2] != []
             or starts[0][0] != wanted["ExecStart"][0]
             or starts[0][1] != wanted["ExecStart"]
-            or starts[0][2] is not False
         ):
-            raise fail(unit, "ExecStart")
-        for field in ("ExecStartPre", "ExecStartPost", "ExecCondition"):
+            raise fail(unit, "ExecStartEx")
+        for field in ("ExecStartPreEx", "ExecStartPostEx", "ExecConditionEx"):
             if actual[field] != []:
                 raise fail(unit, field)
         for field in ("Requires", "After"):
