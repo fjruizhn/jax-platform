@@ -162,6 +162,47 @@ def test_sse_queued_event_is_rechecked_before_generator_yield(client, usuarios):
     assert client.portal.call(scenario) == "closed"
 
 
+@pytest.mark.parametrize("infrastructure_failure", [False, True])
+def test_sse_sibling_streams_close_together_after_callback_reverification_failure(client, usuarios, monkeypatch,
+                                                                                   infrastructure_failure):
+    """One EventBus callback must close both SSE siblings for the same user."""
+    import asyncio
+    from api import events as events_mod
+    from auth.jwt import decode_token
+    from auth.middleware import verificar_sesion
+    from jax_engine.events import event_bus
+    from jax_engine.schemas import JAXEvent
+    from jax_engine.lifecycle import sse_connections
+
+    actor, _ = usuarios()
+
+    async def scenario():
+        user = await verificar_sesion(decode_token(token_para(actor)), "access")
+        first = await events_mod.sse_events(user)
+        second = await events_mod.sse_events(user)
+        first_generator, second_generator = first.body_iterator, second.body_iterator
+        try:
+            if infrastructure_failure:
+                async def unavailable(_user):
+                    raise RuntimeError("database unavailable")
+                monkeypatch.setattr(events_mod, "reverificar_sesion", unavailable)
+            else:
+                await sql("UPDATE jax_users SET account_class='OFFICE_INTERNAL' WHERE user_id=%s", (actor,))
+            await event_bus.publish(JAXEvent(event_type="heartbeat", tenant_id=user.tenant_id,
+                                              user_id=user.user_id, payload={"must_not": "escape"}))
+            with pytest.raises(StopAsyncIteration):
+                await asyncio.wait_for(first_generator.__anext__(), timeout=1)
+            with pytest.raises(StopAsyncIteration):
+                await asyncio.wait_for(second_generator.__anext__(), timeout=1)
+            assert not sse_connections.has_connections(user.user_id)
+            assert user.user_id not in events_mod._streams
+            assert user.user_id not in event_bus._subscribers.get(user.tenant_id, {})
+        finally:
+            await first_generator.aclose()
+            await second_generator.aclose()
+    client.portal.call(scenario)
+
+
 def test_established_ws_heartbeat_class_change_closes_all_ws_and_sse(client, usuarios, monkeypatch):
     import asyncio
     import main

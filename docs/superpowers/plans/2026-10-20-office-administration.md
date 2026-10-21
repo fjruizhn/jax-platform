@@ -19,6 +19,14 @@ Own backend/auth/models.py, auth/middleware.py, api/auth.py, api/admin/users.py,
 
 Own backend/virtual_office/{mfa,invitations}.py, backend/api/virtual_office/, schemas/proyectos/personas, constraints/requirements, tests. Integrar rutas auth/main secuencialmente. TOTP/cifrado/recovery/stepup/versiones, proyectos dedicados, grants/delegaciones y auditoría, invitación/outbox auditable. Bootstrap explícito verificado en comando propio no migración. Ningún envío real durante pruebas.
 
+### Task 3 delivery slices
+
+3A: persisted MFA primitives/schema/versioned readiness and direct service tests, no new routes/session issuance. Reuse crypto and existing pools/transactions. Strict credential/challenge/TOTP/recovery contracts; consume uniqueness and security events in same transaction, no plaintext fallback.
+
+3B: auth/token/session integration and dedicated MFA endpoints, central privileged-role/recency enforcement, root target-identity proof. Existing classic no-factor login preserved; MFA challenge grants no session. All WS/SSE version cuts and refresh absolute expiration/recency tests required.
+
+3C: administrative projects/people/delegations/grants, immutable invitation issuance proof/atomic acceptance+typed core adapter, explicit bootstrap and durable outbox. No real email/account/bootstrap in tests. Human target-account question affects activation, not service development. Independent exact-SHA review between slices; no external identities/Office execution enabled until all applicable gates.
+
 ## Task 4: UI administrativa
 
 Own frontend/src/api/virtualOffice.js, pages/VirtualOffice*, components/virtual-office/, App y traducciones secuencialmente. Reutilizar Dialogo/tema/auth, selector proyectos, globaladmin/personas/permisos/invitación/MFA. Vitest y navegador ambos idiomas/temas/móvil/teclado; cuenta externa no carga datos clásicos.

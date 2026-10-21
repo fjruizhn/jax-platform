@@ -39,3 +39,5 @@ Task2barrierslice checkpoint: root207passed5.34s includesclassicadmin/session/do
 Task2completeimplementationfrozen: typedrootcreation+memberadmincleanup andexact .2paritybeforeclients, allclass/session/identity/legacydocbarriers. Root253passed5.72s133warnings; prooflesscapabilityacceptancedenied andSSEqueued-deliveryfreshDBchecked. ExactSHAauditnext; Task3MFA/API notenabled.
 
 Task2fixround1: priorSolRECHAZADO0fc40d1 fourfindings corrected; root221passed4.58s133warnings usingrealDB33991. Allownedproductfrozen; scopedexactSHAreviewnext. No capabilityenabled. Evidenceoffice-session-barrier-round1.md.
+
+Task2fixround2: independentSolfoundSSE-onlysiblingsgap despiteWSheartbeatclosure; callbackandpreyieldfailures nowcloseallregistries. RoottwoSSEtestsinspected and223broadpassed4.60s133warnings. Scopeapi/events.pyandtests, reviewedexactSHApending. Task3split3A/B/Cdocumented, notdispatchedbeforegate.

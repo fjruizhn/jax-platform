@@ -60,6 +60,18 @@ async def close_user_streams(user_id: str) -> int:
     return len(colas)
 
 
+async def _close_classic_user_channels(user_id: str) -> None:
+    """Close every classic SSE/WS sibling after fresh authority fails.
+
+    EventBus stores one callback per user; a newer SSE connection can replace
+    an older one's callback.  Closing only that captured queue would leave the
+    earlier generator live and the shared subscription stale.  The existing
+    channel registries own final disconnect/unsubscribe cleanup.
+    """
+    await ws_hub.close_user(user_id, code=4001)
+    await close_user_streams(user_id)
+
+
 @router.get("")
 async def sse_events(user: AuthUser = Depends(get_current_user)):
     # Direct callers and the ordinary HTTP dependency both reach this guard.
@@ -75,11 +87,11 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
             fresh = await reverificar_sesion(user)
             require_classic_stream_user(fresh)
         except HTTPException:
-            queue.put_nowait(_CERRAR)
+            await _close_classic_user_channels(user.user_id)
             return
         except Exception:
             logger.exception("Fallo al re-verificar la sesión del stream SSE")
-            queue.put_nowait(_CERRAR)
+            await _close_classic_user_channels(user.user_id)
             return
         await queue.put(event)
 
@@ -119,9 +131,11 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
                     fresh = await reverificar_sesion(user)
                     require_classic_stream_user(fresh)
                 except HTTPException:
+                    await _close_classic_user_channels(user.user_id)
                     return
                 except Exception:
                     logger.exception("Fallo al re-verificar la sesión antes de emitir SSE")
+                    await _close_classic_user_channels(user.user_id)
                     return
                 yield f"data: {json.dumps(event.model_dump())}\n\n"
         except asyncio.CancelledError:  # fail-soft: CancelledError es la forma normal de terminar el generador SSE al desconectar el cliente
