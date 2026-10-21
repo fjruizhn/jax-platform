@@ -78,6 +78,28 @@ def test_office_audit_rejects_noncanonical_global_tenant(client):
     client.portal.call(scenario)
 
 
+def test_office_audit_check_discriminates_system_fence_from_authorization(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        invalid = (
+            "INSERT INTO office_authorization_event (actor_user_id,actor_principal,event_kind,fence_key,operation,result,reason_code,occurred_at) "
+            "VALUES (1,NULL,'SYSTEM_FENCE','office-audit-fence-v1','VIEW_PROJECT','RECORDED','office_audit_fence_v1',NOW(6))",
+            "INSERT INTO office_authorization_event (actor_user_id,actor_principal,event_kind,fence_key,operation,result,reason_code,occurred_at) "
+            "VALUES (NULL,NULL,'AUTHORIZATION',NULL,'VIEW_PROJECT','DENIED','test',NOW(6))",
+            "INSERT INTO office_authorization_event (actor_user_id,actor_principal,event_kind,fence_key,operation,result,reason_code,occurred_at) "
+            "VALUES (1,NULL,'AUTHORIZATION',NULL,'AUDIT_FENCE_CANARY','DENIED','test',NOW(6))",
+        )
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                for statement in invalid:
+                    with pytest.raises(aiomysql.OperationalError) as error:
+                        await cur.execute(statement)
+                    assert error.value.args[0] == 4025
+    client.portal.call(scenario)
+
+
 def test_external_relation_cannot_bind_a_group_from_another_project(client):
     async def scenario():
         import uuid

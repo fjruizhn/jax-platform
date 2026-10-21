@@ -321,6 +321,8 @@ def test_explain_covers_each_canonical_authority_lookup_without_sort_or_temporar
             extra = " ".join(str(row[-1] or "") for row in rows)
             assert "Using filesort" not in extra
             assert "Using temporary" not in extra
+            assert all(str(row[3]).upper() != "ALL" for row in rows)
+            assert all(row[5] is not None for row in rows)
     client.portal.call(scenario)
 
 

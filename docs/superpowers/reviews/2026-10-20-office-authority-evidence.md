@@ -21,3 +21,17 @@ El runner canónico se ejecuta por db.migrate en proceso oneshot, y web no lo ll
 ## Límites
 
 La protección es frente al principal DB runtime. Administrador DB/migrador son de confianza; no se afirma inmutabilidad frente a ellos ni frente a un compromiso total del host. La suite heredada prepara DDL privilegiado y puede sustituir el guard en su fixture; no acredita seguridad Office por sí sola. La prueba de runtime usa su cuenta restringida real y el guard sin sustituirlo. MFA/HTTPWSbarreras/APIs/escena/colas aún son siguientes tareas; no clientes habilitados.
+
+## Corrección y verificación · fixround2
+
+CORRECCIÓN de la afirmación anterior sobre separación en unidades: Sol rechazó5c340e0 porque restore no creaba realmente los env, web heredaba secreto migrador, faltaba dependencia de oneshot y la cuenta compartida LAS MANOS conservabaDDL. Separar solo env tampoco basta cuando comparten uid/grupo. El contrato revisado exige web/migrador con identidadesOS/DB dedicadas y preserva legado confiable sin revocarlo. No se aplicó el cambio a servicios vivos.
+
+CHECKdiscriminador audit impide SYSTEM_FENCE falso/AUTHORIZATIONsinactor; no reescribe historial y conserva constraint compatible; incompatible falla cerrado. Lifecycle existente actualizado al guard DB. Fuente: diff/backendtests, originalTier2 y sucesoropscontextofresco.
+
+Raíz ejecutó fixture real `sudo -n ops/migration/tests/provision-db-runtime-disposable.sh`, exclusivamente contenedor propio cv-op343-db-20261020 ID7cdc8cc68ac3f4ff60d8e42d10f0ea70141b179a7504f843d2dd52da0414d307 publicado127.0.0.1:33991. Exit0: CREATE/grants exactos con loginCURRENT_USER, archivosroot-only temporales, segundoapplyidempotente, rechazo de permisos inseguros/secretomissingen cuentaexistente/extraGRANT. Limpieza solo de principalesaleatoriospropios. No useradd/systemctl ni escrituras/etc o/srv. OSidentidades/drop-ins efectivos y ordenstart/restart reales siguen Task6 antes de activación. Dos fallos iniciales de la prueba se resolvieron: nombre aleatorio excedía32caracteres y SHOWGRANTS reordena privilegios; ahora nombres válidos y comparación de conjunto exacto, no deordenSQL.
+
+EXPLAINindependiente ejecutando las seis funciones reales del repository con/sin FORUPDATE:12planes, todos con keyelegida y sinALL/filesort/temporary. Volumen sintético medido:1256usuarios,1451scopes,1432memberships,461Officegrants,66relaciones,40delegaciones,19professionalgrants. ResultadoJSONsincredenciales en2026-10-20-office-authority-explain.json. No se infiere carga productiva de estos planes.
+
+Raízprobó regresiónlifecycle puntualmente:1passed0.64s. Suitecombinada antes de quitar prueba de tokens deimplementación65passed451warnings1.75s; cifra final posterior se registra abajo. La eliminación conserva prueba conductual real del orden deprivilegios. Dictamen exactSHA todavía pendiente.
+
+Verificaciónfinal raíz fixround2:64passed451warnings1.80s con--disable-warnings, Office/provisión/runtime/auth/proyectos/lifecycle. Bashsyntax tresguiones ygitdiffcheck pasan.

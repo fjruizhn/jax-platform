@@ -594,8 +594,8 @@ def test_lifespan_crea_y_cierra_el_pool(monkeypatch):
     async def http_espia():
         llamadas.append("http")
 
-    async def migraciones_espia():
-        llamadas.append("migraciones")
+    async def contrato_db_espia(_pool):
+        llamadas.append("contrato_db")
 
     async def seed_espia():
         llamadas.append("seed")
@@ -605,7 +605,7 @@ def test_lifespan_crea_y_cierra_el_pool(monkeypatch):
     monkeypatch.setattr(pdf_pool, "precalentar_pool", precalentar_espia)
     monkeypatch.setattr(main, "get_pool", pool_espia)
     monkeypatch.setattr(main, "get_http_client", http_espia)
-    monkeypatch.setattr(main, "run_migrations", migraciones_espia)
+    monkeypatch.setattr(main, "assert_runtime_db_contract", contrato_db_espia)
     monkeypatch.setattr(main, "run_seed", seed_espia)
 
     async def cargar_nombres_espia():

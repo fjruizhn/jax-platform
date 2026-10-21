@@ -95,7 +95,7 @@ async def apply_office_migrations(cursor) -> None:
     # Runtime fence fields are additive and intentionally use no pseudo-user:
     # SYSTEM_FENCE has NULL actor_user_id and a canonical system principal.
     await cursor.execute("ALTER TABLE office_authorization_event MODIFY actor_user_id INT NULL")
-    await cursor.execute("ALTER TABLE office_authorization_event ADD COLUMN IF NOT EXISTS requested_project_id INT NULL AFTER operation, ADD COLUMN IF NOT EXISTS actor_principal VARCHAR(64) NULL AFTER actor_user_id, ADD COLUMN IF NOT EXISTS event_kind VARCHAR(24) NOT NULL DEFAULT 'AUTHORIZATION' AFTER actor_principal, ADD COLUMN IF NOT EXISTS fence_key VARCHAR(64) NULL AFTER event_kind")
+    await cursor.execute("ALTER TABLE office_authorization_event ADD COLUMN IF NOT EXISTS requested_project_id INT NULL AFTER operation, ADD COLUMN IF NOT EXISTS actor_principal VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER actor_user_id, ADD COLUMN IF NOT EXISTS event_kind VARCHAR(24) NOT NULL DEFAULT 'AUTHORIZATION' AFTER actor_principal, ADD COLUMN IF NOT EXISTS fence_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER event_kind")
     if not await _index_exists(cursor, "office_authorization_event", "uq_office_authorization_event_fence"):
         await cursor.execute("ALTER TABLE office_authorization_event ADD UNIQUE KEY uq_office_authorization_event_fence (fence_key)")
     result_clause = await _check_clause(cursor, "chk_office_authorization_event_result")
@@ -104,6 +104,21 @@ async def apply_office_migrations(cursor) -> None:
         result_clause = None
     if result_clause is None:
         await cursor.execute("ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_result CHECK (result IN ('ALLOWED','DENIED','RECORDED'))")
+    shape_clause = await _check_clause(cursor, "chk_office_authorization_event_shape")
+    if shape_clause is not None and ("SYSTEM_FENCE" not in shape_clause or "AUTHORIZATION" not in shape_clause):
+        raise RuntimeError("Office audit shape constraint is incompatible; historic evidence is not rewritten")
+    if shape_clause is None:
+        await cursor.execute(
+            "ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_shape CHECK ("
+            "(event_kind='AUTHORIZATION' AND actor_user_id IS NOT NULL AND actor_principal IS NULL AND fence_key IS NULL "
+            "AND result IN ('ALLOWED','DENIED') AND operation <> 'AUDIT_FENCE_CANARY') "
+            "OR (event_kind='SYSTEM_FENCE' AND actor_user_id IS NULL "
+            "AND actor_principal IS NOT NULL AND BINARY actor_principal=BINARY 'system:office-schema-migrator' "
+            "AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-audit-fence-v1' "
+            "AND operation='AUDIT_FENCE_CANARY' AND requested_project_id IS NULL AND project_id IS NULL AND tenant_id IS NULL "
+            "AND result='RECORDED' AND reason_code='office_audit_fence_v1' AND correlation_id IS NULL)"
+            ")"
+        )
     await cursor.execute("SELECT actor_user_id,actor_principal,event_kind,fence_key,operation,project_id,tenant_id,result,reason_code,correlation_id FROM office_authorization_event WHERE fence_key='office-audit-fence-v1'")
     row = await cursor.fetchone()
     canonical = (None, 'system:office-schema-migrator', 'SYSTEM_FENCE', 'office-audit-fence-v1', 'AUDIT_FENCE_CANARY', None, None, 'RECORDED', 'office_audit_fence_v1', None)
