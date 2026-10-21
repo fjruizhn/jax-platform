@@ -3748,6 +3748,11 @@ async def run_migrations():
             # platform migration runner starts (the same ordering used in CI).
             await _apply_jax_project_authority_migration(cur)
 
+            # Virtual Office owns only its additive authority schema.  The JAX
+            # namespace column is read as a contract; no Office code writes it.
+            from virtual_office.migrations import apply_office_migrations
+            await apply_office_migrations(cur)
+
             for table_name, column_name, ddl in _COLUMNS:
                 if not await _column_exists(cur, table_name, column_name):
                     await cur.execute(ddl)

@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class OfficeOperation(StrEnum):
+    VIEW_PROJECT = "VIEW_PROJECT"
+    MANAGE_PROJECT = "MANAGE_PROJECT"
+    PROFESSIONAL_ACTION = "PROFESSIONAL_ACTION"
+    ADMINISTER_OFFICE = "ADMINISTER_OFFICE"
+    CREATE_OFFICE_PROJECT = "CREATE_OFFICE_PROJECT"
+
+
+PROJECT_OPERATIONS = frozenset({OfficeOperation.VIEW_PROJECT, OfficeOperation.MANAGE_PROJECT, OfficeOperation.PROFESSIONAL_ACTION})
+ADMIN_OPERATIONS = frozenset({OfficeOperation.ADMINISTER_OFFICE, OfficeOperation.CREATE_OFFICE_PROJECT})
+
+
+def operation_requires_project(operation: OfficeOperation) -> bool:
+    return operation in PROJECT_OPERATIONS
+
+
+def grant_permits(operation: OfficeOperation, grant_role: str, audience: str) -> bool:
+    if operation is OfficeOperation.VIEW_PROJECT:
+        return grant_role in {"COLLABORATOR", "PROJECT_ADMIN"} and audience in {"INTERNAL", "CLIENT_PUBLISHED"}
+    return operation is OfficeOperation.MANAGE_PROJECT and grant_role == "PROJECT_ADMIN" and audience == "INTERNAL"

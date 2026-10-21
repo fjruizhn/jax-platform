@@ -13,7 +13,7 @@ Own backend/virtual_office/{__init__,models,capabilities,authority,repository,au
 
 ## Task 2: Barreras de sesión y par JAX
 
-Own backend/auth/models.py, auth/middleware.py, api/auth.py, main.py y par_jax.py, tests específicos. Cargar account_class de DB, HTTP allowlist external estricta/sessionenrollment, WS clásico rechaza, SSE cubierto. Adaptador transaccional namespace autorizado y contrato de par al arranque. Consumir JAX solo tras gate independiente de namespace.
+Own backend/auth/models.py, auth/middleware.py, api/auth.py, main.py y par_jax.py, tests específicos. Cargar account_class de DB, HTTP allowlist external estricta/sessionenrollment, WS clásico rechaza, SSE cubierto. Adaptador transaccional namespace autorizado y contrato de par al arranque. Incluir backend/proyectos_documentos/repositorio.py: sus consultas directas a jax_project_scope (despacho, predicado de owner, INSERT/reencolar/diagnóstico y jobs abiertos) deben filtrar CLASSIC; prueba real de filas Office con membresía heredada y trabajo en cola que no se despacha/lee/modifica desde ruta clásica. Consumir JAX solo tras gate independiente de namespace.
 
 ## Task 3: MFA y administración API
 
