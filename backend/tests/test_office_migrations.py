@@ -7,6 +7,12 @@ import aiomysql
 import pytest
 
 from virtual_office.migrations import apply_office_migrations
+from virtual_office.migrations import _CANONICAL_AUDIT_SHAPE, _is_canonical_audit_shape
+
+
+def test_audit_check_comparison_preserves_binary_literal_case():
+    assert _is_canonical_audit_shape(_CANONICAL_AUDIT_SHAPE)
+    assert not _is_canonical_audit_shape(_CANONICAL_AUDIT_SHAPE.replace("office-audit-fence-v1", "OFFICE-AUDIT-FENCE-V1"))
 
 
 async def _schema_state():
@@ -123,4 +129,86 @@ def test_external_relation_cannot_bind_a_group_from_another_project(client):
                 foreign_group = cur.lastrowid
                 with pytest.raises(aiomysql.IntegrityError):
                     await cur.execute("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (project_a, user, foreign_group))
+    client.portal.call(scenario)
+
+
+def test_upgrade_converts_prior_utf8_fence_columns_to_ascii_bin(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("ALTER TABLE office_authorization_event MODIFY actor_principal VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL, MODIFY fence_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL")
+                await apply_office_migrations(cur)
+                await cur.execute("SELECT COLUMN_NAME,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_authorization_event' AND COLUMN_NAME IN ('actor_principal','fence_key') ORDER BY COLUMN_NAME")
+                assert await cur.fetchall() == (("actor_principal", "ascii", "ascii_bin"), ("fence_key", "ascii", "ascii_bin"))
+    client.portal.call(scenario)
+
+
+def test_homonymous_audit_shape_constraint_fails_closed_without_readiness(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_shape")
+                await cur.execute("ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_shape CHECK (event_kind IN ('AUTHORIZATION','SYSTEM_FENCE'))")
+                with pytest.raises(RuntimeError, match="shape constraint is incompatible"):
+                    await apply_office_migrations(cur)
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_shape")
+                await apply_office_migrations(cur)
+        from db.migrations import run_migrations
+        await run_migrations()
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("replacement", (
+    "CHECK ((event_kind='AUTHORIZATION' AND actor_user_id IS NOT NULL AND actor_principal IS NULL AND fence_key IS NULL AND result IN ('ALLOWED','DENIED') AND operation <> 'AUDIT_FENCE_CANARY') OR (event_kind='SYSTEM_FENCE' AND actor_user_id IS NULL AND actor_principal IS NOT NULL AND BINARY actor_principal=BINARY 'system:office-schema-migrator' AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-audit-fence-v1' AND operation='AUDIT_FENCE_CANARY' AND requested_project_id IS NULL AND project_id IS NULL AND tenant_id IS NULL AND result='RECORDED' AND reason_code='office_audit_fence_v1' AND correlation_id IS NULL) OR 1=1)",
+    "CHECK ((event_kind='AUTHORIZATION' OR actor_user_id IS NOT NULL OR actor_principal IS NULL OR fence_key IS NULL OR result IN ('ALLOWED','DENIED') OR operation <> 'AUDIT_FENCE_CANARY') OR (event_kind='SYSTEM_FENCE' OR actor_user_id IS NULL OR actor_principal IS NOT NULL OR BINARY actor_principal=BINARY 'system:office-schema-migrator' OR fence_key IS NOT NULL OR BINARY fence_key=BINARY 'office-audit-fence-v1' OR operation='AUDIT_FENCE_CANARY' OR requested_project_id IS NULL OR project_id IS NULL OR tenant_id IS NULL OR result='RECORDED' OR reason_code='office_audit_fence_v1' OR correlation_id IS NULL))",
+))
+def test_boolean_weakened_audit_shape_fails_closed(replacement, client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_shape")
+                await cur.execute("ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_shape " + replacement)
+                with pytest.raises(RuntimeError, match="shape constraint is incompatible"):
+                    await apply_office_migrations(cur)
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_shape")
+                await apply_office_migrations(cur)
+        from db.migrations import run_migrations
+        await run_migrations()
+    client.portal.call(scenario)
+
+
+def test_weakened_result_constraint_fails_closed(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_result")
+                await cur.execute("ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_result CHECK (result IN ('ALLOWED','DENIED','RECORDED') OR 1=1)")
+                with pytest.raises(RuntimeError, match="result constraint is incompatible"):
+                    await apply_office_migrations(cur)
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await cur.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_result")
+                await apply_office_migrations(cur)
+        from db.migrations import run_migrations
+        await run_migrations()
     client.portal.call(scenario)

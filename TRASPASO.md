@@ -23,3 +23,5 @@ Task5 contrato previo preparado en docs/superpowers/specs/2026-10-20-office-work
 Namespace core marker office-namespace.1 aprobadoSol22715d518b24fd19801b29144e5f85b9307eeaac, puedeconsumirseTask2 tras gateTask1. Fernando deja esta sesión a cargo y consultarádesde otra ventana; OP343/344/345 comentarios1042/1043/1044 actualizados. Pilotoestable activo4173 y RDP3389/Tailscale activos; publicdomain aúnnoresuelve, pruebaMacexternapendiente. No DNS/NAT/producciónmodificados.
 
 Task1fixround2 listo: fixture raíz real deprovisiónDB pasó contempfiles/principalespropios y negativas; noOS/prod. EXPLAIN12planes de funcionesreales con1256users/1451scopes todosíndice, JSONenreviews. AuditoríaSHA sigue antesdeTask2. Campos auditCHECK/lifecycle y sourceunits/restore/helper corregidos; no se tocaron cuentas/servicioslegados.
+
+Task1fixround3 listo: readinessv2/upgradeascii/CHECKexacto y arranqueDocker/restoreartefacto coherente. Raíz78passed2.37s+fixtureprovisiónDBexit0. ScopeopsOSlive sigueTask6, ninguna activación. ScopedSolreview antes deTask2barreras.

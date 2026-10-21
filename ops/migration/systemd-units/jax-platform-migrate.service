@@ -1,6 +1,8 @@
 [Unit]
 Description=JAX Platform schema migration (one-shot)
-After=network.target mariadb.service
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 Before=jax-platform.service
 
 [Service]

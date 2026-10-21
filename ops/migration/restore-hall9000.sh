@@ -48,7 +48,9 @@ done
 MIG_DIR="${MIG_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 JAX_DIR="/home/fruiz/jax"
-PLATFORM_DIR="/home/fruiz/jax-platform"
+# Platform runs only from the immutable release staging location used by the
+# units.  LAS MANOS remains at its legacy root above.
+PLATFORM_DIR="/srv/jax-prod/jax-platform"
 NODE_DIR="/home/fruiz/.nvm/versions/node/v24.16.0"
 NODE_BIN="$NODE_DIR/bin"
 EXPECTED_NODE="v24.16.0"
@@ -61,6 +63,7 @@ DB_DUMP="$MIG_DIR/jax_memory-20260708.sql.gz"
 ENV_ENC="$MIG_DIR/jax.env.enc"
 ENV_DEST="/etc/jax/.env"
 UNITS_DIR="$MIG_DIR/systemd-units"
+ARTIFACT_READINESS="$MIG_DIR/artifact-readiness.sh"
 
 # venv → requirements  (label|ruta_venv|ruta_requirements)
 VENVS=(
@@ -179,6 +182,13 @@ checkpoint "Prerequisitos OK. ¿Continuar con la clonación de repos?"
 
 # ───────────────────────────── FASE 1: Clonar repos ─────────────────────────────
 phase "1 · Clonar repositorios desde GitHub"
+
+if is_dry; then
+  would "crear /srv/jax-prod con propietario fruiz antes de publicar el artefacto Platform"
+else
+  sudo install -d -m 0755 -o fruiz -g fruiz /srv/jax-prod \
+    || die "no se pudo preparar /srv/jax-prod para el artefacto Platform"
+fi
 
 clone_repo() {
   local repo="$1" dir="$2" name="$3"
@@ -423,13 +433,18 @@ if is_dry; then
   would "NO haría enable ni start de ningún servicio (queda manual — ver checklist)"
 else
   sudo systemctl daemon-reload && ok "systemctl daemon-reload hecho."
+  [ -r "$ARTIFACT_READINESS" ] || die "falta helper de verificación de artefacto: $ARTIFACT_READINESS"
+  # shellcheck source=artifact-readiness.sh
+  source "$ARTIFACT_READINESS"
   info "Verificando rutas referidas por los units…"
   for u in "$UNITS_DIR"/*.service; do
     [ -e "$u" ] || continue
     while IFS= read -r path; do
-      [ -e "$path" ] || warn "  $(basename "$u"): ruta aún ausente → $path"
-    done < <(grep -hoE '(/home/fruiz|/etc/jax)[^ "]+' "$u" | sort -u)
+      [ -e "$path" ] || die "$(basename "$u"): ruta requerida ausente → $path"
+    done < <(grep -hoE '(/home/fruiz|/srv/jax-prod|/etc/jax)[^ "]+' "$u" | sort -u)
   done
+  verify_platform_artifact_readiness "$PLATFORM_DIR" sudo systemctl \
+    || die "el artefacto o las units efectivas no están listos para arrancar"
   warn "Los servicios NO se arrancaron ni habilitaron (por diseño). Ver checklist final."
 fi
 

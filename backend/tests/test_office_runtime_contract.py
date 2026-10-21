@@ -8,7 +8,7 @@ import uuid
 import aiomysql
 import pytest
 
-from db.runtime_contract import FENCE_KEY, RuntimeDbContractError, assert_runtime_db_contract
+from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractError, assert_runtime_db_contract
 from virtual_office.migrations import apply_office_migrations
 
 
@@ -176,4 +176,31 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
             monkeypatch.setattr(migrations, "_reclassify_provenance_mismatch", original)
             await migrations.run_migrations()
 
+    client.portal.call(scenario)
+
+
+def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
+    """A v1 marker cannot certify schema that predates the audit-shape CHECK."""
+    async def scenario():
+        from db.connection import get_pool
+        from db.migrations import run_migrations
+        from db.runtime_contract import _revision
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "UPDATE office_schema_revision SET revision='office-runtime-v1' "
+                    "WHERE component='virtual-office'"
+                )
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                with pytest.raises(RuntimeDbContractError, match="revision is absent"):
+                    await _revision(cur)
+        await run_migrations()
+        assert SCHEMA_REVISION != 'office-runtime-v1'
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _revision(cur)
     client.portal.call(scenario)

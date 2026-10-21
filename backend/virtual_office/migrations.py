@@ -14,7 +14,25 @@ OFFICE_DDL = (
 )
 
 RUNTIME_COMPONENT = "virtual-office"
-RUNTIME_REVISION = "office-runtime-v1"
+RUNTIME_REVISION = "office-runtime-v2"
+
+# Exact MariaDB 12.3.3 CHECK_CLAUSE renderings, measured from the constraint
+# created below.  Normalization deliberately preserves boolean operators and
+# literals; accepting a bag of words would turn a permissive OR into a guard.
+_CANONICAL_AUDIT_SHAPE = """`event_kind` = 'AUTHORIZATION' and `actor_user_id` is not null and `actor_principal` is null and `fence_key` is null and `result` in ('ALLOWED','DENIED') and `operation` <> 'AUDIT_FENCE_CANARY' or `event_kind` = 'SYSTEM_FENCE' and `actor_user_id` is null and `actor_principal` is not null and cast(`actor_principal` as char charset binary) = cast('system:office-schema-migrator' as char charset binary) and `fence_key` is not null and cast(`fence_key` as char charset binary) = cast('office-audit-fence-v1' as char charset binary) and `operation` = 'AUDIT_FENCE_CANARY' and `requested_project_id` is null and `project_id` is null and `tenant_id` is null and `result` = 'RECORDED' and `reason_code` = 'office_audit_fence_v1' and `correlation_id` is null"""
+_CANONICAL_AUDIT_RESULT = "`result` in ('ALLOWED','DENIED','RECORDED')"
+
+
+def _normalize_mariadb_check(clause: str | None) -> str | None:
+    return None if clause is None else " ".join(clause.split())
+
+
+def _is_canonical_audit_shape(clause: str | None) -> bool:
+    return _normalize_mariadb_check(clause) == _normalize_mariadb_check(_CANONICAL_AUDIT_SHAPE)
+
+
+def _is_canonical_audit_result(clause: str | None) -> bool:
+    return _normalize_mariadb_check(clause) == _normalize_mariadb_check(_CANONICAL_AUDIT_RESULT)
 
 
 async def _column_exists(cur, table: str, column: str) -> bool:
@@ -36,6 +54,38 @@ async def _check_clause(cur, name: str) -> str | None:
     await cur.execute("SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME=%s", (name,))
     row = await cur.fetchone()
     return None if row is None else str(row[0])
+
+
+async def _ensure_ascii_bin(cur, column: str) -> None:
+    await cur.execute(
+        "SELECT CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_authorization_event' AND COLUMN_NAME=%s",
+        (column,),
+    )
+    metadata = await cur.fetchone()
+    if metadata is None:
+        raise RuntimeError(f"Office audit column {column} is absent")
+    if tuple(metadata) == ("ascii", "ascii_bin"):
+        return
+    # Reject lossy conversion before ALTER; audit rows are evidence and are
+    # never rewritten merely to make an upgrade convenient.
+    await cur.execute(
+        f"SELECT 1 FROM office_authorization_event WHERE {column} IS NOT NULL "
+        f"AND BINARY {column} != BINARY CONVERT(CONVERT({column} USING ascii) USING utf8mb4) LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError(f"Office audit column {column} contains non-ASCII historic evidence")
+    await cur.execute(
+        f"ALTER TABLE office_authorization_event MODIFY COLUMN {column} VARCHAR(64) "
+        "CHARACTER SET ascii COLLATE ascii_bin NULL"
+    )
+    await cur.execute(
+        "SELECT CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_authorization_event' AND COLUMN_NAME=%s",
+        (column,),
+    )
+    if tuple(await cur.fetchone() or ()) != ("ascii", "ascii_bin"):
+        raise RuntimeError(f"Office audit column {column} did not upgrade to ascii_bin")
 
 
 async def invalidate_office_runtime_revision(cur) -> None:
@@ -98,14 +148,15 @@ async def apply_office_migrations(cursor) -> None:
     await cursor.execute("ALTER TABLE office_authorization_event ADD COLUMN IF NOT EXISTS requested_project_id INT NULL AFTER operation, ADD COLUMN IF NOT EXISTS actor_principal VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER actor_user_id, ADD COLUMN IF NOT EXISTS event_kind VARCHAR(24) NOT NULL DEFAULT 'AUTHORIZATION' AFTER actor_principal, ADD COLUMN IF NOT EXISTS fence_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER event_kind")
     if not await _index_exists(cursor, "office_authorization_event", "uq_office_authorization_event_fence"):
         await cursor.execute("ALTER TABLE office_authorization_event ADD UNIQUE KEY uq_office_authorization_event_fence (fence_key)")
+    await _ensure_ascii_bin(cursor, "actor_principal")
+    await _ensure_ascii_bin(cursor, "fence_key")
     result_clause = await _check_clause(cursor, "chk_office_authorization_event_result")
-    if result_clause is not None and "RECORDED" not in result_clause:
-        await cursor.execute("ALTER TABLE office_authorization_event DROP CONSTRAINT chk_office_authorization_event_result")
-        result_clause = None
+    if result_clause is not None and not _is_canonical_audit_result(result_clause):
+        raise RuntimeError("Office audit result constraint is incompatible; historic evidence is not rewritten")
     if result_clause is None:
         await cursor.execute("ALTER TABLE office_authorization_event ADD CONSTRAINT chk_office_authorization_event_result CHECK (result IN ('ALLOWED','DENIED','RECORDED'))")
     shape_clause = await _check_clause(cursor, "chk_office_authorization_event_shape")
-    if shape_clause is not None and ("SYSTEM_FENCE" not in shape_clause or "AUTHORIZATION" not in shape_clause):
+    if shape_clause is not None and not _is_canonical_audit_shape(shape_clause):
         raise RuntimeError("Office audit shape constraint is incompatible; historic evidence is not rewritten")
     if shape_clause is None:
         await cursor.execute(

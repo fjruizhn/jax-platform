@@ -48,7 +48,9 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$WEB.password")" = root:root:600
 test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
-test "$(wc -l < "$TEMP/state/migrate.env")" -eq 5
+test "$(wc -l < "$TEMP/state/migrate.env")" -eq 7
+grep -qx 'JAX_MIGRATE_DB_READINESS_ATTEMPTS=12' "$TEMP/state/migrate.env"
+grep -qx 'JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=10' "$TEMP/state/migrate.env"
 
 chmod 644 "$TEMP/state/secrets/$WEB.password"
 if run_helper; then echo 'unsafe secret mode was accepted' >&2; exit 1; fi

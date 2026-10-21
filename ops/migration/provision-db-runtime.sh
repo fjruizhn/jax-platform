@@ -190,6 +190,8 @@ migrate_content+="JAX_DB_NAME=$DB"$'\n'
 migrate_content+="JAX_DB_USER=$MIGRATE_USER"$'\n'
 migrate_content+="JAX_DB_PASSWORD=$migrate_password"$'\n'
 for key in JAX_REPO_PATH JAX_EJECUTOR_INVENTARIO; do [[ -v "CFG[$key]" ]] && migrate_content+="$key=${CFG[$key]}"$'\n'; done
+migrate_content+="JAX_MIGRATE_DB_READINESS_ATTEMPTS=${CFG[JAX_MIGRATE_DB_READINESS_ATTEMPTS]:-12}"$'\n'
+migrate_content+="JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=${CFG[JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS]:-10}"$'\n'
 write_atomic "$RUNTIME_ENV" "$runtime_content"
 write_atomic "$MIGRATE_ENV" "$migrate_content"
 

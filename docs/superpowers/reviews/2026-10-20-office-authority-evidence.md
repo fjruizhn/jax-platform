@@ -35,3 +35,11 @@ EXPLAINindependiente ejecutando las seis funciones reales del repository con/sin
 Raízprobó regresiónlifecycle puntualmente:1passed0.64s. Suitecombinada antes de quitar prueba de tokens deimplementación65passed451warnings1.75s; cifra final posterior se registra abajo. La eliminación conserva prueba conductual real del orden deprivilegios. Dictamen exactSHA todavía pendiente.
 
 Verificaciónfinal raíz fixround2:64passed451warnings1.80s con--disable-warnings, Office/provisión/runtime/auth/proyectos/lifecycle. Bashsyntax tresguiones ygitdiffcheck pasan.
+
+## Upgrade y arranque · fixround3
+
+Sol rechazó7d4848d porv1readinessreutilizada, columnasprevias sinconversión, comparación débil deCHECK, restore/home vs/srv y carreraDocker. FreshTier2office_authority_upgrade_implement corrigev2centralizada y prueba rechazo dev1; upgrademetadataascii_bin sinreescribirhistoria y deniega nonASCII; compara CHECK_CLAUSE canónico medidoMariaDB12.3.3 preservandooperadores/literales, rechazandoOR1=1/AND→OR/resultdébil/cambio deliteralbinario sinreadystamp.
+
+Migrador ordenaDocker y pruebaSELECT1 antesDDL con retries/timeoutasíncronosconfigurados/acotados/cierrepool; pruebasready/exhaustion/bounds. RestorepublicaPlatform en/srv/jax-prod/jax-platform y helperverifica archivos ejecutables y unidad efectiva (webuvicorn/migradorpython), parseando formato real systemctlExecStart={path;argv}. Pruebas tempfs/fakesystemctl realistas para éxito/missingpython/missinguvicorn/cwdwrong/execwrong; ningún restorehost ejecutado.
+
+Raíz repitió fixtureDBprivilegios actualizado, exit0sinmutaciónOS/producción. Suitecombinadafinal:78passed1085warnings2.37s, Office/provisión/runtime/migrator/restore/auth/proyectos/lifecycle. Worker24focalizadas1.46s. Fuente: comandosraíz y task-1-round3-report.md. DictamenexactSHA siguiente; ninguna apertura de rutas ni cuentas.

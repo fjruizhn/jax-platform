@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import aiomysql
+from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
+from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
 
 FENCE_KEY = "office-audit-fence-v1"
 FENCE_PRINCIPAL = "system:office-schema-migrator"
 FENCE_OPERATION = "AUDIT_FENCE_CANARY"
 FENCE_REASON = "office_audit_fence_v1"
 APPEND_ONLY_MESSAGE = "office_authorization_event append-only"
-SCHEMA_REVISION = "office-runtime-v1"
-SCHEMA_COMPONENT = "virtual-office"
 
 
 class RuntimeDbContractError(RuntimeError):
