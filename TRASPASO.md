@@ -41,3 +41,5 @@ Task2completeimplementationfrozen: typedrootcreation+memberadmincleanup andexact
 Task2fixround1: priorSolRECHAZADO0fc40d1 fourfindings corrected; root221passed4.58s133warnings usingrealDB33991. Allownedproductfrozen; scopedexactSHAreviewnext. No capabilityenabled. Evidenceoffice-session-barrier-round1.md.
 
 Task2fixround2: independentSolfoundSSE-onlysiblingsgap despiteWSheartbeatclosure; callbackandpreyieldfailures nowcloseallregistries. RoottwoSSEtestsinspected and223broadpassed4.60s133warnings. Scopeapi/events.pyandtests, reviewedexactSHApending. Task3split3A/B/Cdocumented, notdispatchedbeforegate.
+
+Task2round2RECHAZADO7f8f490 postregistrationSSEfailurestillclosedonlynewqueue. Round3allfailurepointsnowglobal; rootreadfullmodule+newregistrationracebothvariants,225broadpassed4.61s. ExactSHAauditnext,cap5preserved, noTask3enablement.

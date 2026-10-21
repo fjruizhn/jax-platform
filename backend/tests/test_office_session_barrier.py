@@ -203,6 +203,61 @@ def test_sse_sibling_streams_close_together_after_callback_reverification_failur
     client.portal.call(scenario)
 
 
+@pytest.mark.parametrize("infrastructure_failure", [False, True])
+def test_second_sse_post_registration_failure_closes_prior_sse_and_ws(client, usuarios, monkeypatch,
+                                                                         infrastructure_failure):
+    """The second registration replaces EventBus's callback but cannot strand siblings."""
+    import asyncio
+    import main
+    from api import events as events_mod
+    from auth.jwt import decode_token
+    from auth.middleware import verificar_sesion
+    from jax_engine.events import event_bus
+    from jax_engine.lifecycle import sse_connections
+
+    class Socket:
+        def __init__(self): self.closed = []
+        async def close(self, code): self.closed.append(code)
+        async def send_json(self, value): raise AssertionError("no event may be sent")
+
+    actor, _ = usuarios()
+
+    async def scenario():
+        user = await verificar_sesion(decode_token(token_para(actor)), "access")
+        socket = Socket()
+        connection_id = await main._ws_connect_and_subscribe(user.user_id, user.tenant_id, user.role, socket, user)
+        first = await events_mod.sse_events(user)
+        first_generator = first.body_iterator
+        original_reverify = events_mod.reverificar_sesion
+        try:
+            if infrastructure_failure:
+                async def fail_during_second_registration(_user):
+                    raise RuntimeError("database unavailable")
+                monkeypatch.setattr(events_mod, "reverificar_sesion", fail_during_second_registration)
+            else:
+                async def flip_during_second_registration(current_user):
+                    await sql("UPDATE jax_users SET account_class='OFFICE_INTERNAL' WHERE user_id=%s", (actor,))
+                    return await original_reverify(current_user)
+                monkeypatch.setattr(events_mod, "reverificar_sesion", flip_during_second_registration)
+            second = await events_mod.sse_events(user)
+            second_generator = second.body_iterator
+            try:
+                assert socket.closed == [4001]
+                with pytest.raises(StopAsyncIteration):
+                    await asyncio.wait_for(first_generator.__anext__(), timeout=1)
+                with pytest.raises(StopAsyncIteration):
+                    await asyncio.wait_for(second_generator.__anext__(), timeout=1)
+                assert not sse_connections.has_connections(user.user_id)
+            finally:
+                await second_generator.aclose()
+        finally:
+            await first_generator.aclose()
+            await main._ws_disconnect_and_maybe_unsubscribe(user.user_id, connection_id)
+        assert user.user_id not in events_mod._streams
+        assert user.user_id not in event_bus._subscribers.get(user.tenant_id, {})
+    client.portal.call(scenario)
+
+
 def test_established_ws_heartbeat_class_change_closes_all_ws_and_sse(client, usuarios, monkeypatch):
     import asyncio
     import main

@@ -106,10 +106,10 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
             fresh = await reverificar_sesion(user)
             require_classic_stream_user(fresh)
         except HTTPException:
-            queue.put_nowait(_CERRAR)
+            await _close_classic_user_channels(user.user_id)
         except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (termina el stream) con rastro en el log
             logger.exception("Fallo inesperado al re-verificar la sesión del stream SSE")
-            queue.put_nowait(_CERRAR)
+            await _close_classic_user_channels(user.user_id)
     except BaseException:
         # Cancelación del request (CancelledError) durante la re-verificación:
         # todavía no hay generador cuyo finally limpie, así que se deshace el
