@@ -37,7 +37,7 @@ CAMBIO_DE_PASSWORD_REQUERIDO = "cambio_de_password_requerido"
 # get_current_user_con_cambio_pendiente son el mismo conjunto.
 RUTAS_CON_CAMBIO_PENDIENTE = frozenset({("GET", "/api/auth/me"), ("POST", "/api/auth/me/password")})
 SQL_ESTADO_DE_SESION = (
-    "SELECT status, role, token_version, email, must_change_password, tenant_id "
+    "SELECT status, role, token_version, email, must_change_password, tenant_id, account_class "
     "FROM jax_users WHERE user_id = %s"
 )
 
@@ -70,7 +70,7 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
             fila = await cur.fetchone()
     if fila is None:
         raise _rechazo()
-    estado, rol, tv_base, email, cambio_pendiente, tenant_id_base = fila
+    estado, rol, tv_base, email, cambio_pendiente, tenant_id_base, account_class = fila
     # `tenant_id` del token es una claim de transporte, no autoridad. La
     # relación user -> tenant de jax_users es la fuente que la confirma para
     # toda sesión autenticada, incluidos refresh, WS y SSE.
@@ -81,6 +81,8 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
         or tenant_id_token is None
         or str(tenant_id_token) != str(tenant_id_base)
     ):
+        raise _rechazo()
+    if account_class not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
         raise _rechazo()
     # Después de los 401: una sesión revocada sigue siendo 401 (el frontend la
     # manda al login); una válida con la marca, 403 (la manda al cambio).
@@ -93,6 +95,7 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
         email=email,
         token_version=int(tv_base),
         must_change_password=bool(cambio_pendiente),
+        account_class=account_class,
     )
 
 

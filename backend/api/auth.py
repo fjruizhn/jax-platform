@@ -107,7 +107,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT user_id, tenant_id, email, password_hash, role, status, "
-                "failed_attempts, locked_until, token_version, must_change_password "
+                "failed_attempts, locked_until, token_version, must_change_password, account_class "
                 "FROM jax_users WHERE email = %s",
                 (req.email,),
             )
@@ -120,7 +120,9 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise _credenciales_invalidas()
 
     (user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version,
-     must_change_password) = row
+     must_change_password, account_class) = row
+    if account_class not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+        raise _credenciales_invalidas()
     now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
@@ -199,6 +201,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         role=role,
         email=email,
         must_change_password=bool(must_change_password),
+        account_class=account_class,
     )
 
 
@@ -237,6 +240,7 @@ async def me(user: AuthUser = Depends(get_current_user_con_cambio_pendiente)):
         role=user.role,
         email=user.email,
         must_change_password=user.must_change_password,
+        account_class=user.account_class,
     )
 
 

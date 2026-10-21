@@ -18,6 +18,7 @@ class LoginResponse(BaseModel):
     role: str
     email: str
     must_change_password: bool = False
+    account_class: str = "INTERNAL"
 
 
 class RefreshResponse(BaseModel):
@@ -31,6 +32,7 @@ class MeResponse(BaseModel):
     role: str
     email: str
     must_change_password: bool = False
+    account_class: str = "INTERNAL"
 
 
 class AuthUser(BaseModel):
@@ -40,3 +42,7 @@ class AuthUser(BaseModel):
     email: Optional[str] = None
     token_version: int = 0
     must_change_password: bool = False
+    # Always resolved from jax_users.  A JWT claim must never become account
+    # classification authority because account_class is what selects the
+    # classic-surface barrier.
+    account_class: str = "INTERNAL"

@@ -167,6 +167,23 @@ def test_existente_por_sha(e):
     assert _pool_call(e.client, repo.existente_por_sha, project_id=p, sha256="a" * 64) == {"id": d, "oculto": True}
 
 
+def test_office_namespace_rows_are_invisible_and_never_claimed_by_classic_repository(e):
+    """A legacy membership or queued row cannot lend the classic worker Office data."""
+    project = e.proyecto()
+    document = e.insertar(project, "c" * 64, "office.pdf")
+    e.client.portal.call(
+        sql,
+        "UPDATE jax_project_scope SET authorization_namespace='OFFICE_CONFIDENTIAL' WHERE project_id=%s",
+        (project,),
+    )
+    assert _pool_call(e.client, repo.listar, project_id=project, ocultos=False, antes_de=None, limite=50) == []
+    assert _pool_call(e.client, repo.estado_documento, project_id=project, documento_id=document) is None
+    assert _pool_call(e.client, repo.existente_por_sha, project_id=project, sha256="c" * 64) is None
+    queued = _pool_call(e.client, repo.tomar_en_cola, limite=1000)
+    assert document not in {row["id"] for row in queued}
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[document], job_id="classic-must-not-claim", owner=e.owner(project)) == []
+
+
 def test_listar_excluye_ocultos_y_pagina(e):
     p = e.proyecto()
     ids = [e.insertar(p, f"{i:064x}", f"{i}.pdf") for i in range(3)]

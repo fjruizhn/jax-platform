@@ -427,13 +427,9 @@ def test_ws_registrado_despues_del_corte_se_cierra_con_4001(client, usuarios, mo
     monkeypatch.setattr(main, "_ws_connect_and_subscribe", corte_en_el_hueco)
     with client.websocket_connect(f"/ws/{o}") as sock:
         sock.send_json({"type": "auth", "token": token_para(o)})
-        assert sock.receive_json() == {"type": "auth_ok"}
-        sock.send_json({"type": "ping"})
         mensaje = sock.receive()
-        while mensaje["type"] == "websocket.send" and '"pong"' not in mensaje.get("text", ""):
-            mensaje = sock.receive()
         assert (mensaje["type"], mensaje.get("code")) == ("websocket.close", 4001), (
-            "la conexión sobrevivió al corte: respondió el ping")
+            "un corte en la carrera no puede recibir auth_ok")
 
 
 def test_sse_registrado_despues_del_corte_termina_el_stream(client, usuarios, monkeypatch):

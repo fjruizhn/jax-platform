@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from auth.office_barrier import OfficeSurfaceBarrierMiddleware
+from auth.office_barrier import require_classic_stream_user
 
 # El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
 # plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
@@ -275,6 +277,7 @@ app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_il
 app.add_middleware(
     limite_json.LimiteDeProfundidadJSON, limite=LIMITE_DE_PROFUNDIDAD_JSON
 )
+app.add_middleware(OfficeSurfaceBarrierMiddleware)
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.
@@ -344,13 +347,24 @@ for _router in ROUTERS:
 
 
 async def _ws_connect_and_subscribe(
-    user_id: str, tenant_id: str, role: str, websocket: WebSocket
+    user_id: str, tenant_id: str, role: str, websocket: WebSocket, session=None
 ) -> str:
     async with lifecycle_lock:
         connection_id = await ws_hub.connect(user_id, websocket)
         engine_state.register_user(user_id, tenant_id, role)
 
         async def event_callback(event: JAXEvent):
+            if session is not None:
+                try:
+                    fresh = await reverificar_sesion(session)
+                    require_classic_stream_user(fresh)
+                except HTTPException:
+                    await _cerrar_4001(websocket)
+                    return
+                except Exception:
+                    logger.exception("Fallo al re-verificar la sesión del WebSocket")
+                    await _cerrar_4001(websocket)
+                    return
             await ws_hub.send_to_user(user_id, event)
 
         await event_bus.subscribe(tenant_id, user_id, event_callback)
@@ -417,6 +431,10 @@ async def websocket_endpoint(
         # arriba) cae en el `except Exception` -> 4001 CON log (code review
         # de esta ronda).
         sesion = await verificar_sesion(payload, "access")
+        # WebSocket bypasses HTTP middleware.  It is a classic event channel,
+        # so a valid Office-only identity must be stopped before auth_ok,
+        # hub registration, presence, or event subscription.
+        require_classic_stream_user(sesion)
 
     except WebSocketDisconnect:
         return
@@ -443,9 +461,7 @@ async def websocket_endpoint(
     tenant_id = sesion.tenant_id
     role = sesion.role  # de la base, no del token
 
-    await websocket.send_json({"type": "auth_ok"})
-
-    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket)
+    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket, sesion)
 
     heartbeat_task = None
     try:
@@ -454,7 +470,8 @@ async def websocket_endpoint(
         # conexión. Ya registrada, se verifica de nuevo: cualquier corte
         # posterior la encuentra, y uno anterior se ve acá.
         try:
-            await reverificar_sesion(sesion)
+            fresh = await reverificar_sesion(sesion)
+            require_classic_stream_user(fresh)
         except HTTPException:
             await _cerrar_4001(websocket)
             return
@@ -463,6 +480,10 @@ async def websocket_endpoint(
             await _cerrar_4001(websocket)
             return
 
+        # auth_ok is emitted only after the post-registration revalidation;
+        # otherwise a class change in the registration race could receive a
+        # successful handshake before the close frame.
+        await websocket.send_json({"type": "auth_ok"})
         heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
         while True:
             data = await websocket.receive_json()

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from auth.middleware import get_current_user, reverificar_sesion
 from auth.models import AuthUser
+from auth.office_barrier import require_classic_stream_user
 from jax_engine.events import event_bus
 from jax_engine.lifecycle import lifecycle_lock, sse_connections
 from jax_engine.websocket_hub import ws_hub
@@ -61,9 +62,25 @@ async def close_user_streams(user_id: str) -> int:
 
 @router.get("")
 async def sse_events(user: AuthUser = Depends(get_current_user)):
+    # Direct callers and the ordinary HTTP dependency both reach this guard.
+    # The middleware is an outer boundary; it is not the stream contract.
+    require_classic_stream_user(user)
     queue: asyncio.Queue = asyncio.Queue()
 
     async def callback(event: JAXEvent):
+        # A subscription can outlive the request that created it.  Re-read
+        # account_class before every delivery so a trusted provisioning change
+        # cannot leak one queued event while the stream waits to reconnect.
+        try:
+            fresh = await reverificar_sesion(user)
+            require_classic_stream_user(fresh)
+        except HTTPException:
+            queue.put_nowait(_CERRAR)
+            return
+        except Exception:
+            logger.exception("Fallo al re-verificar la sesión del stream SSE")
+            queue.put_nowait(_CERRAR)
+            return
         await queue.put(event)
 
     await _sse_connect_and_subscribe(user.user_id, user.tenant_id, callback, queue)
@@ -74,7 +91,8 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
     # termina igual que con close_user_streams (el finally del generador limpia).
     try:
         try:
-            await reverificar_sesion(user)
+            fresh = await reverificar_sesion(user)
+            require_classic_stream_user(fresh)
         except HTTPException:
             queue.put_nowait(_CERRAR)
         except Exception:  # fail-soft: fallo de infraestructura al re-verificar -- falla cerrado (termina el stream) con rastro en el log

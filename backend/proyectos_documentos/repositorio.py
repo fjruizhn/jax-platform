@@ -26,7 +26,9 @@ _COLUMNAS_LISTA = (
 )
 _BASE_LISTA = (
     f"SELECT {_COLUMNAS_LISTA} FROM project_documents d {{indice}} JOIN jax_users u ON u.user_id = d.subido_por "
-    "WHERE d.project_id = %s AND d.oculto_at IS {nulo} AND d.id < %s ORDER BY d.id DESC LIMIT %s"
+    "WHERE d.project_id = %s AND d.oculto_at IS {nulo} AND d.id < %s "
+    "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=d.project_id AND s.authorization_namespace='CLASSIC') "
+    "ORDER BY d.id DESC LIMIT %s"
 )
 _INDICE_LISTA = "FORCE INDEX (idx_project_documents_lista)"
 # Un proyecto grande y ANTIGUO con muchas filas mas nuevas de otros proyectos: sin la pista
@@ -88,7 +90,7 @@ def sql_tomar_en_cola(excluir_clases: frozenset[str] = frozenset(), n_ids_exclui
         "SELECT STRAIGHT_JOIN d.id, d.project_id, p.project_uuid, d.ruta_entrada, s.tenant_id, u.user_id, d.sha256, d.updated_at "
         "FROM project_documents d FORCE INDEX (idx_project_documents_despacho) "
         "JOIN projects p ON p.id = d.project_id "
-        "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' "
+        "JOIN jax_project_scope s ON s.project_id = d.project_id AND s.status = 'ACTIVE' AND s.authorization_namespace = 'CLASSIC' "
         "JOIN jax_users u ON u.user_id = d.subido_por AND u.tenant_id = s.tenant_id "
         f"WHERE d.estado = 'en_cola' AND d.job_id IS NULL {extra}ORDER BY d.id LIMIT %s"
     )
@@ -104,7 +106,7 @@ def _owner(tenant_id: int, user_id: int, project_id: int) -> PlatformProcessingO
 def _owner_predicate(alias: str = "d") -> str:
     return (f"{alias}.project_id = %s AND EXISTS (SELECT 1 FROM jax_project_scope s "
             f"JOIN jax_users u ON u.user_id = {alias}.subido_por AND u.tenant_id = s.tenant_id "
-            f"WHERE s.project_id = {alias}.project_id AND s.tenant_id = %s AND u.user_id = %s)")
+            f"WHERE s.project_id = {alias}.project_id AND s.tenant_id = %s AND s.authorization_namespace = 'CLASSIC' AND u.user_id = %s)")
 
 
 class ProyectoNoActivo(Exception):
@@ -129,7 +131,7 @@ class MembresiaPerdida(Exception):
 # Predicado de escritura sobre `jax_project_scope s` (parametros: user_id, *roles, user_id).
 # Lo comparten el INSERT y el re-encolado: las mismas condiciones en la misma sentencia.
 _PUEDE_ESCRIBIR = (
-    "s.status = 'ACTIVE' AND EXISTS ("
+    "s.status = 'ACTIVE' AND s.authorization_namespace = 'CLASSIC' AND EXISTS ("
     "SELECT 1 FROM jax_project_membership m WHERE m.project_id = s.project_id "
     "AND m.tenant_id = s.tenant_id AND m.user_id = %s AND m.status = 'ACTIVE' "
     "AND m.project_role IN ({roles})) "
@@ -156,7 +158,7 @@ _SQL_POR_QUE_NO = (
     "LEFT JOIN jax_project_membership m ON m.project_id = s.project_id AND m.tenant_id = s.tenant_id "
     "AND m.user_id = %s AND m.status = 'ACTIVE' "
     "LEFT JOIN jax_users u ON u.user_id = %s AND u.tenant_id = s.tenant_id AND LOWER(u.status) = 'active' "
-    "WHERE s.project_id = %s LIMIT 1"
+    "WHERE s.project_id = %s AND s.authorization_namespace = 'CLASSIC' LIMIT 1"
 )
 
 
@@ -268,7 +270,8 @@ async def documento_para_reprocesar(pool, *, project_id: int, documento_id: int)
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT estado, nombre_original, sha256, bytes, carpeta_procesado, subido_por, "
-                "oculto_at IS NOT NULL, ruta_entrada FROM project_documents WHERE id = %s AND project_id = %s",
+                "oculto_at IS NOT NULL, ruta_entrada FROM project_documents WHERE id = %s AND project_id = %s "
+                "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC')",
                 (documento_id, project_id))
             fila = await cur.fetchone()
         await conn.commit()
@@ -285,7 +288,8 @@ async def estado_documento(pool, *, project_id: int, documento_id: int) -> dict 
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, nombre_original, estado, error FROM project_documents "
-                "WHERE id = %s AND project_id = %s AND oculto_at IS NULL",
+                "WHERE id = %s AND project_id = %s AND oculto_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC')",
                 (documento_id, project_id))
             fila = await cur.fetchone()
         await conn.commit()
@@ -338,7 +342,8 @@ async def existente_por_sha(pool, *, project_id: int, sha256: str) -> dict | Non
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT id, oculto_at IS NOT NULL FROM project_documents WHERE project_id = %s AND sha256 = %s",
+                "SELECT id, oculto_at IS NOT NULL FROM project_documents WHERE project_id = %s AND sha256 = %s "
+                "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC')",
                 (project_id, sha256))
             fila = await cur.fetchone()
     return None if fila is None else {"id": fila[0], "oculto": bool(fila[1])}
@@ -365,7 +370,8 @@ async def _actualizar_de_proyecto(pool, actualiza: str, args: tuple, project_id:
             if cur.rowcount:
                 await conn.commit()
                 return True
-            await cur.execute("SELECT 1 FROM project_documents WHERE id = %s AND project_id = %s",
+            await cur.execute("SELECT 1 FROM project_documents WHERE id = %s AND project_id = %s "
+                              "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC')",
                               (documento_id, project_id))
             existe = await cur.fetchone() is not None
         await conn.commit()
@@ -444,7 +450,7 @@ async def trabajos_abiertos(pool) -> list[dict]:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT d.job_id, d.project_id, s.tenant_id, u.user_id FROM project_documents d "
-                "LEFT JOIN jax_project_scope s ON s.project_id=d.project_id "
+                "LEFT JOIN jax_project_scope s ON s.project_id=d.project_id AND s.authorization_namespace='CLASSIC' "
                 "LEFT JOIN jax_users u ON u.user_id=d.subido_por AND u.tenant_id=s.tenant_id "
                 "WHERE d.estado IN ('pendiente', 'procesando') AND d.job_id IS NOT NULL")
             rows = await cur.fetchall()

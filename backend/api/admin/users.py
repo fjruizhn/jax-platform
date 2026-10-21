@@ -27,6 +27,7 @@ from db.connection import get_pool
 from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion  # noqa: F401 -- reexporta AISLAMIENTO_ADMIN
 from validacion import email_valido
+from virtual_office.identity_security import OfficeIdentityMutation, guard_office_identity_mutation_in_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,15 @@ async def update_user(
         cambia_email = nuevo_email != email_actual
         if not (cambia_rol or cambia_estado or cambia_email):
             return {"ok": True}
+        if cambia_email:
+            await guard_office_identity_mutation_in_cursor(
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.EMAIL)
+        if cambia_rol:
+            await guard_office_identity_mutation_in_cursor(
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.CLASSIC_ROLE)
+        if cambia_estado and nuevo_estado == "active":
+            await guard_office_identity_mutation_in_cursor(
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.REACTIVATE)
         # Rol o estado nuevos cortan TODAS las sesiones (spec §3.2): ahí es
         # donde aplican la guarda de auto-acción y el invariante de
         # superadmin. Un cambio de email solo (U11 de la Task 2 del
@@ -382,8 +392,13 @@ async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(r
     # transaccion(AISLAMIENTO_ADMIN)): ninguna escritura de admin puede formar
     # un ciclo de espera con otra.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
+        tenant_id = int(user.tenant_id)
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, int(user.user_id), tenant_id)
+        if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await guard_office_identity_mutation_in_cursor(
+            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.UNLOCK)
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
             (user_id,),
@@ -429,6 +444,18 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     recuperación pública (_crear_enlace_de_recuperacion + _send_reset_email),
     pero NO su envoltorio fail-soft: acá el admin ESPERA el envío (en un hilo)
     y ve el error. Un 200 sin correo sería el éxito falso que el spec prohíbe."""
+    # Target authorization precedes even SMTP configuration loading.  A
+    # classic administrator probing an Office identity must not reach a
+    # provider/configuration path before the identity barrier rejects it.
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        tenant_id = int(user.tenant_id)
+        actor_id = int(user.user_id)
+        await _bloquear_tenant(cur, tenant_id)
+        await _bloquear_actor(cur, actor_id, tenant_id)
+        if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
+            raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await guard_office_identity_mutation_in_cursor(
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK)
     try:
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:
@@ -444,6 +471,8 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
     # falta el conjunto de superadmins (no se decide ningún invariante acá).
     # El envío va DESPUÉS del commit: nunca se retiene una fila durante SMTP.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await _bloquear_tenant(cur, int(user.tenant_id))
+        await _bloquear_actor(cur, int(user.user_id), int(user.tenant_id))
         await cur.execute(
             "SELECT email, status FROM jax_users WHERE user_id = %s AND status <> 'deleted' FOR UPDATE",
             (user_id,),
@@ -451,6 +480,8 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         fila = await cur.fetchone()
         if fila is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await guard_office_identity_mutation_in_cursor(
+            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK)
         email, estado = fila
         if estado != "active":
             raise HTTPException(status_code=409, detail="usuario_no_activo")
@@ -554,6 +585,8 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
         await _bloquear_actor(cur, actor_id, tenant_id)
         if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await guard_office_identity_mutation_in_cursor(
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.PASSWORD)
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
             "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
@@ -599,6 +632,8 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
         actual = await _leer_para_actualizar(cur, user_id, tenant_id)
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
+        await guard_office_identity_mutation_in_cursor(
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.BAJA)
         rol_actual, estado_actual, email_actual = actual
         await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted", tenant_id)
         await cur.execute(
