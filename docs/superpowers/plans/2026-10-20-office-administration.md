@@ -1,0 +1,32 @@
+# Implementación · Virtual Office
+
+Spec: docs/superpowers/specs/2026-10-20-office-administration.md
+Fecha: 2026-10-20 · OP#343/345 · rama codex/virtual-office-20261020.
+
+## Global Constraints
+
+Reutilizar identidad/pool/runner/UI existentes. OFFICE_SUPERUSER es global solo dentro de Virtual Office. No inferir rol del email ni admin clásico. account_class en jax_users. Externo denegado por defecto fuera de sesión/oficina. Namespace OFFICE_CONFIDENTIAL no accesible desde superficies clásicas. Reautorizar mutaciones y jobs; auditoría atómica. Sin producción durante implementación. ES/EN y dark/light, modal propio. Índices/EXPLAIN, async, no caché de permisos, carga antes de producción. Trabajadores no cometen/pushean; root verifica y conserva commits chicos, exact-SHA Sol entre tareas.
+
+## Task 1: Esquema, resolvedor y auditoría de oficina
+
+Own backend/virtual_office/{__init__,models,capabilities,authority,repository,audit,migrations}.py, backend/db/migrations.py integración mínima y backend/tests/test_office_{authority,migrations}.py. Todavía no modificar auth/middleware, main.py ni exponer rutas. Crear tablas/clase de cuenta y constraints/FKs/índices según spec, con upgrade idempotente. Resolvedor puro de entrada estricta y consultas DB, operación tipada, resultado inmutable; variante en cursor para mutaciones/bloqueos. Usuario/grants/revocados/missing/unknown fail closed. GENERAL_ADMIN solo delegaciones explícitas. Evento append-only con triggers y actor/scope, sin secretos. Probar RED/GREEN realMariaDB, matriz dos tenants/proyectos/roles y cambios de revocación; EXPLAIN consultas reales. No bootstrap automático ni creación de cuentas externas todavía.
+
+## Task 2: Barreras de sesión y par JAX
+
+Own backend/auth/models.py, auth/middleware.py, api/auth.py, main.py y par_jax.py, tests específicos. Cargar account_class de DB, HTTP allowlist external estricta/sessionenrollment, WS clásico rechaza, SSE cubierto. Adaptador transaccional namespace autorizado y contrato de par al arranque. Consumir JAX solo tras gate independiente de namespace.
+
+## Task 3: MFA y administración API
+
+Own backend/virtual_office/{mfa,invitations}.py, backend/api/virtual_office/, schemas/proyectos/personas, constraints/requirements, tests. Integrar rutas auth/main secuencialmente. TOTP/cifrado/recovery/stepup/versiones, proyectos dedicados, grants/delegaciones y auditoría, invitación/outbox auditable. Bootstrap explícito verificado en comando propio no migración. Ningún envío real durante pruebas.
+
+## Task 4: UI administrativa
+
+Own frontend/src/api/virtualOffice.js, pages/VirtualOffice*, components/virtual-office/, App y traducciones secuencialmente. Reutilizar Dialogo/tema/auth, selector proyectos, globaladmin/personas/permisos/invitación/MFA. Vitest y navegador ambos idiomas/temas/móvil/teclado; cuenta externa no carga datos clásicos.
+
+## Task 5: Persistencia de trabajo y ejecución
+
+Tablas office de artefactos/revisiones/publicación y jobs; worker durable con idempotencia, revocación y presupuesto/conectores por proyecto. Reutilizar contratos actuales y paquete espacial versionado; estructurar propuesta->validación->reparación limitada->presentación con evidencia. Integrar escena3D con montaje/desmontaje seguro. Matriz API/events/worker adversarial y carga.
+
+## Task 6: Migración reversible y publicación web
+
+Respaldar/restaurar Omoa, importar historial fiel sin aprobar ni duplicarOP334. Artefacto reproducible, activos allowlist, reverseproxy/HTTPS/DNS, cabeceras/límites/monitoreo. Auditoría independiente SHA exacto y gates constitucionales antes de integración/despliegue. Registrar pruebas EXPLAIN/carga/restauración y URL real operativa. No afirmar producción por tener código local.
