@@ -37,10 +37,7 @@ def restricted_route_allowed(method: str, path: str) -> bool:
 
 def require_classic_stream_user(user: AuthUser) -> None:
     """Streams are classic-only even when called outside HTTP middleware."""
-    # AuthUser always carries the canonical value.  The default only keeps
-    # legacy in-process test doubles compatible; it is not reachable from an
-    # HTTP/WS session, whose verifier rejects a missing/unknown DB value.
-    if getattr(user, "account_class", "INTERNAL") != "INTERNAL":
+    if getattr(user, "account_class", None) != "INTERNAL":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="office_surface_required")
 
 
@@ -66,7 +63,11 @@ class OfficeSurfaceBarrierMiddleware(BaseHTTPMiddleware):
         if restricted_route_allowed(request.method, request.url.path):
             return await call_next(request)
         try:
-            user = await verificar_sesion(decode_token(token), "access")
+            # Resolve the canonical class even for a password-change-pending
+            # restricted user.  The barrier must run before body, limiter,
+            # quota or route work; normal INTERNAL pending-password semantics
+            # still occur in the endpoint dependency below.
+            user = await verificar_sesion(decode_token(token), "access", admite_cambio_pendiente=True)
         except HTTPException:
             return await call_next(request)
         except Exception:

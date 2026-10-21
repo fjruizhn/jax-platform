@@ -1,4 +1,7 @@
 """Office-only account classes never enter a classic handler or stream."""
+import pytest
+
+from auth.models import AuthUser
 from tests.identidades import auth, sql, token_para
 
 
@@ -22,6 +25,37 @@ def test_restricted_class_is_rejected_before_classic_admin_handler(client, usuar
     response = client.post(f"/api/admin/users/{target}/unlock", headers=auth(token_para(actor, role="superadmin")))
     assert (response.status_code, response.json()) == (403, {"detail": "office_surface_required"})
     assert reached == []
+
+
+def test_restricted_pending_password_upload_stops_before_limiter_body_kill_or_quota(client, usuarios, monkeypatch):
+    """The real app stack keeps CORS outermost and Office before upload work."""
+    from adjuntos import limite_de_subidas
+    from api import upload
+    from main import app
+
+    actor, _ = usuarios()
+    client.portal.call(sql, "UPDATE jax_users SET account_class='OFFICE_INTERNAL', must_change_password=1 WHERE user_id=%s", (actor,))
+    reached = []
+    original_limiter = limite_de_subidas.LimiteDeSubidas.__call__
+
+    async def limiter_spy(self, scope, receive, send):
+        reached.append("limiter")
+        return await original_limiter(self, scope, receive, send)
+
+    async def forbidden_kill(*args, **kwargs):
+        reached.append("kill")
+        raise AssertionError("upload handler ran")
+
+    monkeypatch.setattr(limite_de_subidas.LimiteDeSubidas, "__call__", limiter_spy)
+    monkeypatch.setattr(upload, "exigir_mesa_libre", forbidden_kill)
+    response = client.post("/api/chat/upload", headers=auth(token_para(actor)),
+                           files={"file": ("blocked.txt", b"this body must remain unread", "text/plain")})
+    assert (response.status_code, response.json()) == (403, {"detail": "office_surface_required"})
+    assert reached == []
+    # The installed order is a regression guard for aliases and future routes:
+    # CORS outer -> Office barrier -> upload limiter -> JSON/body/handler.
+    names = [entry.cls.__name__ for entry in app.user_middleware]
+    assert names.index("CORSMiddleware") < names.index("OfficeSurfaceBarrierMiddleware") < names.index("LimiteDeSubidas")
 
 
 def test_restricted_class_keeps_exact_auth_self_service_allowlist(client, usuarios):
@@ -128,6 +162,44 @@ def test_sse_queued_event_is_rechecked_before_generator_yield(client, usuarios):
     assert client.portal.call(scenario) == "closed"
 
 
+def test_established_ws_heartbeat_class_change_closes_all_ws_and_sse(client, usuarios, monkeypatch):
+    import asyncio
+    import main
+    from api import events as events_mod
+    from auth.jwt import decode_token
+    from auth.middleware import verificar_sesion
+
+    class Socket:
+        def __init__(self):
+            self.closed = []
+            self.sent = []
+        async def close(self, code): self.closed.append(code)
+        async def send_json(self, value): self.sent.append(value)
+
+    actor, _ = usuarios()
+    monkeypatch.setattr(main, "_HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    async def scenario():
+        session = await verificar_sesion(decode_token(token_para(actor)), "access")
+        first, second = Socket(), Socket()
+        first_id = await main._ws_connect_and_subscribe(session.user_id, session.tenant_id, session.role, first, session)
+        second_id = await main._ws_connect_and_subscribe(session.user_id, session.tenant_id, session.role, second, session)
+        response = await events_mod.sse_events(session)
+        generator = response.body_iterator
+        try:
+            await sql("UPDATE jax_users SET account_class='OFFICE_INTERNAL' WHERE user_id=%s", (actor,))
+            await main._heartbeat(session.user_id, session.tenant_id, session)
+            assert first.closed == [4001] and second.closed == [4001]
+            with pytest.raises(StopAsyncIteration):
+                await asyncio.wait_for(generator.__anext__(), timeout=1)
+        finally:
+            await generator.aclose()
+            await main._ws_disconnect_and_maybe_unsubscribe(session.user_id, first_id)
+            await main._ws_disconnect_and_maybe_unsubscribe(session.user_id, second_id)
+    import pytest
+    client.portal.call(scenario)
+
+
 def test_session_lookup_keeps_primary_key_plan_after_account_class_added(client):
     from auth.middleware import SQL_ESTADO_DE_SESION
 
@@ -174,3 +246,25 @@ def test_unknown_database_class_fails_closed_in_session_verification(client, usu
             return exc.status_code, exc.detail
         raise AssertionError("unknown class was accepted")
     assert client.portal.call(scenario) == (401, "sesion_invalida")
+
+
+@pytest.mark.parametrize("user", [
+    AuthUser(user_id="1", tenant_id="1", role="operator"),
+    type("UnknownClassUser", (), {"user_id": "2", "tenant_id": "1", "account_class": "UNKNOWN"})(),
+])
+def test_direct_stream_without_canonical_class_never_subscribes(client, monkeypatch, user):
+    from fastapi import HTTPException
+    from api import events as events_mod
+
+    subscribed = []
+
+    async def forbid(*args, **kwargs):
+        subscribed.append(True)
+
+    monkeypatch.setattr(events_mod.event_bus, "subscribe", forbid)
+
+    async def scenario():
+        with pytest.raises(HTTPException, match="office_surface_required"):
+            await events_mod.sse_events(user)
+    client.portal.call(scenario)
+    assert subscribed == []

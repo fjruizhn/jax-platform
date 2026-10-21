@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 
 
 class LoginRequest(BaseModel):
@@ -42,7 +42,6 @@ class AuthUser(BaseModel):
     email: Optional[str] = None
     token_version: int = 0
     must_change_password: bool = False
-    # Always resolved from jax_users.  A JWT claim must never become account
-    # classification authority because account_class is what selects the
-    # classic-surface barrier.
-    account_class: str = "INTERNAL"
+    # Only verificar_sesion may mint a known class from jax_users. A direct
+    # construction is unclassified and cannot pass the classic stream guard.
+    account_class: Literal["INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"] | None = None

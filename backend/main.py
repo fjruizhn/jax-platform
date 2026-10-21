@@ -277,7 +277,6 @@ app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_il
 app.add_middleware(
     limite_json.LimiteDeProfundidadJSON, limite=LIMITE_DE_PROFUNDIDAD_JSON
 )
-app.add_middleware(OfficeSurfaceBarrierMiddleware)
 
 # Frente A (2026-09-16, A-18): el dev es mismo origen (proxy de Vite para /api
 # y /ws) y producción también (nginx de la VM dev). Solo el origen declarado.
@@ -285,6 +284,10 @@ app.add_middleware(OfficeSurfaceBarrierMiddleware)
 # (adjuntos/limite_de_subidas.py). Se agrega ANTES que CORS a propósito: en
 # Starlette el último agregado es el de afuera, así que CORS envuelve al 429.
 app.add_middleware(limite_de_subidas.LimiteDeSubidas)
+# Added after upload limiting: Starlette makes the last middleware outermost.
+# CORS remains outermost below, while a valid restricted bearer is stopped
+# before limiter/body/kill/quota code runs.
+app.add_middleware(OfficeSurfaceBarrierMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -359,11 +362,11 @@ async def _ws_connect_and_subscribe(
                     fresh = await reverificar_sesion(session)
                     require_classic_stream_user(fresh)
                 except HTTPException:
-                    await _cerrar_4001(websocket)
+                    await _close_classic_user_channels(user_id)
                     return
                 except Exception:
                     logger.exception("Fallo al re-verificar la sesión del WebSocket")
-                    await _cerrar_4001(websocket)
+                    await _close_classic_user_channels(user_id)
                     return
             await ws_hub.send_to_user(user_id, event)
 
@@ -484,7 +487,7 @@ async def websocket_endpoint(
         # otherwise a class change in the registration race could receive a
         # successful handshake before the close frame.
         await websocket.send_json({"type": "auth_ok"})
-        heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
+        heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id, sesion))
         while True:
             data = await websocket.receive_json()
             if data.get("type") == "ping":
@@ -504,9 +507,30 @@ async def _cerrar_4001(websocket: WebSocket):
         pass
 
 
-async def _heartbeat(user_id: str, tenant_id: str):
+async def _close_classic_user_channels(user_id: str) -> None:
+    """Close every classic delivery channel after current authority fails."""
+    from api.events import close_user_streams
+
+    await ws_hub.close_user(user_id, code=4001)
+    await close_user_streams(user_id)
+
+
+_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def _heartbeat(user_id: str, tenant_id: str, session):
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            fresh = await reverificar_sesion(session)
+            require_classic_stream_user(fresh)
+        except HTTPException:
+            await _close_classic_user_channels(user_id)
+            return
+        except Exception:
+            logger.exception("Fallo al re-verificar la sesión antes del heartbeat WebSocket")
+            await _close_classic_user_channels(user_id)
+            return
         event = JAXEvent(
             event_type="heartbeat",
             tenant_id=tenant_id,

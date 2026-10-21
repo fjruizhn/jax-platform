@@ -225,7 +225,9 @@ async def reencolar_atascado(pool, *, project_id: int, sha256: str, ruta_entrada
             try:
                 await cur.execute(
                     "SELECT id, ruta_entrada FROM project_documents WHERE project_id = %s AND sha256 = %s "
-                    "AND estado = 'error' AND carpeta_procesado IS NULL AND oculto_at IS NULL FOR UPDATE",
+                    "AND estado = 'error' AND carpeta_procesado IS NULL AND oculto_at IS NULL "
+                    "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id "
+                    "AND s.authorization_namespace='CLASSIC') FOR UPDATE",
                     (project_id, sha256))
                 fila = await cur.fetchone()
                 if fila is None:
@@ -321,7 +323,8 @@ async def reprocesar(pool, *, project_id: int, documento_id: int, ruta_fuente: s
             await conn.begin()
             try:
                 await cur.execute("SELECT ruta_entrada, subido_por FROM project_documents "
-                                  "WHERE id = %s AND project_id = %s FOR UPDATE", (documento_id, project_id))
+                                  "WHERE id = %s AND project_id = %s AND EXISTS (SELECT 1 FROM jax_project_scope s "
+                                  "WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC') FOR UPDATE", (documento_id, project_id))
                 anterior = await cur.fetchone()
                 if anterior is None:
                     await conn.rollback()
@@ -387,7 +390,9 @@ async def ocultar(pool, *, project_id: int, documento_id: int, user_id: int) -> 
     return await _actualizar_de_proyecto(
         pool,
         "UPDATE project_documents SET oculto_at = COALESCE(oculto_at, CURRENT_TIMESTAMP(6)), "
-        "oculto_por = COALESCE(oculto_por, %s), updated_at = updated_at WHERE id = %s AND project_id = %s",
+        "oculto_por = COALESCE(oculto_por, %s), updated_at = updated_at WHERE id = %s AND project_id = %s "
+        "AND EXISTS (SELECT 1 FROM jax_project_scope s WHERE s.project_id=project_documents.project_id "
+        "AND s.authorization_namespace='CLASSIC')",
         (user_id,), project_id, documento_id)
 
 
@@ -395,7 +400,8 @@ async def restaurar(pool, *, project_id: int, documento_id: int) -> bool:
     return await _actualizar_de_proyecto(
         pool,
         "UPDATE project_documents SET oculto_at = NULL, oculto_por = NULL, updated_at = updated_at "
-        "WHERE id = %s AND project_id = %s",
+        "WHERE id = %s AND project_id = %s AND EXISTS (SELECT 1 FROM jax_project_scope s "
+        "WHERE s.project_id=project_documents.project_id AND s.authorization_namespace='CLASSIC')",
         (), project_id, documento_id)
 
 

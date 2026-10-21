@@ -281,6 +281,7 @@ async def test_close_user_de_un_usuario_sin_conexiones_no_hace_nada():
 class _Usuario:
     def __init__(self, user_id):
         self.user_id, self.tenant_id = user_id, "1"
+        self.account_class = "INTERNAL"
 
 
 async def test_close_user_streams_termina_el_stream_sse_del_usuario_y_no_el_de_otro(monkeypatch):
