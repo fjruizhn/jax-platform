@@ -1,0 +1,15 @@
+[Unit]
+Description=JAX Platform schema migration (one-shot)
+After=network.target mariadb.service
+Before=jax-platform.service
+
+[Service]
+Type=oneshot
+# Same checked-out artifact and OS principal as jax-platform.service; only the
+# database credential override differs, and belongs in /etc/jax/migrate.env.
+User=fruiz
+WorkingDirectory=/home/fruiz/jax-platform/backend
+EnvironmentFile=/etc/jax/.env
+EnvironmentFile=/etc/jax/migrate.env
+ExecStart=/home/fruiz/jax-platform/backend/.venv/bin/python -m db.migrate
+RemainAfterExit=yes

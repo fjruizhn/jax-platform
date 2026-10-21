@@ -9,8 +9,10 @@ from .models import OfficeDecision
 from . import repository
 
 
-def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None):
-    return OfficeDecision(allowed, code, actor, operation.value, project, tenant, role)
+def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None,
+              audience: str | None = None, grant_role: str | None = None, recipient_group_id: int | None = None,
+              canonical_project_id: int | None = None):
+    return OfficeDecision(allowed, code, actor, operation.value, project, canonical_project_id, tenant, role, audience, grant_role, recipient_group_id)
 
 
 def _validate(actor_user_id, operation, project_id, recipient_group_id):
@@ -64,7 +66,7 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         return _decision(False, "office_actor_inactive", actor, operation, project, tenant)
     if tenant_status != "active":
         return _decision(False, "office_tenant_inactive", actor, operation, project, tenant)
-    if account_class not in {"INTERNAL", "EXTERNAL_CLIENT"}:
+    if account_class not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
         return _decision(False, "office_account_class_denied", actor, operation, project, tenant)
     if profile_status != "ACTIVE" or global_role not in {"COLLABORATOR", "GENERAL_ADMIN", "OFFICE_SUPERUSER"}:
         return _decision(False, "office_profile_missing", actor, operation, project, tenant)
@@ -78,38 +80,44 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         project_status = scope["status"]
         namespace = scope["namespace"]
         if project_status != "ACTIVE" or namespace != "OFFICE_CONFIDENTIAL":
-            return _decision(False, "office_namespace_denied", actor, operation, project, tenant, global_role)
+            return _decision(False, "office_namespace_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
         # An external account may only consume a CLIENT_PUBLISHED view through
         # an active recipient relation.  It never receives a role bypass.
         if account_class == "EXTERNAL_CLIENT":
             if global_role != "COLLABORATOR" or operation is not OfficeOperation.VIEW_PROJECT or recipient_group is None:
-                return _decision(False, "office_account_class_denied", actor, operation, project, tenant, global_role)
+                return _decision(False, "office_account_class_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             grant = await repository.fetch_external_grant(cur, project, actor, recipient_group, for_update=locked)
             if (grant is None or grant["grant_status"] != "ACTIVE" or grant["relation_status"] != "ACTIVE"
                     or grant["group_status"] != "ACTIVE"):
-                return _decision(False, "office_external_relation_missing", actor, operation, project, tenant, global_role)
-            if grant["audience"] != "CLIENT_PUBLISHED" or not grant_permits(operation, grant["grant_role"], grant["audience"]):
-                return _decision(False, "office_grant_insufficient", actor, operation, project, tenant, global_role)
-            return _decision(True, "office_external_grant", actor, operation, project, project_tenant, global_role)
+                return _decision(False, "office_external_relation_missing", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            if (grant["audience"] != "CLIENT_PUBLISHED" or grant["grant_role"] != "COLLABORATOR"
+                    or not grant_permits(operation, grant["grant_role"], grant["audience"])):
+                return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            return _decision(True, "office_external_grant", actor, operation, project, project_tenant, global_role,
+                             grant["audience"], grant["grant_role"], grant["recipient_group_id"], project)
         if global_role == "OFFICE_SUPERUSER":
-            return _decision(True, "office_superuser", actor, operation, project, project_tenant, global_role)
-        if account_class == "INTERNAL":
+            return _decision(True, "office_superuser", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+        if account_class in {"INTERNAL", "OFFICE_INTERNAL"}:
             if tenant != project_tenant:
-                return _decision(False, "office_tenant_denied", actor, operation, project, tenant, global_role)
+                return _decision(False, "office_tenant_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             grant = await repository.fetch_internal_grant(cur, project, actor, for_update=locked)
             if grant is None or grant["grant_status"] != "ACTIVE" or grant["membership_status"] != "ACTIVE":
-                return _decision(False, "office_grant_missing", actor, operation, project, tenant, global_role)
+                return _decision(False, "office_grant_missing", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            if grant["audience"] != "INTERNAL":
+                return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             if not grant_permits(operation, grant["grant_role"], grant["audience"]):
                 if operation is OfficeOperation.PROFESSIONAL_ACTION:
                     professional = await repository.fetch_professional_grant(
                         cur, project, actor, operation, for_update=locked)
                     if professional is not None and professional["status"] == "ACTIVE":
-                        return _decision(True, "office_professional_grant", actor, operation, project, tenant, global_role)
-                    return _decision(False, "office_professional_grant_missing", actor, operation, project, tenant, global_role)
-                return _decision(False, "office_grant_insufficient", actor, operation, project, tenant, global_role)
-            return _decision(True, "office_grant", actor, operation, project, tenant, global_role)
-        return _decision(False, "office_account_class_denied", actor, operation, project, tenant, global_role)
-    if account_class != "INTERNAL":
+                        return _decision(True, "office_professional_grant", actor, operation, project, project_tenant, global_role,
+                                         grant["audience"], grant["grant_role"], canonical_project_id=project)
+                    return _decision(False, "office_professional_grant_missing", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+                return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            return _decision(True, "office_grant", actor, operation, project, project_tenant, global_role,
+                             grant["audience"], grant["grant_role"], canonical_project_id=project)
+        return _decision(False, "office_account_class_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+    if account_class not in {"INTERNAL", "OFFICE_INTERNAL"}:
         return _decision(False, "office_account_class_denied", actor, operation, None, tenant, global_role)
     if global_role == "OFFICE_SUPERUSER":
         return _decision(True, "office_superuser", actor, operation, None, tenant, global_role)

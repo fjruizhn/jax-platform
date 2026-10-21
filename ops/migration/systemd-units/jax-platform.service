@@ -2,7 +2,7 @@
 StartLimitIntervalSec=300
 StartLimitBurst=5
 Description=JAX Platform Backend
-After=network.target docker.service jax-las-manos.service
+After=network.target docker.service jax-las-manos.service jax-platform-migrate.service
 Wants=docker.service jax-las-manos.service
 
 [Service]
@@ -10,7 +10,10 @@ Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local
 Type=simple
 User=fruiz
 WorkingDirectory=/home/fruiz/jax-platform/backend
+# Runtime uses the same artifact/OS principal as migration, with DML-only DB
+# credentials supplied after the shared configuration by runtime.env.
 EnvironmentFile=/etc/jax/.env
+EnvironmentFile=/etc/jax/runtime.env
 ExecStart=/home/fruiz/jax-platform/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --no-access-log --log-level warning
 Restart=on-failure
 RestartSec=5

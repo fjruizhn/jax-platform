@@ -1,0 +1,179 @@
+"""The web principal has DML only and the Office audit guard measures it."""
+from __future__ import annotations
+
+import os
+import re
+import uuid
+
+import aiomysql
+import pytest
+
+from db.runtime_contract import FENCE_KEY, RuntimeDbContractError, assert_runtime_db_contract
+from virtual_office.migrations import apply_office_migrations
+
+
+async def _runtime_pool(user: str, password: str):
+    return await aiomysql.create_pool(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=user, password=password, db=os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True)
+
+
+async def _fence(pool):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT event_id,actor_principal,event_kind,fence_key,operation,result,reason_code FROM office_authorization_event WHERE fence_key=%s", (FENCE_KEY,))
+            return await cur.fetchone()
+
+
+async def _errno(pool, statement: str) -> int:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            with pytest.raises(aiomysql.OperationalError) as error:
+                await cur.execute(statement)
+            return int(error.value.args[0])
+
+
+def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
+    async def scenario():
+        from db.connection import get_pool
+        database = os.environ["JAX_DB_NAME"]
+        assert re.fullmatch(r"[A-Za-z0-9_]+", database)
+        tag = uuid.uuid4().hex[:16]
+        user, password, role = f"office_rt_{tag}", f"Office{uuid.uuid4().hex}", f"office_rt_role_{tag}"
+        unusual_user = f"office@rt_{tag}"
+        routine = f"office_rt_proc_{tag}"
+        admin = await get_pool()
+        runtime = None
+        try:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
+                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await cur.execute(f"CREATE USER `{unusual_user}`@'%%' IDENTIFIED BY %s", (password,))
+                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{unusual_user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            before = await _fence(admin)
+            await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            runtime = await _runtime_pool(unusual_user, password)
+            with pytest.raises(RuntimeDbContractError, match="identity is unsupported"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            runtime = await _runtime_pool(user, password)
+            assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
+            assert await _errno(runtime, "DROP TABLE office_schema_revision") == 1142
+            assert await _errno(runtime, "ALTER TABLE office_schema_revision ADD COLUMN office_runtime_probe INT") == 1142
+            assert await _errno(runtime, "DROP TRIGGER no_update_office_authorization_event") == 1142
+            assert await _errno(runtime, "CREATE ROLE office_runtime_forbidden") == 1227
+            assert await _errno(runtime, "GRANT SELECT ON *.* TO 'nobody'@'%'") == 1045
+            assert await _fence(admin) == before
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"GRANT SELECT ON *.* TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="non-DML global privilege"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE SELECT ON *.* FROM `{user}`@'%'")
+                    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%' WITH GRANT OPTION")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE GRANT OPTION ON `{database}`.* FROM `{user}`@'%'")
+                    await cur.execute(f"CREATE PROCEDURE `{routine}`() SELECT 1")
+                    await cur.execute(f"GRANT EXECUTE ON PROCEDURE `{database}`.`{routine}` TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="routine privileges"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE EXECUTE ON PROCEDURE `{database}`.`{routine}` FROM `{user}`@'%'")
+                    await cur.execute(f"DROP PROCEDURE `{routine}`")
+                    await cur.execute(f"GRANT DROP ON `{database}`.* TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE DROP ON `{database}`.* FROM `{user}`@'%'")
+                    await cur.execute(f"CREATE ROLE `{role}`")
+                    await cur.execute(f"GRANT `{role}` TO `{user}`@'%'")
+                    await cur.execute(f"SET DEFAULT ROLE `{role}` FOR `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="applicable role"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE `{role}` FROM `{user}`@'%'")
+                    await cur.execute("DROP TRIGGER no_delete_office_authorization_event")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="triggers are missing"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    await cur.execute("DROP TRIGGER no_delete_office_authorization_event")
+                    await cur.execute("DELETE FROM office_authorization_event WHERE fence_key=%s", (FENCE_KEY,))
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="fence is absent"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="revision is absent"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    from db.migrations import run_migrations
+                    await run_migrations()
+            runtime = await _runtime_pool(user, password)
+            await assert_runtime_db_contract(runtime)
+            assert (await _fence(admin))[1:] == before[1:]
+        finally:
+            if runtime is not None:
+                runtime.close(); await runtime.wait_closed()
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
+                    await cur.execute(f"DROP USER IF EXISTS `{unusual_user}`@'%'")
+                    await cur.execute(f"DROP ROLE IF EXISTS `{role}`")
+                    await cur.execute(f"DROP PROCEDURE IF EXISTS `{routine}`")
+    client.portal.call(scenario)
+
+
+def test_failed_late_platform_migration_never_leaves_office_ready(client, monkeypatch):
+    async def scenario():
+        from db.connection import get_pool
+        from db import migrations
+
+        async def fail_after_office(_cur):
+            raise RuntimeError("forced late migration failure")
+
+        pool = await get_pool()
+        original = migrations._reclassify_provenance_mismatch
+        monkeypatch.setattr(migrations, "_reclassify_provenance_mismatch", fail_after_office)
+        try:
+            with pytest.raises(RuntimeError, match="forced late migration failure"):
+                await migrations.run_migrations()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+        finally:
+            monkeypatch.setattr(migrations, "_reclassify_provenance_mismatch", original)
+            await migrations.run_migrations()
+
+    client.portal.call(scenario)

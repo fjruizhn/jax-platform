@@ -272,7 +272,7 @@ if is_dry; then
   would "descifrar $ENV_ENC (openssl AES-256, -pass stdin) → temp umask 077 → install -m600 root:root $ENV_DEST"
   would "  (pediría la passphrase interactiva; hasta 3 intentos; shred+rm del temp al salir)"
   would "verificaría claves críticas (JAX_DB_*, JAX_JWT_SECRET) y avisaría si falta SMTP_*"
-  would "opcional (confirmado): crear/actualizar usuario '$DB_NAME'.jax_user con GRANT, sourceando el .env como root"
+  would "opcional (confirmado): crear/actualizar principales MariaDB separados: runtime DML y migrador DDL, con archivos runtime.env/migrate.env de permisos 640"
 else
   sudo install -d -m 755 -o root -g root /etc/jax && ok "/etc/jax listo."
 
@@ -315,18 +315,23 @@ else
   # Paso OPCIONAL: recrear el grant del usuario de aplicación (el dump NO lo incluye).
   # Se ejecuta como root sourceando el .env (manejo de comillas idéntico al de la app);
   # el password nunca aparece en argv ni en logs — va por stdin a mariadb dentro del subshell.
-  if confirm "¿Crear/actualizar el usuario MariaDB de la app (jax_user) con GRANT sobre $DB_NAME? (recomendado)"; then
+  if confirm "¿Crear/actualizar los usuarios MariaDB runtime y migrador con privilegios separados sobre $DB_NAME? (recomendado)"; then
     if sudo bash -s -- "$DB_NAME" "$MYSQL_CLI" <<'GRANTEOF'
       set -uo pipefail
       DB_NAME="$1"; CLI="$2"
       set -a; . /etc/jax/.env 2>/dev/null; set +a
       : "${JAX_DB_USER:?falta JAX_DB_USER en .env}"; : "${JAX_DB_PASSWORD:?falta JAX_DB_PASSWORD en .env}"
+      : "${JAX_MIGRATE_DB_USER:?falta JAX_MIGRATE_DB_USER en .env}"; : "${JAX_MIGRATE_DB_PASSWORD:?falta JAX_MIGRATE_DB_PASSWORD en .env}"
+      [ "$JAX_DB_USER" != "$JAX_MIGRATE_DB_USER" ] || { echo "runtime y migrador deben ser principales distintos" >&2; exit 1; }
       HOST="${JAX_DB_HOST:-localhost}"; HOSTPART="localhost"
       { [ "$HOST" != "localhost" ] && [ "$HOST" != "127.0.0.1" ]; } && HOSTPART='%'
       "$CLI" <<SQL
 CREATE USER IF NOT EXISTS '${JAX_DB_USER}'@'${HOSTPART}' IDENTIFIED BY '${JAX_DB_PASSWORD}';
 ALTER USER '${JAX_DB_USER}'@'${HOSTPART}' IDENTIFIED BY '${JAX_DB_PASSWORD}';
-GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${JAX_DB_USER}'@'${HOSTPART}';
+GRANT SELECT, INSERT, UPDATE, DELETE ON \`${DB_NAME}\`.* TO '${JAX_DB_USER}'@'${HOSTPART}';
+CREATE USER IF NOT EXISTS '${JAX_MIGRATE_DB_USER}'@'${HOSTPART}' IDENTIFIED BY '${JAX_MIGRATE_DB_PASSWORD}';
+ALTER USER '${JAX_MIGRATE_DB_USER}'@'${HOSTPART}' IDENTIFIED BY '${JAX_MIGRATE_DB_PASSWORD}';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON \`${DB_NAME}\`.* TO '${JAX_MIGRATE_DB_USER}'@'${HOSTPART}';
 FLUSH PRIVILEGES;
 SQL
 GRANTEOF

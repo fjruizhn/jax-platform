@@ -3750,7 +3750,15 @@ async def run_migrations():
 
             # Virtual Office owns only its additive authority schema.  The JAX
             # namespace column is read as a contract; no Office code writes it.
-            from virtual_office.migrations import apply_office_migrations
+            from virtual_office.migrations import (
+                apply_office_migrations,
+                invalidate_office_runtime_revision,
+                stamp_office_runtime_revision,
+            )
+            # An old ready marker must never survive a later failed migration:
+            # MariaDB DDL may commit implicitly, so remove it before any Office
+            # schema work and stamp only at the successful end below.
+            await invalidate_office_runtime_revision(cur)
             await apply_office_migrations(cur)
 
             for table_name, column_name, ddl in _COLUMNS:
@@ -3854,6 +3862,7 @@ async def run_migrations():
             # arriba (bucle de _COLUMNS): idempotente, así que el orden solo
             # importa para que la columna exista, no para el contenido.
             await _reclassify_provenance_mismatch(cur)
+            await stamp_office_runtime_revision(cur)
 
         await conn.commit()
     # Regresión del 2026-09-12 (13:03-13:29): la migración `generate` 5 -> 15

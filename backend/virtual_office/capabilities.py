@@ -12,7 +12,7 @@ class OfficeOperation(StrEnum):
 
 
 PROJECT_OPERATIONS = frozenset({OfficeOperation.VIEW_PROJECT, OfficeOperation.MANAGE_PROJECT, OfficeOperation.PROFESSIONAL_ACTION})
-ADMIN_OPERATIONS = frozenset({OfficeOperation.ADMINISTER_OFFICE, OfficeOperation.CREATE_OFFICE_PROJECT})
+ADMIN_OPERATIONS = frozenset({OfficeOperation.ADMINISTER_OFFICE})
 
 
 def operation_requires_project(operation: OfficeOperation) -> bool:

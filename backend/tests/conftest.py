@@ -520,8 +520,20 @@ def _esquema_de_jax_en_la_base_de_test(c):
 
 @pytest.fixture(scope="session")
 def client():
+    # Test-only admin preparation: production web startup deliberately has no
+    # DDL privilege and only verifies the runtime fence.
+    import asyncio
+    from db.migrations import run_migrations
+    asyncio.run(run_migrations())
     from fastapi.testclient import TestClient
-    from main import app
+    import main
+    async def _admin_fixture_runtime_guard(_pool):
+        return None
+    # This session fixture is the schema-admin principal. Office runtime tests
+    # create their own restricted principal; production never receives this
+    # replacement.
+    main.assert_runtime_db_contract = _admin_fixture_runtime_guard
+    app = main.app
 
     with TestClient(app) as c:
         c.portal.call = _envolver_portal_call(c.portal.call)

@@ -105,7 +105,7 @@ LIMITE_DE_PROFUNDIDAD_JSON = limite_json.limite_configurado()
 
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
-from db.migrations import run_migrations
+from db.runtime_contract import assert_runtime_db_contract
 from db.seed import run_seed
 from db import indices_forzados
 from jax_engine.state import engine_state
@@ -198,9 +198,9 @@ async def lifespan(app: FastAPI):
     # para que el timeout de la primera extracción real no incluya spawn +
     # import de pypdf. Best-effort (ver adjuntos/pdf_pool.py::precalentar_pool).
     await pdf_pool.precalentar_pool()
-    await get_pool()
+    pool = await get_pool()
+    await assert_runtime_db_contract(pool)
     await get_http_client()
-    await run_migrations()
     # F2-D restart inspection is observational: PREPARED remains uncommitted,
     # COMMITTING remains ambiguous, and no response is replayed automatically.
     from webchat_f2d.repository import OutputOutboxRepository
