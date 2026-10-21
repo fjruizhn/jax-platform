@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import uuid
 
 import aiomysql
 import pytest
@@ -211,4 +214,45 @@ def test_weakened_result_constraint_fails_closed(client):
                 await apply_office_migrations(cur)
         from db.migrations import run_migrations
         await run_migrations()
+    client.portal.call(scenario)
+
+
+def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(client):
+    """Exercise fresh DDL and the pre-surrogate challenge shape in an owned schema."""
+    async def scenario():
+        from db.connection import get_pool
+
+        source = os.environ["JAX_DB_NAME"]
+        assert re.fullmatch(r"[A-Za-z0-9_]+", source)
+        schema = f"office_mfa_upgrade_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await apply_office_migrations(cur)
+                    await cur.execute("ALTER TABLE office_mfa_security_event DROP FOREIGN KEY fk_office_mfa_security_event_challenge_subject")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX uq_office_mfa_challenge_subject")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP COLUMN challenge_id")
+                    await apply_office_migrations(cur)
+                    await cur.execute(
+                        "SELECT COLUMN_NAME,IS_NULLABLE FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_challenge' "
+                        "AND COLUMN_NAME='challenge_id'"
+                    )
+                    assert await cur.fetchone() == ("challenge_id", "NO")
+                    await cur.execute(
+                        "SELECT 1 FROM information_schema.TABLE_CONSTRAINTS "
+                        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_security_event' "
+                        "AND CONSTRAINT_NAME='fk_office_mfa_security_event_challenge_subject'"
+                    )
+                    assert await cur.fetchone() == (1,)
+                    await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)

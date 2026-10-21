@@ -10,6 +10,7 @@ import pytest
 
 from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractError, assert_runtime_db_contract
 from virtual_office.migrations import apply_office_migrations
+from tests.identidades import crear_usuario
 
 
 async def _runtime_pool(user: str, password: str):
@@ -203,4 +204,49 @@ def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await _revision(cur)
+    client.portal.call(scenario)
+
+
+def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(client):
+    """A conditional trigger must not pass merely because the fence row is safe."""
+    async def scenario():
+        from db.connection import get_pool
+
+        database = os.environ["JAX_DB_NAME"]
+        tag = uuid.uuid4().hex[:16]
+        user, password = f"office_mfa_rt_{tag}", f"Office{uuid.uuid4().hex}"
+        subject, _ = await crear_usuario()
+        admin = await get_pool()
+        runtime = None
+        try:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    await cur.execute(
+                        "INSERT INTO office_mfa_security_event "
+                        "(event_kind,actor_user_id,principal_kind,subject_user_id,operation,purpose,token_version,mfa_version,result,server_correlation_id) "
+                        "VALUES ('MFA_PROOF',%s,'USER_SESSION',%s,'MFA_PROOF','STEP_UP',0,0,'VERIFIED',UNHEX(REPLACE(UUID(),'-','')))",
+                        (subject, subject),
+                    )
+                    await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
+                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
+                    await cur.execute(
+                        "CREATE TRIGGER no_update_office_mfa_security_event BEFORE UPDATE "
+                        "ON office_mfa_security_event FOR EACH ROW "
+                        "BEGIN IF OLD.fence_key IS NOT NULL THEN "
+                        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'; "
+                        "END IF; END"
+                    )
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="trigger permitted a mutation"):
+                await assert_runtime_db_contract(runtime)
+        finally:
+            if runtime is not None:
+                runtime.close(); await runtime.wait_closed()
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("DROP TRIGGER IF EXISTS no_update_office_mfa_security_event")
+                    await apply_office_migrations(cur)
+                    await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
     client.portal.call(scenario)
