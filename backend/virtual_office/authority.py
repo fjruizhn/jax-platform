@@ -79,7 +79,11 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         project_tenant = scope["tenant_id"]
         project_status = scope["status"]
         namespace = scope["namespace"]
-        if project_status != "ACTIVE" or namespace != "OFFICE_CONFIDENTIAL":
+        # Membership administration has cleanup semantics: revocation may
+        # remove stale access from an archived Office scope.  It is deliberately
+        # distinct from content management, which remains ACTIVE-only.
+        cleanup_operation = operation is OfficeOperation.ADMINISTER_PROJECT_MEMBERS
+        if namespace != "OFFICE_CONFIDENTIAL" or (project_status != "ACTIVE" and not cleanup_operation):
             return _decision(False, "office_namespace_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
         # An external account may only consume a CLIENT_PUBLISHED view through
         # an active recipient relation.  It never receives a role bypass.
@@ -100,11 +104,23 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         if account_class in {"INTERNAL", "OFFICE_INTERNAL"}:
             if tenant != project_tenant:
                 return _decision(False, "office_tenant_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            if operation is OfficeOperation.ADMINISTER_PROJECT_MEMBERS and global_role == "GENERAL_ADMIN":
+                delegation = await repository.fetch_delegation(
+                    cur, actor, OfficeOperation.ADMINISTER_OFFICE, for_update=locked)
+                if project_status == "ACTIVE" and delegation is not None and delegation["status"] == "ACTIVE":
+                    return _decision(True, "office_delegated_member_admin", actor, operation, project,
+                                     project_tenant, global_role, canonical_project_id=project)
             grant = await repository.fetch_internal_grant(cur, project, actor, for_update=locked)
             if grant is None or grant["grant_status"] != "ACTIVE" or grant["membership_status"] != "ACTIVE":
                 return _decision(False, "office_grant_missing", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             if grant["audience"] != "INTERNAL":
                 return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
+            if operation is OfficeOperation.ADMINISTER_PROJECT_MEMBERS:
+                if grant["grant_role"] == "PROJECT_ADMIN":
+                    return _decision(True, "office_project_admin_members", actor, operation, project, project_tenant,
+                                     global_role, grant["audience"], grant["grant_role"], canonical_project_id=project)
+                return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant,
+                                 global_role, canonical_project_id=project)
             if not grant_permits(operation, grant["grant_role"], grant["audience"]):
                 if operation is OfficeOperation.PROFESSIONAL_ACTION:
                     professional = await repository.fetch_professional_grant(

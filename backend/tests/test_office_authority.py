@@ -92,6 +92,19 @@ def test_project_admin_can_manage_its_project_but_not_global_administration(clie
     client.portal.call(scenario)
 
 
+def test_project_membership_administration_is_separate_from_content_and_can_clean_archived_scope(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        await _sql("UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
+        assert (await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])).allowed is True
+        await _sql("UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", (fixture["project"],))
+        assert (await authorize_office(None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"])).code == "office_namespace_denied"
+        archived_cleanup = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])
+        assert archived_cleanup.allowed is True
+        assert archived_cleanup.code == "office_project_admin_members"
+    client.portal.call(scenario)
+
+
 def test_authority_grant_lookup_uses_index_without_sort_or_temporary_table(client):
     async def scenario():
         fixture = await _seed_office_fixture()

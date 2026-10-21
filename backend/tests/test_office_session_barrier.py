@@ -98,6 +98,36 @@ def test_sse_delivery_rechecks_class_and_emits_no_event_after_change(client, usu
     assert client.portal.call(scenario) == "closed"
 
 
+def test_sse_queued_event_is_rechecked_before_generator_yield(client, usuarios):
+    """A class mutation after enqueue but before consumption leaks no SSE data."""
+    import asyncio
+    from api import events as events_mod
+    from auth.jwt import decode_token
+    from auth.middleware import verificar_sesion
+    from jax_engine.events import event_bus
+    from jax_engine.schemas import JAXEvent
+
+    actor, _ = usuarios()
+
+    async def scenario():
+        user = await verificar_sesion(decode_token(token_para(actor)), "access")
+        response = await events_mod.sse_events(user)
+        generator = response.body_iterator
+        try:
+            # Callback sees an allowed INTERNAL account and queues the event.
+            await event_bus.publish(JAXEvent(event_type="heartbeat", tenant_id=user.tenant_id,
+                                              user_id=user.user_id, payload={"queued": True}))
+            await sql("UPDATE jax_users SET account_class='OFFICE_INTERNAL' WHERE user_id=%s", (actor,))
+            try:
+                await asyncio.wait_for(generator.__anext__(), timeout=1)
+            except StopAsyncIteration:
+                return "closed"
+            raise AssertionError("SSE yielded an event queued before the class transition")
+        finally:
+            await generator.aclose()
+    assert client.portal.call(scenario) == "closed"
+
+
 def test_session_lookup_keeps_primary_key_plan_after_account_class_added(client):
     from auth.middleware import SQL_ESTADO_DE_SESION
 

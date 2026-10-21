@@ -111,6 +111,18 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
                 event = await queue.get()
                 if event is _CERRAR:
                     return
+                # The callback checked before enqueueing, but a queued event
+                # can wait behind the consumer while a trusted account-class
+                # or token-version change occurs.  Check again at the point
+                # of disclosure; no stale queued payload may cross SSE.
+                try:
+                    fresh = await reverificar_sesion(user)
+                    require_classic_stream_user(fresh)
+                except HTTPException:
+                    return
+                except Exception:
+                    logger.exception("Fallo al re-verificar la sesión antes de emitir SSE")
+                    return
                 yield f"data: {json.dumps(event.model_dump())}\n\n"
         except asyncio.CancelledError:  # fail-soft: CancelledError es la forma normal de terminar el generador SSE al desconectar el cliente
             pass

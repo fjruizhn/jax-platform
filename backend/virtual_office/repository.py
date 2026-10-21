@@ -30,6 +30,13 @@ async def fetch_project_scope(cur, project_id: int, *, for_update: bool):
     return None if row is None else dict(zip(("tenant_id", "status", "namespace"), row))
 
 
+async def fetch_tenant(cur, tenant_id: int, *, for_update: bool):
+    suffix = " FOR UPDATE" if for_update else ""
+    await cur.execute("SELECT status FROM jax_tenants WHERE tenant_id=%s" + suffix, (tenant_id,))
+    row = await cur.fetchone()
+    return None if row is None else {"status": row[0]}
+
+
 async def fetch_internal_grant(cur, project_id: int, actor_user_id: int, *, for_update: bool):
     suffix = " FOR UPDATE" if for_update else ""
     await cur.execute(
