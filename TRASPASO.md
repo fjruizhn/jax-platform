@@ -25,3 +25,5 @@ Namespace core marker office-namespace.1 aprobadoSol22715d518b24fd19801b29144e5f
 Task1fixround2 listo: fixture raíz real deprovisiónDB pasó contempfiles/principalespropios y negativas; noOS/prod. EXPLAIN12planes de funcionesreales con1256users/1451scopes todosíndice, JSONenreviews. AuditoríaSHA sigue antesdeTask2. Campos auditCHECK/lifecycle y sourceunits/restore/helper corregidos; no se tocaron cuentas/servicioslegados.
 
 Task1fixround3 listo: readinessv2/upgradeascii/CHECKexacto y arranqueDocker/restoreartefacto coherente. Raíz78passed2.37s+fixtureprovisiónDBexit0. ScopeopsOSlive sigueTask6, ninguna activación. ScopedSolreview antes deTask2barreras.
+
+Task1fixround4 congelado: verificador usa busctlJSON/LoadUnit y contrato efectivo completo de argv/identidad/env/hooks/dependencias. Raíz77passed6.32s sobreMariaDB33991; transporteD-Bus scalar/array contrastado readonly. Fuente docs/superpowers/reviews/2026-10-20-office-runtime-round4.md. ScopedSol exactSHA siguiente, noactivación niOS/prodmutados.

@@ -71,3 +71,7 @@ Contexto únicamente mensajeactual, mensajesCLIENT_GROUP del mismo thread/grupo,
 Configuración office_client_agent_config por tenant/proyecto: DIRECTOR|DEDICATED_CLIENT_AGENT,facet_key,prompt_template_version,status,execution_policy_ref. Política configurada habilita respuesta/tasa/concurrencia/contexto/salida/presupuesto; ausencia falla antes de gasto. Jacobsresuelvecatálogo y preflight. No inventar cuota comercial ni cobro implícito no aceptado.
 
 Complete entrega office_discussion_message MODEL/CLIENT_GROUP/grupoexacto, delivery_basisCLIENT_REQUEST, job/stage/outputsha y professional_statusNOT_PROFESSIONALLY_REVIEWED. Es respuesta alrequestespecífico en suaudiencia, no office_publication, aprobación ni entregableprofesional. Artefactos mantienen review/publicaciónexplícita. Eventos soloIDs/estado/grupo; el cuerpo se obtiene con autorizaciónfresca. Citas solo de publicaciones ya accesibles.
+
+### Reutilización de comprobación del informe
+
+Antes de habilitar el worker productivo, extraer la comprobación estricta del informe hoy enpilot/spatial_api.py a un módulo puro del paquete virtual_office_spatial, preservando bytes/semántica y pruebas. API y worker consumen la misma función; ningún import depilot/FastAPI desde paquete ni copia de la lógica. La extracción tiene checkpoint/gate independiente y versión de paquete registrada. No afirmar que el worker aplica esa comprobación mientras solo exista en el adaptadorHTTP del piloto.

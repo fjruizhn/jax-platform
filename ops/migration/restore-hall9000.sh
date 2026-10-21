@@ -443,7 +443,7 @@ else
       [ -e "$path" ] || die "$(basename "$u"): ruta requerida ausente → $path"
     done < <(grep -hoE '(/home/fruiz|/srv/jax-prod|/etc/jax)[^ "]+' "$u" | sort -u)
   done
-  verify_platform_artifact_readiness "$PLATFORM_DIR" sudo systemctl \
+  verify_platform_artifact_readiness "$PLATFORM_DIR" sudo busctl \
     || die "el artefacto o las units efectivas no están listos para arrancar"
   warn "Los servicios NO se arrancaron ni habilitaron (por diseño). Ver checklist final."
 fi
