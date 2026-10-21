@@ -10,6 +10,8 @@ FENCE_PRINCIPAL = "system:office-schema-migrator"
 FENCE_OPERATION = "AUDIT_FENCE_CANARY"
 FENCE_REASON = "office_audit_fence_v1"
 APPEND_ONLY_MESSAGE = "office_authorization_event append-only"
+MFA_FENCE_KEY = "office-mfa-fence-v1"
+MFA_APPEND_ONLY_MESSAGE = "office_mfa_security_event append-only"
 
 
 class RuntimeDbContractError(RuntimeError):
@@ -43,6 +45,24 @@ async def _trigger_metadata(cur):
     expected = {("no_update_office_authorization_event", "BEFORE", "UPDATE"), ("no_delete_office_authorization_event", "BEFORE", "DELETE")}
     if found != expected:
         raise RuntimeDbContractError("Office audit triggers are missing or invalid")
+
+
+async def _mfa_fence_snapshot(cur):
+    await cur.execute("SELECT event_id,event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at FROM office_mfa_security_event WHERE fence_key=%s", (MFA_FENCE_KEY,))
+    rows = await cur.fetchall()
+    if len(rows) != 1:
+        raise RuntimeDbContractError("Office MFA fence is absent or duplicated")
+    row = rows[0]
+    if tuple(_row(row, i) for i in range(1, 17)) != ("SYSTEM_FENCE", None, "SYSTEM_MIGRATOR", None, None, None, None, None, None, None, None, None, None, "RECORDED", None, MFA_FENCE_KEY):
+        raise RuntimeDbContractError("Office MFA fence is not canonical")
+    return row
+
+
+async def _mfa_trigger_metadata(cur):
+    await cur.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN ('no_update_office_mfa_security_event','no_delete_office_mfa_security_event')")
+    found = {(str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2))) for row in await cur.fetchall()}
+    if found != {("no_update_office_mfa_security_event", "BEFORE", "UPDATE"), ("no_delete_office_mfa_security_event", "BEFORE", "DELETE")}:
+        raise RuntimeDbContractError("Office MFA triggers are missing or invalid")
 
 
 async def _revision(cur):
@@ -133,6 +153,25 @@ async def _probe(pool, statement: str) -> None:
                 raise RuntimeDbContractError("Office audit fence changed after probe rollback")
 
 
+async def _mfa_probe(pool, statement: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                before = await _mfa_fence_snapshot(cur)
+                try:
+                    await cur.execute(statement, (MFA_FENCE_KEY,))
+                except aiomysql.OperationalError as error:
+                    if error.args != (1644, MFA_APPEND_ONLY_MESSAGE):
+                        raise RuntimeDbContractError("Office MFA trigger did not reject canonically") from error
+                else:
+                    raise RuntimeDbContractError("Office MFA trigger permitted a mutation")
+                if await _mfa_fence_snapshot(cur) != before:
+                    raise RuntimeDbContractError("Office MFA fence changed during probe")
+        finally:
+            await conn.rollback()
+
+
 async def assert_runtime_db_contract(pool) -> None:
     """Verify revision, canonical fence, trigger metadata and DML behavior."""
     async with pool.acquire() as conn:
@@ -141,5 +180,9 @@ async def assert_runtime_db_contract(pool) -> None:
             await _revision(cur)
             await _fence_snapshot(cur)
             await _trigger_metadata(cur)
+            await _mfa_fence_snapshot(cur)
+            await _mfa_trigger_metadata(cur)
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")
+    await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
+    await _mfa_probe(pool, "DELETE FROM office_mfa_security_event WHERE fence_key=%s")

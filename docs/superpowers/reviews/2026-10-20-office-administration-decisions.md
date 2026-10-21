@@ -1,6 +1,8 @@
 # Decisions carried from SDD ledger
 
-2026-10-20 · Codex root · DECISIÓN technical during Fernando-authorized development. Source: signed session ledger; these are design decisions with stated costs, not production claims or execution permission. Refresh this archive at final gate; no ledger deletion.
+2026-10-20 · Codex root · DECISIÓN technical during Fernando-authorized development. Source: attributed session ledger, no cryptographic signature. These decisions state rationale and costs; they are not proof of production state or execution permission. Full ledger retained.
+
+Correction of provenance: an earlier archive described the session ledger as signed; it has attribution, not a cryptographic signature. Corrected by Codex on 2026-10-20.
 
 Ruling: namespace authority limited to Virtual Office, no generic global capability or singleton root — fits Fernando's office requirement and avoids unrelated classic authority — wrong scope needs deliberate future extension.
 
@@ -35,3 +37,5 @@ Ruling: inspect structured effective unit properties and compare complete critic
 Ruling: protect Office-enabled target identities from classic administrator credential/email/reset escalation, retaining classic emergency session revocation/deactivation and subject self-service — actor-only barriers leave a confirmed password-reset takeover path into Office grants — costs a permanent Office binding and root-MFA target guard before enabling accounts; no generic classic-admin trust inferred.
 
 Ruling: acceptance uses immutable MFA-backed issuance proof plus current inviter authority/MFA version, without pretending a fresh interactive inviter session at acceptance — an invite may legitimately be accepted24hafterissue — costs proof/event binding and invalidation on MFA change, not every ordinary login.
+
+Ruling: deliver Task3 as3A persistedMFAprimitives,3B session/endpointauthority,3C administration/invitations/outbox, each independentlyreviewed before enabling — large shared auth surface needs bounded verified checkpoints — costs extra audit checkpoints; no partial external capability enabled.

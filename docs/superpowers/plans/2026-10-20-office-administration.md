@@ -38,3 +38,5 @@ Tablas office de artefactos/revisiones/publicación y jobs; worker durable con i
 ## Task 6: Migración reversible y publicación web
 
 Respaldar/restaurar Omoa, importar historial fiel sin aprobar ni duplicarOP334. Artefacto reproducible, activos allowlist, reverseproxy/HTTPS/DNS, cabeceras/límites/monitoreo. Auditoría independiente SHA exacto y gates constitucionales antes de integración/despliegue. Registrar pruebas EXPLAIN/carga/restauración y URL real operativa. No afirmar producción por tener código local.
+
+Task3A delivery refinement:3A1 dedicatedsecurityevent/schema/durableproofreceipts/secondruntimefence first,3A2 primitive replacement/enrollment/recovery/selfsecurity afterindependentgate. OldWIPMFAProof/authledgerimplementationisnotapprovedorexposed. SourcebindingSolrefinement; no taskcapreset.
