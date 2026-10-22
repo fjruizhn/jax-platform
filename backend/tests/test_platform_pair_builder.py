@@ -6,6 +6,7 @@ import importlib.util
 import os
 import json
 import subprocess
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,40 @@ def test_rejects_alternate_object_database_and_dirty_checkout(tmp_path: Path) ->
         builder.repo_tree(source, commit)
 
 
+def test_rejects_gitlink_and_blob_bytes_that_do_not_hash_to_claimed_oid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source, commit = _repository(tmp_path)
+    tree = _git(source, "write-tree")
+    _git(source, "update-index", "--add", "--cacheinfo", f"160000,{commit},nested")
+    gitlink_tree = _git(source, "write-tree")
+    gitlink_commit = _git(source, "commit-tree", gitlink_tree, "-p", commit, "-m", "gitlink")
+    _git(source, "update-ref", "HEAD", gitlink_commit)
+    original = builder.run
+    def clean_status(*args: str, cwd: Path) -> bytes:
+        if args[:2] == ("status", "--porcelain"):
+            return b""
+        return original(*args, cwd=cwd)
+    monkeypatch.setattr(builder, "run", clean_status)
+    with pytest.raises(SystemExit, match="unsafe tree entry"):
+        builder.extract(source, gitlink_commit, tmp_path / "gitlink-out")
+    monkeypatch.setattr(builder, "run", original)
+    source, commit = _repository(tmp_path / "regular")
+    def corrupt(*args: str, cwd: Path) -> bytes:
+        if args[:2] == ("cat-file", "blob"):
+            return b"tampered"
+        return original(*args, cwd=cwd)
+    monkeypatch.setattr(builder, "run", corrupt)
+    with pytest.raises(SystemExit, match="corrupt git blob"):
+        builder.extract(source, commit, tmp_path / "corrupt-out")
+
+
+def test_mountinfo_octal_paths_are_decoded_before_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "with space"; root.mkdir()
+    encoded = os.fsencode(str(root)).replace(b" ", b"\\040")
+    mountinfo = b"1 1 0:1 / " + encoded + b" rw - tmpfs tmpfs rw\n"
+    monkeypatch.setattr(Path, "read_bytes", lambda path: mountinfo if str(path) == "/proc/self/mountinfo" else b"")
+    assert adoption.mount_points_below(root) == {root}
+
+
 def test_wheelhouse_digest_binds_filename_and_bytes_and_rejects_links(tmp_path: Path) -> None:
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
@@ -94,7 +129,15 @@ def test_wheelhouse_digest_binds_filename_and_bytes_and_rejects_links(tmp_path: 
 def _adoptable_tree(root: Path) -> None:
     (root / "jax-platform" / "backend" / ".venv" / "bin").mkdir(parents=True)
     (root / "jax-platform" / "backend" / ".venv" / "bin" / "python").write_bytes(b"python")
-    (root / "build-attestation.json").write_text("{}\n", encoding="utf-8")
+    attestation = {"schema": "axioma.pair-build/v2", "platform_commit": "a" * 40, "platform_tree": "b" * 40,
+                   "platform_links": [], "jax_commit": "c" * 40, "jax_tree": "d" * 40, "jax_links": [],
+                   "wheelhouse_sha256": "e" * 64, "lock_sha256": "f" * 64, "python": "/usr/bin/python3",
+                   "python_sha256": "0" * 64, "python_version": "cpython-test", "freeze_sha256": "1" * 64}
+    (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
+    manifest = {"schema": "axioma.jax-platform-pair/v1", "jax_platform_revision": "a" * 40,
+                "jax_revision": "c" * 40, "dependency_lock_sha256": "f" * 64,
+                "wheelhouse_manifest_sha256": "e" * 64, "files": [], "jax_links": []}
+    (root / "pair-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     for item in [root, *root.rglob("*")]:
         item.chmod(0o755 if item.is_dir() else 0o644)
 
@@ -102,11 +145,12 @@ def _adoptable_tree(root: Path) -> None:
 def test_adoption_validator_accepts_plain_tree_and_rejects_hardlinks(tmp_path: Path) -> None:
     source = tmp_path / "build"
     _adoptable_tree(source)
-    adoption.validate_builder_tree(source, os.getuid())
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    adoption.validate_builder_tree(source, os.getuid(), expected)
     executable = source / "jax-platform" / "backend" / ".venv" / "bin" / "python"
     os.link(executable, source / "duplicate")
     with pytest.raises(SystemExit, match="hardlink"):
-        adoption.validate_builder_tree(source, os.getuid())
+        adoption.validate_builder_tree(source, os.getuid(), expected)
 
 
 def test_adoption_validator_rejects_extended_attributes(tmp_path: Path) -> None:
@@ -117,7 +161,23 @@ def test_adoption_validator_rejects_extended_attributes(tmp_path: Path) -> None:
     except OSError as error:
         pytest.skip(f"filesystem does not provide test xattrs: {error}")
     with pytest.raises(SystemExit, match="xattr or ACL"):
-        adoption.validate_builder_tree(source, os.getuid())
+        adoption.validate_builder_tree(source, os.getuid(), hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest())
+
+
+def test_adoption_requires_external_manifest_digest_and_all_attested_links(tmp_path: Path) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    with pytest.raises(SystemExit, match="unexpected manifest digest"):
+        adoption.validate_builder_tree(source, os.getuid(), "0" * 64)
+    manifest = json.loads((source / "pair-manifest.json").read_text(encoding="utf-8"))
+    link = source / "jax" / "alias"; link.parent.mkdir(); link.symlink_to("target")
+    (source / "jax" / "target").write_text("x", encoding="utf-8")
+    manifest["jax_links"] = [{"path": "jax/alias", "mode": "120000", "blob_oid": "1" * 40,
+                              "target": "target", "target_path": "jax/target", "target_mode": "100644", "target_oid": "2" * 40}]
+    (source / "pair-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    with pytest.raises(SystemExit, match="invalid build contract"):
+        adoption.validate_builder_tree(source, os.getuid(), expected)
 
 
 def test_real_jax_commit_extracts_all_internal_links_in_disposable_clone(tmp_path: Path) -> None:

@@ -34,25 +34,34 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     bin_dir.mkdir(parents=True)
     (release / "jax" / "jax").mkdir(parents=True)
     output = tmp_path / "runtime-path.txt"
+    migration_started = tmp_path / "migration-started"
     credential = tmp_path / "runtime.env"
     credential.write_text("JAX_DB_HOST=db\nJAX_TRUSTED_PROXIES=127.0.0.1\n", encoding="utf-8")
-    fake_python = "#!/bin/sh\nsleep 0.4\nprintf '%s|%s|%s|%s' \"$JAX_REPO_PATH\" \"${BASH_ENV-}\" \"${LD_PRELOAD-}\" \"$PATH\" > " + repr(str(output)) + "\n"
-    for name in ("python", "uvicorn"):
-        path = bin_dir / name
-        path.write_text(fake_python, encoding="utf-8")
-        path.chmod(0o755)
+    fake_python = "#!/bin/sh\nfor arg in \"$@\"; do [ \"$arg\" = uvicorn ] && { printf '%s|||%s' \"$JAX_REPO_PATH\" \"$PATH\" > " + repr(str(output)) + "; exit 0; }; done\nexec /usr/bin/python3 \"$@\"\n"
+    path = bin_dir / 'python'; path.write_text(fake_python, encoding="utf-8"); path.chmod(0o755)
+    db = release / 'jax-platform' / 'backend' / 'db'; db.mkdir()
+    (db / '__init__.py').write_text('')
+    (db / 'migrate.py').write_text("import os,time\nopen(" + repr(str(migration_started)) + ", 'w').write('started')\ntime.sleep(.4)\nopen(" + repr(str(output)) + ", 'w').write(os.environ['JAX_REPO_PATH']+'|||'+os.environ['PATH'])\n")
     (release / "jax" / "jax" / "memory.py").write_text("x", encoding="utf-8")
     for path in [root, root / "releases", release, *release.rglob("*")]:
         if path.is_dir():
             path.chmod(0o755)
         elif path.is_file():
-            path.chmod(0o755 if path.name in {"python", "uvicorn"} else 0o644)
+            path.chmod(0o755 if path.name == "python" else 0o644)
+    attestation = {"schema": "axioma.pair-build/v2", "platform_commit": "a" * 40,
+                   "platform_tree": "1" * 40, "platform_links": [], "jax_commit": "b" * 40,
+                   "jax_tree": "2" * 40, "jax_links": [], "wheelhouse_sha256": "d" * 64,
+                   "lock_sha256": "c" * 64, "python": "/usr/bin/python3", "python_sha256": "3" * 64,
+                   "python_version": "cpython-test", "freeze_sha256": "4" * 64}
+    (release / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
+    (release / "build-attestation.json").chmod(0o644)
     manifest = {
         "schema": readiness.SCHEMA,
         "jax_platform_revision": "a" * 40,
         "jax_revision": "b" * 40,
         "dependency_lock_sha256": "c" * 64,
         "wheelhouse_manifest_sha256": "d" * 64,
+        "jax_links": [],
         "files": readiness._inventory(release, owner_uid=os.getuid(), owner_gid=os.getgid()),
     }
     (release / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
@@ -97,8 +106,13 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     while "start jax-platform-migrate.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
         time.sleep(0.02)
     assert "start jax-platform-migrate.service" in calls.read_text(encoding="utf-8")
+    while not migration_started.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert migration_started.exists()
     held = subprocess.run(["sudo", "-n", "/usr/bin/flock", "-n", str(root / ".runtime.lock"), "-c", "true"], check=False)
-    assert held.returncode != 0
+    if held.returncode == 0:
+        _, diagnostic = first.communicate(timeout=10)
+        pytest.fail(diagnostic)
     stdout, stderr = first.communicate(timeout=10)
     assert first.returncode == 0, stderr or stdout
     assert second.returncode != 0

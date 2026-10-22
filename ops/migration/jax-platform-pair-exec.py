@@ -46,7 +46,9 @@ def main():
     python=str(backend/'.venv/bin/python')
     # -I keeps the child environment isolated; do not add -S here because the
     # venv's own site-packages contains uvicorn and the application modules.
-    argv=[python,'-I','-m','uvicorn','main:app','--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-m','db.migrate']
+    # The immutable release inventory includes no bytecode cache.  -I ignores
+    # PYTHONDONTWRITEBYTECODE, so -B is required for both service processes.
+    argv=[python,'-I','-B','-m','uvicorn','main:app','--app-dir',str(backend),'--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-B','-c',"import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module('db.migrate',run_name='__main__')",str(backend)]
     if mode=='web' and not child['JAX_TRUSTED_PROXIES']: die()
     os.execve(python,argv,child)
 if __name__ == '__main__': main()

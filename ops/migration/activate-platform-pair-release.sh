@@ -32,8 +32,11 @@ if [[ -n $PREVIOUS ]]; then
  current=$(/usr/bin/realpath -e "$ROOT/current" 2>/dev/null || true)
  [[ -n $current && $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'predecessor digest mismatch' >&2; exit 1; }
 fi
-exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x 8
+# A live web launcher owns LOCK_SH for its full lifetime.  Stop it before
+# waiting for LOCK_EX, otherwise systemctl and the activator wait forever.
 $SYSTEMCTL stop jax-platform.service
+web_stopped=1
+exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x 8
 $SYSTEMCTL stop jax-platform-migrate.service
 for unit in jax-platform.service jax-platform-migrate.service; do
   if $SYSTEMCTL is-active --quiet "$unit"; then

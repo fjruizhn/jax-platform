@@ -35,6 +35,9 @@ def digest(path: Path) -> str:
             value.update(block)
     return value.hexdigest()
 
+def git_oid(kind: str, data: bytes) -> str:
+    return hashlib.sha1(f"{kind} {len(data)}\0".encode() + data).hexdigest()
+
 
 def exact_commit(value: str) -> bool:
     return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
@@ -57,6 +60,12 @@ def repo_tree(repo: Path, commit: str) -> tuple[str, list[bytes]]:
     if actual != commit:
         die("commit mismatch")
     tree = run("rev-parse", f"{commit}^{{tree}}", cwd=repo).decode("ascii").strip()
+    # Do not trust Git's object-name lookup alone: a corrupt loose object can
+    # otherwise be returned under the claimed name and copied into the release.
+    if git_oid("commit", run("cat-file", "commit", commit, cwd=repo)) != commit:
+        die("corrupt git commit")
+    if git_oid("tree", run("cat-file", "tree", tree, cwd=repo)) != tree:
+        die("corrupt git tree")
     rows = run("ls-tree", "-rz", "-r", "-t", commit, cwd=repo).split(b"\0")[:-1]
     return tree, rows
 
@@ -73,7 +82,10 @@ def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[
         except UnicodeDecodeError:
             die("non-UTF-8 tree path")
         path = Path(name)
-        if path.is_absolute() or ".." in path.parts or len(object_id) != 40 or (object_type == b"tree" and mode != b"040000") or (object_type == b"blob" and mode not in REGULAR_MODES | {b"120000"}):
+        if (path.is_absolute() or ".." in path.parts or len(object_id) != 40
+                or object_type not in {b"tree", b"blob"}
+                or (object_type == b"tree" and mode != b"040000")
+                or (object_type == b"blob" and mode not in REGULAR_MODES | {b"120000"})):
             die("unsafe tree entry")
         entries[name] = (mode, object_type, object_id)
     links: list[dict[str, str]] = []
@@ -83,13 +95,22 @@ def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[
         path = Path(name)
         output = destination / path
         output.parent.mkdir(parents=True, exist_ok=True)
+        raw = run("cat-file", "blob", object_id.decode("ascii"), cwd=repo)
+        if git_oid("blob", raw) != object_id.decode("ascii"):
+            die("corrupt git blob")
         with output.open("xb") as target:
-            target.write(run("cat-file", "blob", object_id.decode("ascii"), cwd=repo))
+            target.write(raw)
         output.chmod(0o755 if mode == b"100755" else 0o644)
     for name, (mode, object_type, object_id) in entries.items():
         if mode != b"120000":
             continue
-        target = run("cat-file", "blob", object_id.decode("ascii"), cwd=repo).decode("utf-8")
+        raw_target = run("cat-file", "blob", object_id.decode("ascii"), cwd=repo)
+        if git_oid("blob", raw_target) != object_id.decode("ascii"):
+            die("corrupt git blob")
+        try:
+            target = raw_target.decode("utf-8")
+        except UnicodeDecodeError:
+            die("unsafe symlink target")
         if not target or target.startswith("/") or "\x00" in target:
             die("unsafe symlink target")
         target_path = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
@@ -145,6 +166,8 @@ def main() -> None:
     platform_output.mkdir()
     jax_output.mkdir()
     platform_tree, platform_links = extract(arguments.platform, arguments.platform_commit, platform_output)
+    if platform_links:
+        die("platform source symlinks forbidden")
     jax_tree, jax_links = extract(arguments.jax, arguments.jax_commit, jax_output)
     venv = platform_output / "backend" / ".venv"
     subprocess.run([arguments.python, "-m", "venv", "--copies", str(venv)], check=True, env=SAFE_ENV)

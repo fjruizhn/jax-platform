@@ -133,16 +133,42 @@ def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str 
         attestation = json.loads((release / "build-attestation.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _reject("invalid build attestation") from exc
-    if not isinstance(manifest["jax_links"], list) or not isinstance(attestation, dict) or manifest["jax_links"] != attestation.get("jax_links"):
+    required_attestation = {"schema", "platform_commit", "platform_tree", "platform_links", "jax_commit", "jax_tree", "jax_links", "wheelhouse_sha256", "lock_sha256", "python", "python_sha256", "python_version", "freeze_sha256"}
+    if (not isinstance(manifest["jax_links"], list) or not isinstance(attestation, dict)
+            or set(attestation) != required_attestation
+            or attestation.get("schema") != "axioma.pair-build/v2"
+            or attestation.get("platform_commit") != manifest["jax_platform_revision"]
+            or attestation.get("jax_commit") != manifest["jax_revision"]
+            or attestation.get("wheelhouse_sha256") != manifest["wheelhouse_manifest_sha256"]
+            or attestation.get("lock_sha256") != manifest["dependency_lock_sha256"]
+            or attestation.get("platform_links") != []
+            or manifest["jax_links"] != attestation.get("jax_links")):
         raise _reject("jax link attestation mismatch")
+    if any(not _valid_link_entry(link) for link in manifest["jax_links"]):
+        raise _reject("invalid jax link attestation")
     if not isinstance(files, list) or files != _inventory(release, owner_uid=owner_uid, owner_gid=owner_gid):
         raise _reject("artifact inventory mismatch")
+    actual_links = {(item["path"], item["target"], item["target_path"])
+                    for item in files if isinstance(item, dict) and item.get("mode") == "120000"}
+    sealed_links = {(item["path"], item["target"], item["target_path"]) for item in manifest["jax_links"]}
+    if actual_links != sealed_links:
+        raise _reject("jax link inventory mismatch")
     paths = {entry["path"] for entry in files if isinstance(entry, dict)}
     if not any(path.startswith("jax-platform/backend/.venv/") for path in paths):
         raise _reject("missing sealed platform venv")
     if not any(path.startswith("jax/") for path in paths):
         raise _reject("missing sealed jax")
     return manifest
+
+
+def _valid_link_entry(item: object) -> bool:
+    if not isinstance(item, dict) or set(item) != {"path", "mode", "blob_oid", "target", "target_path", "target_mode", "target_oid"}:
+        return False
+    return (isinstance(item["path"], str) and item["path"].startswith("jax/")
+            and item["mode"] == "120000" and isinstance(item["target"], str) and item["target"]
+            and isinstance(item["target_path"], str) and item["target_path"].startswith("jax/")
+            and item["target_mode"] in {"100644", "100755", "040000"}
+            and all(isinstance(item[key], str) and len(item[key]) == 40 and all(char in "0123456789abcdef" for char in item[key]) for key in ("blob_oid", "target_oid")))
 
 
 def main(argv: list[str]) -> int:

@@ -27,3 +27,13 @@ def test_isolated_child_uses_real_venv_site_packages(tmp_path):
     subprocess.run([str(python),'-m','pip','install','--no-index',f'--find-links={wheelhouse}','uvicorn==0.51.0'],check=True)
     assert subprocess.run([str(python),'-I','-c','import uvicorn'],check=False).returncode == 0
     assert subprocess.run([str(python),'-I','-S','-c','import uvicorn'],check=False).returncode != 0
+
+def test_isolated_child_resolves_validated_backend_modules_without_running_migration(tmp_path):
+    venv=tmp_path/'venv'; backend=tmp_path/'backend'; (backend/'db').mkdir(parents=True)
+    (backend/'main.py').write_text('app=object()\n')
+    (backend/'db'/'__init__.py').write_text('')
+    (backend/'db'/'migrate.py').write_text('MARKER=True\n')
+    subprocess.run([sys.executable,'-m','venv',str(venv)],check=True)
+    python=venv/'bin/python'
+    code="import importlib,sys;sys.path.insert(0,sys.argv[1]);import main,db.migrate;assert main.app and db.migrate.MARKER"
+    assert subprocess.run([str(python),'-I','-c',code,str(backend)],check=False).returncode == 0

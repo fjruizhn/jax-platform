@@ -30,7 +30,11 @@ def _pair(tmp_path: Path) -> tuple[Path, int, int]:
                  root / "jax-platform" / "backend" / ".venv", root / "jax-platform" / "backend" / ".venv" / "bin",
                  root / "jax", root / "jax" / "jax", root.parent, root.parent.parent):
         path.chmod(0o755)
-    attestation = {"schema": "axioma.pair-build/v2", "jax_links": []}
+    attestation = {"schema": "axioma.pair-build/v2", "platform_commit": "a" * 40,
+                   "platform_tree": "1" * 40, "platform_links": [], "jax_commit": "b" * 40,
+                   "jax_tree": "2" * 40, "jax_links": [], "wheelhouse_sha256": "d" * 64,
+                   "lock_sha256": "c" * 64, "python": "/usr/bin/python3", "python_sha256": "3" * 64,
+                   "python_version": "cpython-test", "freeze_sha256": "4" * 64}
     (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
     (root / "build-attestation.json").chmod(0o644)
     manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": "a" * 40,
@@ -85,7 +89,8 @@ def test_allows_only_sealed_internal_jax_symlink_targets(tmp_path: Path) -> None
     link.symlink_to("jax/memory.py")
     link_attestation = {"path": "jax/las_manos_memory.py", "mode": "120000", "blob_oid": "a" * 40,
                         "target": "jax/memory.py", "target_path": "jax/jax/memory.py", "target_mode": "100644", "target_oid": "b" * 40}
-    (root / "build-attestation.json").write_text(json.dumps({"schema": "axioma.pair-build/v2", "jax_links": [link_attestation]}), encoding="utf-8")
+    attestation = json.loads((root / "build-attestation.json").read_text(encoding="utf-8")); attestation["jax_links"] = [link_attestation]
+    (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
     manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8"))
     manifest["jax_links"] = [link_attestation]
     manifest["files"] = readiness._inventory(root, owner_uid=uid, owner_gid=gid)
@@ -102,7 +107,8 @@ def test_rejects_pair_manifest_link_attestation_mutation(tmp_path: Path, field: 
     link_attestation = {"path": "jax/link", "mode": "120000", "blob_oid": "a" * 40,
                         "target": "jax/memory.py", "target_path": "jax/jax/memory.py", "target_mode": "100644", "target_oid": "b" * 40}
     (root / "jax" / "link").symlink_to("jax/memory.py")
-    (root / "build-attestation.json").write_text(json.dumps({"schema": "axioma.pair-build/v2", "jax_links": [link_attestation]}), encoding="utf-8")
+    attestation = json.loads((root / "build-attestation.json").read_text(encoding="utf-8")); attestation["jax_links"] = [link_attestation]
+    (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
     manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8")); manifest["jax_links"] = [dict(link_attestation)]
     manifest["jax_links"][0][field] = value
     manifest["files"] = readiness._inventory(root, owner_uid=uid, owner_gid=gid)
