@@ -9,6 +9,7 @@ DB=jax_memory_test_ac1d2e12
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/virtualoffice/provision-invitation-worker.sh"
 RELEASE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-worker-release.sh"
+ROUTINE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-delivery-routines.sh"
 [[ $(id -u) == 0 ]] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
 docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
@@ -66,6 +67,7 @@ chmod 666 "$ENV_FILE"
 if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2; exit 1; fi
 chmod 600 "$ENV_FILE"
 run_helper
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT"
 run_helper
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
@@ -85,13 +87,20 @@ grants=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | se
 for grant in \
   "GRANT USAGE ON *.* TO '$USER_NAME'@'$HOST'" \
   "GRANT SELECT ON '$DB'.'axioma_config' TO '$USER_NAME'@'$HOST'" \
-  "GRANT SELECT, UPDATE ON '$DB'.'office_invitation' TO '$USER_NAME'@'$HOST'" \
-  "GRANT SELECT ON '$DB'.'office_invitation_issuance' TO '$USER_NAME'@'$HOST'" \
-  "GRANT SELECT, INSERT ON '$DB'.'office_invitation_event' TO '$USER_NAME'@'$HOST'" \
-  "GRANT SELECT, UPDATE ON '$DB'.'office_invitation_outbox' TO '$USER_NAME'@'$HOST'"; do
+  "GRANT SELECT (outbox_id, invitation_id, state, attempt_id, claimed_at, created_at) ON '$DB'.'office_invitation_outbox' TO '$USER_NAME'@'$HOST'" \
+  "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_claim_next_v1' TO '$USER_NAME'@'$HOST'" \
+  "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO '$USER_NAME'@'$HOST'" \
+  "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO '$USER_NAME'@'$HOST'"; do
   grep -Fqx "$grant" <<< "$grants"
 done
 [[ $(grep -c '^GRANT ' <<< "$grants") == 6 ]]
+# Valid lifecycle SQL must fail at privilege resolution (1142), not merely
+# because a made-up column was used.
+if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e "UPDATE office_invitation SET status='EXPIRED' WHERE invitation_id='00000000-0000-4000-8000-000000000000'" 2>"$TEMP/denied"; then
+  echo 'worker was able to mutate invitation lifecycle' >&2; exit 1
+fi
+grep -q '1142' "$TEMP/denied" || { cat "$TEMP/denied" >&2; exit 1; }
+
 if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e 'INSERT INTO office_invitation (id) VALUES (0)' >/dev/null 2>&1; then
   echo 'worker was able to issue an invitation' >&2; exit 1
 fi
