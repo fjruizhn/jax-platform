@@ -4,7 +4,7 @@ from __future__ import annotations
 import aiomysql
 from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
 from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
-from virtual_office.migrations import _assert_mfa_ledger_metadata
+from virtual_office.migrations import assert_mfa_ledger_runtime_metadata
 
 FENCE_KEY = "office-audit-fence-v1"
 FENCE_PRINCIPAL = "system:office-schema-migrator"
@@ -60,10 +60,10 @@ async def _mfa_fence_snapshot(cur):
 
 
 async def _mfa_trigger_metadata(cur):
-    await cur.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN ('no_update_office_mfa_security_event','no_delete_office_mfa_security_event')")
-    found = {(str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2))) for row in await cur.fetchall()}
-    if found != {("no_update_office_mfa_security_event", "BEFORE", "UPDATE"), ("no_delete_office_mfa_security_event", "BEFORE", "DELETE")}:
-        raise RuntimeDbContractError("Office MFA triggers are missing or invalid")
+    try:
+        await assert_mfa_ledger_runtime_metadata(cur, allow_redacted_trigger_body=True)
+    except RuntimeError as error:
+        raise RuntimeDbContractError("Office MFA triggers or ledger metadata are invalid") from error
 
 
 async def _revision(cur):
@@ -189,6 +189,54 @@ async def _mfa_normal_event_id(pool):
             return None if row is None else _row(row, 0)
 
 
+async def _mfa_pristine_ledger_probe(pool) -> None:
+    """Prove append-only behavior without committing fabricated MFA evidence.
+
+    A database that contains only the migration fence must still reject a
+    conditional trigger which protects that fence alone.  The DML principal
+    creates a contract-valid ``DENIED`` row in its transaction, probes both
+    mutations, and rolls the entire transaction back.  It never persists a
+    successful verification canary.
+    """
+    before = None
+    async with pool.acquire() as conn:
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                before = await _mfa_fence_snapshot(cur)
+                await cur.execute("SELECT user_id FROM jax_users ORDER BY user_id LIMIT 1")
+                subject = await cur.fetchone()
+                if subject is None:
+                    raise RuntimeDbContractError("Office MFA trigger cannot be safely probed without a subject")
+                user_id = _row(subject, 0)
+                await cur.execute(
+                    "INSERT INTO office_mfa_security_event "
+                    "(event_kind,actor_user_id,principal_kind,subject_user_id,operation,purpose,token_version,mfa_version,result,server_correlation_id) "
+                    "VALUES ('MFA_PROOF',%s,'USER_SESSION',%s,'MFA_PROOF','STEP_UP',0,0,'DENIED',UNHEX(REPLACE(UUID(),'-','')))",
+                    (user_id, user_id),
+                )
+                event_id = cur.lastrowid
+                for statement in (
+                    "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE event_id=%s",
+                    "DELETE FROM office_mfa_security_event WHERE event_id=%s",
+                ):
+                    try:
+                        await cur.execute(statement, (event_id,))
+                    except aiomysql.OperationalError as error:
+                        if error.args != (1644, MFA_APPEND_ONLY_MESSAGE):
+                            raise RuntimeDbContractError("Office MFA trigger did not reject canonically") from error
+                    else:
+                        raise RuntimeDbContractError("Office MFA trigger permitted a mutation")
+                if await _mfa_fence_snapshot(cur) != before:
+                    raise RuntimeDbContractError("Office MFA fence changed during probe")
+        finally:
+            await conn.rollback()
+    async with pool.acquire() as reread_conn:
+        async with reread_conn.cursor() as reread_cur:
+            if await _mfa_fence_snapshot(reread_cur) != before:
+                raise RuntimeDbContractError("Office MFA fence changed after probe rollback")
+
+
 async def assert_runtime_db_contract(pool) -> None:
     """Verify revision, canonical fence, trigger metadata and DML behavior."""
     async with pool.acquire() as conn:
@@ -199,10 +247,6 @@ async def assert_runtime_db_contract(pool) -> None:
             await _trigger_metadata(cur)
             await _mfa_fence_snapshot(cur)
             await _mfa_trigger_metadata(cur)
-            try:
-                await _assert_mfa_ledger_metadata(cur)
-            except RuntimeError as error:
-                raise RuntimeDbContractError("Office MFA ledger metadata is invalid") from error
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")
     await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
@@ -211,3 +255,5 @@ async def assert_runtime_db_contract(pool) -> None:
     if normal_event_id is not None:
         await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE event_id=%s", normal_event_id)
         await _mfa_probe(pool, "DELETE FROM office_mfa_security_event WHERE event_id=%s", normal_event_id)
+    else:
+        await _mfa_pristine_ledger_probe(pool)

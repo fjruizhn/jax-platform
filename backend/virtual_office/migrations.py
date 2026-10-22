@@ -46,9 +46,22 @@ _CANONICAL_MFA_CHECK_DIGESTS = {
 }
 
 _MFA_CRITICAL_COLUMNS = {
-    ("office_mfa_challenge", "challenge_id"): ("bigint", "bigint(20) unsigned", "NO", None, None),
-    ("office_mfa_security_event", "event_id"): ("bigint", "bigint(20) unsigned", "NO", None, None),
-    ("office_mfa_security_event", "fence_key"): ("varchar", "varchar(64)", "YES", "ascii", "ascii_bin"),
+    ("office_mfa_challenge", "challenge_id"): ("bigint", "bigint(20) unsigned", "NO", None, None, "auto_increment", None),
+    ("office_mfa_security_event", "event_id"): ("bigint", "bigint(20) unsigned", "NO", None, None, "auto_increment", None),
+    ("office_mfa_security_event", "fence_key"): ("varchar", "varchar(64)", "YES", "ascii", "ascii_bin", "", "NULL"),
+}
+
+_MFA_FOREIGN_KEYS = {
+    "fk_office_mfa_security_event_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_mfa_security_event_subject": (("subject_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_mfa_security_event_challenge_subject": (("challenge_id", "subject_user_id"), "office_mfa_challenge", ("challenge_id", "user_id"), "RESTRICT", "RESTRICT"),
+    "fk_office_mfa_security_event_proof": (("proof_event_id",), "office_mfa_security_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_mfa_security_event_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
+}
+
+_MFA_TRIGGER_METADATA = {
+    "no_update_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
+    "no_delete_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
 }
 
 _MFA_UNIQUE_INDEXES = {
@@ -118,7 +131,7 @@ async def _assert_mfa_ledger_metadata(cur) -> None:
             raise RuntimeError(f"Office MFA constraint {name} is incompatible; historic evidence is not rewritten")
     for (table, column), expected in _MFA_CRITICAL_COLUMNS.items():
         await cur.execute(
-            "SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,CHARACTER_SET_NAME,COLLATION_NAME "
+            "SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,CHARACTER_SET_NAME,COLLATION_NAME,EXTRA,COLUMN_DEFAULT "
             "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s",
             (table, column),
         )
@@ -134,6 +147,52 @@ async def _assert_mfa_ledger_metadata(cur) -> None:
         rows = await cur.fetchall()
         if not rows or any(int(row[0]) != 0 for row in rows) or tuple(row[1] for row in rows) != expected_columns:
             raise RuntimeError(f"Office MFA unique index {table}.{index} is incompatible")
+    await _assert_mfa_ledger_foreign_keys(cur)
+
+
+async def _assert_mfa_ledger_foreign_keys(cur) -> None:
+    for name, expected in _MFA_FOREIGN_KEYS.items():
+        await cur.execute(
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
+            "r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k "
+            "JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA "
+            "AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME "
+            "WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME='office_mfa_security_event' "
+            "AND k.CONSTRAINT_NAME=%s ORDER BY k.ORDINAL_POSITION",
+            (name,),
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            raise RuntimeError(f"Office MFA foreign key {name} is incompatible")
+        local = tuple(row[0] for row in rows)
+        referenced_table = rows[0][1]
+        referenced = tuple(row[2] for row in rows)
+        rules = (rows[0][3], rows[0][4])
+        if (local, referenced_table, referenced, *rules) != expected:
+            raise RuntimeError(f"Office MFA foreign key {name} is incompatible")
+
+
+async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+    await _assert_mfa_ledger_metadata(cur)
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+        "AND TRIGGER_NAME IN ('no_update_office_mfa_security_event','no_delete_office_mfa_security_event')"
+    )
+    found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    if allow_redacted_trigger_body:
+        found = {
+            name: (*metadata[:-1], None if metadata[-1] is None else metadata[-1])
+            for name, metadata in found.items()
+        }
+        expected = {
+            name: (*metadata[:-1], None if found.get(name, (None,))[-1] is None else metadata[-1])
+            for name, metadata in _MFA_TRIGGER_METADATA.items()
+        }
+    else:
+        expected = _MFA_TRIGGER_METADATA
+    if found != expected:
+        raise RuntimeError("Office MFA triggers are missing or invalid")
 
 
 async def _ensure_ascii_bin(cur, column: str) -> None:
@@ -201,7 +260,8 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_MFA_DDL:
         if "office_mfa_security_event" not in statement:
             await cursor.execute(statement)
-    if not await _column_exists(cursor, "office_mfa_challenge", "challenge_id"):
+    legacy_challenge_surrogate = not await _column_exists(cursor, "office_mfa_challenge", "challenge_id")
+    if legacy_challenge_surrogate:
         await cursor.execute("ALTER TABLE office_mfa_challenge ADD COLUMN challenge_id BIGINT UNSIGNED NULL AUTO_INCREMENT UNIQUE AFTER token_hash")
     if not await _index_exists(cursor, "office_mfa_challenge", "uq_office_mfa_challenge_subject"):
         await cursor.execute("ALTER TABLE office_mfa_challenge ADD UNIQUE KEY uq_office_mfa_challenge_subject (challenge_id,user_id)")
@@ -221,13 +281,14 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE office_mfa_security_event ADD CONSTRAINT chk_office_mfa_security_event_fence CHECK ((event_kind='SYSTEM_FENCE' AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1') OR (event_kind IN ('MFA_PROOF','MFA_STATE_CHANGE') AND fence_key IS NULL))")
     if not await _constraint_exists(cursor, "chk_office_mfa_security_event_truth"):
         await cursor.execute("ALTER TABLE office_mfa_security_event ADD CONSTRAINT chk_office_mfa_security_event_truth CHECK (COALESCE((BINARY event_kind=BINARY 'SYSTEM_FENCE' AND actor_user_id IS NULL AND BINARY principal_kind=BINARY 'SYSTEM_MIGRATOR' AND challenge_id IS NULL AND subject_user_id IS NULL AND operation IS NULL AND purpose IS NULL AND token_version IS NULL AND mfa_version IS NULL AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND BINARY result=BINARY 'RECORDED' AND server_correlation_id IS NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1') OR (BINARY event_kind=BINARY 'MFA_PROOF' AND subject_user_id IS NOT NULL AND BINARY operation=BINARY 'MFA_PROOF' AND (BINARY purpose=BINARY 'LOGIN' OR BINARY purpose=BINARY 'STEP_UP' OR BINARY purpose=BINARY 'ENROLLMENT' OR BINARY purpose=BINARY 'RECOVERY') AND token_version IS NOT NULL AND token_version>=0 AND mfa_version IS NOT NULL AND mfa_version>=0 AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND (BINARY result=BINARY 'VERIFIED' OR BINARY result=BINARY 'DENIED') AND server_correlation_id IS NOT NULL AND fence_key IS NULL AND ((BINARY principal_kind=BINARY 'USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR ((BINARY principal_kind=BINARY 'PASSWORD_PREAUTH' OR BINARY principal_kind=BINARY 'RECOVERY_CAPABILITY' OR BINARY principal_kind=BINARY 'ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (BINARY event_kind=BINARY 'MFA_STATE_CHANGE' AND subject_user_id IS NOT NULL AND (BINARY operation=BINARY 'ENROLLMENT_CONFIRM' OR BINARY operation=BINARY 'RECOVERY_CONSUME' OR BINARY operation=BINARY 'MFA_DISABLE' OR BINARY operation=BINARY 'MFA_RESET') AND (BINARY purpose=BINARY 'ENROLLMENT' OR BINARY purpose=BINARY 'RECOVERY') AND token_version IS NOT NULL AND token_version>=0 AND mfa_version IS NOT NULL AND mfa_version>=0 AND previous_token_version IS NOT NULL AND previous_token_version>=0 AND previous_mfa_version IS NOT NULL AND previous_mfa_version>=0 AND proof_event_id IS NOT NULL AND BINARY result=BINARY 'RECORDED' AND server_correlation_id IS NOT NULL AND fence_key IS NULL AND ((BINARY principal_kind=BINARY 'USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR ((BINARY principal_kind=BINARY 'RECOVERY_CAPABILITY' OR BINARY principal_kind=BINARY 'ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))),FALSE))")
-    if not await _constraint_exists(cursor, "fk_office_mfa_security_event_challenge_subject"):
+    if legacy_challenge_surrogate and not await _constraint_exists(cursor, "fk_office_mfa_security_event_challenge_subject"):
         await cursor.execute(
             "ALTER TABLE office_mfa_security_event ADD CONSTRAINT "
             "fk_office_mfa_security_event_challenge_subject FOREIGN KEY (challenge_id,subject_user_id) "
             "REFERENCES office_mfa_challenge(challenge_id,user_id)"
         )
     await _assert_mfa_ledger_metadata(cursor)
+    await assert_mfa_ledger_runtime_metadata(cursor)
     await cursor.execute("SELECT event_id FROM office_mfa_security_event WHERE fence_key='office-mfa-fence-v1'")
     if not await cursor.fetchone():
         await cursor.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) VALUES ('SYSTEM_FENCE',NULL,'SYSTEM_MIGRATOR',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'RECORDED',NULL,'office-mfa-fence-v1')")

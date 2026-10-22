@@ -150,3 +150,71 @@ def test_mfa_ledger_lookup_indexes_have_real_explain_coverage(client):
                     assert "Using filesort" not in (row[9] or "")
                     assert "Using temporary" not in (row[9] or "")
     client.portal.call(scenario)
+
+
+def test_migration_rejects_conditional_mfa_triggers_on_a_pristine_ledger(client):
+    async def scenario():
+        from db.connection import get_pool
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                for event, name in (("UPDATE", "no_update_office_mfa_security_event"), ("DELETE", "no_delete_office_mfa_security_event")):
+                    await cur.execute(f"DROP TRIGGER {name}")
+                    await cur.execute(
+                        f"CREATE TRIGGER {name} BEFORE {event} ON office_mfa_security_event FOR EACH ROW "
+                        "BEGIN IF OLD.fence_key IS NOT NULL THEN "
+                        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'; END IF; END"
+                    )
+                with pytest.raises(RuntimeError, match="MFA triggers are missing or invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
+                await cur.execute("DROP TRIGGER no_delete_office_mfa_security_event")
+                await apply_office_migrations(cur)
+        from db.migrations import run_migrations
+        await run_migrations()
+    client.portal.call(scenario)
+
+
+def test_migration_rejects_each_missing_or_homonymous_mfa_foreign_key(client):
+    async def scenario():
+        from db.connection import get_pool
+
+        definitions = {
+            "fk_office_mfa_security_event_actor": "FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id)",
+            "fk_office_mfa_security_event_subject": "FOREIGN KEY (subject_user_id) REFERENCES jax_users(user_id)",
+            "fk_office_mfa_security_event_challenge_subject": "FOREIGN KEY (challenge_id,subject_user_id) REFERENCES office_mfa_challenge(challenge_id,user_id)",
+            "fk_office_mfa_security_event_proof": "FOREIGN KEY (proof_event_id) REFERENCES office_mfa_security_event(event_id)",
+            "fk_office_mfa_security_event_authorization": "FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id)",
+        }
+        wrong = {
+            "fk_office_mfa_security_event_actor": "FOREIGN KEY (subject_user_id) REFERENCES jax_users(user_id)",
+            "fk_office_mfa_security_event_subject": "FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id)",
+            "fk_office_mfa_security_event_challenge_subject": "FOREIGN KEY (challenge_id) REFERENCES office_mfa_challenge(challenge_id)",
+            "fk_office_mfa_security_event_proof": "FOREIGN KEY (proof_event_id) REFERENCES office_authorization_event(event_id)",
+            "fk_office_mfa_security_event_authorization": "FOREIGN KEY (authorization_event_id) REFERENCES office_mfa_security_event(event_id)",
+        }
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                for name, definition in definitions.items():
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                    with pytest.raises(RuntimeError, match=name):
+                        await apply_office_migrations(cur)
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {wrong[name]}")
+                    with pytest.raises(RuntimeError, match=name):
+                        await apply_office_migrations(cur)
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
+                await apply_office_migrations(cur)
+        from db.migrations import run_migrations
+        await run_migrations()
+    client.portal.call(scenario)

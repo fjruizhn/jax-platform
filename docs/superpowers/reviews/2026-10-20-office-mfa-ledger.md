@@ -1,5 +1,13 @@
 # Task 3A1 ledger finish report
 
+## Correction round1 · 2026-10-21 · Codex
+
+The initial a11ea53 candidate was rejected: a pristine ledger protected only its fence could pass the runtime check, FK metadata was incomplete, and surrogate AUTO_INCREMENT was not verified. This correction adds exact metadata for all five ledger FKs/critical columns and checks the canonical trigger definition when visible. The restricted DML principal verifies metadata plus real rolled-back UPDATE/DELETE denial. With no ordinary event, it inserts a transaction-local DENIED canary, never persists a VERIFIED canary, and rereads the immutable fence after rollback. Known legacy pre-surrogate upgrade restores only that missing composite FK; an unexpectedly missing current FK fails closed.
+
+Durable private harness now lives under `/home/fruiz/.local/share/codex-workspaces/office-20261020/`; it reconstructs disposable MariaDB12.3.3 on loopback33991 without production credentials. Tier2 reports 54 relevant tests passed in3.47s,1841 inherited fixture warnings, plus py_compile and diff check. Parent independent rerun and exact-SHA scoped review follow; this is not an activation verdict. Old mfa.py remains unapproved until3A2.
+
+Parent independently reran the same six relevant files with the durable harness: **54passed,1840warnings,3.63s**. Command: `python3 /home/fruiz/.local/share/codex-workspaces/office-20261020/cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_mfa_events.py tests/test_office_runtime_contract.py tests/test_office_migrations.py tests/test_office_mfa.py tests/test_office_authority.py tests/test_office_namespace_adapter.py`. The warning-count difference is fixture history, not a reduced test floor. No live account/provider/production change.
+
 2026-10-20 · Tier 2 handoff · schema/fences only; no 3A2 writer or route.
 
 ## Scope completed

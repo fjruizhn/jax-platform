@@ -240,11 +240,11 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP COLUMN challenge_id")
                     await apply_office_migrations(cur)
                     await cur.execute(
-                        "SELECT COLUMN_NAME,IS_NULLABLE FROM information_schema.COLUMNS "
+                        "SELECT COLUMN_NAME,IS_NULLABLE,EXTRA FROM information_schema.COLUMNS "
                         "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_challenge' "
                         "AND COLUMN_NAME='challenge_id'"
                     )
-                    assert await cur.fetchone() == ("challenge_id", "NO")
+                    assert await cur.fetchone() == ("challenge_id", "NO", "auto_increment")
                     await cur.execute(
                         "SELECT 1 FROM information_schema.TABLE_CONSTRAINTS "
                         "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_security_event' "
