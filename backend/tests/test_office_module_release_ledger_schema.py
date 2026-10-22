@@ -217,3 +217,26 @@ def test_mariadb_metadata_rejects_check_clause_on_decoy_table(client) -> None:
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
             conn.close()
     client.portal.call(scenario)
+
+
+def test_mariadb_mediumblob_boundary_matches_declared_cap(client) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_candidate_bound_{uuid.uuid4().hex[:16]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version) VALUES ('bounded','1')")
+                candidate_id = cur.lastrowid
+                digest = bytes.fromhex("22" * 32)
+                await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,1,UNHEX(SHA2(REPEAT('x',16777215),256)),REPEAT('x',16777215),%s,'untrusted-key')", (candidate_id, digest))
+                with pytest.raises((IntegrityError, OperationalError)):
+                    await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,2,UNHEX(SHA2(REPEAT('x',16777216),256)),REPEAT('x',16777216),%s,'untrusted-key')", (candidate_id, digest))
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
