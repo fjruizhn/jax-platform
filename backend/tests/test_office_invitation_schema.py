@@ -73,9 +73,9 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                     "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
                     "AND TRIGGER_NAME IN ('no_update_office_invitation_issuance','no_delete_office_invitation_issuance',"
                     "'no_update_office_invitation_event','no_delete_office_invitation_event','guard_office_invitation_update',"
-                    "'guard_office_invitation_insert','guard_office_invitation_event_insert','guard_office_invitation_outbox_update')"
+                    "'guard_office_invitation_insert','guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
                 )
-                assert (await cur.fetchone())[0] == 8
+                assert (await cur.fetchone())[0] == 9
     client.portal.call(scenario)
 
 
@@ -318,6 +318,132 @@ def test_revocation_and_expiry_stop_queued_or_claimed_outbox_and_erase_ciphertex
                         (str(uuid.uuid4()), claimed_outbox),
                     )
                 assert original_attempt is not None
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,observed_outbox_state,correlation_id,occurred_at) "
+                    "VALUES (%s,'DELIVERY_OBSERVED',%s,'CANCELLED',UNHEX(REPEAT('b1',16)),UTC_TIMESTAMP(6))",
+                    (revoked_id, revoked_issued),
+                )
+                await cur.execute(
+                    "UPDATE office_invitation_outbox SET state='UNKNOWN',payload_ciphertext=NULL,result_code='ambiguous-after-expiry',"
+                    "finished_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) "
+                    "WHERE outbox_id=%s AND attempt_id=%s",
+                    (claimed_outbox, original_attempt),
+                )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,observed_outbox_state,correlation_id,occurred_at) "
+                    "VALUES (%s,'DELIVERY_OBSERVED',%s,'UNKNOWN',UNHEX(REPEAT('b2',16)),UTC_TIMESTAMP(6))",
+                    (expired_id, expired_issued),
+                )
+    client.portal.call(scenario)
+
+
+def test_acceptance_stops_delivery_without_forging_transport_history(client):
+    """Acceptance atomically cancels queued mail and fences a claimed send."""
+    async def add_bearer(cur, invitation_id, issued_event, issuance_id, correlation):
+        await cur.execute(
+            "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
+            "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),%s,UTC_TIMESTAMP(6))",
+            (invitation_id, issued_event, issuance_id, correlation),
+        )
+        return cur.lastrowid
+
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                other_user, _, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"M" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                queued_id, queued_outbox, queued_issued, queued_issuance = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"accepted-queued-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                claimed_id, claimed_outbox, claimed_issued, claimed_issuance = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"accepted-claimed-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                with pytest.raises(aiomysql.OperationalError, match='outbox initial state denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_id,attempt_count,"
+                        "cancel_requested,payload_ciphertext,result_code,created_at,updated_at,finished_at) "
+                        "VALUES (%s,%s,'UNKNOWN',%s,1,FALSE,NULL,'forged',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                        (str(uuid.uuid4()), queued_id, str(uuid.uuid4())),
+                    )
+                queued_bearer = await add_bearer(
+                    cur, queued_id, queued_issued, queued_issuance, bytes.fromhex('11' * 16))
+                with pytest.raises(aiomysql.OperationalError, match='acceptance event denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,"
+                        "observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',%s,UTC_TIMESTAMP(6))",
+                        (queued_id, queued_bearer, other_user, bytes.fromhex('11' * 16)),
+                    )
+                with pytest.raises(aiomysql.OperationalError, match='acceptance event denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,"
+                        "observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',%s,UTC_TIMESTAMP(6))",
+                        (queued_id, queued_bearer, issuer, bytes.fromhex('11' * 16)),
+                    )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,"
+                    "observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'QUEUED',%s,UTC_TIMESTAMP(6))",
+                    (queued_id, queued_bearer, issuer, bytes.fromhex('11' * 16)),
+                )
+                await cur.execute(
+                    "UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) "
+                    "WHERE invitation_id=%s",
+                    (issuer, queued_id),
+                )
+                await cur.execute(
+                    "SELECT state,cancel_requested,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s",
+                    (queued_outbox,),
+                )
+                assert await cur.fetchone() == ('CANCELLED', 1, None)
+
+                await cur.execute(
+                    "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6),"
+                    "updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s",
+                    (str(uuid.uuid4()), claimed_outbox),
+                )
+                claimed_bearer = await add_bearer(
+                    cur, claimed_id, claimed_issued, claimed_issuance, bytes.fromhex('22' * 16))
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,"
+                    "observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'CLAIMED',%s,UTC_TIMESTAMP(6))",
+                    (claimed_id, claimed_bearer, issuer, bytes.fromhex('22' * 16)),
+                )
+                await cur.execute(
+                    "UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) "
+                    "WHERE invitation_id=%s",
+                    (issuer, claimed_id),
+                )
+                await cur.execute(
+                    "SELECT state,cancel_requested,payload_ciphertext,attempt_id FROM office_invitation_outbox WHERE outbox_id=%s",
+                    (claimed_outbox,),
+                )
+                state, cancel_requested, ciphertext, attempt_id = await cur.fetchone()
+                assert (state, cancel_requested, ciphertext) == ('CLAIMED', 1, None)
+                await cur.execute(
+                    "UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='accepted-after-cancel',"
+                    "result_code='250',finished_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) "
+                    "WHERE outbox_id=%s AND attempt_id=%s",
+                    (claimed_outbox, attempt_id),
+                )
+                with pytest.raises(aiomysql.OperationalError, match='delivery evidence denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,observed_outbox_state,"
+                        "correlation_id,occurred_at) VALUES (%s,'DELIVERY_OBSERVED',%s,'UNKNOWN',%s,UTC_TIMESTAMP(6))",
+                        (claimed_id, claimed_issued, bytes.fromhex('23' * 16)),
+                    )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,observed_outbox_state,"
+                    "correlation_id,occurred_at) VALUES (%s,'DELIVERY_OBSERVED',%s,'SMTP_ACCEPTED',%s,UTC_TIMESTAMP(6))",
+                    (claimed_id, claimed_issued, bytes.fromhex('24' * 16)),
+                )
     client.portal.call(scenario)
 
 
