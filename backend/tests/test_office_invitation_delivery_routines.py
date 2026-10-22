@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -37,7 +38,7 @@ def _root_mysql(payload: str) -> None:
     )
 
 
-def _install_routines(worker: str) -> bool:
+def _install_routines(worker: str) -> tuple[bool, str]:
     db = os.environ["JAX_DB_NAME"]
     sql_source = Path(__file__).parents[2] / "ops/virtualoffice/office-invitation-delivery-v1.sql"
     check = subprocess.run(
@@ -45,6 +46,12 @@ def _install_routines(worker: str) -> bool:
         env={**os.environ, "MYSQL_PWD": os.environ["JAX_DB_PASSWORD"]}, check=True, capture_output=True, text=True,
     )
     owner_existed = check.stdout.strip() == "1"
+    host_check = subprocess.run(
+        ["mysql", "--protocol=TCP", "-N", "-B", "-h", os.environ["JAX_DB_HOST"], "-P", os.environ["JAX_DB_PORT"], "-u", "root", "-e", "SELECT SUBSTRING_INDEX(USER(), '@', -1)"],
+        env={**os.environ, "MYSQL_PWD": os.environ["JAX_DB_PASSWORD"]}, check=True, capture_output=True, text=True,
+    )
+    worker_host = host_check.stdout.strip()
+    assert re.fullmatch(r"[A-Za-z0-9._:-]+", worker_host)
     grants = f"""
 CREATE USER IF NOT EXISTS `jaxoffice_invitation_owner`@`localhost` ACCOUNT LOCK;
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM `jaxoffice_invitation_owner`@`localhost`;
@@ -55,19 +62,19 @@ GRANT SELECT ON `{db}`.`office_invitation_outbox` TO `jaxoffice_invitation_owner
 GRANT INSERT ON `{db}`.`office_invitation_event` TO `jaxoffice_invitation_owner`@`localhost`;
 GRANT UPDATE (status,version) ON `{db}`.`office_invitation` TO `jaxoffice_invitation_owner`@`localhost`;
 GRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON `{db}`.`office_invitation_outbox` TO `jaxoffice_invitation_owner`@`localhost`;
-CREATE USER `{worker}`@`localhost` IDENTIFIED BY 'test-only-worker-password';
-GRANT SELECT ON `{db}`.`axioma_config` TO `{worker}`@`localhost`;
-GRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON `{db}`.`office_invitation_outbox` TO `{worker}`@`localhost`;
+CREATE USER `{worker}`@`{worker_host}` IDENTIFIED BY 'test-only-worker-password';
+GRANT SELECT ON `{db}`.`axioma_config` TO `{worker}`@`{worker_host}`;
+GRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON `{db}`.`office_invitation_outbox` TO `{worker}`@`{worker_host}`;
 """
-    executes = "\n".join(f"GRANT EXECUTE ON PROCEDURE `{db}`.`{routine}` TO `{worker}`@`localhost`;" for routine in _ROUTINES)
+    executes = "\n".join(f"GRANT EXECUTE ON PROCEDURE `{db}`.`{routine}` TO `{worker}`@`{worker_host}`;" for routine in _ROUTINES)
     _root_mysql(f"USE `{db}`;\n{grants}\n{sql_source.read_text()}\n{executes}\n")
-    return owner_existed
+    return owner_existed, worker_host
 
 
-def _cleanup_routines(worker: str, owner_existed: bool) -> None:
+def _cleanup_routines(worker: str, worker_host: str, owner_existed: bool) -> None:
     db = os.environ["JAX_DB_NAME"]
     cleanup = "\n".join(f"DROP PROCEDURE IF EXISTS `{routine}`;" for routine in _ROUTINES)
-    cleanup += f"\nDROP USER IF EXISTS `{worker}`@`localhost`;"
+    cleanup += f"\nDROP USER IF EXISTS `{worker}`@`{worker_host}`;"
     if not owner_existed:
         cleanup += "\nDROP USER IF EXISTS `jaxoffice_invitation_owner`@`localhost`;"
     _root_mysql(f"USE `{db}`;\n{cleanup}\n")
@@ -116,7 +123,7 @@ async def _seed_issued_invitation(issuer: int, proof_event_id: int) -> str:
 def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
     """One queue item gains one lease; only the routine can complete it."""
     worker = "jaxinvite_" + uuid.uuid4().hex[:16]
-    owner_existed = _install_routines(worker)
+    owner_existed, worker_host = _install_routines(worker)
     try:
         issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
         invitation_id = client.portal.call(_seed_issued_invitation, issuer, proof_event_id)
@@ -145,4 +152,4 @@ def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
 
         assert client.portal.call(direct_lifecycle_write_is_denied) == 1142
     finally:
-        _cleanup_routines(worker, owner_existed)
+        _cleanup_routines(worker, worker_host, owner_existed)
