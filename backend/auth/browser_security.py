@@ -50,6 +50,14 @@ def _validate_origin(value: str, *, production: bool) -> tuple[str, str]:
     host = _validate_host(parsed.hostname)
     if production and (parsed.scheme != "https" or port is not None):
         raise BrowserSecurityConfigError("production public origins must use HTTPS without a port")
+    if production:
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if not address.is_global:
+                raise BrowserSecurityConfigError("production public origins must not use private addresses")
     canonical = f"{parsed.scheme}://{host}"
     if port is not None:
         canonical = f"{canonical}:{port}"

@@ -90,9 +90,12 @@ ni DDL. El instalador sólo acepta el SQL con el SHA-256 fijado y siempre ejecut
 atestado instalado root-owned antes de devolver éxito.
 
 `/etc/jax/invitation-worker.env` es el único `EnvironmentFile` del worker. Es
-`root:root 0600` e incluye sólo conexión del principal, `FERNET_KEY` y las
-variables Office necesarias para descifrar, validar y entregar una invitación. El
-worker falla antes de reclamar una fila si falta configuración de invitación o SMTP.
+`root:root 0600` e incluye sólo conexión del principal, `FERNET_KEY`,
+`JAX_ENVIRONMENT`, `OFFICE_PUBLIC_ORIGIN` y las variables Office necesarias para
+descifrar, validar y entregar una invitación. En producción el origen de cada
+enlace debe coincidir exactamente con el origen Office canónico; el worker falla
+antes de reclamar una fila si falta esa configuración, no es canónica, o SMTP no
+está listo.
 
 Salud y recuperación:
 

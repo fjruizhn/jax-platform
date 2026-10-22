@@ -84,7 +84,7 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
             or str(delivery_batch_limit) != raw_delivery_batch_limit):
         return None
     try:
-        return InvitationConfig(
+        config = InvitationConfig(
             lifetime_seconds=lifetime,
             claim_timeout_seconds=claim_timeout,
             stale_claim_batch_limit=stale_claim_batch_limit,
@@ -94,3 +94,18 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
         )
     except ValueError:
         return None
+    if os.getenv("JAX_ENVIRONMENT", "").strip().lower() == "production":
+        # The browser layer establishes OFFICE_PUBLIC_ORIGIN through its host
+        # binding.  The delivery worker receives the same root-owned value and
+        # refuses to create a bearer link unless its base is byte-for-byte the
+        # canonical production origin.
+        try:
+            from auth.browser_security import BrowserSecurityConfigError, _validate_origin
+
+            _office_host, office_origin = _validate_origin(
+                os.getenv("OFFICE_PUBLIC_ORIGIN", ""), production=True)
+        except (BrowserSecurityConfigError, ValueError):
+            return None
+        if config.public_base_url != office_origin:
+            return None
+    return config

@@ -171,6 +171,7 @@ def test_public_security_config_requires_explicit_production_mode(monkeypatch, e
         (f"{OFFICE_HOST}=http://{OFFICE_HOST}", f"http://{OFFICE_HOST}"),
         (f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}=https://{OFFICE_HOST}:8443", f"https://{OFFICE_HOST}:8443"),
         (f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}=https://other.example.test", OFFICE_ORIGIN),
+        ("127.0.0.1=https://127.0.0.1", "https://127.0.0.1"),
     ],
 )
 def test_production_rejects_insecure_or_unbound_office_origin(monkeypatch, bindings, office_origin):

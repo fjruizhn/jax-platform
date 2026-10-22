@@ -1,6 +1,15 @@
 from virtual_office.invitation_config import InvitationConfig, load_invitation_config_from_environment
 
 
+def _complete_invitation_environment(monkeypatch, *, base_url="https://virtualoffice.example.test"):
+    monkeypatch.setenv("OFFICE_INVITATION_LIFETIME_SECONDS", "60")
+    monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "25")
+    monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", base_url)
+
+
 def test_invitation_config_has_no_implicit_lifetime(monkeypatch):
     monkeypatch.delenv("OFFICE_INVITATION_LIFETIME_SECONDS", raising=False)
     monkeypatch.delenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", raising=False)
@@ -56,4 +65,22 @@ def test_invitation_config_requires_https_origin(monkeypatch):
         monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "50")
         monkeypatch.setenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "25")
         monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", url)
+        assert load_invitation_config_from_environment() is None
+
+
+def test_production_invitation_links_require_the_exact_trusted_office_origin(monkeypatch):
+    _complete_invitation_environment(monkeypatch)
+    monkeypatch.setenv("JAX_ENVIRONMENT", "production")
+    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://virtualoffice.example.test")
+    assert load_invitation_config_from_environment() is not None
+
+    for base_url, office_origin in (
+        ("https://evil.example.test", "https://virtualoffice.example.test"),
+        ("HTTPS://virtualoffice.example.test", "HTTPS://virtualoffice.example.test"),
+        ("https://virtualoffice.example.test:443", "https://virtualoffice.example.test:443"),
+        ("https://127.0.0.1", "https://127.0.0.1"),
+        ("https://virtualoffice.example.test", ""),
+    ):
+        _complete_invitation_environment(monkeypatch, base_url=base_url)
+        monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", office_origin)
         assert load_invitation_config_from_environment() is None

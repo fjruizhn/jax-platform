@@ -59,6 +59,8 @@ JAX_DB_PORT=$PORT
 JAX_DB_NAME=$DB
 JAX_DB_GRANTEE_HOST=$HOST
 FERNET_KEY=fixture_fernet_key
+JAX_ENVIRONMENT=production
+OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test
 OFFICE_INVITATION_LIFETIME_SECONDS=3600
 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=60
 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=10
@@ -106,6 +108,15 @@ if "$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/invitatio
 fi
 test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$USER_NAME.password")" = root:root:600
 grep -qx "JAX_DB_USER=$USER_NAME" "$TEMP/state/invitation-worker.env"
+grep -qx 'JAX_ENVIRONMENT=production' "$TEMP/state/invitation-worker.env"
+grep -qx 'OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test' "$TEMP/state/invitation-worker.env"
+set -a
+. "$TEMP/state/invitation-worker.env"
+set +a
+"$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/state/invitation-worker.env"
+if OFFICE_PUBLIC_ORIGIN=https://evil.example.test "$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/state/invitation-worker.env" >/dev/null 2>&1; then
+  echo 'worker readiness accepted a mismatched public origin' >&2; exit 1
+fi
 
 password=$(<"$TEMP/state/secrets/$USER_NAME.password")
 CLIENT="$TEMP/worker.cnf"

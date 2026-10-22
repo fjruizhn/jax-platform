@@ -29,6 +29,12 @@ fi
 grep -Eq '^\{"schema":"axioma-office-invitation-worker-release/v1","source_revision":"[0-9a-f]{40}","lock_sha256":"[0-9a-f]{64}","wheelhouse_manifest_sha256":"[0-9a-f]{64}"\}$' "$manifest" || {
   echo 'worker release manifest is invalid' >&2; exit 1;
 }
-required=(JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_USER JAX_DB_PASSWORD FERNET_KEY OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL)
+required=(JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_USER JAX_DB_PASSWORD FERNET_KEY JAX_ENVIRONMENT OFFICE_PUBLIC_ORIGIN OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL)
 for key in "${required[@]}"; do [[ -n ${!key:-} ]] || { echo "invitation worker environment lacks $key" >&2; exit 1; }; done
+[[ $JAX_ENVIRONMENT == production && $OFFICE_INVITATION_PUBLIC_BASE_URL == "$OFFICE_PUBLIC_ORIGIN" ]] || {
+  echo 'invitation worker origin binding is unsafe' >&2; exit 1;
+}
+"$python" -Es -c 'from virtual_office.invitation_config import load_invitation_config_from_environment; raise SystemExit(0 if load_invitation_config_from_environment() is not None else 1)' || {
+  echo 'invitation worker origin configuration is invalid' >&2; exit 1;
+}
 [[ -z ${JAX_MIGRATE_DB_USER:-} && -z ${JAX_RUNTIME_DB_USER:-} ]] || { echo 'invitation worker env exposes a nonworker principal' >&2; exit 1; }
