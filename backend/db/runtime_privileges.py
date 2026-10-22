@@ -18,6 +18,8 @@ _ALLOWED_PRIVILEGES = frozenset(("UPDATE", "DELETE"))
 _FORBIDDEN_TABLES = frozenset((
     "office_authorization_event",
     "office_bootstrap_state",
+    "office_invitation_event",
+    "office_invitation_issuance",
     "office_mfa_security_event",
     "office_membership_mutation_receipt",
     "office_profile_revocation_event",
