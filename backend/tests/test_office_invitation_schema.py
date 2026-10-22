@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import os
 import secrets
+import subprocess
 import uuid
+from pathlib import Path
 
 import aiomysql
 import pytest
@@ -203,6 +206,68 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
                     "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
                 row = await cur.fetchone()
                 assert row[:2] == (outbox_id, 'QUEUED') and row[2] is not None
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                    "AND TRIGGER_NAME IN ('guard_office_invitation_insert','guard_office_invitation_update',"
+                    "'guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
+                )
+                assert (await cur.fetchone())[0] == 5
+    client.portal.call(scenario)
+
+
+def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_rows(client):
+    """The exact reviewed b44 bodies upgrade in MariaDB, preserving evidence."""
+    source = subprocess.check_output(
+        ["git", "show", "b44dd06:backend/virtual_office/migrations.py"],
+        cwd=Path(__file__).resolve().parents[2], text=True,
+    )
+    tree = ast.parse(source)
+    ddl = ast.literal_eval(next(
+        node.value for node in tree.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "OFFICE_INVITATION_DDL" for target in node.targets)
+    ))
+    b44_guards = tuple(statement for statement in ddl if "guard_office_invitation" in statement)
+    assert len(b44_guards) == 4
+
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"V" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                invitation_id, outbox_id, issued_event, _ = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"b44-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                for name in (
+                    "guard_office_invitation_insert", "guard_office_invitation_update",
+                    "guard_office_invitation_event_insert", "guard_office_invitation_outbox_insert",
+                    "guard_office_invitation_outbox_update",
+                ):
+                    await cur.execute(f"DROP TRIGGER {name}")
+                for statement in b44_guards:
+                    await cur.execute(statement)
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                    "AND TRIGGER_NAME LIKE 'guard_office_invitation%'"
+                )
+                assert (await cur.fetchone())[0] == 4
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
+                assert await cur.fetchone() == (invitation_id, 'ISSUED')
+                await cur.execute(
+                    "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
+                row = await cur.fetchone()
+                assert row[:2] == (outbox_id, 'QUEUED') and row[2] is not None
+                await cur.execute(
+                    "SELECT event_kind FROM office_invitation_event WHERE event_id=%s", (issued_event,))
+                assert await cur.fetchone() == ('ISSUED',)
                 await cur.execute(
                     "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
                     "AND TRIGGER_NAME IN ('guard_office_invitation_insert','guard_office_invitation_update',"
