@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import pytest
 from auth.models import AuthUser
 from fastapi import FastAPI, HTTPException
+from pymysql.err import OperationalError
 from starlette.requests import Request
 
 import api.virtual_office.invitations as invitation_api
@@ -181,3 +182,59 @@ def test_jax_authority_denials_are_stable_invitation_denials(
             _anonymous_request(), authenticated_user))
     assert rejected.value.status_code == 403
     assert rejected.value.detail == "office_invitation_issuer_denied"
+
+
+def _authenticated_user() -> AuthUser:
+    return AuthUser(user_id="1", tenant_id="1", role="operator",
+                    email="person@example.test", account_class="OFFICE_INTERNAL")
+
+
+@pytest.mark.parametrize("endpoint", ["issue", "revoke", "accept"])
+@pytest.mark.parametrize("database_code", [1205, 1213])
+def test_transaction_contention_is_retryable_at_every_invitation_endpoint(
+    monkeypatch, endpoint, database_code,
+):
+    @asynccontextmanager
+    async def transaction_stub(*_args):
+        yield object()
+
+    async def database_contention(*_args, **_kwargs):
+        raise OperationalError(database_code, "transaction contention")
+
+    monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
+    if endpoint == "issue":
+        monkeypatch.setattr(invitation_api, "load_invitation_config_from_environment", lambda: object())
+        monkeypatch.setattr(invitation_api, "load_mfa_config_from_environment", lambda: object())
+        call = lambda: issue_invitation(
+            1, invitation_api.InvitationIssueRequest(email="person@example.test", audience="INTERNAL"),
+            str(uuid.uuid4()), _authenticated_user())
+        monkeypatch.setattr(invitation_api, "issue_invitation_in_cursor", database_contention)
+    elif endpoint == "revoke":
+        call = lambda: revoke_invitation(1, str(uuid.uuid4()), 1, str(uuid.uuid4()), _authenticated_user())
+        monkeypatch.setattr(invitation_api, "revoke_invitation_in_cursor", database_contention)
+    else:
+        call = lambda: accept_invitation(
+            InvitationAcceptRequest(token="A" * 43, password=None),
+            _anonymous_request(), _authenticated_user())
+        monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", database_contention)
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(call())
+    assert rejected.value.status_code == 503
+    assert rejected.value.detail == "office_invitation_retryable"
+
+
+def test_non_contention_database_error_is_not_mapped_to_retryable(monkeypatch):
+    @asynccontextmanager
+    async def transaction_stub(*_args):
+        yield object()
+
+    async def syntax_error(*_args, **_kwargs):
+        raise OperationalError(1064, "syntax error")
+
+    monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
+    monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", syntax_error)
+    with pytest.raises(OperationalError) as rejected:
+        asyncio.run(accept_invitation(
+            InvitationAcceptRequest(token="A" * 43, password=None),
+            _anonymous_request(), _authenticated_user()))
+    assert rejected.value.args[0] == 1064

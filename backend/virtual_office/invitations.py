@@ -198,6 +198,19 @@ async def _db_now(cur) -> dt.datetime:
 
 async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
                            proof_event_id: int, mfa_config: MFAConfig):
+    # Establish the same tenant-first lock order used by invitation
+    # acceptance and JAX membership.  These are discovery hints only: the
+    # canonical resolver below re-reads actor, tenant, scope and grants under
+    # lock before it permits issuance or revocation.
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
+    actor_tenant = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+    scope_tenant = await cur.fetchone()
+    if actor_tenant is not None and scope_tenant is not None:
+        for tenant_id in sorted({int(actor_tenant[0]), int(scope_tenant[0])}):
+            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+            if await cur.fetchone() is None:
+                raise InvitationError("office_invitation_issuer_denied", status_code=403)
     decision = await authorize_office_in_cursor(
         cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
         require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,
@@ -267,15 +280,24 @@ async def issue_invitation_in_cursor(
         raise InvitationError("office_invitation_target_denied", status_code=409)
     tenant_id = int(scope[0])
     await cur.execute(
-        "SELECT user_id,tenant_id,account_class,status FROM jax_users WHERE BINARY email=BINARY %s FOR UPDATE",
+        "SELECT user_id,tenant_id,account_class,status FROM jax_users WHERE BINARY email=BINARY %s",
         (normalized_email,))
     target = await cur.fetchone()
-    target_user_id = None if target is None else int(target[0])
     # Issuance is deliberately opaque about account existence and compatibility.
     # A nonmatching account receives the same pending invitation/outbox as an
-    # unknown address; only acceptance can authenticate and bind it.
-    if target is not None and (int(target[1]) != tenant_id or target[2] != target_account_class or target[3] != "active"):
-        target_user_id = None
+    # unknown address; never lock that other tenant's user while retaining the
+    # issuer tenant lock.  A compatible target is locked only after its tenant
+    # is already in the canonical tenant set, then revalidated under lock.
+    target_user_id = None
+    if target is not None and (int(target[1]) == tenant_id and target[2] == target_account_class
+                               and target[3] == "active"):
+        await cur.execute(
+            "SELECT user_id,tenant_id,account_class,status FROM jax_users WHERE user_id=%s FOR UPDATE",
+            (target[0],))
+        locked_target = await cur.fetchone()
+        if (locked_target is not None and int(locked_target[1]) == tenant_id
+                and locked_target[2] == target_account_class and locked_target[3] == "active"):
+            target_user_id = int(locked_target[0])
     recipient_group_id = None
     if audience == "CLIENT_PUBLISHED":
         await cur.execute(
@@ -480,7 +502,7 @@ class _InvitationAcceptanceAuthorizer:
 async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: int,
                             issued_event_id: int, correlation_id: bytes, expires_at: dt.datetime) -> bool:
     now = await _db_now(cur)
-    if status != "ISSUED" or now <= (expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at):
+    if status != "ISSUED" or now < (expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at):
         return False
     await cur.execute(
         "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
@@ -492,6 +514,15 @@ async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: in
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     return True
+
+
+async def _translate_acceptance_deadline_guard(cur, error: Exception, *, expires_at: dt.datetime) -> None:
+    """Convert a SQL deadline guard race into the public expired result."""
+    if getattr(error, "args", ()) and error.args[0] == 1644:
+        expiry = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
+        if await _db_now(cur) >= expiry:
+            raise InvitationError("office_invitation_expired", status_code=410) from error
+    raise error
 
 
 async def invitation_bearer_preflight(bearer_token: str) -> bool:
@@ -640,10 +671,13 @@ async def accept_invitation_in_cursor(
     outbox = await cur.fetchone()
     if outbox is None or outbox[0] not in {"QUEUED", "CLAIMED", "SMTP_ACCEPTED", "UNKNOWN", "CANCELLED"}:
         raise InvitationError("office_invitation_integrity", status_code=503)
-    await cur.execute(
-        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
-        "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,NULL,%s,NULL,%s,UTC_TIMESTAMP(6))",
-        (invitation_id, int(issued[0]), token_hash, correlation_id))
+    try:
+        await cur.execute(
+            "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+            "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,NULL,%s,NULL,%s,UTC_TIMESTAMP(6))",
+            (invitation_id, int(issued[0]), token_hash, correlation_id))
+    except Exception as error:
+        await _translate_acceptance_deadline_guard(cur, error, expires_at=expires_at)
     bearer_event_id = int(cur.lastrowid)
     from db.connection import get_pool
     from jax.memory.b9_mariadb import MariaDBB9Store
@@ -691,10 +725,13 @@ async def accept_invitation_in_cursor(
         target_user_id=accepting_user_id, grant_role=grant_role, audience=audience, result=result,
         office_grant_version=1, authorization_event_id=authorizer.authorization_event_id,
         external_relation=external_relation)
-    await cur.execute(
-        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
-        "VALUES (%s,'ACCEPTED',%s,%s,NULL,%s,%s,UTC_TIMESTAMP(6))",
-        (invitation_id, bearer_event_id, accepting_user_id, outbox[0], correlation_id))
+    try:
+        await cur.execute(
+            "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+            "VALUES (%s,'ACCEPTED',%s,%s,NULL,%s,%s,UTC_TIMESTAMP(6))",
+            (invitation_id, bearer_event_id, accepting_user_id, outbox[0], correlation_id))
+    except Exception as error:
+        await _translate_acceptance_deadline_guard(cur, error, expires_at=expires_at)
     await cur.execute(
         "UPDATE office_invitation SET status='ACCEPTED',version=version+1,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) "
         "WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
@@ -757,7 +794,7 @@ async def claim_next_invitation_delivery_in_cursor(cur) -> ClaimedInvitationDeli
     outbox_id, ciphertext = outbox
     now = await _db_now(cur)
     expiry = invitation[2].replace(tzinfo=dt.timezone.utc) if invitation[2].tzinfo is None else invitation[2].astimezone(dt.timezone.utc)
-    if now > expiry:
+    if now >= expiry:
         await cur.execute(
             "SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE",
             (invitation_id,))
