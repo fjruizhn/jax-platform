@@ -9,7 +9,7 @@ import uuid
 import aiomysql
 import pytest
 
-from virtual_office.migrations import apply_office_migrations
+from virtual_office.migrations import _preflight_legacy_recovery_in_flight, apply_office_migrations
 from virtual_office.migrations import (
     _CANONICAL_AUDIT_SHAPE,
     _CANONICAL_MFA_CHECK_DIGESTS,
@@ -474,6 +474,113 @@ def test_mfa_v4_incompatible_evidence_fails_preflight_without_rewrite_or_readine
                 finally:
                     await cur.execute("SET SESSION check_constraint_checks=ON")
                     await cur.execute("SET SESSION FOREIGN_KEY_CHECKS=1")
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
+def test_mfa_recovery_preflight_only_blocks_live_unreceipted_legacy_bearers(client):
+    """A receipt-table partial DDL must not waive a legacy bearer hop."""
+    async def scenario():
+        from db.connection import get_pool
+
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_mfa_legacy_preflight_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    tag = uuid.uuid4().hex
+                    await cur.execute(
+                        "INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')",
+                        (f"legacy-preflight-{tag}",),
+                    )
+                    tenant = cur.lastrowid
+                    await cur.execute(
+                        "INSERT INTO jax_users (tenant_id,email,password_hash,account_class) VALUES (%s,%s,'x','OFFICE_INTERNAL')",
+                        (tenant, f"legacy-preflight-{tag}@example.invalid"),
+                    )
+                    user = cur.lastrowid
+                    await cur.execute(
+                        "INSERT INTO office_mfa_credential (user_id,state,created_at,updated_at) "
+                        "VALUES (%s,'RECOVERY_REQUIRED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                        (user,),
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_mfa_challenge "
+                        "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                        "VALUES (UNHEX(SHA2(%s,256)),%s,'RECOVERY',0,0,1,UTC_TIMESTAMP(6)+INTERVAL 10 MINUTE,'ISSUED',UTC_TIMESTAMP(6))",
+                        (f"live-recovery-{tag}", user),
+                    )
+                    # The receipt table already exists here, reproducing a
+                    # partial v7 DDL rollout with a still-live v6 bearer.
+                    with pytest.raises(RuntimeError, match="legacy recovery challenge"):
+                        await _preflight_legacy_recovery_in_flight(cur)
+
+                    await cur.execute("DELETE FROM office_mfa_challenge WHERE user_id=%s", (user,))
+                    await cur.execute("UPDATE jax_users SET token_version=3,mfa_version=3 WHERE user_id=%s", (user,))
+                    await cur.execute(
+                        "INSERT INTO office_mfa_challenge "
+                        "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                        "VALUES (UNHEX(SHA2(%s,256)),%s,'RECOVERY',3,3,1,UTC_TIMESTAMP(6)+INTERVAL 10 MINUTE,'CONSUMED',UTC_TIMESTAMP(6))",
+                        (f"consumed-recovery-{tag}", user),
+                    )
+                    recovery_id = cur.lastrowid
+                    await cur.execute(
+                        "INSERT INTO office_mfa_challenge "
+                        "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                        "VALUES (UNHEX(SHA2(%s,256)),%s,'ENROLLMENT',3,3,1,UTC_TIMESTAMP(6)+INTERVAL 10 MINUTE,'ISSUED',UTC_TIMESTAMP(6))",
+                        (f"pending-enrollment-{tag}", user),
+                    )
+                    await cur.execute(
+                        "SELECT token_hash,expires_at FROM office_mfa_challenge WHERE user_id=%s AND purpose='ENROLLMENT'",
+                        (user,),
+                    )
+                    enrollment_hash, enrollment_expiry = await cur.fetchone()
+                    await cur.execute(
+                        "UPDATE office_mfa_credential SET state='PENDING',pending_secret_ciphertext='opaque',"
+                        "pending_enrollment_id=%s,pending_expires_at=%s "
+                        "WHERE user_id=%s",
+                        (enrollment_hash, enrollment_expiry, user),
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_mfa_security_event "
+                        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) "
+                        "VALUES ('MFA_PROOF',NULL,'RECOVERY_CAPABILITY',%s,%s,'MFA_PROOF','RECOVERY',3,3,NULL,NULL,NULL,NULL,'VERIFIED',UNHEX(REPLACE(UUID(),'-','')),NULL)",
+                        (recovery_id, user),
+                    )
+                    proof_id = cur.lastrowid
+                    await cur.execute(
+                        "INSERT INTO office_mfa_security_event "
+                        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) "
+                        "VALUES ('MFA_STATE_CHANGE',NULL,'RECOVERY_CAPABILITY',%s,%s,'RECOVERY_CONSUME','RECOVERY',3,3,2,2,%s,NULL,'RECORDED',UNHEX(REPLACE(UUID(),'-','')),NULL)",
+                        (recovery_id, user, proof_id),
+                    )
+                    with pytest.raises(RuntimeError, match="legacy recovery enrollment"):
+                        await _preflight_legacy_recovery_in_flight(cur)
+
+                    await cur.execute(
+                        "INSERT INTO office_mfa_recovery_receipt "
+                        "(source_code_hash,user_id,output_challenge_hash,ceremony_id,token_version,mfa_version,replay_until,state,response_ciphertext,response_digest,created_at,updated_at) "
+                        "VALUES (UNHEX(SHA2(%s,256)),%s,%s,UNHEX(REPLACE(UUID(),'-','')),3,3,"
+                        "%s,'REPLAYABLE','opaque',"
+                        "UNHEX(SHA2('receipt',256)),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                        (f"receipt-source-{tag}", user, enrollment_hash, enrollment_expiry),
+                    )
+                    await _preflight_legacy_recovery_in_flight(cur)
+
+                    # The completed recovery event remains durable history,
+                    # but a later version cut makes its old enrollment bearer
+                    # unusable even if its receipt record has been removed.
+                    await cur.execute("DELETE FROM office_mfa_recovery_receipt WHERE user_id=%s", (user,))
+                    await cur.execute("UPDATE jax_users SET token_version=4,mfa_version=4 WHERE user_id=%s", (user,))
+                    await _preflight_legacy_recovery_in_flight(cur)
+                finally:
                     await cur.execute(f"USE `{source}`")
                     await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)

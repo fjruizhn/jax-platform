@@ -400,30 +400,61 @@ async def assert_mfa_recovery_receipt_runtime_metadata(cur) -> None:
 
 
 async def _preflight_legacy_recovery_in_flight(cur) -> None:
-    """Do not enable one-hop replay while old raw bearer output is stranded."""
-    # This is an upgrade gate, not a request-time validator.  Once the
-    # receipt table exists, a stopped legacy binary cannot make a new bearer
-    # hop and historical test fixtures must not make migration non-idempotent.
-    if await _table_exists(cur, "office_mfa_recovery_receipt"):
-        return
+    """Refuse only a currently usable legacy bearer ceremony.
+
+    The v6 flow had two separately committed bearer hops.  Its durable
+    footprint is either a live RECOVERY capability, or a live enrollment
+    capability following a RECOVERY_CONSUME event.  Historical events and
+    expired/exhausted challenges cannot yield either bearer and must not turn
+    an otherwise idempotent migration into a permanent outage.  A v7 receipt
+    is accepted only when it is the exact live enrollment output.
+    """
     required = ("office_mfa_challenge", "office_mfa_credential", "office_mfa_security_event")
     for table in required:
         if not await _table_exists(cur, table):
             return
+    await cur.execute("SELECT UTC_TIMESTAMP(6)")
+    now = (await cur.fetchone())[0]
     await cur.execute(
-        "SELECT 1 FROM office_mfa_challenge WHERE purpose='RECOVERY' "
-        "AND state IN ('ISSUED','EXHAUSTED') LIMIT 1"
+        "SELECT 1 FROM office_mfa_challenge ch "
+        "JOIN office_mfa_credential c ON c.user_id=ch.user_id "
+        "JOIN jax_users u ON u.user_id=ch.user_id "
+        "WHERE ch.purpose='RECOVERY' AND ch.state='ISSUED' AND ch.expires_at >= %s "
+        "AND ch.expected_token_version=u.token_version AND ch.expected_mfa_version=u.mfa_version "
+        "AND c.state='RECOVERY_REQUIRED' AND c.secret_ciphertext IS NULL "
+        "AND c.pending_secret_ciphertext IS NULL AND c.pending_enrollment_id IS NULL "
+        "AND c.pending_expires_at IS NULL LIMIT 1",
+        (now,),
     )
     if await cur.fetchone() is not None:
         raise RuntimeError("Office MFA legacy recovery challenge remains in flight")
-    await cur.execute("SELECT 1 FROM office_mfa_credential WHERE state='RECOVERY_REQUIRED' LIMIT 1")
-    if await cur.fetchone() is not None:
-        raise RuntimeError("Office MFA legacy recovery credential remains in flight")
+    receipt_exists = await _table_exists(cur, "office_mfa_recovery_receipt")
+    receipt_guard = ""
+    if receipt_exists:
+        receipt_guard = (
+            "AND NOT EXISTS (SELECT 1 FROM office_mfa_recovery_receipt r "
+            "WHERE r.user_id=c.user_id AND r.output_challenge_hash=enrollment.token_hash "
+            "AND r.token_version=u.token_version AND r.mfa_version=u.mfa_version "
+            "AND r.state='REPLAYABLE' AND r.replay_until >= %s "
+            "AND r.response_ciphertext IS NOT NULL AND r.response_digest IS NOT NULL) "
+        )
     await cur.execute(
-        "SELECT 1 FROM office_mfa_credential c JOIN office_mfa_security_event e "
-        "ON e.subject_user_id=c.user_id WHERE c.state='PENDING' "
-        "AND e.event_kind='MFA_STATE_CHANGE' AND e.operation='RECOVERY_CONSUME' "
-        "AND e.result='RECORDED' LIMIT 1"
+        "SELECT 1 FROM office_mfa_credential c "
+        "JOIN jax_users u ON u.user_id=c.user_id "
+        "JOIN office_mfa_challenge enrollment ON enrollment.token_hash=c.pending_enrollment_id "
+        "JOIN office_mfa_security_event consumed ON consumed.subject_user_id=c.user_id "
+        "WHERE c.state='PENDING' AND c.pending_secret_ciphertext IS NOT NULL "
+        "AND c.pending_enrollment_id IS NOT NULL AND c.pending_expires_at >= %s "
+        "AND enrollment.purpose='ENROLLMENT' AND enrollment.state='ISSUED' "
+        "AND enrollment.expires_at >= %s AND enrollment.expires_at=c.pending_expires_at "
+        "AND enrollment.expected_token_version=u.token_version "
+        "AND enrollment.expected_mfa_version=u.mfa_version "
+        "AND consumed.event_kind='MFA_STATE_CHANGE' AND consumed.operation='RECOVERY_CONSUME' "
+        "AND consumed.purpose='RECOVERY' AND consumed.principal_kind='RECOVERY_CAPABILITY' "
+        "AND consumed.result='RECORDED' AND consumed.token_version=u.token_version "
+        "AND consumed.mfa_version=u.mfa_version "
+        + receipt_guard + "LIMIT 1",
+        (now, now, now) if receipt_exists else (now, now),
     )
     if await cur.fetchone() is not None:
         raise RuntimeError("Office MFA legacy recovery enrollment remains in flight")
