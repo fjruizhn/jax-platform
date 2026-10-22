@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from auth.jwt import create_access_token
 from tests.identidades import crear_usuario, sql
 from tests.test_office_people_api import _configure_mfa, _headers, _root_with_proof
 
@@ -109,6 +110,32 @@ def test_project_admin_may_list_members_but_client_and_nonmember_are_denied(clie
             headers=_headers(user_id, token_version, mfa_version, 1),
         )
         assert (response.status_code, response.json()) == (403, {"detail": "office_project_grant_denied"})
+
+
+def test_project_admin_can_add_collaborator_without_mfa(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _root_tv, _root_mv, _root_proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    admin, token_version, _mfa_version, _proof = client.portal.call(
+        lambda: _project_admin_with_proof(project=project, root=root))
+    # This is a normal authenticated session: it intentionally carries no
+    # MFA proof claim.  Project administrators may manage collaborators.
+    headers = {
+        "Authorization": "Bearer " + create_access_token(
+            str(admin), "1", "operator", token_version),
+        "Idempotency-Key": str(uuid.uuid4()),
+    }
+    response = client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["replayed"] is False
+    assert client.portal.call(
+        sql, "SELECT grant_role,status FROM office_project_grant WHERE project_id=%s AND user_id=%s",
+        (project, target), True,
+    ) == (("COLLABORATOR", "ACTIVE"),)
 
 
 def test_root_changes_active_internal_role_without_touching_jax_membership(client, monkeypatch):

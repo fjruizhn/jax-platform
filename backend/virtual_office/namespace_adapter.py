@@ -79,8 +79,6 @@ class OfficeNamespaceMembershipAuthorizer:
             raise OfficeNamespaceAuthorizationDenied("Office invitation acceptance proof is unavailable")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed:
             raise OfficeNamespaceAuthorizationDenied("Office membership administration denied")

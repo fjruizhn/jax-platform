@@ -46,8 +46,6 @@ class _OfficeProjectMetadataAuthorizer:
             raise AuthorizationDenied("Office metadata authority context is invalid")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed or decision.tenant_id != target_tenant_id:
             raise AuthorizationDenied("Office project metadata authority is required")
@@ -375,8 +373,6 @@ async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdat
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
-                require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
-                mfa_config=config,
             )
             if not decision.allowed or decision.tenant_id is None:
                 raise HTTPException(status_code=403, detail="office_project_update_denied")

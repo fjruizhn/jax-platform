@@ -51,14 +51,11 @@ async def list_project_members(project_id: int, cursor: int = Query(default=0, g
     stable identifier, so clients can safely continue while roles change.
     """
     actor_user_id = _actor_id(user)
-    config = load_mfa_config_from_environment()
     if project_id < 1:
         raise HTTPException(status_code=404, detail="office_project_grant_denied")
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         decision = await authorize_office_in_cursor(
             cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
-            mfa_config=config,
         )
         if not decision.allowed:
             # Do not let a non-member distinguish a missing project from a
@@ -296,8 +293,6 @@ class _OfficeMembershipAuthorizer:
         from jax.memory.project_authority import AuthorizationDenied
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed:
             raise AuthorizationDenied("Office project-member authority is required")
@@ -331,7 +326,6 @@ async def _current_project_grant_decision(cur, *, actor_user_id: int, project_id
                                           proof_event_id: int | None, config):
     decision = await authorize_office_in_cursor(
         cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-        require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=config,
     )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_project_grant_denied")
