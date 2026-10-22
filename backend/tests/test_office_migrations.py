@@ -9,6 +9,7 @@ import uuid
 import aiomysql
 import pytest
 
+from db.connection import get_pool
 from virtual_office.migrations import apply_office_migrations
 from virtual_office.migrations import (
     _CANONICAL_AUDIT_SHAPE,
@@ -16,7 +17,88 @@ from virtual_office.migrations import (
     _check_clause,
     _check_digest,
     _is_canonical_audit_shape,
+    _membership_receipt_collation,
+    _membership_receipt_columns,
 )
+
+
+class _MembershipReceiptCollationCursor:
+    """Small information-schema cursor for the receipt collation contract."""
+
+    def __init__(self, rows):
+        self._rows = iter(rows)
+
+    async def execute(self, _statement, _params=None):
+        return None
+
+    async def fetchone(self):
+        return next(self._rows)
+
+
+def test_membership_receipt_collation_rejects_absent_malformed_or_incompatible_jax_parents():
+    async def scenario(rows, message):
+        with pytest.raises(RuntimeError, match=message):
+            await _membership_receipt_collation(_MembershipReceiptCollationCursor(rows))
+
+    asyncio.run(scenario((None,), "namespace collation is unavailable"))
+    asyncio.run(scenario((("utf8mb4", "not-a-collation!"),), "namespace collation is invalid"))
+    asyncio.run(scenario(
+        (("utf8mb4", "utf8mb4_uca1400_ai_ci"), ("utf8mb4", "utf8mb4_unicode_ci")),
+        "foreign-key collations are incompatible",
+    ))
+
+
+def test_membership_receipt_column_attestation_follows_a_fresh_jax_collation():
+    collation = "utf8mb4_uca1400_ai_ci"
+    columns = asyncio.run(_membership_receipt_columns(_MembershipReceiptCollationCursor((
+        ("utf8mb4", collation),
+        ("utf8mb4", collation),
+        ("utf8mb4", collation),
+        ("utf8mb4", collation),
+    ))))
+    assert {column[5] for column in columns if column[4] == "utf8mb4"} == {collation}
+
+
+def test_membership_receipt_bootstraps_twice_with_fresh_jax_collation(client):
+    """A newly-created JAX parent need not share a historical Office default."""
+    async def scenario():
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_receipt_fresh_collation_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_project_membership", "jax_project_membership_event",
+                        "jax_namespace_membership_mutation_request",
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    for table, column in (
+                        ("jax_namespace_membership_mutation_request", "namespace"),
+                        ("jax_namespace_membership_mutation_request", "idempotency_key"),
+                        ("jax_project_membership", "membership_id"),
+                        ("jax_project_membership_event", "event_id"),
+                    ):
+                        data_type = "VARCHAR(32)" if column == "namespace" else "CHAR(36)"
+                        await cur.execute(
+                            f"ALTER TABLE `{table}` MODIFY `{column}` {data_type} "
+                            "CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci NOT NULL"
+                        )
+                    await apply_office_migrations(cur)
+                    await apply_office_migrations(cur)
+                    await cur.execute(
+                        "SELECT DISTINCT COLLATION_NAME FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_membership_mutation_receipt' "
+                        "AND CHARACTER_SET_NAME='utf8mb4'"
+                    )
+                    assert await cur.fetchall() == (("utf8mb4_uca1400_ai_ci",),)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
 
 
 def test_bootstrap_attestation_rejects_homonymous_noop_trigger_and_missing_check(client):
