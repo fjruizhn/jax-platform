@@ -74,6 +74,7 @@ self=$(readlink -f -- "$0") || die 'installer cannot be resolved'
 verify_root_owned_path "$self" 'installer'
 verify_root_owned_path "$validator" 'validator'
 verify_operational_chain "$site_root" 'site parent'
+verify_operational_chain "$releases_root" 'releases parent'
 
 source_sha=$(python3 - "$built_release/manifest.json" <<'PY'
 import json,re,sys
@@ -107,9 +108,11 @@ find -P "$stage" -type f -exec chmod 0644 {} +
 find -P "$stage" -type l -print -quit | grep -q . && die 'copied release contains a symlink'
 find -P "$stage" \( -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q . && die 'copied release contains a special file'
 
+verify_operational_chain "$releases_root" 'releases parent'
 mv -- "$stage" "$target"
 stage=
 verify_operational_chain "$site_root" 'site parent'
+verify_operational_chain "$releases_root" 'releases parent'
 [[ $(sha256sum "$target/manifest.json" | awk '{print $1}') == "$expected_manifest_sha256" ]] || die 'installed manifest differs from independently audited manifest digest'
 "$validator" offline \
   --config "$config" --site-root "$site_root" --releases-root "$releases_root" \

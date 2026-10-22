@@ -75,6 +75,16 @@ if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site
 fi
 [[ ! -e "$fixture/site/releases/$bad" && ! -L "$fixture/site/releases/$bad" ]]
 rm "$fixture/built/$bad/dist/pipe"
+mkdir -p "$fixture/site/intermediate/releases"
+chown nobody:nogroup "$fixture/site/intermediate"
+chmod 755 "$fixture/site/intermediate"
+if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site" \
+  --releases-root "$fixture/site/intermediate/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$bad" \
+  --expected-manifest-sha256 "$(sha256sum "$fixture/built/$bad/manifest.json" | awk '{print $1}')" --nginx-user nobody >/dev/null 2>&1; then
+  echo 'unexpected untrusted releases ancestor' >&2; exit 1
+fi
+[[ ! -e "$fixture/site/intermediate/releases/$bad" && ! -L "$fixture/site/intermediate/releases/$bad" ]]
 chmod g+w "$fixture"
 if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site" \
   --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
