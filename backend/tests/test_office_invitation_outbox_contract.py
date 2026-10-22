@@ -19,7 +19,7 @@ from virtual_office.mfa import MFAConfig
 
 
 _MFA_CONFIG = MFAConfig(120, 3, 300, 300, 3)
-_INVITATION_CONFIG = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30)
+_INVITATION_CONFIG = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50)
 
 
 def test_late_relay_acceptance_remains_observed_after_revocation(client):
