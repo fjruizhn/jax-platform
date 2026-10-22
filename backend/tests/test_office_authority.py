@@ -151,6 +151,97 @@ def test_project_admin_can_manage_its_project_but_not_global_administration(clie
     client.portal.call(scenario)
 
 
+def test_module_publication_request_is_project_admin_only_and_has_no_implicit_mfa(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        allowed = await authorize_office(
+            None, fixture["actor"], OfficeOperation.REQUEST_MODULE_PUBLICATION, fixture["project"],
+        )
+        assert allowed.allowed is True
+        assert allowed.code == "office_project_admin_publication_request"
+        # An explicit caller step-up still hardens this otherwise MFA-free
+        # operation; callers cannot use the operation policy to bypass it.
+        hardened = await authorize_office(
+            None, fixture["actor"], OfficeOperation.REQUEST_MODULE_PUBLICATION, fixture["project"],
+            require_recent_mfa=True,
+        )
+        assert hardened.code == "office_mfa_required"
+        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.REQUEST_MODULE_PUBLICATION, fixture["project"],
+            **_with_proof(proof, recent=True),
+        )).allowed is True
+    client.portal.call(scenario)
+
+
+def test_module_publication_request_does_not_bypass_exact_grant_for_office_superuser(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        operation = OfficeOperation.REQUEST_MODULE_PUBLICATION
+        await _sql(
+            "UPDATE office_account_profile SET global_role='OFFICE_SUPERUSER' WHERE user_id=%s",
+            (fixture["actor"],),
+        )
+        # The same-tenant root still has only a COLLABORATOR grant, so it
+        # cannot request publication by virtue of its global role.
+        denied = await authorize_office(None, fixture["actor"], operation, fixture["project"])
+        assert denied.code == "office_grant_insufficient"
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        allowed = await authorize_office(None, fixture["actor"], operation, fixture["project"])
+        assert allowed.allowed is True
+        assert allowed.code == "office_project_admin_publication_request"
+    client.portal.call(scenario)
+
+
+def test_module_publication_request_fails_closed_without_exact_active_internal_project_admin(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        operation = OfficeOperation.REQUEST_MODULE_PUBLICATION
+        # A collaborator has no request authority.
+        assert (await authorize_office(None, fixture["actor"], operation, fixture["project"])).code == "office_grant_insufficient"
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        # Revocation is re-read for every decision.
+        await _sql("UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
+        assert (await authorize_office(None, fixture["actor"], operation, fixture["project"])).code == "office_grant_missing"
+        await _sql("UPDATE office_project_grant SET status='ACTIVE' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
+        other_project = await _sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            (f"office-other-{uuid.uuid4().hex[:10]}",),
+        )
+        await _sql(
+            "INSERT INTO jax_project_scope "
+            "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))",
+            (other_project, fixture["tenant_a"]),
+        )
+        # A PROJECT_ADMIN grant is scoped to its exact project, never to a
+        # tenant or a similarly shaped Office scope.
+        assert (await authorize_office(None, fixture["actor"], operation, other_project)).code == "office_grant_missing"
+        # Scope and tenant boundaries remain authoritative.
+        await _sql("UPDATE jax_project_scope SET authorization_namespace='CLASSIC' WHERE project_id=%s", (fixture["project"],))
+        assert (await authorize_office(None, fixture["actor"], operation, fixture["project"])).code == "office_namespace_denied"
+        await _sql("UPDATE jax_project_scope SET authorization_namespace='OFFICE_CONFIDENTIAL',status='ARCHIVED' WHERE project_id=%s", (fixture["project"],))
+        assert (await authorize_office(None, fixture["actor"], operation, fixture["project"])).code == "office_namespace_denied"
+        await _sql("UPDATE jax_project_scope SET status='ACTIVE' WHERE project_id=%s", (fixture["project"],))
+        manager = await _add_internal_office_user(fixture, global_role="GENERAL_ADMIN")
+        assert (await authorize_office(None, manager, operation, fixture["project"])).code == "office_grant_insufficient"
+        await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (fixture["outsider"],))
+        assert (await authorize_office(None, fixture["outsider"], operation, fixture["project"])).code == "office_tenant_denied"
+        await _sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (fixture["actor"],))
+        assert (await authorize_office(None, fixture["actor"], operation, fixture["project"])).code == "office_account_class_denied"
+    client.portal.call(scenario)
+
+
 def test_derived_mfa_matrix_keeps_collaborator_view_open_and_mutations_recent(client):
     async def scenario():
         fixture = await _seed_office_fixture()

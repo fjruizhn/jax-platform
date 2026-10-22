@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 
 from db.connection import get_pool
 
-from .capabilities import ADMIN_OPERATIONS, OfficeOperation, grant_permits, operation_requires_project
+from .capabilities import (ADMIN_OPERATIONS, MFARequirement, MFA_REQUIREMENT_BY_OPERATION,
+                           OfficeOperation, grant_permits, operation_requires_project)
 from .models import OfficeDecision
 from . import repository
 from .mfa import (MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor,
@@ -135,12 +136,16 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
             OfficeOperation.PROFESSIONAL_ACTION, for_update=False,
         )
         professional_view = professional is not None and professional["status"] == "ACTIVE"
-    derived_recent = decision.operation != OfficeOperation.VIEW_PROJECT.value
+    mfa_requirement = MFA_REQUIREMENT_BY_OPERATION[OfficeOperation(decision.operation)]
     # An explicit caller requirement hardens even an otherwise ordinary
     # collaborator view.  It is additive, like the role-derived conditions;
     # callers can never use ``False`` to lower either rule.
-    need_verified = privileged_view or professional_view or derived_recent or require_recent_mfa
-    need_recent = derived_recent or require_recent_mfa
+    need_verified = (
+        (mfa_requirement is MFARequirement.RECENT)
+        or (mfa_requirement is MFARequirement.CONTEXTUAL and (privileged_view or professional_view))
+        or require_recent_mfa
+    )
+    need_recent = mfa_requirement is MFARequirement.RECENT or require_recent_mfa
     if not need_verified:
         return decision
     if config is None or type(proof_event_id) is not int or proof_event_id < 1:
@@ -210,7 +215,10 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
                 return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             return _decision(True, "office_external_grant", actor, operation, project, project_tenant, global_role,
                              grant["audience"], grant["grant_role"], grant["recipient_group_id"], project)
-        if global_role == "OFFICE_SUPERUSER":
+        # A module-publication request is deliberately project-bound.  Even
+        # Office root must carry the active, exact PROJECT_ADMIN grant; this
+        # vocabulary grants no global request or publication authority.
+        if global_role == "OFFICE_SUPERUSER" and operation is not OfficeOperation.REQUEST_MODULE_PUBLICATION:
             return _decision(True, "office_superuser", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
         if account_class in {"INTERNAL", "OFFICE_INTERNAL"}:
             if tenant != project_tenant:
@@ -230,6 +238,13 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
                 if grant["grant_role"] == "PROJECT_ADMIN":
                     return _decision(True, "office_project_admin_members", actor, operation, project, project_tenant,
                                      global_role, grant["audience"], grant["grant_role"], canonical_project_id=project)
+                return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant,
+                                 global_role, canonical_project_id=project)
+            if operation is OfficeOperation.REQUEST_MODULE_PUBLICATION:
+                if grant["grant_role"] == "PROJECT_ADMIN":
+                    return _decision(True, "office_project_admin_publication_request", actor, operation, project,
+                                     project_tenant, global_role, grant["audience"], grant["grant_role"],
+                                     canonical_project_id=project)
                 return _decision(False, "office_grant_insufficient", actor, operation, project, project_tenant,
                                  global_role, canonical_project_id=project)
             if not grant_permits(operation, grant["grant_role"], grant["audience"]):
