@@ -28,6 +28,7 @@ from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion  # noqa: F401 -- reexporta AISLAMIENTO_ADMIN
 from validacion import email_valido
 from virtual_office.identity_security import OfficeIdentityMutation, guard_office_identity_mutation_in_cursor
+from virtual_office.mfa import terminalize_recovery_receipts_after_token_cut_in_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +378,7 @@ async def update_user(
                 raise HTTPException(status_code=409, detail="email_ya_existe") from e
             raise
         if corta_sesiones:
+            await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
             await _sincronizar_membresias_admin_tenant(
                 cur, actor_id=actor_id, target_id=user_id, tenant_id=tenant_id,
             )
@@ -425,6 +427,7 @@ async def revoke_sessions(user_id: int, request: Request, user: AuthUser = Depen
         if await _leer_para_actualizar(cur, user_id, int(user.tenant_id)) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await cur.execute("UPDATE jax_users SET token_version = token_version + 1 WHERE user_id = %s", (user_id,))
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
         await user_audit.registrar(cur, int(user.user_id), user_id, "sessions_revoked", None, _ip(request))
     # ...y las conexiones WS/SSE ya abiertas, tras el commit (como el PUT y la baja).
     await _cortar_conexiones(user_id)
@@ -605,6 +608,7 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
             "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
             (nuevo_hash, user_id),
         )
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
         await cur.execute("DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE", (user_id,))
         # Sin detalle: ni la contraseña ni el hash salen de jax_users.
         await user_audit.registrar(cur, actor_id, user_id, "password_set_by_admin", None, _ip(request))
@@ -655,6 +659,7 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
             "token_version = token_version + 1, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
             (ahora, actor_id, email_de_baja(email_actual, user_id, ahora.date()), user_id),
         )
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
         # Ningún enlace de recuperación vivo sobrevive a la baja. Va DESPUÉS
         # de bloquear la fila del usuario (usuario -> token, el orden de
         # /reset-password, U21); por el índice de la FK user_id.

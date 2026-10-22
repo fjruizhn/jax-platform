@@ -35,6 +35,7 @@ from virtual_office.mfa import (
     pending_enrollment_is_recovery_origin_in_cursor,
     regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
     reset_mfa_by_office_root_in_cursor,
+    terminalize_recovery_receipts_after_token_cut_in_cursor,
     load_mfa_config_from_environment,
     lock_office_identity_pair_in_cursor,
 )
@@ -238,6 +239,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             if vigente is None or vigente[0] != "active":
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
             raise _credenciales_invalidas()
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=int(user_id))
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
         (token_version,) = await cur.fetchone()
         tenant_id, email, role, must_change_password, account_class = current[5:]
@@ -716,6 +718,8 @@ async def logout(response: Response, refresh_token: str = Cookie(None)):
                     (user_id, user.token_version),
                 )
                 matada = cur.rowcount == 1
+                if matada:
+                    await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
             # Ruling U9: después del commit, fail-soft (las otras pestañas de
             # este navegador comparten la cookie: salen también, a propósito).
             if matada:
@@ -802,6 +806,7 @@ async def cambiar_mi_password(
             "failed_attempts = 0, locked_until = NULL, must_change_password = FALSE WHERE user_id = %s",
             (nuevo_hash, user_id),
         )
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=int(user_id))
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
         (nueva_version,) = await cur.fetchone()
         await user_audit.registrar(cur, user_id, user_id, "password_changed_self", None, ip)
@@ -1069,6 +1074,7 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
             "token_version = token_version + 1, must_change_password = FALSE WHERE user_id = %s",
             (new_hash, user_id),
         )
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=int(user_id))
         await user_audit.registrar(cur, user_id, user_id, "password_reset_completed", None, ip)
 
     # Ruling U9 (spec §3.2): después del commit, fail-soft. Nunca dentro de la

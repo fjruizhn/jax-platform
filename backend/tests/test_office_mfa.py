@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import datetime as dt
+import hashlib
 import secrets
 
 import pyotp
@@ -23,6 +24,7 @@ from virtual_office.mfa import (
     start_first_enrollment_after_password_in_cursor,
     start_reenrollment_after_password_in_cursor,
     start_recovery_enrollment_in_cursor,
+    terminalize_recovery_receipts_after_token_cut_in_cursor,
     verify_and_consume_totp_in_cursor,
 )
 from virtual_office.migrations import apply_office_migrations
@@ -362,6 +364,62 @@ def test_recovery_receipt_tamper_fails_closed_and_expiry_erases_ciphertext(clien
             "SELECT state,response_ciphertext,response_digest FROM office_mfa_recovery_receipt WHERE user_id=%s",
             (user_id,), True,
         ) == (("TERMINAL", None, None),)
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("terminal", ("expired", "exhausted"))
+def test_terminal_enrollment_erases_its_recovery_replay_package(client, terminal):
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"E" * 16,
+            )
+        if terminal == "expired":
+            await sql(
+                "UPDATE office_mfa_challenge SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND "
+                "WHERE token_hash=UNHEX(SHA2(%s,256))", (pending.enrollment_id,),
+            )
+            otp = _otp(pending.secret)
+        else:
+            otp = "000000"
+        for _ in range(CONFIG.challenge_max_attempts):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                denied = await confirm_enrollment_in_cursor(
+                    cur, enrollment_capability_token=pending.enrollment_id, otp=otp,
+                    config=CONFIG, server_correlation_id=b"F" * 16,
+                )
+            assert isinstance(denied, MFADenied)
+            if terminal == "expired":
+                break
+        assert await sql(
+            "SELECT state,response_ciphertext,response_digest FROM office_mfa_recovery_receipt WHERE user_id=%s",
+            (user_id,), True,
+        ) == (("TERMINAL", None, None),)
+    client.portal.call(scenario)
+
+
+def test_token_only_cut_erases_recovery_replay_package_but_keeps_pending_origin(client):
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"G" * 16,
+            )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await cur.execute("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+            await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=user_id)
+        assert await sql(
+            "SELECT state,response_ciphertext,response_digest FROM office_mfa_recovery_receipt WHERE user_id=%s",
+            (user_id,), True,
+        ) == (("TERMINAL", None, None),)
+        assert await sql(
+            "SELECT state,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        ) == (("PENDING", hashlib.sha256(pending.enrollment_id.encode()).digest()),)
     client.portal.call(scenario)
 
 

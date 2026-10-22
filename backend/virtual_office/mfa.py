@@ -184,6 +184,27 @@ async def _terminalize_recovery_receipts(cur, user: int) -> None:
     )
 
 
+async def terminalize_recovery_receipts_after_token_cut_in_cursor(cur, *, user_id: int) -> None:
+    """Erase replay packages after a caller has invalidated a user's sessions.
+
+    The enrollment capability and pending credential remain subject to their
+    own version checks.  This only removes the server-held copy of the raw
+    enrollment secret, so a session cut cannot leave a lost-response replay
+    package usable behind the new token version.
+    """
+    await _terminalize_recovery_receipts(cur, user_id)
+
+
+async def _terminalize_recovery_receipt_for_output(cur, token_hash: bytes) -> None:
+    """Erase the package tied to one terminal enrollment capability."""
+    await cur.execute(
+        "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
+        "response_digest=NULL,updated_at=UTC_TIMESTAMP(6) "
+        "WHERE output_challenge_hash=%s AND state IN ('CLAIMED','REPLAYABLE')",
+        (token_hash,),
+    )
+
+
 async def _invalidate_login_window(cur, user: int, token_version: int) -> None:
     """Retire only pre-success capabilities after a successful LOGIN cut.
 
@@ -210,6 +231,8 @@ async def _deny_attempt(cur, token_hash: bytes, count: int, maximum: int) -> MFA
     )
     if cur.rowcount != 1:
         return MFADenied("challenge_unavailable", terminal=True)
+    if terminal:
+        await _terminalize_recovery_receipt_for_output(cur, token_hash)
     return MFADenied("challenge_exhausted" if terminal else "totp_invalid", maximum - next_count, terminal)
 
 
@@ -814,9 +837,11 @@ async def confirm_enrollment_in_cursor(cur, *, enrollment_capability_token: str,
         return MFADenied("enrollment_invalid", terminal=True)
     if challenge[6] < now:
         await cur.execute("UPDATE office_mfa_challenge SET state='EXPIRED',used_at=UTC_TIMESTAMP(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        await _terminalize_recovery_receipt_for_output(cur, hashed)
         return MFADenied("enrollment_expired", terminal=True)
     if versions != (int(challenge[2]), int(challenge[3])):
         await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        await _terminalize_recovery_receipt_for_output(cur, hashed)
         return MFADenied("enrollment_version", terminal=True)
     if (
         not hmac.compare_digest(bytes(credential[2] or b""), hashed)
