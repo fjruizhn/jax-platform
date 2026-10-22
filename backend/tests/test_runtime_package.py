@@ -148,3 +148,10 @@ def test_active_service_rejects_import(monkeypatch):
     monkeypatch.setattr(rp.subprocess, "run", lambda *_, **__: Result())
     with pytest.raises(rp.PackageError, match="inactive"):
         rp._require_units_inactive()
+
+
+def test_import_leaves_durable_verified_journal(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"new", "0755")])
+    backup = tmp_path / "backup"
+    rp.import_package(bundle, digest, tmp_path / "destination", backup, lambda: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert json.loads((backup / "journal.json").read_text())["phase"] == "VERIFIED"

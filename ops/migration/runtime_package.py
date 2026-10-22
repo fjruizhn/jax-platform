@@ -255,6 +255,10 @@ def restore(paths: dict[str, Path], backup: Path) -> None:
         raise PackageError("RECOVERY_REQUIRED") from exc
 
 
+def _journal(backup: Path, phase: str) -> None:
+    _write_file(backup / "journal.json", json.dumps({"phase": phase}, sort_keys=True, separators=(",", ":")).encode() + b"\n", mode=0o600, uid=os.geteuid(), gid=os.getegid())
+
+
 def _destinations(data: dict[str, object], root: Path) -> dict[str, Path]:
     declared: dict[str, Path] = {}
     for item in data["payload"]:
@@ -284,9 +288,11 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
     data, sealed_bytes = _load(bundle, digest, owner_uid=package_owner_uid, owner_gid=package_owner_gid)
     destinations = _destinations(data, destination_root)
     snapshot(destinations, backup)
+    _journal(backup, "PREPARED")
     declared = {entry["path"] for entry in data["payload"] if isinstance(entry, dict)}
     swaps = 0
     try:
+        _journal(backup, "MUTATING")
         for item in data["payload"]:
             assert isinstance(item, dict)
             path, destination = item["path"], destinations[item["path"]]
@@ -299,12 +305,16 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
             if path not in declared:
                 destination.unlink()
         verify_effective()
+        _journal(backup, "VERIFIED")
     except BaseException as original:
         try:
+            _journal(backup, "ROLLING_BACK")
             restore(destinations, backup)
             if verify_restored is not None:
                 verify_restored()
+            _journal(backup, "ROLLED_BACK")
         except BaseException as rollback_error:
+            _journal(backup, "RECOVERY_REQUIRED")
             raise PackageError("RECOVERY_REQUIRED") from rollback_error
         raise original
 
