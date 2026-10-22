@@ -129,7 +129,8 @@ def test_classic_superadmin_can_bootstrap_office_with_current_password_without_m
     assert isinstance(payload["access_token"], str)
     assert client.get("/api/virtual-office/session", headers=headers).status_code == 401
     fresh = {"Authorization": "Bearer " + payload["access_token"]}
-    assert client.get("/api/virtual-office/session", headers=fresh).json()["state"] == "ACTIVE"
+    fresh_session = client.get("/api/virtual-office/session", headers=fresh)
+    assert (fresh_session.status_code, fresh_session.json().get("state")) == (200, "ACTIVE"), fresh_session.json()
 
 
 def test_office_session_allows_root_project_creation_without_mfa(client, monkeypatch):
