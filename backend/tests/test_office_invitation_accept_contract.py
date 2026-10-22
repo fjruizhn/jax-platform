@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import uuid
 
+import pytest
 from api.virtual_office.invitations import InvitationAcceptRequest, accept_invitation
 from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
@@ -11,7 +12,7 @@ from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office.invitation_config import InvitationConfig
 from virtual_office.invitations import (
-    _decode_outbox_payload, _proof_digest, accept_invitation_in_cursor,
+    InvitationError, _decode_outbox_payload, _proof_digest, accept_invitation_in_cursor,
     issue_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
@@ -105,6 +106,11 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
             replayed = await accept_invitation_in_cursor(
                 cur, accepting_user_id=None, accepting_email=None, new_password_hash=password_hash,
                 bearer_token=bearer_token)
+        with pytest.raises(InvitationError, match="office_invitation_existing_session_required"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await accept_invitation_in_cursor(
+                    cur, accepting_user_id=None, accepting_email=None,
+                    new_password_hash=_hash("a-different-password"), bearer_token=bearer_token)
         rows = await sql(
             "SELECT u.email,u.account_class,p.status,g.grant_role FROM jax_users u "
             "JOIN office_account_profile p ON p.user_id=u.user_id "
