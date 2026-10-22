@@ -82,6 +82,47 @@ def test_office_schema_is_idempotent_and_has_append_only_audit_and_scope_index(c
     assert constraints == {'fk_office_authorization_event_scope', 'fk_office_authorization_event_project', 'fk_office_authorization_event_tenant', 'fk_office_external_relation_group_project'}
 
 
+def test_nonempty_global_delegation_fails_before_tenant_ddl_and_recovers_cleanly(client):
+    """No legacy authority row may acquire a fabricated tenant during upgrade."""
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DROP TABLE office_admin_delegation")
+                await cur.execute(
+                    "CREATE TABLE office_admin_delegation ("
+                    "delegation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+                    "user_id INT NOT NULL,capability VARCHAR(40) NOT NULL,status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',"
+                    "granted_by INT NOT NULL,version BIGINT NOT NULL DEFAULT 1,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+                    "UNIQUE KEY uq_office_admin_delegation (user_id,capability),"
+                    "KEY idx_office_admin_delegation_scope (user_id,capability,status),"
+                    "CONSTRAINT fk_office_admin_delegation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id),"
+                    "CONSTRAINT fk_office_admin_delegation_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id)"
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                )
+                await cur.execute(
+                    "INSERT INTO office_admin_delegation (user_id,capability,status,granted_by) "
+                    "VALUES (1,'ADMINISTER_OFFICE','ACTIVE',1)"
+                )
+                with pytest.raises(RuntimeError, match="legacy delegations require reviewed tenant assignment"):
+                    await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                    "AND TABLE_NAME='office_admin_delegation' AND COLUMN_NAME='tenant_id'"
+                )
+                assert await cur.fetchone() is None
+                await cur.execute("DROP TABLE office_admin_delegation")
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_professional_grant' AND COLUMN_NAME='version'"
+                )
+                assert await cur.fetchone() == ("bigint", "bigint(20)", "NO", "1")
+    client.portal.call(scenario)
+
+
 def test_office_authorization_audit_rejects_update_and_delete(client):
     async def scenario():
         from db.connection import get_pool
