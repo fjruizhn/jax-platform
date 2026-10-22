@@ -149,6 +149,10 @@ def wheelhouse_digest(wheelhouse: Path) -> str:
 
 
 def main() -> None:
+    # The builder may run with a collaborative umask (0002).  The root handoff
+    # admits no group-writable bytes, so make the artifact's creation modes
+    # deterministic before creating the output tree, venv or JSON contracts.
+    os.umask(0o022)
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", type=Path, required=True)
     parser.add_argument("--platform-commit", required=True)

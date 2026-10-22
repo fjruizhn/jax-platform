@@ -151,12 +151,19 @@ def _adoptable_tree(root: Path) -> None:
                    "wheelhouse_sha256": "e" * 64, "lock_sha256": "f" * 64, "python": "/usr/bin/python3",
                    "python_sha256": "0" * 64, "python_version": "cpython-test", "freeze_sha256": "1" * 64}
     (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
-    manifest = {"schema": "axioma.jax-platform-pair/v1", "jax_platform_revision": "a" * 40,
-                "jax_revision": "c" * 40, "dependency_lock_sha256": "f" * 64,
-                "wheelhouse_manifest_sha256": "e" * 64, "files": [], "jax_links": []}
-    (root / "pair-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     for item in [root, *root.rglob("*")]:
         item.chmod(0o755 if item.is_dir() else 0o644)
+    inventory = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and path.name != "pair-manifest.json":
+            inventory.append({"path": path.relative_to(root).as_posix(), "size": path.stat().st_size,
+                              "mode": f"{path.stat().st_mode & 0o7777:04o}",
+                              "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    manifest = {"schema": "axioma.jax-platform-pair/v1", "jax_platform_revision": "a" * 40,
+                "jax_revision": "c" * 40, "dependency_lock_sha256": "f" * 64,
+                "wheelhouse_manifest_sha256": "e" * 64, "files": inventory, "jax_links": []}
+    (root / "pair-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "pair-manifest.json").chmod(0o644)
 
 
 def test_adoption_validator_accepts_plain_tree_and_rejects_hardlinks(tmp_path: Path) -> None:
@@ -179,6 +186,79 @@ def test_adoption_validator_rejects_extended_attributes(tmp_path: Path) -> None:
         pytest.skip(f"filesystem does not provide test xattrs: {error}")
     with pytest.raises(SystemExit, match="xattr or ACL"):
         adoption.validate_builder_tree(source, os.getuid(), hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest())
+
+
+def test_copy_and_seal_makes_fresh_inodes_despite_retained_writable_source_fd(tmp_path: Path) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    contract = adoption.validate_builder_tree(source, os.getuid(), expected)
+    executable = source / "jax-platform" / "backend" / ".venv" / "bin" / "python"
+    source_inode = executable.stat().st_ino
+    held = executable.open("r+b")
+    try:
+        destination = tmp_path / "sealed"
+        adoption.copy_and_seal(source, destination, contract, owner_uid=os.getuid(), owner_gid=os.getgid())
+        held.seek(0); held.write(b"EVIL"); held.flush(); os.fsync(held.fileno())
+    finally:
+        held.close()
+    copied = destination / "jax-platform" / "backend" / ".venv" / "bin" / "python"
+    assert copied.read_bytes() == b"python"
+    assert copied.stat().st_ino != source_inode
+    assert copied.stat().st_nlink == 1
+
+
+def test_copy_and_seal_rejects_intermediate_symlink_swap_without_publishing(tmp_path: Path) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    contract = adoption.validate_builder_tree(source, os.getuid(), expected)
+    (source / "jax-platform").rename(source / "saved-platform")
+    (source / "jax-platform").symlink_to(tmp_path / "outside")
+    destination = tmp_path / "sealed"
+    with pytest.raises(SystemExit, match="unsafe path component"):
+        adoption.copy_and_seal(source, destination, contract, owner_uid=os.getuid(), owner_gid=os.getgid())
+    assert not destination.exists()
+
+
+def test_copy_and_seal_rechecks_builder_processes_before_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    contract = adoption.validate_builder_tree(source, os.getuid(), expected)
+    monkeypatch.setattr(adoption, "process_uids", lambda: {os.getuid()})
+    destination = tmp_path / "sealed"
+    with pytest.raises(SystemExit, match="gained a process"):
+        adoption.copy_and_seal(source, destination, contract, owner_uid=os.getuid(), owner_gid=os.getgid(), builder_uid=os.getuid())
+    assert not destination.exists()
+
+
+def test_copy_and_seal_rejects_source_mutation_during_stream_and_never_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    large = source / "jax-platform" / "backend" / ".venv" / "bin" / "python"
+    large.write_bytes(b"A" * (2 * 1024 * 1024))
+    # Rebuild the authoritative inventory after making the fixture intentionally large.
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    manifest = json.loads((source / "pair-manifest.json").read_text(encoding="utf-8"))
+    for item in manifest["files"]:
+        if item["path"].endswith("/.venv/bin/python"):
+            item["size"] = large.stat().st_size; item["sha256"] = hashlib.sha256(large.read_bytes()).hexdigest()
+    (source / "pair-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    expected = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
+    contract = adoption.validate_builder_tree(source, os.getuid(), expected)
+    held = large.open("r+b"); original_read = adoption.os.read; changed = False
+    source_inode = large.stat().st_ino
+    def racing_read(fd: int, count: int) -> bytes:
+        nonlocal changed
+        value = original_read(fd, count)
+        if not changed and value and os.fstat(fd).st_ino == source_inode:
+            held.seek(1024 * 1024); held.write(b"EVIL"); held.flush(); changed = True
+        return value
+    monkeypatch.setattr(adoption.os, "read", racing_read)
+    destination = tmp_path / "sealed"
+    try:
+        with pytest.raises(SystemExit, match="source changed during adoption"):
+            adoption.copy_and_seal(source, destination, contract, owner_uid=os.getuid(), owner_gid=os.getgid())
+    finally:
+        held.close()
+    assert changed and not destination.exists()
 
 
 def test_adoption_requires_external_manifest_digest_and_all_attested_links(tmp_path: Path) -> None:
