@@ -1781,8 +1781,7 @@ export default {
     accessTitle: 'Acceso de Oficina virtual',
     accessBody: 'La autorización se confirma en el servidor en cada operación. Esta pantalla no concede acceso ni modifica permisos.',
     close: 'Cerrar',
-    pendingTitle: 'Acceso de Oficina',
-    pending: 'La administración de proyectos y permisos se habilitará cuando el servidor confirme una capacidad de Oficina.',
+    projects: { title: 'Proyectos', loading: 'Cargando proyectos…', empty: 'No hay proyectos disponibles.', error: 'No se pudieron cargar los proyectos.', more: 'Cargar más', detailTitle: 'Detalle del proyecto', noDescription: 'Sin descripción.' },
   },
   mfa: {
     title: 'Verificación en dos pasos', otpLabel: 'Código de autenticación', verify: 'Verificar', verifying: 'Verificando…',
