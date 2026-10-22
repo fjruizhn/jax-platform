@@ -43,6 +43,9 @@ MODULE_CANDIDATE_DDL = (
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_module_candidate_revision_no (candidate_id,revision_no),"
     "UNIQUE KEY uq_office_module_candidate_revision_identity (candidate_revision_id,candidate_id),"
+    # Shared with publication staging: candidate attestation must recognize
+    # this exact identity index on every subsequent migration pass.
+    "UNIQUE KEY uq_office_module_candidate_revision_release_identity (candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),"
     "KEY idx_office_module_candidate_revision_artifact (candidate_id,claimed_artifact_set_digest),"
     "CONSTRAINT fk_office_module_candidate_revision_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),"
     "CONSTRAINT chk_office_module_candidate_revision_payload CHECK (revision_no>0 AND OCTET_LENGTH(manifest_sha256)=32 AND manifest_sha256=UNHEX(SHA2(manifest_bytes,256)) AND OCTET_LENGTH(manifest_bytes)>0 AND OCTET_LENGTH(manifest_bytes)<=16777215 AND OCTET_LENGTH(claimed_artifact_set_digest)=32 AND claimed_signing_key_id<>'')"
@@ -102,6 +105,7 @@ _INDEXES = {
     ("office_module_candidate_revision", "PRIMARY"): (True, ("candidate_revision_id",)),
     ("office_module_candidate_revision", "uq_office_module_candidate_revision_no"): (True, ("candidate_id", "revision_no")),
     ("office_module_candidate_revision", "uq_office_module_candidate_revision_identity"): (True, ("candidate_revision_id", "candidate_id")),
+    ("office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity"): (True, ("candidate_revision_id", "candidate_id", "manifest_sha256", "claimed_artifact_set_digest")),
     ("office_module_candidate_revision", "idx_office_module_candidate_revision_artifact"): (False, ("candidate_id", "claimed_artifact_set_digest")),
     ("office_module_candidate_evidence", "PRIMARY"): (True, ("candidate_evidence_id",)),
     ("office_module_candidate_evidence", "uq_office_module_candidate_evidence_entry"): (True, ("candidate_revision_id", "evidence_kind", "evidence_sha256")),

@@ -61,6 +61,11 @@ def test_candidate_identity_manifest_claim_and_generic_evidence_are_bound() -> N
     assert "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL" in identity
     assert "FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id)" in identity
     assert "manifest_sha256=UNHEX(SHA2(manifest_bytes,256))" in revision
+    release_identity = "UNIQUE KEY uq_office_module_candidate_revision_release_identity (candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest)"
+    assert release_identity in revision
+    assert candidate._INDEXES[("office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity")] == (
+        True, ("candidate_revision_id", "candidate_id", "manifest_sha256", "claimed_artifact_set_digest"),
+    )
     assert "claimed_artifact_set_digest BINARY(32)" in revision
     assert "claimed_signing_key_id" in revision
     assert "evidence_sha256=UNHEX(SHA2(evidence_bytes,256))" in evidence
