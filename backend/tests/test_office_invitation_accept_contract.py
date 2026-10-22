@@ -469,8 +469,8 @@ def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_roll
                 async with transaccion(AISLAMIENTO_ADMIN) as cur:
                     await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
                                                       new_password_hash=_hash("rollback-password"), bearer_token=bearer)
-            except (AuthorizationDenied, ProjectStateConflict):
-                pass
+            except (AuthorizationDenied, ProjectStateConflict) as denied:
+                assert denied
             else:
                 raise AssertionError(f"delegated acceptance unexpectedly survived {label} revocation")
             await sql(restore, args)

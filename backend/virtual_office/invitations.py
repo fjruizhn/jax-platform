@@ -830,7 +830,7 @@ async def deliver_one_invitation() -> bool:
                 await finalize_invitation_delivery_in_cursor(
                     cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
                     relay_accepted=False, result_code=result_code)
-        except Exception:
+        except Exception:  # fail-soft: the original relay failure is already preserved; leave the CLAIMED lease fenced when persisting its failure also fails
             # Leave a fenced CLAIMED row for the operator rather than claim a
             # false state after a second persistence failure.
             pass
