@@ -133,6 +133,7 @@ from api.audit import router as audit_router
 from api.proyectos import router as proyectos_router
 from api.proyectos_documentos import router as proyectos_documentos_router
 from api.virtual_office.projects import router as virtual_office_projects_router
+from api.virtual_office.people import router as virtual_office_people_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
@@ -380,6 +381,7 @@ ROUTERS = (
     proyectos_router,
     proyectos_documentos_router,
     virtual_office_projects_router,
+    virtual_office_people_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

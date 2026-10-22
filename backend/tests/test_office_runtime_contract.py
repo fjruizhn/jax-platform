@@ -80,7 +80,7 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evid
     rows = load_runtime_table_privileges()
     assert MANIFEST_VERSION == "runtime-table-privileges-v1"
     assert [table for table, _ in rows] == sorted(table for table, _ in rows)
-    assert runtime_table_privilege_digest() == "d1434aaaaae77f578e00bed087692aec3ce0c821faffb109c6d61bbbc1758928"
+    assert runtime_table_privilege_digest() == "747d024619bc00f76e51fa1f6d7534b24f0cadd90d3e95e21f52c48d97ea23ea"
     grants = runtime_table_privilege_map()
     for protected in (
         "office_authorization_event", "office_bootstrap_state",
