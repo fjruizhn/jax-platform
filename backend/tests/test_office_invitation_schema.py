@@ -288,15 +288,15 @@ def test_invitation_receipt_requires_exact_event_authority_digest_and_expiry(cli
     client.portal.call(scenario)
 
 
-def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
+def test_invitation_runtime_acl_keeps_delivery_updates_and_append_only_evidence():
     from db.runtime_privileges import runtime_table_privilege_map
 
     grants = runtime_table_privilege_map()
-    assert grants['office_invitation'] == frozenset({'UPDATE'})
-    assert grants['office_invitation_outbox'] == frozenset({'UPDATE'})
-    for immutable in ('office_invitation_issuance', 'office_invitation_event',
-                      'office_invitation_mutation_receipt'):
-        assert immutable not in grants
+    assert grants['office_invitation'] == frozenset({'INSERT', 'UPDATE'})
+    assert grants['office_invitation_outbox'] == frozenset({'INSERT', 'UPDATE'})
+    for append_only in ('office_invitation_issuance', 'office_invitation_event',
+                        'office_invitation_mutation_receipt'):
+        assert grants[append_only] == frozenset({'INSERT'})
 
 
 def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_rows(client):

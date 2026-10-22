@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from hashlib import sha256
+from pathlib import Path
 
 import aiomysql
 import pytest
@@ -39,11 +41,27 @@ async def _errno(pool, statement: str) -> int:
 
 async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
     """Grant the checked-in runtime ACL to a disposable test principal."""
-    await cur.execute(f"GRANT SELECT, INSERT ON `{database}`.* TO `{user}`@'%'")
+    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
     for table, privileges in runtime_table_privilege_map().items():
         await cur.execute(
             f"GRANT {', '.join(sorted(privileges))} ON `{database}`.`{table}` TO `{user}`@'%'"
         )
+
+
+async def _grant_bootstrap_probe_acl(cur, database: str, user: str) -> None:
+    """Grant only the v2 rows used by the isolated bootstrap probe fixture."""
+    grants = runtime_table_privilege_map()
+    required = (
+        "jax_tenants", "jax_users", "user_admin_audit", "office_mfa_challenge",
+        "office_mfa_security_event", "office_bootstrap_state",
+    )
+    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
+    for table in required:
+        # The fixture needs only its append path.  Some production tables
+        # (jax_users) also have a v2 UPDATE grant, which must not leak into
+        # this minimal empty-schema principal.
+        assert "INSERT" in grants[table], table
+        await cur.execute(f"GRANT INSERT ON `{database}`.`{table}` TO `{user}`@'%'")
 
 
 async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) -> None:
@@ -76,18 +94,27 @@ async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) ->
                     await cur.execute(f"DELETE FROM `{table}` WHERE 1=0")
 
 
-def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evidence():
+def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_module_state():
     rows = load_runtime_table_privileges()
-    assert MANIFEST_VERSION == "runtime-table-privileges-v1"
+    assert MANIFEST_VERSION == "runtime-table-privileges-v2"
     assert [table for table, _ in rows] == sorted(table for table, _ in rows)
-    assert runtime_table_privilege_digest() == "de21df731d20cf744c50fbd1c5eb7d30b0f0d4b103c39b53c86c1989b3d999ea"
+    assert re.fullmatch(r"[0-9a-f]{64}", runtime_table_privilege_digest())
     grants = runtime_table_privilege_map()
+    for classic_insert in (
+        "axioma_usage", "capability_motor", "credential_audit",
+        "jax_tenants", "pipeline_aviso_enviado",
+    ):
+        assert grants[classic_insert] == frozenset(("INSERT",))
     for protected in (
-        "office_authorization_event", "office_bootstrap_state",
-        "office_invitation_event", "office_invitation_issuance",
-        "office_mfa_security_event", "office_schema_revision",
+        "office_schema_revision", "office_module_candidate",
+        "office_module_candidate_revision", "office_module_candidate_evidence",
+        "office_module_creative_review_event", "office_module_creative_review_head",
+        "office_module_rights_review_event", "office_module_rights_review_head",
+        "office_module_release_event", "office_module_release",
     ):
         assert protected not in grants
+    assert "INSERT" in grants["office_authorization_event"]
+    assert "INSERT" in grants["office_invitation_event"]
 
 
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
@@ -120,6 +147,8 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
+            assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
             assert await _errno(runtime, "DROP TABLE office_schema_revision") == 1142
             assert await _errno(runtime, "ALTER TABLE office_schema_revision ADD COLUMN office_runtime_probe INT") == 1142
@@ -439,15 +468,29 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v8 marker cannot certify the later invitation lifecycle contract."""
+    """A v11 marker cannot certify the v12 per-table INSERT contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v10-")
-        predecessor = SCHEMA_REVISION.replace("office-runtime-v10-", "office-runtime-v9-", 1)
+        assert SCHEMA_REVISION.startswith("office-runtime-v12-")
+        # v11 used the checked-in v1 table contract.  Do not fabricate a v11
+        # marker by retaining the v2 digest: that state was never a deployable
+        # predecessor and would not exercise the actual migration boundary.
+        v1_manifest = (
+            Path(__file__).resolve().parents[2]
+            / "ops" / "migration" / "runtime-table-privileges-v1.txt"
+        )
+        v1_rows = [
+            line.strip() for line in v1_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        predecessor = (
+            "office-runtime-v11-runtime-table-privileges-v1-"
+            + sha256("\n".join(v1_rows).encode("ascii")).hexdigest()[:16]
+        )
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
@@ -660,7 +703,9 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT ON `{schema}`.* TO `{user}`@'%'")
+                # This empty-tenant path has only the fixture tables, so it
+                # receives its exact v2 subset, including jax_tenants INSERT.
+                await _grant_bootstrap_probe_acl(cur, schema, user)
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:
