@@ -149,3 +149,35 @@ def test_jax_retryable_authority_error_is_a_stable_retryable_http_response(monke
             _anonymous_request(), authenticated_user))
     assert rejected.value.status_code == 503
     assert rejected.value.detail == "office_invitation_retryable"
+
+
+@pytest.mark.parametrize(
+    ("authority_error", "scenario"),
+    [
+        ("AuthorizationDenied", "issuer_mfa_revoked"),
+        ("AuthorizationDenied", "issuer_grant_revoked"),
+        ("ProjectStateConflict", "project_closed"),
+    ],
+)
+def test_jax_authority_denials_are_stable_invitation_denials(
+    monkeypatch, authority_error, scenario,
+):
+    from jax.memory import project_authority
+
+    @asynccontextmanager
+    async def transaction_stub(*_args):
+        yield object()
+
+    async def denied_authority_error(*_args, **_kwargs):
+        raise getattr(project_authority, authority_error)(scenario)
+
+    monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
+    monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", denied_authority_error)
+    authenticated_user = AuthUser(user_id="1", tenant_id="1", role="operator",
+                                  email="person@example.test", account_class="OFFICE_INTERNAL")
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(accept_invitation(
+            InvitationAcceptRequest(token="A" * 43, password=None),
+            _anonymous_request(), authenticated_user))
+    assert rejected.value.status_code == 403
+    assert rejected.value.detail == "office_invitation_issuer_denied"
