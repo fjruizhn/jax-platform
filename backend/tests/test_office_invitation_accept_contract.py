@@ -14,7 +14,7 @@ from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office.invitation_config import InvitationConfig
 from virtual_office.invitations import (
     InvitationError, _decode_outbox_payload, _proof_digest, accept_invitation_in_cursor,
-    issue_invitation_in_cursor,
+    issue_invitation_in_cursor, revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
 import virtual_office.invitations as invitation_service
@@ -196,6 +196,41 @@ def test_receipt_write_failure_rolls_back_issue_companions(client, monkeypatch):
         return await sql("SELECT COUNT(*) FROM office_invitation WHERE project_id=%s", (project_id,), True)
 
     assert client.portal.call(scenario) == ((0,),)
+
+
+def test_revoke_replay_reauthorizes_and_new_key_cannot_revoke_terminal_invitation(client):
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-revoke-replay-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+        config = MFAConfig(120, 3, 300, 300, 3)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                email="revoke-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=proof_event_id, mfa_config=config,
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                idempotency_key=str(uuid.uuid4()))
+        key = str(uuid.uuid4())
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
+                mfa_config=config, idempotency_key=key) == (2, False)
+        with pytest.raises(InvitationError, match="office_invitation_terminal"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                    invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
+                    mfa_config=config, idempotency_key=str(uuid.uuid4()))
+        await sql("UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", (issuer,))
+        with pytest.raises(InvitationError, match="office_invitation_issuer_denied"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                    invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
+                    mfa_config=config, idempotency_key=key)
+
+    client.portal.call(scenario)
 
 
 def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch):

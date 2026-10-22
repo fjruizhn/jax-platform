@@ -255,7 +255,9 @@ def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_
                     "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
                     "AND TRIGGER_NAME LIKE 'guard_office_invitation%'"
                 )
-                assert (await cur.fetchone())[0] == 4
+                # The immutable request-receipt guard remains intact while
+                # the historical lifecycle guards are replaced.
+                assert (await cur.fetchone())[0] == 5
                 await apply_office_migrations(cur)
                 await cur.execute(
                     "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
