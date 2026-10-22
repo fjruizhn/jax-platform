@@ -1,11 +1,14 @@
 """Root-controlled professional capability grants for existing project members."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
+from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.audit import record_authorization_event
 from virtual_office.authority import authorize_office_in_cursor
@@ -22,11 +25,214 @@ class ProfessionalGrantUpdate(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+class ProjectGrantUpdate(BaseModel):
+    grant_role: Literal["PROJECT_ADMIN", "COLLABORATOR"]
+    audience: Literal["INTERNAL", "CLIENT_PUBLISHED"]
+    expected_version: int = Field(ge=0)
+
+
+class _OfficeMembershipAuthorizer:
+    """Trusted JXP callback for JAX's caller-owned membership mutation."""
+
+    def __init__(self, *, proof_event_id: int | None, mfa_config, grant_role: str | None):
+        self._proof_event_id = proof_event_id
+        self._mfa_config = mfa_config
+        self._grant_role = grant_role
+
+    async def authorize_membership_in_transaction(self, cursor, *, actor_user_id: int,
+                                                  target_tenant_id: int, project_id: int,
+                                                  target_user_id: int, namespace, operation,
+                                                  member_kind, idempotency_key: str, execution) -> None:
+        from jax.memory.project_authority import AuthorizationDenied
+        decision = await authorize_office_in_cursor(
+            cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
+            mfa_config=self._mfa_config,
+        )
+        if not decision.allowed:
+            raise AuthorizationDenied("Office project-member authority is required")
+        # A project administrator may manage only collaborators.  It can never
+        # mint the Office-side PROJECT_ADMIN authority.
+        if self._grant_role == "PROJECT_ADMIN" and decision.global_role != "OFFICE_SUPERUSER":
+            raise AuthorizationDenied("only an Office root may grant project administration")
+
+
 def _actor_id(user: AuthUser) -> int:
     try:
         return int(user.user_id)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=403, detail="office_professional_grant_denied") from error
+
+
+async def _current_project_grant_decision(cur, *, actor_user_id: int, project_id: int,
+                                          proof_event_id: int | None, config):
+    decision = await authorize_office_in_cursor(
+        cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+        require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=config,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="office_project_grant_denied")
+    return decision
+
+
+@router.put("/{project_id}/members/{target_user_id}")
+async def grant_project_member(project_id: int, target_user_id: int, payload: ProjectGrantUpdate,
+                               idempotency_key: str = Header(alias="Idempotency-Key"),
+                               user: AuthUser = Depends(get_current_user)):
+    """Atomically create canonical JAX membership and its Office audience grant."""
+    actor_user_id = _actor_id(user)
+    if project_id < 1 or target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+    config = load_mfa_config_from_environment()
+    from jax.memory.b9_mariadb import MariaDBB9Store
+    from jax.memory.project_authority import (
+        AlreadyMember, AuthorizationDenied, IdempotencyKeyConflict,
+        InvalidIdempotencyKey, NamespacedMemberKind, ProjectAuthorityAdmin,
+        ProjectAuthorityError, ProjectNamespace,
+    )
+    member_kind = (NamespacedMemberKind.INTERNAL if payload.audience == "INTERNAL"
+                   else NamespacedMemberKind.EXTERNAL)
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            # The JAX hook takes tenant→actor→target→scope and invokes this
+            # callback in the same cursor before its idempotency record.
+            await _current_project_grant_decision(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id, config=config,
+            )
+            await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
+            target = await cur.fetchone()
+            if target is None:
+                raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+            target_tenant_id = int(target[0])
+            result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
+                cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
+                project_id=project_id, target_user_id=target_user_id,
+                namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, member_kind=member_kind,
+                idempotency_key=idempotency_key,
+                authorizer=_OfficeMembershipAuthorizer(
+                    proof_event_id=user.mfa_proof_event_id, mfa_config=config,
+                    grant_role=payload.grant_role),
+            )
+            await cur.execute(
+                "SELECT grant_role,audience,status,version FROM office_project_grant "
+                "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
+            existing = await cur.fetchone()
+            if existing is None:
+                if payload.expected_version != 0:
+                    raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                await cur.execute(
+                    "INSERT INTO office_project_grant "
+                    "(project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,%s,%s,'ACTIVE',%s)",
+                    (project_id, target_user_id, payload.grant_role, payload.audience, actor_user_id))
+                version, replayed = 1, False
+            else:
+                role, audience, status, version = existing
+                version = int(version)
+                if status == "ACTIVE" and role == payload.grant_role and audience == payload.audience:
+                    if payload.expected_version not in {0, version}:
+                        raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                    replayed = True
+                else:
+                    if payload.expected_version != version:
+                        raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                    await cur.execute(
+                        "UPDATE office_project_grant SET grant_role=%s,audience=%s,status='ACTIVE',granted_by=%s,"
+                        "version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE project_id=%s AND user_id=%s AND version=%s",
+                        (payload.grant_role, payload.audience, actor_user_id, project_id, target_user_id, version))
+                    if cur.rowcount != 1:
+                        raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                    version, replayed = version + 1, False
+            decision = await _current_project_grant_decision(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id, config=config,
+            )
+            if payload.grant_role == "PROJECT_ADMIN" and decision.global_role != "OFFICE_SUPERUSER":
+                raise HTTPException(status_code=403, detail="office_project_grant_denied")
+            await record_authorization_event(cur, decision)
+    except HTTPException:
+        raise
+    except InvalidIdempotencyKey as error:
+        raise HTTPException(status_code=422, detail="office_project_grant_idempotency_invalid") from error
+    except IdempotencyKeyConflict as error:
+        raise HTTPException(status_code=409, detail="office_project_grant_idempotency_conflict") from error
+    except (AlreadyMember, AuthorizationDenied) as error:
+        raise HTTPException(status_code=403, detail="office_project_grant_denied") from error
+    except ProjectAuthorityError as error:
+        raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
+    return {"project_id": project_id, "user_id": target_user_id, "grant_role": payload.grant_role,
+            "audience": payload.audience, "version": version, "replayed": replayed,
+            "membership_replayed": result.replayed}
+
+
+@router.delete("/{project_id}/members/{target_user_id}")
+async def revoke_project_member(project_id: int, target_user_id: int,
+                                expected_version: int = Query(ge=1),
+                                idempotency_key: str = Header(alias="Idempotency-Key"),
+                                user: AuthUser = Depends(get_current_user)):
+    """Atomically revoke the canonical membership and its Office grant."""
+    actor_user_id = _actor_id(user)
+    if project_id < 1 or target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_grant_not_found")
+    config = load_mfa_config_from_environment()
+    from jax.memory.b9_mariadb import MariaDBB9Store
+    from jax.memory.project_authority import (
+        AuthorizationDenied, IdempotencyKeyConflict, InvalidIdempotencyKey,
+        ProjectAuthorityAdmin, ProjectAuthorityError, ProjectNamespace,
+    )
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await _current_project_grant_decision(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id, config=config,
+            )
+            await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
+            target = await cur.fetchone()
+            if target is None:
+                raise HTTPException(status_code=404, detail="office_project_grant_not_found")
+            target_tenant_id = int(target[0])
+            result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).revoke_namespaced_member_in_transaction(
+                cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
+                project_id=project_id, target_user_id=target_user_id,
+                namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, idempotency_key=idempotency_key,
+                authorizer=_OfficeMembershipAuthorizer(
+                    proof_event_id=user.mfa_proof_event_id, mfa_config=config, grant_role=None),
+            )
+            await cur.execute(
+                "SELECT status,version FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
+                (project_id, target_user_id))
+            grant = await cur.fetchone()
+            if grant is None:
+                raise HTTPException(status_code=404, detail="office_project_grant_not_found")
+            if int(grant[1]) != expected_version:
+                raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+            if grant[0] == "REVOKED":
+                version, replayed = expected_version, True
+            else:
+                await cur.execute(
+                    "UPDATE office_project_grant SET status='REVOKED',version=version+1,updated_at=UTC_TIMESTAMP(6) "
+                    "WHERE project_id=%s AND user_id=%s AND version=%s",
+                    (project_id, target_user_id, expected_version))
+                if cur.rowcount != 1:
+                    raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                version, replayed = expected_version + 1, False
+            decision = await _current_project_grant_decision(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id, config=config,
+            )
+            await record_authorization_event(cur, decision)
+    except HTTPException:
+        raise
+    except InvalidIdempotencyKey as error:
+        raise HTTPException(status_code=422, detail="office_project_grant_idempotency_invalid") from error
+    except IdempotencyKeyConflict as error:
+        raise HTTPException(status_code=409, detail="office_project_grant_idempotency_conflict") from error
+    except AuthorizationDenied as error:
+        raise HTTPException(status_code=403, detail="office_project_grant_denied") from error
+    except ProjectAuthorityError as error:
+        raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
+    return {"project_id": project_id, "user_id": target_user_id, "version": version,
+            "replayed": replayed, "membership_replayed": result.replayed}
 
 
 @router.put("/{project_id}/professionals/{target_user_id}")
