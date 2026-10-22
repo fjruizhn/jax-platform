@@ -313,9 +313,9 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
                 await cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
                 await cur.execute(f"DROP USER IF EXISTS `{denied_runtime_user}`@'%'")
 
-    root, tv, mv, proof, project, target, denied_target, delegate, profile_target = client.portal.call(seed)
-    headers = _headers(root, tv, mv, proof)
     try:
+        root, tv, mv, proof, project, target, denied_target, delegate, profile_target = client.portal.call(seed)
+        headers = _headers(root, tv, mv, proof)
         monkeypatch.setenv("JAX_DB_USER", runtime_user)
         monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
         client.portal.call(close_application_pool)
@@ -353,9 +353,22 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert granted_without_update.status_code == 200, granted_without_update.text
+        denied_key = str(uuid.uuid4())
+        authorization_events_before = client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event "
+            "WHERE actor_user_id=%s AND project_id=%s AND operation='ADMINISTER_PROJECT_MEMBERS'",
+            (root, project), True,
+        )
+        revoke_events_before = client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM jax_project_membership_event "
+            "WHERE project_id=%s AND target_user_id=%s AND operation='REVOKE_OFFICE_MEMBER'",
+            (project, denied_target), True,
+        )
         denied_revoke = client.delete(
             f"/api/virtual-office/projects/{project}/members/{denied_target}?expected_version=1",
-            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+            headers={**headers, "Idempotency-Key": denied_key},
         )
         assert denied_revoke.status_code == 503
         client.portal.call(close_application_pool)
@@ -363,9 +376,34 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             os.environ[name] = value
         assert client.portal.call(
             sql,
-            "SELECT status,version FROM office_project_grant WHERE project_id=%s AND user_id=%s",
+            "SELECT m.status,g.status,g.version FROM jax_project_membership m JOIN office_project_grant g "
+            "ON g.project_id=m.project_id AND g.user_id=m.user_id WHERE m.project_id=%s AND m.user_id=%s",
             (project, denied_target), True,
-        ) == (("ACTIVE", 1),)
+        ) == (("ACTIVE", "ACTIVE", 1),)
+        assert client.portal.call(
+            sql,
+            "SELECT idempotency_key FROM jax_namespace_membership_mutation_request "
+            "WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s",
+            (denied_key,), True,
+        ) == ()
+        assert client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM jax_project_membership_event "
+            "WHERE project_id=%s AND target_user_id=%s AND operation='REVOKE_OFFICE_MEMBER'",
+            (project, denied_target), True,
+        ) == revoke_events_before
+        assert client.portal.call(
+            sql,
+            "SELECT idempotency_key FROM office_membership_mutation_receipt "
+            "WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s",
+            (denied_key,), True,
+        ) == ()
+        assert client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event "
+            "WHERE actor_user_id=%s AND project_id=%s AND operation='ADMINISTER_PROJECT_MEMBERS'",
+            (root, project), True,
+        ) == authorization_events_before
     finally:
         client.portal.call(close_application_pool)
         for name, value in original_credentials.items():
