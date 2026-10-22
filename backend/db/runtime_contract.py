@@ -128,7 +128,7 @@ async def _revision(cur):
 
 
 _CURRENT_GRANTEE = "CONCAT(\"'\",SUBSTRING_INDEX(CURRENT_USER(),'@',1),\"'@'\",SUBSTRING_INDEX(CURRENT_USER(),'@',-1),\"'\")"
-_RUNTIME_SCHEMA_PRIVILEGES = frozenset(("SELECT", "INSERT"))
+_RUNTIME_SCHEMA_PRIVILEGES = frozenset(("SELECT",))
 
 
 async def _effective_privilege_guard(cur) -> None:

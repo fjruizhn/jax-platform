@@ -16,7 +16,8 @@ PREPARE_OS=1
 ADMIN_CONTAINER="${JAX_DB_ADMIN_CONTAINER:-mariadb-12-3-jax}"
 ADMIN_SECRET_FILE="${JAX_DB_ADMIN_SECRET_FILE:-/run/secrets/mariadb_root_password}"
 ADMIN_TRANSPORT=
-MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privileges-v1.txt"
+MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privileges-v2.txt"
+V1_MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privileges-v1.txt"
 
 usage() {
   printf '%s\n' 'usage: provision-db-runtime.sh [--plan] [--state-root DIR] [--admin-transport PATH] [--env FILE] --measured-grantee-host HOST [--skip-os-identities]'
@@ -81,6 +82,8 @@ DB=${CFG[JAX_DB_NAME]}
 
 declare -a RUNTIME_TABLES=()
 declare -A RUNTIME_TABLE_PRIVILEGES=()
+declare -a V1_RUNTIME_TABLES=()
+declare -A V1_RUNTIME_TABLE_PRIVILEGES=()
 load_runtime_manifest() {
   [[ -r "$MANIFEST_FILE" ]] || die "runtime table privilege manifest is not readable"
   local line table privileges extra previous=
@@ -89,8 +92,8 @@ load_runtime_manifest() {
     read -r table privileges extra <<< "$line"
     [[ -n "$table" && -n "$privileges" && -z ${extra:-} ]] || die "runtime table privilege manifest is malformed"
     [[ "$table" =~ ^[a-z][a-z0-9_]{0,63}$ ]] || die "runtime table privilege manifest has invalid table"
-    [[ "$privileges" =~ ^(UPDATE|DELETE)(,(UPDATE|DELETE))?$ ]] || die "runtime table privilege manifest has invalid privileges"
-    [[ "$table" != office_authorization_event && "$table" != office_mfa_security_event && "$table" != office_bootstrap_state && "$table" != office_invitation_event && "$table" != office_invitation_issuance && "$table" != office_schema_revision ]] || die "runtime table privilege manifest grants a protected table"
+    [[ "$privileges" =~ ^(INSERT|UPDATE|DELETE)(,(INSERT|UPDATE|DELETE)){0,2}$ ]] || die "runtime table privilege manifest has invalid privileges"
+    [[ "$table" != office_schema_revision && "$table" != office_module_candidate && "$table" != office_module_candidate_revision && "$table" != office_module_candidate_evidence && "$table" != office_module_creative_review_event && "$table" != office_module_creative_review_head && "$table" != office_module_rights_review_event && "$table" != office_module_rights_review_head && "$table" != office_module_release_event && "$table" != office_module_release ]] || die "runtime table privilege manifest grants a protected table"
     [[ -z "$previous" || "$table" > "$previous" ]] || die "runtime table privilege manifest is not ordered"
     previous=$table
     RUNTIME_TABLES+=("$table")
@@ -100,8 +103,39 @@ load_runtime_manifest() {
 }
 load_runtime_manifest
 
+# v1 was the predecessor with schema INSERT.  It is accepted only if every
+# old table grant is exact, then converged by adding v2's named writes before
+# schema INSERT is revoked.  Any other grant shape remains fail-closed.
+load_v1_runtime_manifest() {
+  [[ -r "$V1_MANIFEST_FILE" ]] || die "v1 runtime table privilege manifest is not readable"
+  local line table privileges extra previous=
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    read -r table privileges extra <<< "$line"
+    [[ -n "$table" && -n "$privileges" && -z ${extra:-} ]] || die "v1 runtime table privilege manifest is malformed"
+    [[ "$table" =~ ^[a-z][a-z0-9_]{0,63}$ && "$privileges" =~ ^(UPDATE|DELETE)(,(UPDATE|DELETE))?$ ]] || die "v1 runtime table privilege manifest is invalid"
+    [[ -z "$previous" || "$table" > "$previous" ]] || die "v1 runtime table privilege manifest is not ordered"
+    previous=$table
+    V1_RUNTIME_TABLES+=("$table")
+    V1_RUNTIME_TABLE_PRIVILEGES["$table"]=$privileges
+  done < "$V1_MANIFEST_FILE"
+  [ "${#V1_RUNTIME_TABLES[@]}" -gt 0 ] || die "v1 runtime table privilege manifest is empty"
+}
+load_v1_runtime_manifest
+
+verify_runtime_manifest_tables() {
+  # v2 names INSERT explicitly, so a database restored from a pre-v2 backup
+  # cannot be provisioned as though it had the new tables.  The migrator is
+  # the only principal that may create them; fail before touching web grants.
+  local table count
+  for table in "${RUNTIME_TABLES[@]}"; do
+    count=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s;\n" "$(sql_quote "$DB")" "$(sql_quote "$table")" | admin_sql) || die "could not inspect runtime manifest table $table"
+    [[ "$count" == 1 ]] || die "runtime manifest table is absent: $table; run the migrator before provisioning v2"
+  done
+}
+
 if [ "$MODE" = plan ]; then
-  note "plan: preserve legacy principal; provision $RUNTIME_USER@$HOST (SELECT/INSERT schema plus table UPDATE/DELETE) and $MIGRATE_USER@$HOST (migration DDL)"
+  note "plan: preserve legacy principal; provision $RUNTIME_USER@$HOST (schema SELECT plus named table DML) and $MIGRATE_USER@$HOST (migration DDL)"
   note "plan: write root-only runtime.env and migrate.env; web=jaxweb migrator=jaxmigrate artifact=/srv/jax-prod"
   exit 0
 fi
@@ -214,7 +248,33 @@ runtime_grant_state() {
     done
     printf 'legacy-prefix:%s' "$prefix_count"; return
   fi
-  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] || { printf invalid; return; }
+  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] || {
+    [ "$actual_set" = "SELECT" ] || { printf invalid; return; }
+    prefix_count=$((actual_count - 2))
+    [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
+    for ((index=0; index<prefix_count; index++)); do
+      table=${RUNTIME_TABLES[$index]}; privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { printf invalid; return; }
+    done
+    [ "$prefix_count" -eq "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_count" ] || { printf 'new-prefix:%s' "$prefix_count"; return; }
+    printf new; return
+  }
+  # Verify an exact full v1 state before adding v2's per-table INSERT grants.
+  if [ "$actual_count" -eq "$((2 + ${#V1_RUNTIME_TABLES[@]}))" ]; then
+    for table in "${V1_RUNTIME_TABLES[@]}"; do
+      privileges=${V1_RUNTIME_TABLE_PRIVILEGES[$table]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || break
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || break
+    done
+    [ "$table" = "${V1_RUNTIME_TABLES[-1]}" ] && [ "$(normalize_set "$actual_set")" = "$(normalize_set "${V1_RUNTIME_TABLE_PRIVILEGES[$table]}")" ] && { printf v1; return; }
+  fi
+  # A v2 creation can be interrupted after schema SELECT or any ordered table
+  # grant; only that exact prefix is resumable.
   prefix_count=$((actual_count - 2))
   [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
   for ((index=0; index<prefix_count; index++)); do
@@ -255,6 +315,7 @@ migrator_grant_state() {
 
 create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"
 create_missing "$MIGRATE_USER" "$migrate_password" "$migrate_exists"
+verify_runtime_manifest_tables
 runtime_state=$(runtime_grant_state)
 case "$runtime_state" in
     new) ;;
@@ -262,7 +323,7 @@ case "$runtime_state" in
       prefix_count=${runtime_state#new-prefix:}
       [[ "$prefix_count" =~ ^[0-9]+$ ]] || die "runtime principal transitional state is malformed"
       if [ "$prefix_count" = 0 ]; then
-        printf 'GRANT SELECT, INSERT ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime schema privileges"
+        printf 'GRANT SELECT ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime schema privileges"
       fi
       for ((index=prefix_count; index<${#RUNTIME_TABLES[@]}; index++)); do
         table=${RUNTIME_TABLES[$index]}
@@ -277,7 +338,13 @@ case "$runtime_state" in
         table=${RUNTIME_TABLES[$index]}
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge runtime table privileges"
       done
-      printf 'REVOKE UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"
+      printf 'REVOKE INSERT, UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"
+      ;;
+    v1)
+      for table in "${RUNTIME_TABLES[@]}"; do
+        printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge v1 runtime table privileges"
+      done
+      printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke v1 runtime schema INSERT"
       ;;
     *) die "runtime principal is neither the exact legacy nor new grant state" ;;
 esac

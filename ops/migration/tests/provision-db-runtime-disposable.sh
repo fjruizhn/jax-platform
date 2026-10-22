@@ -85,10 +85,10 @@ reset_new_runtime() {
 reset_new_runtime
 run_helper
 reset_new_runtime
-printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
+printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 reset_new_runtime
-printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s'; GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
 run_helper
