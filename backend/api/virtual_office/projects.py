@@ -310,21 +310,16 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         # indistinguishable.  It runs even for an absent scope, preserving
         # the canonical authority/audit path for every request.
         raise HTTPException(status_code=404, detail="office_project_not_found")
-    if mfa_config is None:
-        # Invitation issuance has a separate durable-proof contract.  Its
-        # unavailable MFA dependency must not prevent a project from opening.
-        manage_invitations = False
-    else:
-        try:
-            manage_invitations = await can_manage_invitations_in_cursor(
-                cur, actor_user_id=actor_user_id, project_id=project_id,
-                proof_event_id=proof_event_id, mfa_config=mfa_config,
-            )
-        except InvitationError as error:
-            # A normal authorization/MFA denial has already become ``False`` in
-            # the helper.  Any remaining domain error is incomplete operational
-            # state, never a capability that the browser may safely infer.
-            raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
+    try:
+        manage_invitations = await can_manage_invitations_in_cursor(
+            cur, actor_user_id=actor_user_id, project_id=project_id,
+            proof_event_id=proof_event_id, mfa_config=mfa_config,
+        )
+    except InvitationError as error:
+        # A normal authorization/MFA denial has already become ``False`` in
+        # the helper.  Any remaining domain error is incomplete operational
+        # state, never a capability that the browser may safely infer.
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
     return {
         "id": int(row[0]), "name": row[1],
         "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],

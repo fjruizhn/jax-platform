@@ -261,7 +261,7 @@ def test_list_fails_closed_for_global_admin_or_missing_mfa_runtime_config(client
         assert client.get(f"/api/virtual-office/projects?after_id={projects[1]}", headers=headers).json() == {"projects": [], "next_after_id": None}
 
 
-def test_project_admin_lists_and_views_own_project_without_mfa(client, monkeypatch):
+def test_project_admin_lists_views_and_manages_invitations_without_mfa(client, monkeypatch):
     _configure_mfa(monkeypatch)
 
     async def scenario():
@@ -285,9 +285,27 @@ def test_project_admin_lists_and_views_own_project_without_mfa(client, monkeypat
             "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
             (project_id, user_id, user_id),
         )
-        return user_id, project_id
+        collaborator, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (collaborator,))
+        await sql(
+            "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), project_id, collaborator),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (project_id, collaborator, user_id),
+        )
+        return user_id, collaborator, project_id
 
-    user_id, project_id = client.portal.call(scenario)
+    user_id, collaborator, project_id = client.portal.call(scenario)
+    for name in (
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+    ):
+        monkeypatch.delenv(name)
     headers = _headers(user_id)
     listed = client.get("/api/virtual-office/projects", headers=headers)
     assert listed.status_code == 200
@@ -295,6 +313,10 @@ def test_project_admin_lists_and_views_own_project_without_mfa(client, monkeypat
     detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["id"] == project_id
+    assert detail.json()["capabilities"]["manage_invitations"] is True
+    denied = client.get(f"/api/virtual-office/projects/{project_id}", headers=_headers(collaborator))
+    assert denied.status_code == 200
+    assert denied.json()["capabilities"]["manage_invitations"] is False
 
 def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(client, monkeypatch):
     import api.virtual_office.projects as projects_api
@@ -501,7 +523,7 @@ def test_root_bootstrap_creates_lists_and_views_project_without_mfa_or_config(cl
     detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["id"] == project_id
-    assert detail.json()["capabilities"]["manage_invitations"] is False
+    assert detail.json()["capabilities"]["manage_invitations"] is True
 
 
 def test_create_project_denies_nonroot_but_allows_office_root_without_mfa(client, monkeypatch):
