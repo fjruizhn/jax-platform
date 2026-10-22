@@ -26,3 +26,4 @@ office_mfa_recovery_code UPDATE,DELETE
 password_reset_tokens UPDATE,DELETE
 project_documents UPDATE
 shadow_messages UPDATE
+user_api_keys UPDATE

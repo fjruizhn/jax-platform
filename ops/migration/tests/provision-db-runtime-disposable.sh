@@ -76,6 +76,23 @@ printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT
 run_helper
 runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
 
+# Every durable cut-point for a newly created principal is resumable and
+# bounded: CREATE USER (USAGE), schema grant, and the first table grant.  The
+# migration principal has only CREATE USER and its one schema grant cut-point.
+reset_new_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
+}
+reset_new_runtime
+run_helper
+reset_new_runtime
+printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+reset_new_runtime
+printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_helper
+
 chmod 644 "$TEMP/state/secrets/$WEB.password"
 if run_helper; then echo 'unsafe secret mode was accepted' >&2; exit 1; fi
 chmod 600 "$TEMP/state/secrets/$WEB.password"

@@ -370,7 +370,7 @@ async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body
     await cur.execute(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
         "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-        "AND TRIGGER_NAME IN ('no_update_office_mfa_security_event','no_delete_office_mfa_security_event')"
+        "AND EVENT_OBJECT_TABLE='office_mfa_security_event'"
     )
     found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
     if allow_redacted_trigger_body:
@@ -398,8 +398,7 @@ async def assert_audit_runtime_metadata(cur) -> None:
     await cur.execute(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,"
         "ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS "
-        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
-        "('no_update_office_authorization_event','no_delete_office_authorization_event')"
+        "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='office_authorization_event'"
     )
     found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
     if found != _AUDIT_TRIGGER_METADATA:
@@ -459,8 +458,7 @@ async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body:
     await cur.execute(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
         "FROM information_schema.TRIGGERS "
-        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
-        "('no_update_office_bootstrap_state','no_delete_office_bootstrap_state')"
+        "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='office_bootstrap_state'"
     )
     found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
     if allow_redacted_trigger_body:

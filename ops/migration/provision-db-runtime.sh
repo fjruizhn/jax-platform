@@ -186,7 +186,14 @@ runtime_grant_state() {
   local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index
   grants=$(show_grants "$RUNTIME_USER") || die "could not inspect runtime grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$RUNTIME_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
-  schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$"); [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+  schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$" || true)
+  # CREATE USER leaves only the exact USAGE grant.  This is a safe prefix of
+  # a new principal; no pre-existing capability is repaired or broadened.
+  if [ -z "$schema_line" ]; then
+    [ "$(printf '%s\n' "$grants" | grep -c '^GRANT ')" -eq 1 ] || { printf invalid; return; }
+    printf 'new-prefix:0'; return
+  fi
+  [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || { printf invalid; return; }
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
   legacy_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE')
   expected_count=$((2 + ${#RUNTIME_TABLES[@]})); actual_count=$(printf '%s\n' "$grants" | grep -c '^GRANT ')
@@ -207,7 +214,18 @@ runtime_grant_state() {
     done
     printf 'legacy-prefix:%s' "$prefix_count"; return
   fi
-  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] && [ "$actual_count" -eq "$expected_count" ] || { printf invalid; return; }
+  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] || { printf invalid; return; }
+  prefix_count=$((actual_count - 2))
+  [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
+  for ((index=0; index<prefix_count; index++)); do
+    table=${RUNTIME_TABLES[$index]}; privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+    line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+    [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+    actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+    [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { printf invalid; return; }
+  done
+  [ "$prefix_count" -eq "${#RUNTIME_TABLES[@]}" ] || { printf 'new-prefix:%s' "$prefix_count"; return; }
+  [ "$actual_count" -eq "$expected_count" ] || { printf invalid; return; }
   for table in "${RUNTIME_TABLES[@]}"; do
     privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
     line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
@@ -218,17 +236,39 @@ runtime_grant_state() {
   printf new
 }
 
+migrator_grant_state() {
+  local grants schema_line actual_set expected_set grant_count
+  grants=$(show_grants "$MIGRATE_USER") || die "could not inspect migration grants"
+  printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$MIGRATE_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
+  schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$" || true)
+  grant_count=$(printf '%s\n' "$grants" | grep -c '^GRANT ')
+  if [ -z "$schema_line" ]; then
+    [ "$grant_count" -eq 1 ] || { printf invalid; return; }
+    printf 'new-prefix:0'; return
+  fi
+  [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] && [ "$grant_count" -eq 2 ] || { printf invalid; return; }
+  actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  [ "$actual_set" = "$expected_set" ] || { printf invalid; return; }
+  printf new
+}
+
 create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"
 create_missing "$MIGRATE_USER" "$migrate_password" "$migrate_exists"
-if [ "$runtime_exists" = 0 ]; then
-  printf 'GRANT SELECT, INSERT ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime schema privileges"
-  for table in "${RUNTIME_TABLES[@]}"; do
-    printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime table privileges"
-  done
-else
-  runtime_state=$(runtime_grant_state)
-  case "$runtime_state" in
+runtime_state=$(runtime_grant_state)
+case "$runtime_state" in
     new) ;;
+    new-prefix:*)
+      prefix_count=${runtime_state#new-prefix:}
+      [[ "$prefix_count" =~ ^[0-9]+$ ]] || die "runtime principal transitional state is malformed"
+      if [ "$prefix_count" = 0 ]; then
+        printf 'GRANT SELECT, INSERT ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime schema privileges"
+      fi
+      for ((index=prefix_count; index<${#RUNTIME_TABLES[@]}; index++)); do
+        table=${RUNTIME_TABLES[$index]}
+        printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge runtime table privileges"
+      done
+      ;;
     legacy-prefix:*)
       # Add the narrow table grants before revoking broad schema DML.
       prefix_count=${runtime_state#legacy-prefix:}
@@ -240,11 +280,13 @@ else
       printf 'REVOKE UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"
       ;;
     *) die "runtime principal is neither the exact legacy nor new grant state" ;;
-  esac
-fi
-if [ "$migrate_exists" = 0 ]; then
-  printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal"
-fi
+esac
+migrate_state=$(migrator_grant_state)
+case "$migrate_state" in
+  new) ;;
+  new-prefix:0) printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal" ;;
+  *) die "migration principal is neither the exact new nor create-only grant state" ;;
+esac
 verify_migrator_grants
 [ "$(runtime_grant_state)" = new ] || die "runtime principal table privilege set is not exact"
 

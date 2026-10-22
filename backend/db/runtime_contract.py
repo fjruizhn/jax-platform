@@ -46,7 +46,11 @@ async def _trigger_metadata(cur):
     # Restricted MariaDB principals can legitimately receive NULL
     # ACTION_STATEMENT metadata; identity/timing/event are the enforceable
     # trigger contract and are therefore the fields verified here.
-    await cur.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN ('no_update_office_authorization_event','no_delete_office_authorization_event')")
+    await cur.execute(
+        "SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+        "AND EVENT_OBJECT_TABLE='office_authorization_event'"
+    )
     found = {(str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2))) for row in await cur.fetchall()}
     expected = {("no_update_office_authorization_event", "BEFORE", "UPDATE"), ("no_delete_office_authorization_event", "BEFORE", "DELETE")}
     if found != expected:
@@ -117,26 +121,38 @@ async def _effective_privilege_guard(cur) -> None:
     global_privileges = await privileges("USER_PRIVILEGES")
     if global_privileges != {("USAGE", "NO")}:
         raise RuntimeDbContractError("runtime database principal has non-DML global privilege")
-    schema_privileges = await privileges("SCHEMA_PRIVILEGES", " AND TABLE_SCHEMA=DATABASE()")
-    if schema_privileges != {(privilege, "NO") for privilege in _RUNTIME_SCHEMA_PRIVILEGES}:
+    expected_schema_privileges = {(privilege, "NO") for privilege in _RUNTIME_SCHEMA_PRIVILEGES}
+    await cur.execute("SELECT DATABASE()")
+    database_row = await cur.fetchone()
+    database = "" if database_row is None else str(_row(database_row, 0))
+    if not database:
+        raise RuntimeDbContractError("runtime database name is unavailable")
+    await cur.execute(
+        "SELECT TABLE_SCHEMA,PRIVILEGE_TYPE,IS_GRANTABLE FROM information_schema.SCHEMA_PRIVILEGES "
+        "WHERE GRANTEE=" + _CURRENT_GRANTEE
+    )
+    actual_schema_privileges = {
+        (str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2)))
+        for row in await cur.fetchall()
+    }
+    if actual_schema_privileges != {(database, privilege, grantable) for privilege, grantable in expected_schema_privileges}:
         raise RuntimeDbContractError("runtime database principal does not have exact schema privileges")
     await cur.execute(
-        "SELECT TABLE_NAME,PRIVILEGE_TYPE,IS_GRANTABLE FROM information_schema.TABLE_PRIVILEGES "
-        "WHERE GRANTEE=" + _CURRENT_GRANTEE + " AND TABLE_SCHEMA=DATABASE() "
-        "ORDER BY TABLE_NAME,PRIVILEGE_TYPE"
+        "SELECT TABLE_SCHEMA,TABLE_NAME,PRIVILEGE_TYPE,IS_GRANTABLE FROM information_schema.TABLE_PRIVILEGES "
+        "WHERE GRANTEE=" + _CURRENT_GRANTEE + " ORDER BY TABLE_SCHEMA,TABLE_NAME,PRIVILEGE_TYPE"
     )
     expected_table_privileges = {
-        (table, privilege, "NO")
+        (database, table, privilege, "NO")
         for table, privileges_for_table in runtime_table_privilege_map().items()
         for privilege in privileges_for_table
     }
     actual_table_privileges = {
-        (str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2)))
+        (str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2)), str(_row(row, 3)))
         for row in await cur.fetchall()
     }
     if actual_table_privileges != expected_table_privileges:
         raise RuntimeDbContractError("runtime database principal does not have exact table privileges")
-    column_privileges = await privileges("COLUMN_PRIVILEGES", " AND TABLE_SCHEMA=DATABASE()")
+    column_privileges = await privileges("COLUMN_PRIVILEGES")
     if column_privileges:
         raise RuntimeDbContractError("runtime database principal has column-specific privileges")
     # MariaDB has no INFORMATION_SCHEMA.ROUTINE_PRIVILEGES relation, and a
@@ -145,7 +161,7 @@ async def _effective_privilege_guard(cur) -> None:
     # extra capability and fails the exact-DML contract.
     await cur.execute(
         "SELECT ROUTINE_NAME,ROUTINE_TYPE FROM information_schema.ROUTINES "
-        "WHERE ROUTINE_SCHEMA=DATABASE()"
+        "WHERE ROUTINE_SCHEMA IS NOT NULL"
     )
     if await cur.fetchone() is not None:
         raise RuntimeDbContractError("runtime database principal has routine privileges")

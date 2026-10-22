@@ -59,7 +59,9 @@ Pruebas del código: parser/saneamiento env, provisión idempotente y rechazo de
 El principal runtime conserva SELECT/INSERT de esquema. UPDATE/DELETE están
 solamente en el manifiesto ordenado y versionado
 `ops/migration/runtime-table-privileges-v1.txt`, derivado del SQL de ejecución
-clásico y Office y validado bajo un principal restringido. El manifiesto excluye
+clásico y Office y validado bajo un principal restringido. Incluye el UPDATE
+que conserva la siembra transitoria de `user_api_keys` de `/api/admin/keys`;
+el INSERT lo cubre el privilegio de esquema. El manifiesto excluye
 `office_bootstrap_state`, los ledgers append-only y `office_schema_revision`.
 El guard exige el conjunto efectivo exacto de privilegios globales, de esquema,
 tabla, columna, rutinas y roles; una UPDATE/DELETE sobre bootstrap debe devolver
