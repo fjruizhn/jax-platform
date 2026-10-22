@@ -1758,9 +1758,11 @@ async def apply_office_migrations(cursor) -> None:
     await _prepare_invitation_schema(cursor)
     await _preflight_invitation_receipt_causal_history(cursor)
     await _upgrade_invitation_event_causality(cursor)
+    # Attest and remove only known lifecycle guards before the one-time
+    # backfill; predecessor update guards reject every non-transition UPDATE.
+    await _upgrade_invitation_guards(cursor)
     await _upgrade_invitation_expiry_materialization(cursor)
     await _upgrade_invitation_outbox_stale_index(cursor)
-    await _upgrade_invitation_guards(cursor)
     await _upgrade_invitation_mutation_receipt_guard(cursor)
     for statement in OFFICE_INVITATION_DDL:
         await cursor.execute(statement)
