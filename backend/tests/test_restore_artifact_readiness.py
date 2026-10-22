@@ -26,14 +26,14 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
         "jax-platform.service": {
             "WorkingDirectory": "/", "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
             "Environment": [], "EnvironmentFiles": [], "LoadCredential": [["runtime.env", "/etc/jax/runtime.env"]], "UnsetEnvironment": [],
-            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "web", "/run/credentials/jax-platform.service/runtime.env"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "web", "${CREDENTIALS_DIRECTORY}/runtime.env"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
         },
         "jax-platform-migrate.service": {
             "WorkingDirectory": "/", "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
             "Environment": [], "EnvironmentFiles": [], "LoadCredential": [["migrate.env", "/etc/jax/migrate.env"]], "UnsetEnvironment": [],
-            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "migrate", "/run/credentials/jax-platform-migrate.service/migrate.env"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "migrate", "${CREDENTIALS_DIRECTORY}/migrate.env"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
         },

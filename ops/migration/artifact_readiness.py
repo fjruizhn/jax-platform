@@ -83,12 +83,13 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
         credential = "runtime.env" if mode == "web" else "migrate.env"
         if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"${{CREDENTIALS_DIRECTORY}}/{credential}"]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        effective_argv = [argument.replace("${CREDENTIALS_DIRECTORY}", f"/run/credentials/{unit}") for argument in argv]
         contract[unit] = {
             "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
             "EnvironmentFiles": [], "LoadCredential": [credential.split(":", 1) for credential in creds], "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
-            "ExecStart": effective_argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
+            # D-Bus exposes the literal unit token here; expansion happens only
+            # when systemd starts the process, so compare that canonical token.
+            "ExecStart": argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
         }
