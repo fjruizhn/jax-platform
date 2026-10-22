@@ -151,9 +151,14 @@ async def _assert_mfa_ledger_metadata(cur) -> None:
 
 
 async def _assert_mfa_ledger_foreign_keys(cur) -> None:
+    await cur.execute("SELECT DATABASE()")
+    schema_row = await cur.fetchone()
+    schema = None if schema_row is None else str(schema_row[0])
+    if not schema:
+        raise RuntimeError("Office MFA foreign key schema is unavailable")
     for name, expected in _MFA_FOREIGN_KEYS.items():
         await cur.execute(
-            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
             "r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k "
             "JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA "
             "AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME "
@@ -165,10 +170,11 @@ async def _assert_mfa_ledger_foreign_keys(cur) -> None:
         if not rows:
             raise RuntimeError(f"Office MFA foreign key {name} is incompatible")
         local = tuple(row[0] for row in rows)
-        referenced_table = rows[0][1]
-        referenced = tuple(row[2] for row in rows)
-        rules = (rows[0][3], rows[0][4])
-        if (local, referenced_table, referenced, *rules) != expected:
+        referenced_schema = rows[0][1]
+        referenced_table = rows[0][2]
+        referenced = tuple(row[3] for row in rows)
+        rules = (rows[0][4], rows[0][5])
+        if referenced_schema != schema or (local, referenced_table, referenced, *rules) != expected:
             raise RuntimeError(f"Office MFA foreign key {name} is incompatible")
 
 

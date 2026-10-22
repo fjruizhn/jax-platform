@@ -2,6 +2,10 @@
 
 ## Correction round1 · 2026-10-21 · Codex
 
+### Round2 · same-schema foreign-key binding
+
+ScopedSol rejected1051cd9 because REFERENCES metadata omitted referenced schema. Tier2 now compares REFERENCED_TABLE_SCHEMA with DATABASE() for each of the five canonical FKs. The real disposable negative matrix preserves missing/same-schema-wrong-target/cross-schema-homonym cases and canonical restoration, using only an owned random shadow schema. Root independently reran21focused tests (3.14s,1652warnings) before the final test-only restoration of the old wrong-target controls; the covering one-test case is rerun after that restoration. Private harness modejax now selects JAX-first imports and the existing JAX test interpreter; no production credentials or guard overrides.
+
 The initial a11ea53 candidate was rejected: a pristine ledger protected only its fence could pass the runtime check, FK metadata was incomplete, and surrogate AUTO_INCREMENT was not verified. This correction adds exact metadata for all five ledger FKs/critical columns and checks the canonical trigger definition when visible. The restricted DML principal verifies metadata plus real rolled-back UPDATE/DELETE denial. With no ordinary event, it inserts a transaction-local DENIED canary, never persists a VERIFIED canary, and rereads the immutable fence after rollback. Known legacy pre-surrogate upgrade restores only that missing composite FK; an unexpectedly missing current FK fails closed.
 
 Durable private harness now lives under `/home/fruiz/.local/share/codex-workspaces/office-20261020/`; it reconstructs disposable MariaDB12.3.3 on loopback33991 without production credentials. Tier2 reports 54 relevant tests passed in3.47s,1841 inherited fixture warnings, plus py_compile and diff check. Parent independent rerun and exact-SHA scoped review follow; this is not an activation verdict. Old mfa.py remains unapproved until3A2.

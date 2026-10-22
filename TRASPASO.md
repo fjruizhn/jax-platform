@@ -4,6 +4,8 @@
 
 Task3A1 round1 producto congelado: Tier2 cerró tres hallazgos con canarioDENIED transaccional, FKs exactas y AUTO_INCREMENT;54pruebas relevantes. Harness recuperado durable en office-20261020/cv-office-run-tests.py; interfaz `python3 <ruta> jxp -q --disable-warnings <tests>`, DB33991. Parent revisó diff de módulos y repite54pruebas antes de checkpoint/auditoría. Próximo paso: scopedSol exactSHA; no empezar3A2 hasta clean gate. Brief3A2 preparado en workspace del plan.
 
+Round1RECHAZADO1051cd9: falta esquema referenciado en metadataFK. Round2 corrige mismoDATABASE para las cincoFKs, con negativas reales missing/wrongtable/crossschema y restauración positiva. Parent21focused3.14s; coveringtest tras conservar controles anteriores. Producto congelado para scopedSol;3A2 sigue esperando gate. No prod ni identidades habilitadas.
+
 2026-10-20 · Codex · OP#343/345. Autorizado por Fernando en conversación.
 Base cdb9878b583b29d44c2dd86155525632fd92df6c, rama codex/virtual-office-20261020.
 Spec y plan: docs/superpowers/{specs,plans}/2026-10-20-office-administration.md.

@@ -1,6 +1,10 @@
 """MFA durable ledger schema is enforced by MariaDB before 3A2 writers exist."""
 from __future__ import annotations
 
+import os
+import sys
+import uuid
+
 import aiomysql
 import pytest
 
@@ -198,23 +202,70 @@ def test_migration_rejects_each_missing_or_homonymous_mfa_foreign_key(client):
             "fk_office_mfa_security_event_proof": "FOREIGN KEY (proof_event_id) REFERENCES office_authorization_event(event_id)",
             "fk_office_mfa_security_event_authorization": "FOREIGN KEY (authorization_event_id) REFERENCES office_mfa_security_event(event_id)",
         }
+        cross_schema = {
+            "fk_office_mfa_security_event_actor": "FOREIGN KEY (actor_user_id) REFERENCES `{schema}`.`jax_users`(user_id)",
+            "fk_office_mfa_security_event_subject": "FOREIGN KEY (subject_user_id) REFERENCES `{schema}`.`jax_users`(user_id)",
+            "fk_office_mfa_security_event_challenge_subject": "FOREIGN KEY (challenge_id,subject_user_id) REFERENCES `{schema}`.`office_mfa_challenge`(challenge_id,user_id)",
+            "fk_office_mfa_security_event_proof": "FOREIGN KEY (proof_event_id) REFERENCES `{schema}`.`office_mfa_security_event`(event_id)",
+            "fk_office_mfa_security_event_authorization": "FOREIGN KEY (authorization_event_id) REFERENCES `{schema}`.`office_authorization_event`(event_id)",
+        }
+        source = os.environ["JAX_DB_NAME"]
+        shadow = f"office_mfa_fk_shadow_{uuid.uuid4().hex[:16]}"
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
-                for name, definition in definitions.items():
-                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
-                    with pytest.raises(RuntimeError, match=name):
-                        await apply_office_migrations(cur)
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {wrong[name]}")
-                    with pytest.raises(RuntimeError, match=name):
-                        await apply_office_migrations(cur)
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
-                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
-                await apply_office_migrations(cur)
+                await cur.execute(f"CREATE DATABASE `{shadow}`")
+
+                async def restore_canonical(name: str) -> None:
+                    try:
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                    except aiomysql.OperationalError as error:
+                        if error.args[0] != 1091:
+                            raise
+                    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definitions[name]}")
+
+                try:
+                    for table in ("jax_users", "office_mfa_challenge", "office_mfa_security_event", "office_authorization_event"):
+                        await cur.execute(f"CREATE TABLE `{shadow}`.`{table}` LIKE `{source}`.`{table}`")
+                    for name, definition in definitions.items():
+                        await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                        with pytest.raises(RuntimeError, match=name):
+                            await apply_office_migrations(cur)
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {wrong[name]}")
+                        with pytest.raises(RuntimeError, match=name):
+                            await apply_office_migrations(cur)
+                        await restore_canonical(name)
+                        await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
+                        await cur.execute("SET FOREIGN_KEY_CHECKS=0")
+                        try:
+                            await cur.execute(
+                                f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} "
+                                + cross_schema[name].format(schema=shadow)
+                            )
+                        finally:
+                            await cur.execute("SET FOREIGN_KEY_CHECKS=1")
+                        with pytest.raises(RuntimeError, match=name):
+                            await apply_office_migrations(cur)
+                        await restore_canonical(name)
+                    await apply_office_migrations(cur)
+                finally:
+                    original_failure = sys.exc_info()[0] is not None
+                    cleanup_failure = None
+                    for name in definitions:
+                        try:
+                            await restore_canonical(name)
+                        except Exception as error:
+                            cleanup_failure = cleanup_failure or error
+                    try:
+                        await cur.execute(f"DROP DATABASE IF EXISTS `{shadow}`")
+                    except Exception as error:
+                        cleanup_failure = cleanup_failure or error
+                    if cleanup_failure is not None and not original_failure:
+                        raise cleanup_failure
         from db.migrations import run_migrations
         await run_migrations()
     client.portal.call(scenario)
