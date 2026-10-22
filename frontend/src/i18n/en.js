@@ -1684,8 +1684,10 @@ export default {
     accessInfo: 'Access information',
     accessTitle: 'Virtual Office access',
     accessBody: 'The server confirms authorization for every operation. This screen does not grant access or modify permissions.',
-    close: 'Close',
+    close: 'Close', cancel: 'Cancel',
     projects: { title: 'Projects', loading: 'Loading projects…', empty: 'No projects are available.', error: 'Projects could not be loaded.', more: 'Load more', detailTitle: 'Project detail', noDescription: 'No description.' },
+    creator: { open: 'Create project', title: 'Create project', intro: 'Start your first Office project for your current organization.', name: 'Project name', description: 'Description (optional)', create: 'Create project', creating: 'Creating project…', error: 'The project could not be created.', conflict: 'This project request needs to be refreshed before trying again.' },
+    members: { open: 'Add existing person', title: 'Add an existing person', intro: 'Choose an existing Office person to add to this project.', person: 'Person', choose: 'Choose a person', role: 'Project role', roles: { COLLABORATOR: 'Collaborator', PROJECT_ADMIN: 'Project administrator' }, grant: 'Add person', granting: 'Adding person…', error: 'The person could not be added to this project.', conflict: 'The person changed before the operation completed. Refresh and try again.' },
   },
   officeInvitation: {
     title: 'Virtual Office invitation', invalidLink: 'The invitation link is invalid.',

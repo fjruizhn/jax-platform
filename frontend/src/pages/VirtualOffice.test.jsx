@@ -4,9 +4,11 @@ import '@testing-library/jest-dom'
 import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
-const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn() }))
+const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), create: vi.fn() }))
 const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
-vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations }))
+const people = vi.hoisted(() => ({ list: vi.fn() }))
+const members = vi.hoisted(() => ({ grant: vi.fn() }))
+vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations, officePeopleApi: people, officeMembersApi: members, officeSessionApi: { read: vi.fn() } }))
 import VirtualOffice from './VirtualOffice'
 
 function show() {
@@ -22,6 +24,29 @@ beforeEach(() => {
 })
 
 describe('Virtual Office', () => {
+  it('lets a capable Office user create the first project', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
+    projects.create.mockResolvedValue({ data: { id: 31, created: true } })
+    projects.detail.mockResolvedValue({ data: { id: 31, name: 'Nuevo proyecto', description: null, tenant_id: 4, scope_version: 1, audience: 'INTERNAL' } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { tenant_id: 4 }, capabilities: { create_project: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Crear proyecto' }))
+    fireEvent.change(screen.getByLabelText('Nombre del proyecto'), { target: { value: 'Nuevo proyecto' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Crear proyecto' })[1])
+    await waitFor(() => expect(projects.create).toHaveBeenCalledWith({ tenant_id: 4, name: 'Nuevo proyecto', description: null }, expect.any(String)))
+  })
+
+  it('lets an Office administrator add an existing person to a project', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
+    people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
+    members.grant.mockResolvedValue({ data: { user_id: 9 } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
+    fireEvent.change(await screen.findByLabelText('Persona'), { target: { value: '9' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar persona' }))
+    await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 9, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
+  })
   it('shows only the server-filtered project fields and opens a read-only detail', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 12, name: 'Casa Omoa', description: 'Entrega inicial', tenant_id: 4 }], next_after_id: null } })
     projects.detail.mockResolvedValue({ data: { id: 12, name: 'Casa Omoa', description: 'Entrega inicial', tenant_id: 4, scope_version: 7, audience: 'INTERNAL' } })

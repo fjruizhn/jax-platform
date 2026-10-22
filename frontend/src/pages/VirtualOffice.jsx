@@ -3,15 +3,17 @@ import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import Dialogo from '../components/Dialogo'
 import { TAMANO_BOTON_ACCION, TAMANO_BOTON_44 } from '../tema/botones'
-import { officeProjectsApi } from '../api/virtualOffice'
+import { officeProjectsApi, officeSessionApi } from '../api/virtualOffice'
 import OfficeInvitationManager from '../components/office/OfficeInvitationManager'
+import OfficeProjectCreator from '../components/office/OfficeProjectCreator'
+import OfficeProjectMembershipManager from '../components/office/OfficeProjectMembershipManager'
 
 const PAGE_SIZE = 25
 const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
 const validList = (data) => data && Array.isArray(data.projects) && data.projects.every(validProject) && (data.next_after_id === null || Number.isInteger(data.next_after_id))
 const validDetail = (data) => validProject(data) && Number.isInteger(data.scope_version) && typeof data.audience === 'string'
 
-export default function VirtualOffice({ onOfficeDenied }) {
+export default function VirtualOffice({ officeSession, onOfficeDenied }) {
   const { t } = useI18n()
   const user = useJaxStore((s) => s.user)
   const [showAccess, setShowAccess] = useState(false)
@@ -21,6 +23,7 @@ export default function VirtualOffice({ onOfficeDenied }) {
   const [detail, setDetail] = useState(null)
   const [detailError, setDetailError] = useState(false)
   const [pageLoading, setPageLoading] = useState(false)
+  const [session, setSession] = useState(officeSession || null)
   const listGeneration = useRef(0)
   const detailGeneration = useRef(0)
   const listLoading = useRef(false)
@@ -50,6 +53,11 @@ export default function VirtualOffice({ onOfficeDenied }) {
 
   useEffect(() => {
     loadProjects()
+    // RequireOfficeSession validates entry. This independent, short-lived
+    // capability read only controls which controls are displayed.
+    if (!officeSession) officeSessionApi.read().then(({ data }) => {
+      if (data && data.identity?.user_id === user?.user_id && data.capabilities) setSession(data)
+    }).catch((err) => { if (err?.response?.status === 403) onOfficeDenied?.() })
     return () => { listGeneration.current += 1; detailGeneration.current += 1; listLoading.current = false }
   }, [])
 
@@ -105,6 +113,7 @@ export default function VirtualOffice({ onOfficeDenied }) {
 
         <section className="rounded-xl border border-borde bg-superficie p-5">
           <h2 className="text-base font-semibold">{t.virtualOffice.projects.title}</h2>
+          {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
           {projects === null && !error && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {error && <p role="alert" className="mt-3 text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
           {projects?.length === 0 && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.empty}</p>}
@@ -125,6 +134,7 @@ export default function VirtualOffice({ onOfficeDenied }) {
           {!detail.loading && !detail.failed && <>
             <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>
             {detail.capabilities?.manage_invitations === true && <OfficeInvitationManager projectId={detail.id} onForbidden={() => revalidateDetail(detail.id)} />}
+            {session?.capabilities?.administer_office === true && <OfficeProjectMembershipManager projectId={detail.id} onForbidden={() => revalidateDetail(detail.id)} />}
           </>}
         </div>
         <div className="mt-5 flex justify-end"><button type="button" onClick={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }} className={`${TAMANO_BOTON_44} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>

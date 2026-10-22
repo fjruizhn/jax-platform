@@ -1780,8 +1780,10 @@ export default {
     accessInfo: 'Información de acceso',
     accessTitle: 'Acceso de Oficina virtual',
     accessBody: 'La autorización se confirma en el servidor en cada operación. Esta pantalla no concede acceso ni modifica permisos.',
-    close: 'Cerrar',
+    close: 'Cerrar', cancel: 'Cancelar',
     projects: { title: 'Proyectos', loading: 'Cargando proyectos…', empty: 'No hay proyectos disponibles.', error: 'No se pudieron cargar los proyectos.', more: 'Cargar más', detailTitle: 'Detalle del proyecto', noDescription: 'Sin descripción.' },
+    creator: { open: 'Crear proyecto', title: 'Crear proyecto', intro: 'Iniciá el primer proyecto de Oficina para tu organización actual.', name: 'Nombre del proyecto', description: 'Descripción (opcional)', create: 'Crear proyecto', creating: 'Creando proyecto…', error: 'No se pudo crear el proyecto.', conflict: 'Esta solicitud de proyecto debe actualizarse antes de reintentarlo.' },
+    members: { open: 'Agregar persona existente', title: 'Agregar una persona existente', intro: 'Elegí una persona de Oficina existente para agregarla a este proyecto.', person: 'Persona', choose: 'Elegí una persona', role: 'Papel en el proyecto', roles: { COLLABORATOR: 'Colaborador', PROJECT_ADMIN: 'Administrador del proyecto' }, grant: 'Agregar persona', granting: 'Agregando persona…', error: 'No se pudo agregar la persona a este proyecto.', conflict: 'La persona cambió antes de completar la operación. Actualizá e intentá de nuevo.' },
   },
   officeInvitation: {
     title: 'Invitación a Oficina virtual', invalidLink: 'El enlace de invitación no es válido.',
