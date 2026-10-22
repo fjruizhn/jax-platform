@@ -27,6 +27,8 @@ _FORBIDDEN_TABLES = frozenset((
     "office_module_creative_review_head",
     "office_module_rights_review_head",
     "office_module_release",
+    "office_trusted_critic_key",
+    "office_trusted_critic_key_revocation",
 ))
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 

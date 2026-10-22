@@ -17,7 +17,55 @@ from db.runtime_privileges import (
     runtime_table_privilege_digest,
     runtime_table_privilege_map,
 )
-from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
+from virtual_office.migrations import (
+    INVALIDATED_RUNTIME_REVISION,
+    apply_office_migrations,
+    stamp_office_runtime_revision,
+)
+
+
+@pytest.mark.parametrize("dropped", (
+    ("no_delete_office_trusted_critic_key_revocation",),
+    (
+        "no_update_office_trusted_critic_key",
+        "no_delete_office_trusted_critic_key",
+        "no_update_office_trusted_critic_key_revocation",
+        "no_delete_office_trusted_critic_key_revocation",
+    ),
+))
+def test_post_stamp_critic_trust_drift_refuses_runtime_stamp(client, dropped) -> None:
+    """The invalidation marker prevents drift masquerading as a clean prefix."""
+    async def scenario() -> None:
+        from db.connection import get_pool
+        from db.migrations import run_migrations
+
+        await run_migrations()
+        pool = await get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    for trigger in dropped:
+                        await cur.execute(f"DROP TRIGGER `{trigger}`")
+            with pytest.raises(RuntimeError, match="Office critic trust triggers are invalid"):
+                await run_migrations()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT revision FROM office_schema_revision WHERE component='virtual-office'"
+                    )
+                    assert (await cur.fetchone()) == (INVALIDATED_RUNTIME_REVISION,)
+        finally:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    for trigger in dropped:
+                        table = trigger.removeprefix("no_update_").removeprefix("no_delete_")
+                        operation = "UPDATE" if trigger.startswith("no_update_") else "DELETE"
+                        await cur.execute(
+                            f"CREATE TRIGGER IF NOT EXISTS `{trigger}` BEFORE {operation} ON `{table}` "
+                            f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
+                        )
+            await run_migrations()
+    client.portal.call(scenario)
 
 
 async def _runtime_pool(user: str, password: str, database: str | None = None):
@@ -111,10 +159,17 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
         "office_module_creative_review_event", "office_module_creative_review_head",
         "office_module_rights_review_event", "office_module_rights_review_head",
         "office_module_release_event", "office_module_release",
+        "office_trusted_critic_key", "office_trusted_critic_key_revocation",
     ):
         assert protected not in grants
     assert "INSERT" in grants["office_authorization_event"]
     assert "INSERT" in grants["office_invitation_event"]
+
+
+def test_runtime_contract_does_not_claim_critic_trust_metadata_attestation():
+    import db.runtime_contract as runtime_contract
+
+    assert not hasattr(runtime_contract, "_critic_trust_anchor_metadata")
 
 
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
@@ -148,6 +203,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
             assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_trusted_critic_key () VALUES ()") == 1142
             assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
             assert await _errno(runtime, "DROP TABLE office_schema_revision") == 1142
@@ -458,8 +514,8 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
                 await migrations.run_migrations()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
-                    assert await cur.fetchone() is None
+                    await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
+                    assert (await cur.fetchone()) == (INVALIDATED_RUNTIME_REVISION,)
         finally:
             monkeypatch.setattr(migrations, "_reclassify_provenance_mismatch", original)
             await migrations.run_migrations()
@@ -468,29 +524,15 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v11 marker cannot certify the v12 per-table INSERT contract."""
+    """A v12 marker cannot certify the v13 critic trust-anchor contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v12-")
-        # v11 used the checked-in v1 table contract.  Do not fabricate a v11
-        # marker by retaining the v2 digest: that state was never a deployable
-        # predecessor and would not exercise the actual migration boundary.
-        v1_manifest = (
-            Path(__file__).resolve().parents[2]
-            / "ops" / "migration" / "runtime-table-privileges-v1.txt"
-        )
-        v1_rows = [
-            line.strip() for line in v1_manifest.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-        predecessor = (
-            "office-runtime-v11-runtime-table-privileges-v1-"
-            + sha256("\n".join(v1_rows).encode("ascii")).hexdigest()[:16]
-        )
+        assert SCHEMA_REVISION.startswith("office-runtime-v13-")
+        predecessor = "office-runtime-v12-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)

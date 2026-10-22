@@ -21,9 +21,10 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v12 binds the per-table write contract after v11 introduced the pending
-# publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v12-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v13 adds the inert critic trust-anchor schema; its digest still binds the
+# unchanged per-table web write contract and forces a migrator restamp.
+RUNTIME_REVISION = f"office-runtime-v13-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical
@@ -1851,11 +1852,18 @@ async def _ensure_ascii_bin(cur, column: str) -> None:
 
 
 async def invalidate_office_runtime_revision(cur) -> None:
-    """Remove readiness before a runner can apply a new Office revision."""
+    """Persist non-ready migration evidence before a runner can apply Office DDL."""
     await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_schema_revision'")
     if await cur.fetchone() is not None:
         if await _column_exists(cur, "office_schema_revision", "component"):
-            await cur.execute("DELETE FROM office_schema_revision WHERE component=%s", (RUNTIME_COMPONENT,))
+            # Keep an explicit non-ready tombstone.  MariaDB DDL commits
+            # implicitly, so deleting the v13 row would make a later restart
+            # unable to distinguish post-stamp trust-schema drift from a
+            # pristine first-install prefix.
+            await cur.execute(
+                "UPDATE office_schema_revision SET revision=%s,applied_at=NOW(6) WHERE component=%s",
+                (INVALIDATED_RUNTIME_REVISION, RUNTIME_COMPONENT),
+            )
         else:
             # Pre-component table has only Office's legacy readiness row.
             await cur.execute("DELETE FROM office_schema_revision")
@@ -2078,3 +2086,5 @@ async def apply_office_migrations(cursor) -> None:
     from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
     await apply_module_candidate_storage_migrations(cursor)
     await apply_module_publication_staging_migrations(cursor)
+    from virtual_office.module_critic_trust import apply_critic_trust_anchor_migrations
+    await apply_critic_trust_anchor_migrations(cursor)
