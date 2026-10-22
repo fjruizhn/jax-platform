@@ -172,12 +172,12 @@ async def list_projects(
             params = cursor_params + (limit + 1,)
         elif profile["account_class"] in {"INTERNAL", "OFFICE_INTERNAL"}:
             query = (
-                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
-                "JOIN jax_project_scope s ON s.project_id=p.id "
-                "JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
-                "JOIN jax_project_membership m ON m.project_id=p.id AND m.user_id=%s "
+                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM office_project_grant g "
+                "STRAIGHT_JOIN projects p ON p.id=g.project_id "
+                "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
+                "STRAIGHT_JOIN jax_project_membership m ON m.project_id=p.id AND m.user_id=%s "
                 "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
-                "AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
+                "AND g.user_id=%s AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
                 "AND g.grant_role IN ('COLLABORATOR','PROJECT_ADMIN') AND m.status='ACTIVE'"
             )
             if not proof_valid:
@@ -189,14 +189,14 @@ async def list_projects(
             params = (actor_user_id, actor_user_id, profile["tenant_id"], *( () if proof_valid else (actor_user_id,) ), *cursor_params, limit + 1)
         else:
             query = (
-                "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM projects p "
-                "JOIN jax_project_scope s ON s.project_id=p.id "
-                "JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
-                "JOIN office_external_relation r ON r.project_id=p.id AND r.user_id=%s "
-                "JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=p.id "
+                "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM office_external_relation r FORCE INDEX (idx_office_external_relation_list) "
+                "STRAIGHT_JOIN projects p ON p.id=r.project_id "
+                "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
+                "STRAIGHT_JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
+                "STRAIGHT_JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=p.id "
                 "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
                 "AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' "
-                "AND r.status='ACTIVE' AND rg.status='ACTIVE'"
+                "AND r.user_id=%s AND r.status='ACTIVE' AND rg.status='ACTIVE'"
             )
             if not proof_valid:
                 query += (
