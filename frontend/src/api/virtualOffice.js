@@ -19,3 +19,8 @@ export const mfaApi = {
 export const officeSessionApi = {
   read: () => api.get('/virtual-office/session'),
 }
+
+export const officeProjectsApi = {
+  list: ({ limit, after_id }) => api.get('/virtual-office/projects', { params: { limit, after_id } }),
+  detail: (projectId) => api.get(`/virtual-office/projects/${projectId}`),
+}

@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { I18nProvider } from './i18n/index.jsx'
 import { useJaxStore } from './store/useJaxStore'
 
 vi.mock('./apariencia/sincronizarApariencia', () => ({ sincronizarApariencia: vi.fn(() => Promise.resolve()) }))
 const session = vi.hoisted(() => vi.fn())
+const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn() }))
 vi.mock('./api/client', () => ({ default: { get: vi.fn(() => new Promise(() => {})), post: vi.fn(() => new Promise(() => {})) } }))
 vi.mock('./api/virtualOffice', () => ({
   mfaApi: { status: vi.fn(() => new Promise(() => {})) },
   officeSessionApi: { read: session },
+  officeProjectsApi: projects,
 }))
 
 import App from './App.jsx'
@@ -17,6 +19,7 @@ import App from './App.jsx'
 describe('Virtual Office route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
     HTMLElement.prototype.scrollIntoView = vi.fn()
     useJaxStore.setState({ token: 'office-token', user: { user_id: 8, email: 'client@example.test', account_class: 'INTERNAL' }, sessionRestoring: false, _sessionEpoch: 1 })
     window.history.pushState({}, '', '/virtual-office')
@@ -58,6 +61,21 @@ describe('Virtual Office route', () => {
     expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
   })
 
+  it('fails closed when the session response is malformed', async () => {
+    session.mockResolvedValue({ data: { identity: { user_id: 8 }, mfa: {}, capabilities: {} } })
+    render(<I18nProvider><App /></I18nProvider>)
+    await waitFor(() => expect(window.location.pathname).toBe('/account/security'))
+    expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+  })
+
+  it('invalidates the Office decision when a data API returns 403', async () => {
+    session.mockResolvedValue(allowed())
+    projects.list.mockRejectedValue({ response: { status: 403 } })
+    render(<I18nProvider><App /></I18nProvider>)
+    await waitFor(() => expect(window.location.pathname).toBe('/account/security'))
+    expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+  })
+
   it('ignores a late approval after the identity changes', async () => {
     let resolve
     session.mockReturnValue(new Promise((done) => { resolve = done }))
@@ -66,5 +84,15 @@ describe('Virtual Office route', () => {
     resolve(allowed())
     await waitFor(() => expect(session).toHaveBeenCalledTimes(2))
     expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+  })
+
+  it('removes old Office children synchronously when the session identity changes', async () => {
+    session.mockResolvedValueOnce(allowed()).mockReturnValue(new Promise(() => {}))
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 12, name: 'Casa anterior', description: '', tenant_id: 4 }], next_after_id: null } })
+    render(<I18nProvider><App /></I18nProvider>)
+    expect(await screen.findByRole('button', { name: 'Casa anterior' })).toBeInTheDocument()
+    act(() => useJaxStore.setState({ token: 'new-token', user: { user_id: 9, email: 'new@example.test', account_class: 'INTERNAL' }, _sessionEpoch: 2 }))
+    expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Casa anterior' })).not.toBeInTheDocument()
   })
 })

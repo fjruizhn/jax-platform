@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { cloneElement, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
@@ -37,7 +37,8 @@ function RequireOfficeSession({ children }) {
   const token = useJaxStore((s) => s.token)
   const epoch = useJaxStore((s) => s._sessionEpoch)
   const location = useLocation()
-  const [decision, setDecision] = useState('pending')
+  const [decision, setDecision] = useState({ status: 'pending' })
+  const snapshotActual = { epoch, token, userId: user?.user_id }
 
   useEffect(() => {
     let active = true
@@ -46,16 +47,22 @@ function RequireOfficeSession({ children }) {
       const current = useJaxStore.getState()
       return active && current._sessionEpoch === snapshot.epoch && current.token === snapshot.token && current.user?.user_id === snapshot.userId
     }
-    setDecision('pending')
+    setDecision({ status: 'pending', ...snapshot })
     officeSessionApi.read()
-      .then(({ data }) => { if (sigueSiendoLaMismaSesion()) setDecision(respuestaOfficeValida(data, snapshot.userId) ? 'allowed' : 'denied') })
-      .catch(() => { if (sigueSiendoLaMismaSesion()) setDecision('denied') })
+      .then(({ data }) => { if (sigueSiendoLaMismaSesion()) setDecision({ status: respuestaOfficeValida(data, snapshot.userId) ? 'allowed' : 'denied', ...snapshot }) })
+      .catch(() => { if (sigueSiendoLaMismaSesion()) setDecision({ status: 'denied', ...snapshot }) })
     return () => { active = false }
   }, [epoch, token, user?.user_id])
 
-  if (decision === 'pending') return null
-  if (decision !== 'allowed') return <Navigate to="/account/security" replace state={{ from: location }} />
-  return children
+  const decisionVigente = decision.epoch === snapshotActual.epoch && decision.token === snapshotActual.token && decision.userId === snapshotActual.userId
+  if (!decisionVigente || decision.status === 'pending') return null
+  if (decision.status !== 'allowed') return <Navigate to="/account/security" replace state={{ from: location }} />
+  const invalidateOffice = () => setDecision((current) => (
+    current.status === 'allowed' && current.epoch === snapshotActual.epoch && current.token === snapshotActual.token && current.userId === snapshotActual.userId
+      ? { ...current, status: 'denied' }
+      : current
+  ))
+  return cloneElement(children, { onOfficeDenied: invalidateOffice })
 }
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)

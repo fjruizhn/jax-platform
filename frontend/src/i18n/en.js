@@ -1685,8 +1685,7 @@ export default {
     accessTitle: 'Virtual Office access',
     accessBody: 'The server confirms authorization for every operation. This screen does not grant access or modify permissions.',
     close: 'Close',
-    pendingTitle: 'Office access',
-    pending: 'Project and permission administration will be enabled when the server confirms an Office capability.',
+    projects: { title: 'Projects', loading: 'Loading projects…', empty: 'No projects are available.', error: 'Projects could not be loaded.', more: 'Load more', detailTitle: 'Project detail', noDescription: 'No description.' },
   },
   mfa: {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',
