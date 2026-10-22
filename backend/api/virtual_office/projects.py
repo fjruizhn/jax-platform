@@ -190,9 +190,9 @@ async def list_projects(
             )
         predicate = " AND p.id>%s" if after_id is not None else ""
         cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
-        if profile["global_role"] in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}:
-            # Both global roles require verified MFA for every project view;
-            # never discover scopes when it is absent or unverifiable.
+        if profile["global_role"] == "GENERAL_ADMIN":
+            # General administration remains MFA-bound.  An Office root can
+            # bootstrap and manage its Office projects after normal sign-in.
             if not proof_valid:
                 return {"projects": [], "next_after_id": None}
         if profile["global_role"] == "OFFICE_SUPERUSER":
@@ -310,16 +310,21 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         # indistinguishable.  It runs even for an absent scope, preserving
         # the canonical authority/audit path for every request.
         raise HTTPException(status_code=404, detail="office_project_not_found")
-    try:
-        manage_invitations = await can_manage_invitations_in_cursor(
-            cur, actor_user_id=actor_user_id, project_id=project_id,
-            proof_event_id=proof_event_id, mfa_config=mfa_config,
-        )
-    except InvitationError as error:
-        # A normal authorization/MFA denial has already become ``False`` in
-        # the helper.  Any remaining domain error is incomplete operational
-        # state, never a capability that the browser may safely infer.
-        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
+    if mfa_config is None:
+        # Invitation issuance has a separate durable-proof contract.  Its
+        # unavailable MFA dependency must not prevent a project from opening.
+        manage_invitations = False
+    else:
+        try:
+            manage_invitations = await can_manage_invitations_in_cursor(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=proof_event_id, mfa_config=mfa_config,
+            )
+        except InvitationError as error:
+            # A normal authorization/MFA denial has already become ``False`` in
+            # the helper.  Any remaining domain error is incomplete operational
+            # state, never a capability that the browser may safely infer.
+            raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
     return {
         "id": int(row[0]), "name": row[1],
         "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],

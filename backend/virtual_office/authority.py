@@ -122,8 +122,7 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
         return decision
     privileged_view = (
         decision.operation == OfficeOperation.VIEW_PROJECT.value
-        and (decision.global_role in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}
-        )
+        and decision.global_role == "GENERAL_ADMIN"
     )
     # A professional approver is privileged even when their ordinary project
     # grant says COLLABORATOR.  Resolve this current, indexed grant rather

@@ -442,6 +442,31 @@ def test_create_project_jax_first_then_exact_replay_and_one_client_group(client,
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT' AND status='ACTIVE'", (project_id,), True) == ((1,),)
 
 
+def test_root_bootstrap_creates_lists_and_views_project_without_mfa_or_config(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _token_version, _mfa_version, _proof = client.portal.call(_office_root_with_current_proof)
+    for name in (
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+    ):
+        monkeypatch.delenv(name)
+    headers = {"Authorization": "Bearer " + create_access_token(str(root), "1", "operator")}
+    created = client.post(
+        "/api/virtual-office/projects", json=_project_payload(),
+        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert created.status_code == 200
+    project_id = created.json()["id"]
+    listed = client.get("/api/virtual-office/projects", headers=headers)
+    assert listed.status_code == 200
+    assert project_id in [project["id"] for project in listed.json()["projects"]]
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["id"] == project_id
+    assert detail.json()["capabilities"]["manage_invitations"] is False
+
+
 def test_create_project_denies_nonroot_but_allows_office_root_without_mfa(client, monkeypatch):
     _configure_mfa(monkeypatch)
     ordinary, tv, mv, proof = client.portal.call(lambda: _office_root_with_current_proof(role="COLLABORATOR"))
