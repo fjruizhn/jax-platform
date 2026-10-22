@@ -51,28 +51,29 @@ def test_engine_activation_epoch_prevents_enabled_binding_replay(client):
                 await cur.execute("SELECT id FROM model ORDER BY id LIMIT 1")
                 model = await cur.fetchone()
                 assert model is not None
-                await cur.execute("SAVEPOINT engine_epoch")
-                await cur.execute(
-                    "INSERT INTO office_engine (engine_key,display_name_key,model_ref,transport,allowed_data_classifications,binding_fingerprint) "
-                    "VALUES ('epoch-test','office.engine.epoch-test',%s,'http_openai_compat',%s,REPEAT('a',64))",
-                    (*model, '["SYSTEM_SMOKE"]'),
-                )
-                with pytest.raises(Exception) as rejected_without_revision:
-                    await cur.execute("UPDATE office_engine SET enabled=1 WHERE engine_key='epoch-test'")
-                assert getattr(rejected_without_revision.value, "args", (None,))[0] == 1644
-                await cur.execute("UPDATE office_engine SET enabled=1,activation_epoch=1,version=2 WHERE engine_key='epoch-test'")
-                await cur.execute("UPDATE office_engine SET enabled=0,version=3 WHERE engine_key='epoch-test'")
-                with pytest.raises(Exception) as rename:
-                    await cur.execute("UPDATE office_engine SET engine_key='epoch-renamed',version=4 WHERE engine_key='epoch-test'")
-                assert getattr(rename.value, "args", (None,))[0] == 1644
-                with pytest.raises(Exception) as replay:
-                    await cur.execute("UPDATE office_engine SET enabled=1,version=4 WHERE engine_key='epoch-test'")
-                assert getattr(replay.value, "args", (None,))[0] == 1644
-                with pytest.raises(Exception) as deletion:
-                    await cur.execute("DELETE FROM office_engine WHERE engine_key='epoch-test'")
-                assert getattr(deletion.value, "args", (None,))[0] == 1644
-                await cur.execute("ROLLBACK TO SAVEPOINT engine_epoch")
-                await cur.execute("RELEASE SAVEPOINT engine_epoch")
+                await conn.begin()
+                try:
+                    await cur.execute(
+                        "INSERT INTO office_engine (engine_key,display_name_key,model_ref,transport,allowed_data_classifications,binding_fingerprint) "
+                        "VALUES ('epoch-test','office.engine.epoch-test',%s,'http_openai_compat',%s,REPEAT('a',64))",
+                        (*model, '["SYSTEM_SMOKE"]'),
+                    )
+                    with pytest.raises(Exception) as rejected_without_revision:
+                        await cur.execute("UPDATE office_engine SET enabled=1 WHERE engine_key='epoch-test'")
+                    assert getattr(rejected_without_revision.value, "args", (None,))[0] == 1644
+                    await cur.execute("UPDATE office_engine SET enabled=1,activation_epoch=1,version=2 WHERE engine_key='epoch-test'")
+                    await cur.execute("UPDATE office_engine SET enabled=0,version=3 WHERE engine_key='epoch-test'")
+                    with pytest.raises(Exception) as rename:
+                        await cur.execute("UPDATE office_engine SET engine_key='epoch-renamed',version=4 WHERE engine_key='epoch-test'")
+                    assert getattr(rename.value, "args", (None,))[0] == 1644
+                    with pytest.raises(Exception) as replay:
+                        await cur.execute("UPDATE office_engine SET enabled=1,version=4 WHERE engine_key='epoch-test'")
+                    assert getattr(replay.value, "args", (None,))[0] == 1644
+                    with pytest.raises(Exception) as deletion:
+                        await cur.execute("DELETE FROM office_engine WHERE engine_key='epoch-test'")
+                    assert getattr(deletion.value, "args", (None,))[0] == 1644
+                finally:
+                    await conn.rollback()
     client.portal.call(scenario)
 
 
