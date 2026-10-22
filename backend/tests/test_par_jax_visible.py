@@ -32,7 +32,7 @@ def _jax_falso(raiz, *, domain=DOMAIN, lifecycle=F2D_LIFECYCLE_API_VERSION,
                runtime_status=RUNTIME_STATUS_API_VERSION_ESPERADA,
                structured_projection="f2-c.structured-projection.1",
                structured_bytes="f2-d.structured-bytes.1",
-               office_namespace="office-namespace.2"):
+               office_namespace="office-namespace.3"):
     _escribir(raiz, "jax/__init__.py", "")
     _escribir(raiz, "jax/memory/__init__.py", "")
     _escribir(raiz, "jax/memory/project_authority.py", (
@@ -193,7 +193,7 @@ def test_office_namespace_marker_incorrecto_falla_antes_de_cargar_clientes(jax_e
 
     jax_en(office_namespace="office-namespace.1")
     monkeypatch.setattr(par_jax, "_prueba_de_humo", lambda: pytest.fail("loaded F2 client"))
-    with pytest.raises(par_jax.ParJaxIncompatible, match="office-namespace.2"):
+    with pytest.raises(par_jax.ParJaxIncompatible, match="office-namespace.3"):
         par_jax.verificar_par_jax()
 
 
