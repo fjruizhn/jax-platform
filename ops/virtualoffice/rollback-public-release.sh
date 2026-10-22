@@ -32,14 +32,20 @@ assert (fd.st_dev,fd.st_ino)==(path.st_dev,path.st_ino)==tuple(map(int,expected.
 PY
 new_release=$(cat "$backup/new-release")
 [[ -d $new_release ]] || die 'recorded new release disappeared'
-if [[ -L $current ]]; then current_target=$(readlink -f -- "$current"); else current_target=ABSENT; fi
+if [[ -L $current ]]; then
+  current_target=$(readlink -f -- "$current") || current_target=DANGLING_SYMLINK
+elif [[ -e $current ]]; then
+  current_target=NON_SYMLINK
+else
+  current_target=ABSENT
+fi
 if [[ $current_target != "$new_release" ]]; then
   if (( ! recover_incomplete )); then die 'current no longer names this activation release'; fi
   if [[ -f $backup/current-target ]]; then [[ $current_target == "$(cat "$backup/current-target")" ]] || die 'current changed before activation rollback'; else [[ $current_target == ABSENT ]] || die 'current changed before activation rollback'; fi
 fi
 if [[ -f $backup/new-vhost-sha256 ]]; then
   if [[ ! -e $vhost ]]; then
-    (( recover_incomplete )) || die 'activated vhost disappeared'
+    (( recover_incomplete )) && [[ -f $backup/VHOST_ABSENT ]] || die 'activated vhost disappeared'
   else
     current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
     if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then

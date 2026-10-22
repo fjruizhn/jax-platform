@@ -95,6 +95,14 @@ killed=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name ACTIVATION_IN_PRO
 [[ -f $killed/ACTIVATION_IN_PROGRESS ]]
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'new-vhost' "$fixture/vhosts/office.conf"
 cp "$killed/vhost-source" "$fixture/exact-new-vhost"
+rm "$fixture/site/current"; : > "$fixture/site/current"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted regular current' >&2; exit 1; fi
+rm "$fixture/site/current"; ln -s "$fixture/site/releases/missing" "$fixture/site/current"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted dangling current' >&2; exit 1; fi
+rm "$fixture/site/current"; ln -s "$fixture/site/releases/$old" "$fixture/site/current"
+rm "$fixture/vhosts/office.conf"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted missing prior vhost' >&2; exit 1; fi
+cp "$fixture/exact-new-vhost" "$fixture/vhosts/office.conf"
 printf 'foreign-vhost\n' > "$fixture/vhosts/office.conf"
 if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery overwrote foreign vhost' >&2; exit 1; fi
 grep -qx 'foreign-vhost' "$fixture/vhosts/office.conf"
