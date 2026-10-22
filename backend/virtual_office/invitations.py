@@ -128,11 +128,12 @@ async def _load_mutation_receipt(cur, *, idempotency_key: str, digest: bytes,
         raise InvitationError("office_invitation_idempotency_conflict")
     await cur.execute(
         "SELECT 1 FROM office_invitation_mutation_receipt r JOIN office_invitation i ON i.invitation_id=r.invitation_id "
-        "JOIN office_invitation_event e ON e.event_id=r.result_event_id "
+        "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=r.result_event_id "
+        "JOIN office_authorization_event a ON a.event_id=r.authorization_event_id "
         "WHERE r.idempotency_key=%s AND r.response_contract='office-invitation-mutation-response/v1' "
         "AND i.project_id=r.project_id AND e.invitation_id=i.invitation_id AND "
-        "((r.operation='ISSUE' AND r.expected_version=0 AND r.response_version=1 AND e.event_kind='ISSUED' AND e.actor_user_id=r.actor_user_id) OR "
-        "(r.operation='REVOKE' AND r.response_version=r.expected_version+1 AND e.event_kind='REVOKED' AND e.actor_user_id=r.actor_user_id))",
+        "((r.operation='ISSUE' AND r.expected_version=0 AND r.response_version=1 AND e.event_kind='ISSUED' AND e.actor_user_id=r.actor_user_id AND s.issuance_authorization_event_id=r.authorization_event_id) OR "
+        "(r.operation='REVOKE' AND r.response_version=r.expected_version+1 AND e.event_kind='REVOKED' AND e.actor_user_id=r.actor_user_id AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=r.actor_user_id AND a.operation='ADMINISTER_PROJECT_MEMBERS' AND a.requested_project_id=r.project_id AND a.project_id=r.project_id AND a.result='ALLOWED'))",
         (idempotency_key,))
     if await cur.fetchone() is None:
         raise InvitationError("office_invitation_integrity", status_code=503)

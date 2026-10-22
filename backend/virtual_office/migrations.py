@@ -150,7 +150,7 @@ OFFICE_INVITATION_DDL = (
     "((operation='ISSUE' AND expected_version=0 AND response_version=1 AND expires_at IS NOT NULL) OR "
     "(operation='REVOKE' AND expected_version>=1 AND response_version=expected_version+1 AND expires_at IS NULL)))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF (NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.invitation_id=i.invitation_id AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id)) OR (NEW.operation='REVOKE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF (NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.invitation_id=i.invitation_id AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id)) OR (NEW.operation='REVOKE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id JOIN office_authorization_event a ON a.event_id=NEW.authorization_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=NEW.actor_user_id AND a.operation='ADMINISTER_PROJECT_MEMBERS' AND a.requested_project_id=NEW.project_id AND a.project_id=NEW.project_id AND a.result='ALLOWED')) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_mutation_receipt BEFORE UPDATE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_mutation_receipt BEFORE DELETE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
 )
@@ -574,6 +574,7 @@ _INVITATION_MUTATION_RECEIPT_TRIGGERS = {
             "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert"
         )).split(" FOR EACH ROW ", 1)[1]),
 }
+_INVITATION_MUTATION_RECEIPT_CHECK_DIGEST = "36c08ea87356a58a85f8bdebed430f3b2aad6e93c1d3c6a292c9ed786aabf22c"
 
 
 async def _assert_columns(cur, *, table: str, expected: tuple[tuple[object, ...], ...]) -> None:
@@ -725,6 +726,8 @@ async def _assert_invitation_mutation_receipt_runtime_metadata(cur) -> None:
         "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
     if {row[0] for row in await cur.fetchall()} != {"chk_office_invitation_mutation_receipt_shape"}:
         raise RuntimeError("Office invitation mutation receipt check set is invalid")
+    if _check_digest(await _check_clause(cur, "chk_office_invitation_mutation_receipt_shape")) != _INVITATION_MUTATION_RECEIPT_CHECK_DIGEST:
+        raise RuntimeError("Office invitation mutation receipt check is invalid")
 
 
 async def _prepare_invitation_schema(cur) -> None:

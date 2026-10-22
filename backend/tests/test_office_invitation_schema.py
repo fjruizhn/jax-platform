@@ -177,6 +177,36 @@ def test_invitation_attestation_rejects_extra_foreign_key_index_and_check(client
     client.portal.call(scenario)
 
 
+def test_invitation_receipt_attestation_rejects_weaker_named_check(client):
+    async def scenario():
+        source = os.environ['JAX_DB_NAME']
+        schema = f"office_invitation_receipt_check_{uuid.uuid4().hex[:16]}"
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ('jax_users', 'jax_tenants', 'projects', 'jax_project_scope',
+                                  'user_admin_audit', 'jax_project_membership',
+                                  'jax_project_membership_event', 'jax_namespace_membership_mutation_request'):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_invitation_mutation_receipt "
+                        "DROP CONSTRAINT chk_office_invitation_mutation_receipt_shape, "
+                        "ADD CONSTRAINT chk_office_invitation_mutation_receipt_shape "
+                        "CHECK (operation IN ('ISSUE','REVOKE'))")
+                    with pytest.raises(RuntimeError, match='mutation receipt check is invalid'):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
 def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     from db.runtime_privileges import runtime_table_privilege_map
 
