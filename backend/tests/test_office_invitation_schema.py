@@ -10,9 +10,37 @@ import aiomysql
 import pytest
 
 from db.connection import get_pool
+from tests.entorno_de_produccion import cargar
 from virtual_office.migrations import apply_office_migrations
 from tests.test_office_mfa import _active_user, _step_up_proof
 from tests.test_office_runtime_contract import _grant_exact_runtime_acl, _runtime_pool
+
+
+async def _migration_admin_pool():
+    """Use the dedicated migrator when provisioned, never the web principal."""
+    migrator = cargar("/etc/jax/migrate.env")
+    credentials = migrator or os.environ
+    return await aiomysql.create_pool(
+        host=credentials["JAX_DB_HOST"], port=int(credentials["JAX_DB_PORT"]),
+        user=credentials["JAX_DB_USER"], password=credentials["JAX_DB_PASSWORD"],
+        db=os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True,
+        connect_timeout=10,
+    )
+
+
+async def _require_test_ddl_principal(pool, *, create_user: bool) -> None:
+    """Skip locally when no disposable-schema administrator is configured."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SHOW GRANTS")
+            grants = " ".join(str(row[0]).upper() for row in await cur.fetchall())
+    has_global_create = " ON *.*" in grants and (
+        "ALL PRIVILEGES" in grants or "CREATE" in grants
+    )
+    if not has_global_create or (create_user and "CREATE USER" not in grants and "ALL PRIVILEGES" not in grants):
+        pool.close()
+        await pool.wait_closed()
+        pytest.skip("requires the test migrator/root principal for disposable DDL")
 
 
 def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separate(client):
@@ -55,7 +83,8 @@ def test_invitation_attestation_rejects_a_homonymous_noop_issuance_guard(client)
     async def scenario():
         source = os.environ['JAX_DB_NAME']
         schema = f"office_invitation_attest_{uuid.uuid4().hex[:16]}"
-        pool = await get_pool()
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 try:
@@ -100,7 +129,8 @@ def test_invitation_attestation_rejects_extra_foreign_key_index_and_check(client
     async def scenario():
         source = os.environ['JAX_DB_NAME']
         schema = f"office_invitation_extra_{uuid.uuid4().hex[:16]}"
-        pool = await get_pool()
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 try:
@@ -295,6 +325,8 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
     """The normal web principal may UPDATE state, never invent its history."""
     async def scenario():
         pool = await get_pool()
+        migration_admin = await _migration_admin_pool()
+        await _require_test_ddl_principal(migration_admin, create_user=True)
         issuance = str(uuid.uuid4())
         invitation = str(uuid.uuid4())
         outbox = str(uuid.uuid4())
@@ -315,8 +347,10 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                 await cur.execute("INSERT INTO office_authorization_event (actor_user_id,event_kind,operation,result,reason_code,occurred_at) VALUES (%s,'AUTHORIZATION','ADMINISTER_PROJECT_MEMBERS','ALLOWED','test',UTC_TIMESTAMP(6))", (issuer,))
                 authorization_event = cur.lastrowid
                 database = os.environ['JAX_DB_NAME']
-                await cur.execute(f"CREATE USER `{runtime_user}`@'%%' IDENTIFIED BY %s", (runtime_password,))
-                await _grant_exact_runtime_acl(cur, database, runtime_user)
+                async with migration_admin.acquire() as admin_conn:
+                    async with admin_conn.cursor() as admin_cur:
+                        await admin_cur.execute(f"CREATE USER `{runtime_user}`@'%%' IDENTIFIED BY %s", (runtime_password,))
+                        await _grant_exact_runtime_acl(admin_cur, database, runtime_user)
                 runtime = await _runtime_pool(runtime_user, runtime_password, database)
                 try:
                     await cur.execute(
@@ -369,11 +403,15 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                 finally:
                     if runtime is not None:
                         runtime.close(); await runtime.wait_closed()
-                    await cur.execute(
-                        "SELECT ID FROM information_schema.PROCESSLIST WHERE USER=%s",
-                        (runtime_user,),
-                    )
-                    for (connection_id,) in await cur.fetchall():
-                        await cur.execute(f"KILL CONNECTION {int(connection_id)}")
-                    await cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
+                    async with migration_admin.acquire() as admin_conn:
+                        async with admin_conn.cursor() as admin_cur:
+                            await admin_cur.execute(
+                                "SELECT ID FROM information_schema.PROCESSLIST WHERE USER=%s",
+                                (runtime_user,),
+                            )
+                            for (connection_id,) in await admin_cur.fetchall():
+                                await admin_cur.execute(f"KILL CONNECTION {int(connection_id)}")
+                            await admin_cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
+                    migration_admin.close()
+                    await migration_admin.wait_closed()
     client.portal.call(scenario)
