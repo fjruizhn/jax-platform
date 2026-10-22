@@ -290,20 +290,20 @@ class GuardServer:
             response = {"protocol": PROTOCOL, "nonce": nonce, "status": "REJECTED"}
         except (asyncio.TimeoutError, GuardConfigurationError, OSError, RuntimeError, ValueError):
             response = {"protocol": PROTOCOL, "nonce": nonce, "status": "UNAVAILABLE"}
-        except Exception:
+        except Exception:  # fail-soft: hide internal faults; the only wire result is UNAVAILABLE
             # The wire contract deliberately does not differentiate internal
             # database, crypto, or transport faults for an untrusted caller.
             response = {"protocol": PROTOCOL, "nonce": nonce, "status": "UNAVAILABLE"}
         try:
             writer.write(encode_frame(response))
             await asyncio.wait_for(writer.drain(), timeout=self._timeout_seconds)
-        except (OSError, asyncio.TimeoutError, GuardRejected):
+        except (OSError, asyncio.TimeoutError, GuardRejected):  # fail-soft: no authority follows a failed reply
             pass
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
-            except OSError:
+            except OSError:  # fail-soft: closing a failed reply cannot change verification
                 pass
 
 
