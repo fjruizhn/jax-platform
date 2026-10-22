@@ -63,6 +63,8 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
       user: null,
       proyectoActivo: null,
       avisoSesion: 'sesion_invalida',
+      mfaRecoveryCodes: null,
+      mfaRecoveryCodesOwnerId: null,
     })
   })
 
@@ -76,6 +78,8 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
       user: null,
       proyectoActivo: null,
       avisoSesion: 'sesion_invalida',
+      mfaRecoveryCodes: null,
+      mfaRecoveryCodesOwnerId: null,
     })
   })
 
@@ -89,6 +93,8 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
       user: null,
       proyectoActivo: null,
       avisoSesion: 'sesion_expirada',
+      mfaRecoveryCodes: null,
+      mfaRecoveryCodesOwnerId: null,
     })
   })
 
@@ -102,7 +108,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
 
     await expect(onRejected(err401())).rejects.toBeTruthy()
 
-    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'ajuste_ilegible' })
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'ajuste_ilegible', mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
   })
 
   it('refresh falla con otro 5xx -> avisoSesion error_del_servidor', async () => {
@@ -110,7 +116,7 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
 
     await expect(onRejected(err401())).rejects.toBeTruthy()
 
-    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'error_del_servidor' })
+    expect(setStateMock).toHaveBeenCalledWith({ token: null, user: null, proyectoActivo: null, avisoSesion: 'error_del_servidor', mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
   })
 
   it('refresh anda -> reintenta el request original y no toca avisoSesion', async () => {

@@ -197,6 +197,10 @@ export const useJaxStore = create((set, get) => {
   // POST), los botones de salir quedan ocupados, y api/client.js no convierte
   // en aviso un 401 que llegue mientras tanto.
   saliendo: null,
+  // Códigos recién emitidos sobreviven sólo al corte de la sesión que los
+  // produjo, hasta que la persona los reconoce. Nunca se persisten.
+  mfaRecoveryCodes: null,
+  mfaRecoveryCodesOwnerId: null,
 
   restoreSession: async () => {
     try {
@@ -204,21 +208,46 @@ export const useJaxStore = create((set, get) => {
       const { data: user } = await api.get('/auth/me', {
         headers: { Authorization: `Bearer ${refreshData.access_token}` },
       })
-      set({ token: refreshData.access_token, user })
+      set({ token: refreshData.access_token, user, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
       bumpSessionEpoch()
     } catch {
-      set({ ...SESION_VACIA })
+      set({ ...SESION_VACIA, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
       bumpSessionEpoch()
     } finally {
       set({ sessionRestoring: false })
     }
   },
 
-  login: async (email, password) => {
-    const { data } = await api.post('/auth/login', { email, password })
-    set({ token: data.access_token, user: data })
+  // Una respuesta de desafío MFA no establece sesión. La UI conserva esa
+  // capacidad opaca sólo en memoria del componente hasta verificar el OTP.
+  establecerSesion: (data) => {
+    if (!data?.access_token) return false
+    set({ token: data.access_token, user: data, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
     bumpSessionEpoch()
+    return true
+  },
+  actualizarTokenMfa: (access_token) => {
+    if (typeof access_token === 'string' && get().token) set({ token: access_token })
+  },
+  mostrarCodigosMfa: (codes) => set({ mfaRecoveryCodes: Array.isArray(codes) ? codes : null, mfaRecoveryCodesOwnerId: get().user?.user_id ?? null }),
+  limpiarCodigosMfa: () => set({ mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null }),
+
+  login: async (email, password) => {
+    const epoch = get()._sessionEpoch
+    const { data } = await api.post('/auth/login', { email, password })
+    // Una respuesta vieja no puede iniciar sesión después de logout, refresh
+    // o el ingreso de otra cuenta en la misma pestaña.
+    if (!data?.mfa_required && get()._sessionEpoch === epoch) get().establecerSesion(data)
     return data
+  },
+
+  // Acciones MFA que revocan el token ya hicieron el corte en el servidor.
+  // No llamar /logout aquí evita un segundo bump/resultado incierto.
+  limpiarSesionRevocada: () => {
+    _revocarObjectURLsDeAdjuntos(get().messages)
+    set({ ...SESION_VACIA, messages: [], _pipelineCompletedShown: new Set(), avisoSesion: null,
+      historial: { pipelines: [], hasMore: false, cargando: false, error: false } })
+    bumpSessionEpoch()
   },
 
   // Login.jsx la llama tras un login exitoso -- separada de login() porque
@@ -250,7 +279,7 @@ export const useJaxStore = create((set, get) => {
       _revocarObjectURLsDeAdjuntos(get().messages)
       set({
         ...SESION_VACIA, messages: [], _pipelineCompletedShown: new Set(),
-        avisoSesion: null, saliendo: null,
+        avisoSesion: null, saliendo: null, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null,
         // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
         // usuario que entra en la MISMA pestaña (no hay location.reload en el
         // camino de login) y va a /historial veía nombres, estados, costos y

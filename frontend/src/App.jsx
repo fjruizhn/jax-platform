@@ -9,6 +9,7 @@ import Proyectos from './pages/Proyectos'
 import ProyectoDetalle from './pages/ProyectoDetalle'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
+import AccountSecurity from './pages/AccountSecurity'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 
@@ -17,7 +18,6 @@ function RequireSuperadmin({ children }) {
   if (!user || user.role !== 'superadmin') return <Navigate to="/" replace />
   return children
 }
-
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)
 
@@ -38,6 +38,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/account/security" element={<RequireAuth allowOfficeAccount><AccountSecurity /></RequireAuth>} />
         <Route
           path="/"
           element={

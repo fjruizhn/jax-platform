@@ -1675,4 +1675,14 @@ export default {
       },
     },
   },
+  mfa: {
+    title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',
+    challengeIntro: 'Enter the six-digit code from your authenticator app.', recoveryLink: 'Use a recovery code', back: 'Back to sign in',
+    recoveryTitle: 'Recover your authenticator', recoveryIntro: 'Enter a one-time recovery code.', recoveryLabel: 'Recovery code', continue: 'Continue',
+    setupTitle: 'Set up your authenticator', setupIntro: 'Add this key manually to your authenticator app, then enter its code.', secretLabel: 'Setup key',
+    codesTitle: 'Save your recovery codes', codesIntro: 'Each code works once. Save them somewhere safe; they will not be shown again.', acknowledge: 'I understand, return to sign in',
+    invalidOtp: 'Enter exactly six digits.', invalidRecovery: 'Enter a valid recovery code.', failed: 'Verification could not be completed. Check the code and try again.', expired: 'This verification expired. Sign in again.', unavailable: 'Two-step verification is unavailable right now.',
+    account: 'Account security', accountIntro: 'Manage two-step verification for this account.', enabled: 'Two-step verification is active.', disabled: 'Two-step verification is not set up.', setup: 'Set up authenticator', replace: 'Replace authenticator', regenerate: 'Generate new codes', disable: 'Turn off verification',
+    password: 'Current password', confirm: 'Confirm', cancel: 'Cancel', sensitive: 'This action requires your current password and a recent verification.', stepUp: 'Confirm with your authenticator', stepUpIntro: 'Enter the six-digit code to continue.', actionUncertain: 'The result could not be confirmed. Check the status before trying again.', disabledDone: 'Two-step verification was turned off. Sign in again.', copied: 'Key copied.', copy: 'Copy key',
+  },
 }
