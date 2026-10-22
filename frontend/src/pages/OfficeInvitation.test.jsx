@@ -102,8 +102,8 @@ describe('Office invitation acceptance', () => {
     expect(window.sessionStorage.getItem('office-invitation-token-v1')).toBe('opaque-bearer')
   })
 
-  it('handles existing_session_required without revealing account existence and sends the visitor to login', async () => {
-    invitations.accept.mockRejectedValue({ response: { status: 409, data: { detail: { code: 'existing_session_required' } } } })
+  it('handles the real existing-session HTTP detail without revealing account existence and sends the visitor to login', async () => {
+    invitations.accept.mockRejectedValue({ response: { status: 409, data: { detail: 'office_invitation_existing_session_required' } } })
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Crear mi cuenta' }))
     fireEvent.change(screen.getByLabelText('Contraseña nueva'), { target: { value: 'una-clave-segura' } })

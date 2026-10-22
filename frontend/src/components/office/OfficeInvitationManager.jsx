@@ -5,11 +5,12 @@ import Dialogo from '../Dialogo'
 import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 const PAGE_SIZE = 25
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BUTTON = `${TAMANO_BOTON_ACCION} rounded border border-borde px-3 text-texto hover:bg-hundido disabled:opacity-60`
 
 function validInvitation(invitation) {
-  return invitation && Number.isInteger(invitation.id) && typeof invitation.email === 'string' && typeof invitation.audience === 'string' && invitation.status === 'ISSUED' && Number.isInteger(invitation.version) && typeof invitation.expires_at === 'string'
+  return invitation && typeof invitation.id === 'string' && UUID.test(invitation.id) && typeof invitation.email === 'string' && typeof invitation.audience === 'string' && invitation.status === 'ISSUED' && Number.isInteger(invitation.version) && typeof invitation.expires_at === 'string'
 }
 
 function validList(data) {

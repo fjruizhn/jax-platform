@@ -89,7 +89,7 @@ export default function OfficeInvitation() {
       setResult('accepted')
     } catch (err) {
       if (!sameSession() || requestRef.current !== controller) return
-      if (err?.response?.status === 409 && codigoDe(err) === 'existing_session_required') setResult('login')
+      if (err?.response?.status === 409 && codigoDe(err) === 'office_invitation_existing_session_required') setResult('login')
       else if (!err?.response || err?.response?.status >= 500) setResult('ambiguous')
       else setResult('error')
     } finally {

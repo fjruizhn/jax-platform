@@ -8,7 +8,7 @@ vi.mock('../../api/virtualOffice', () => ({ officeInvitationsApi: invitations })
 
 import OfficeInvitationManager from './OfficeInvitationManager'
 
-const firstPage = { data: { invitations: [{ id: 44, version: 3, email: 'ana@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-23T12:00:00Z' }], next_cursor: null } }
+const firstPage = { data: { invitations: [{ id: '550e8400-e29b-41d4-a716-446655440000', version: 3, email: 'ana@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-23T12:00:00Z' }], next_cursor: null } }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -32,7 +32,7 @@ describe('OfficeInvitationManager', () => {
   })
 
   it('keeps the cursor opaque and appends only the page returned by the server', async () => {
-    invitations.list.mockResolvedValueOnce({ data: { invitations: [], next_cursor: 'opaque-next' } }).mockResolvedValueOnce({ data: { invitations: [{ id: 45, version: 1, email: 'bea@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-24T12:00:00Z' }], next_cursor: null } })
+    invitations.list.mockResolvedValueOnce({ data: { invitations: [], next_cursor: 'opaque-next' } }).mockResolvedValueOnce({ data: { invitations: [{ id: '123e4567-e89b-12d3-a456-426614174000', version: 1, email: 'bea@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-24T12:00:00Z' }], next_cursor: null } })
     show()
     fireEvent.click(await screen.findByRole('button', { name: 'Gestionar invitaciones' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Cargar más invitaciones' }))
@@ -56,7 +56,7 @@ describe('OfficeInvitationManager', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Revocar invitación para ana@example.test' }))
     const dialog = screen.getByRole('dialog', { name: 'Revocar invitación' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Revocar invitación' }))
-    await waitFor(() => expect(invitations.revoke).toHaveBeenCalledWith(12, 44, 3, 'fixed-uuid'))
+    await waitFor(() => expect(invitations.revoke).toHaveBeenCalledWith(12, '550e8400-e29b-41d4-a716-446655440000', 3, 'fixed-uuid'))
     await waitFor(() => expect(invitations.list).toHaveBeenCalledTimes(2))
   })
 
