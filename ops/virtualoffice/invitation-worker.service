@@ -3,16 +3,16 @@ Description=Axioma Virtual Office invitation delivery (one bounded batch)
 After=network-online.target jax-platform-migrate.service
 Wants=network-online.target
 ConditionPathIsReadWrite=/run
-OnFailure=axioma-office-invitation-worker-failed.service
+OnFailure=aviso-fallo@%n.service
 
 [Service]
 Type=oneshot
 User=jaxinvite
 Group=jaxinvite
 EnvironmentFile=/etc/jax/invitation-worker.env
-WorkingDirectory=/srv/jax-prod/current/backend
-ExecStartPre=/srv/jax-prod/current/ops/virtualoffice/invitation-worker-readiness.sh
-ExecStart=/srv/jax-prod/venv/bin/python -I -m virtual_office.invitation_delivery_worker
+WorkingDirectory=/srv/jax-prod/jax-platform/backend
+ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
+ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

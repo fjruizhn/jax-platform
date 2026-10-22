@@ -10,7 +10,8 @@ archivos de `ops/virtualoffice/`, y ejecuta como root:
 ```bash
 ops/virtualoffice/provision-invitation-worker.sh /etc/jax/runtime.env
 systemctl daemon-reload
-systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/venv/bin/python -I -m virtual_office.invitation_smtp_preflight
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py --check-import
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es -c "import sys;sys.path.insert(0,'/srv/jax-prod/jax-platform/backend');from virtual_office.invitation_smtp_preflight import main;raise SystemExit(main())"
 systemctl enable --now axioma-office-invitation-worker.timer
 ```
 
@@ -34,5 +35,5 @@ systemctl status axioma-office-invitation-worker.timer axioma-office-invitation-
 
 La salud informa solamente conteos `queued`, `claimed` y `stale`. Un `stale > 0`
 sale con estado 2: el siguiente worker convierte el intento abandonado en `UNKNOWN`;
-nunca lo devuelve a `QUEUED`. `OnFailure=axioma-office-invitation-worker-failed.service`
-debe estar instalado con el mecanismo de alerta auditado del host antes de producción.
+nunca lo devuelve a `QUEUED`. `OnFailure=aviso-fallo@%n.service` usa el template
+de alerta auditado del host; el readiness efectivo verifica que existe antes de producción.
