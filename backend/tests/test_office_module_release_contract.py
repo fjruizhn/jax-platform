@@ -1,5 +1,5 @@
 from __future__ import annotations
-import importlib.util, os, sys
+import importlib.util, os, stat, sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -116,4 +116,24 @@ def test_closes_owned_fd_when_fstat_fails(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(module.os, "fstat", failing)
     with pytest.raises(module.ModuleReleaseContractRejected, match="cannot be inspected safely"):
         module.build_artifact_set(tmp_path)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+def test_close_failure_still_closes_remaining_directories(tmp_path, monkeypatch):
+    file(tmp_path, "child/file.txt")
+    (tmp_path / "child" / "link.txt").symlink_to("file.txt")
+    real_close = module.os.close
+    before = len(os.listdir("/proc/self/fd"))
+    calls = 0
+    def close_then_fail(fd):
+        nonlocal calls
+        is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        real_close(fd)
+        if is_directory:
+            calls += 1
+        if is_directory and calls == 1:
+            raise OSError("injected close failure")
+    monkeypatch.setattr(module.os, "close", close_then_fail)
+    with pytest.raises(module.ModuleReleaseContractRejected, match="descriptor close failed"):
+        module.build_artifact_set(tmp_path)
+    assert calls >= 2
     assert len(os.listdir("/proc/self/fd")) == before

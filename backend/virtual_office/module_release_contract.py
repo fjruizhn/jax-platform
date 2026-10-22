@@ -146,9 +146,12 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
             folded.add(key); total += count
             entries.append({"path": path, "size": count, "mode": f"{mode:04o}", "digest": f"sha256:{hashed.hexdigest()}"})
     finally:
+        close_error: OSError | None = None
         for fd in owned_fds:
             try: os.close(fd)
-            except OSError: pass
+            except OSError as error:
+                if close_error is None: close_error = error
+        if close_error is not None: _reject("artifact descriptor close failed")
     if not entries: _reject("artifact must contain at least one file")
     entries.sort(key=lambda entry: entry["path"].encode())
     payload = {"domain": _DOMAIN, "entries": entries, "schema_version": 1}
