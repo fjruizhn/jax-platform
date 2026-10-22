@@ -43,6 +43,17 @@ def exact_commit(value: str) -> bool:
     return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
 
 
+def require_ancestor(repo: Path, predecessor: str, target: str) -> None:
+    """Record only a Git-verified forward release lineage in the artifact."""
+    if not exact_commit(predecessor) or not exact_commit(target):
+        die("predecessor must be a full lowercase SHA-1")
+    try:
+        subprocess.check_call((GIT, "merge-base", "--is-ancestor", predecessor, target), cwd=repo, env=SAFE_ENV,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        die("predecessor is not an ancestor of target")
+
+
 def repo_tree(repo: Path, commit: str) -> tuple[str, list[bytes]]:
     """Return only an exact, clean, self-contained Git tree."""
     if os.geteuid() == 0:
@@ -158,6 +169,8 @@ def main() -> None:
     parser.add_argument("--platform-commit", required=True)
     parser.add_argument("--jax", type=Path, required=True)
     parser.add_argument("--jax-commit", required=True)
+    parser.add_argument("--platform-predecessor", required=True)
+    parser.add_argument("--jax-predecessor", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True, help="root-sealed snapshot containing wheelhouse/ and lock")
     parser.add_argument("--wheelhouse-sha256", required=True)
@@ -172,6 +185,8 @@ def main() -> None:
     actual_wheelhouse = wheelhouse_digest(arguments.wheelhouse)
     if actual_wheelhouse != arguments.wheelhouse_sha256 or digest(arguments.lock) != arguments.lock_sha256:
         die("external dependency digest mismatch")
+    require_ancestor(arguments.platform, arguments.platform_predecessor, arguments.platform_commit)
+    require_ancestor(arguments.jax, arguments.jax_predecessor, arguments.jax_commit)
     arguments.out.mkdir(mode=0o700); arguments.out.chmod(0o700)
     platform_output = arguments.out / "jax-platform"
     jax_output = arguments.out / "jax"
@@ -189,6 +204,9 @@ def main() -> None:
         subprocess.run([str(venv / "bin" / "pip"), "freeze", "--all"], check=True, stdout=freeze, env=SAFE_ENV)
     attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "platform_links": platform_links, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "jax_links": jax_links, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
     (arguments.out / "build-attestation.json").write_text(json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    lineage = {"schema": "axioma.pair-lineage/v1", "platform_predecessor": arguments.platform_predecessor,
+               "jax_predecessor": arguments.jax_predecessor}
+    (arguments.out / "release-lineage.json").write_text(json.dumps(lineage, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     # The final root adoption re-owns this tree but never changes bytes.  Keep the
     # Git-link attestation beside the sealed inventory so readiness can compare it.
     readiness_spec = __import__("importlib.util").util.spec_from_file_location("pair_readiness", Path(__file__).with_name("pair_artifact_readiness.py"))

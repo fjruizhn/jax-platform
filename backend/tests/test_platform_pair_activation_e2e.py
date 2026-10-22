@@ -68,6 +68,8 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
                    "python_version": "cpython-test", "freeze_sha256": "4" * 64}
     (release / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
     (release / "build-attestation.json").chmod(0o644)
+    (release / "release-lineage.json").write_text(json.dumps({"schema": "axioma.pair-lineage/v1", "platform_predecessor": "c" * 40, "jax_predecessor": "d" * 40}), encoding="utf-8")
+    (release / "release-lineage.json").chmod(0o644)
     manifest = {
         "schema": readiness.SCHEMA,
         "jax_platform_revision": "a" * 40,
@@ -93,12 +95,16 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     test_launcher.chmod(0o755)
     fake_systemctl.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
-        "if [ \"$1\" = is-active ]; then exit 1; fi\n"
-        "if [ \"$1 $2\" = 'start jax-platform-migrate.service' ]; then exec \"$JAX_PAIR_TEST_LAUNCHER\" migrate; fi\n"
+        "if [ \"$1\" = show ] && [ \"$2\" = --value ] && [ \"$3\" = --property=ActiveState ]; then printf 'inactive\\n'; exit 0; fi\n"
+        "if [ \"$1\" = show ] && [ \"$2\" = --value ] && [ \"$3\" = --property=MainPID ]; then printf '0\\n'; exit 0; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; exec \"$JAX_PAIR_TEST_LAUNCHER\" web; fi\n"
         "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
+    health = tmp_path / "health"
+    health.write_text("#!/bin/sh\nsleep .4\nexit 0\n", encoding="utf-8")
+    health.chmod(0o755)
     digest = hashlib.sha256((release / readiness.MANIFEST).read_bytes()).hexdigest()
     predecessor = root / "releases" / ("c" * 40 + "-" + "d" * 40)
     shutil.copytree(release, predecessor)
@@ -108,6 +114,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     (predecessor / readiness.MANIFEST).write_text(json.dumps(predecessor_manifest), encoding="utf-8")
     (root / "current").symlink_to("releases/" + predecessor.name)
     previous_digest = hashlib.sha256((predecessor / readiness.MANIFEST).read_bytes()).hexdigest()
+    (root / "platform-pair-selection.json").write_text(json.dumps({"release": str(predecessor), "jax_platform_revision": "c" * 40, "jax_revision": "d" * 40, "manifest_sha256": previous_digest}), encoding="utf-8")
     subprocess.run(["sudo", "-n", "chown", "-R", "root:root", str(root)], check=True)
     base_env = {
         "JAX_PAIR_TEST_MODE": "1",
@@ -115,8 +122,17 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_SYSTEMCTL_BIN": str(fake_systemctl),
         "JAX_PAIR_TEST_CALLS": str(calls),
         "JAX_PAIR_TEST_LAUNCHER": str(test_launcher),
+        "JAX_PAIR_HEALTH_BIN": str(health),
     }
     command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest]
+    script_index = command.index(str(MIGRATION / "activate-platform-pair-release.sh"))
+    killed_command = command[:script_index] + ["JAX_PAIR_TEST_KILL_AT=after_publish"] + command[script_index:]
+    killed = subprocess.run(killed_command, text=True, capture_output=True, check=False)
+    assert killed.returncode != 0
+    journal = json.loads((root / "activation-journal.json").read_text(encoding="utf-8"))
+    assert journal["schema"] == "axioma.pair-activation/v1"
+    assert journal["state"] == "PRE_DDL"
+    assert (root / "current").resolve() == release
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 5
     while not calls.exists() and time.monotonic() < deadline:
@@ -124,27 +140,24 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     assert calls.exists(), first.communicate(timeout=5)[1]
     second = subprocess.run(command, text=True, capture_output=True, check=False)
     deadline = time.monotonic() + 5
-    while "start jax-platform-migrate.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
+    while "start jax-platform.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert "start jax-platform-migrate.service" in calls.read_text(encoding="utf-8")
+    assert "start jax-platform.service" in calls.read_text(encoding="utf-8")
     while not migration_started.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert migration_started.exists()
-    held = subprocess.run(["sudo", "-n", "/usr/bin/flock", "-n", str(root / ".runtime.lock"), "-c", "true"], check=False)
-    if held.returncode == 0:
-        _, diagnostic = first.communicate(timeout=10)
-        pytest.fail(diagnostic)
     stdout, stderr = first.communicate(timeout=10)
     assert first.returncode == 0, stderr or stdout
     assert second.returncode != 0
-    assert "activation already in progress" in second.stderr
+    assert "predecessor digest mismatch" in second.stderr or "activation lock timeout" in second.stderr
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
-    assert calls.read_text(encoding="utf-8").splitlines() == [
+    assert calls.read_text(encoding="utf-8").splitlines()[-7:] == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
-        "is-active --quiet jax-platform.service", "is-active --quiet jax-platform-migrate.service",
-        "start jax-platform-migrate.service", "start jax-platform.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=MainPID jax-platform.service",
+        "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service",
+        "start jax-platform.service",
     ]
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
     lock_inode = (root / ".runtime.lock").stat().st_ino

@@ -107,25 +107,23 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 
 ## 1 · Par inmutable JAX + plataforma
 
-El backend no ejecuta checkouts actualizables ni mezcla revisiones. Primero, un
-usuario sin privilegios verifica los dos SHA auditados y prepara los archivos de
-fuente; el operador copia esos archivos a una ubicación root-owned que no sea
-escribible. El runtime se instala desde esa copia y sólo entonces root construye
-el venv final dentro del release con el wheelhouse y lock con hashes. El release
-sellado no se selecciona al instalarlo: el digest del manifiesto que imprime el
-instalador se conserva fuera del árbol para la activación posterior.
+El backend no ejecuta checkouts actualizables ni mezcla revisiones. `jaxbuild`,
+sin privilegios, extrae objetos Git exactos y verifica que ambos predecesores son
+ancestros del nuevo par. Root adopta esos bytes sellados sin ejecutar Git, pip ni
+código del release. El instalador histórico de tar/pip está deshabilitado: no
+puede fabricar la atestación, inventario y linaje exigidos por la adopción.
 
 ```bash
-sudo /ruta/root-owned/ops/migration/install-platform-pair-runtime.sh \
-  /ruta/root-owned/ops/migration
-# Como usuario sin privilegios, antes de copiar los tar y sus hashes a /ruta/root-owned:
-ops/migration/prepare-platform-pair-source.sh /checkout/jax-platform <SHA-JXP-40> /tmp/jxp.tar
-ops/migration/prepare-platform-pair-source.sh /checkout/jax <SHA-JAX-40> /tmp/jax.tar
-sudo /usr/local/libexec/install-platform-pair-release.sh \
-  --platform-source /ruta/root-owned/jxp.tar --platform-source-sha256 "$JXP_SOURCE_SHA256" --platform-revision <SHA-JXP-40> \
-  --jax-source /ruta/root-owned/jax.tar --jax-source-sha256 "$JAX_SOURCE_SHA256" --jax-revision <SHA-JAX-40> \
-  --wheelhouse /ruta/root-owned/wheelhouse --lock /ruta/root-owned/requirements.lock
-# Guardar MANIFEST_SHA256 exactamente como lo imprimió el comando anterior.
+# `--inputs` ya fue sellado root:root y contiene wheelhouse/ y lock.
+sudo -u jaxbuild /ruta/root-owned/build-pair-jaxbuild.py \
+  --platform /repos/jax-platform --platform-commit <SHA-JXP-40> --platform-predecessor <SHA-JXP-PREVIO-40> \
+  --jax /repos/jax --jax-commit <SHA-JAX-40> --jax-predecessor <SHA-JAX-PREVIO-40> \
+  --inputs /ruta/root-owned/inputs --wheelhouse-sha256 "$WHEELHOUSE_SHA256" --lock-sha256 "$LOCK_SHA256" \
+  --out /ruta-de-jaxbuild/par
+MANIFEST_SHA256=$(sha256sum /ruta-de-jaxbuild/par/pair-manifest.json | cut -d' ' -f1)
+sudo /ruta/root-owned/adopt-pair-root.sh --source /ruta-de-jaxbuild/par \
+  --destination /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
+  --expected-manifest-sha256 "$MANIFEST_SHA256"
 sudo /usr/local/libexec/activate-platform-pair-release.sh \
   --release /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
   --expected-manifest-sha256 "$MANIFEST_SHA256" \
@@ -134,13 +132,14 @@ sudo /usr/local/libexec/activate-platform-pair-release.sh \
 
 El launcher lee una selección JSON root-owned, toma un candado compartido durante
 todo el proceso y fija `JAX_REPO_PATH` después de limpiar el entorno importado;
-`runtime.env` no puede sustituir el núcleo del par. La activación toma el candado
-exclusivo, detiene el par anterior, cambia la selección de forma atómica, ejecuta
-migración y luego web. Un fallo de migración no intenta revertir DDL ni vuelve a
-arrancar automáticamente el release previo: se detiene para recuperación humana
-con backup probado. Una modificación, byte extra, enlace, permisos inseguros,
-manifiesto alterado o selección que salga de `releases/` detiene el arranque antes
-de importar Python.
+`runtime.env` no puede sustituir el núcleo del par. La activación toma candados
+con timeout, detiene ambos servicios y verifica `ActiveState=inactive` y
+`MainPID=0`. Su journal fsync permite restaurar selección y `current` si la caída
+fue antes de DDL; desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige
+recuperación humana con backup probado. Sólo inicia web: su dependencia systemd
+ejecuta el migrador una vez. Una modificación, byte extra, enlace, permisos
+inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
+arranque antes de importar Python.
 
 Verificar **por comportamiento**, no por `is-active`:
 

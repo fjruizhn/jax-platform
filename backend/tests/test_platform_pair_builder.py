@@ -56,6 +56,17 @@ def test_extracts_regular_blobs_from_exact_clean_git_tree(tmp_path: Path) -> Non
     assert (target / "backend" / "main.py").stat().st_mode & 0o777 == 0o644
 
 
+def test_release_lineage_requires_a_real_git_ancestor(tmp_path: Path) -> None:
+    source, first = _repository(tmp_path)
+    (source / "backend" / "next.py").write_text("next\n", encoding="utf-8")
+    _git(source, "add", ".")
+    _git(source, "commit", "-qm", "next")
+    second = _git(source, "rev-parse", "HEAD")
+    builder.require_ancestor(source, first, second)
+    with pytest.raises(SystemExit, match="predecessor is not an ancestor"):
+        builder.require_ancestor(source, second, first)
+
+
 def test_rejects_symlink_git_entry_before_writing_any_source_bytes(tmp_path: Path) -> None:
     source, commit = _repository(tmp_path, symlink=True)
     target = tmp_path / "target"
