@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import uuid
@@ -32,18 +33,11 @@ async def _create_project_scope(cur) -> None:
 
 
 def _predecessor_ddl() -> tuple[str, ...]:
-    return tuple(
-        statement.replace(
-            "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,", ""
-        ).replace(
-            "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),", ""
-        ).replace(
-            "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),", ""
-        ).replace(
-            "KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),", ""
-        )
-        for statement in candidate.MODULE_CANDIDATE_DDL
-    )
+    # Frozen from the exact #231 revision. Deriving this from the current DDL
+    # previously hid the missing release_identity index at a durable cutpoint.
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "office_module_candidate_v13.json").read_text())
+    assert fixture["source_sha"] == "d1186c841c853b8151b47670b68b54955e28af66"
+    return tuple(fixture["ddl"])
 
 
 def test_candidate_storage_has_no_release_authority_surface() -> None:
@@ -194,6 +188,14 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                     await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("ALTER TABLE office_module_candidate DROP INDEX rogue_predecessor_module")
                 await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("SHOW INDEX FROM office_module_candidate_revision WHERE Key_name='uq_office_module_candidate_revision_release_identity'")
+                assert len(await cur.fetchall()) == 4
+                # A second durable cutpoint can occur after origin ALTER but
+                # before release_identity ALTER; resume only while still empty.
+                await cur.execute("ALTER TABLE office_module_candidate_revision DROP INDEX uq_office_module_candidate_revision_release_identity")
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("SHOW INDEX FROM office_module_candidate_revision WHERE Key_name='uq_office_module_candidate_revision_release_identity'")
+                assert len(await cur.fetchall()) == 4
                 await cur.execute("SHOW COLUMNS FROM office_module_candidate LIKE 'origin_project_id'")
                 assert (await cur.fetchone())[1:3] == ("int(11)", "NO")
                 await cur.execute("SHOW INDEX FROM office_module_candidate_evidence WHERE Key_name='idx_office_module_candidate_evidence_revision_candidate'")

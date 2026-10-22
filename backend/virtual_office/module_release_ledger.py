@@ -120,6 +120,7 @@ _FOREIGN_KEYS = {
 
 _PREDECESSOR_CANDIDATE_COLUMNS = ("candidate_id", "module_id", "module_version", "created_at")
 _PREDECESSOR_EVIDENCE_FK_INDEX = "fk_office_module_candidate_evidence_revision"
+_RELEASE_IDENTITY_INDEX = ("office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity")
 
 
 async def _index_set(cur) -> dict[tuple[str, str], tuple[bool, tuple[str, ...]]]:
@@ -200,8 +201,16 @@ async def _upgrade_empty_candidate_predecessor(cur) -> None:
     # The old child tables must be an exact, attestable predecessor.  Creating
     # a replacement candidate table around an unknown child shape would turn a
     # schema drift into an unreviewed data migration.
+    expected_indexes = dict(_INDEXES)
+    expected_indexes.pop(("office_module_candidate", "idx_office_module_candidate_origin"))
+    expected_indexes.pop(("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"))
+    expected_indexes[("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)] = (
+        False, ("candidate_revision_id", "candidate_id"))
+    if _RELEASE_IDENTITY_INDEX not in await _index_set(cur):
+        expected_indexes.pop(_RELEASE_IDENTITY_INDEX)
     await assert_module_candidate_storage_metadata(
-        cur, expected_candidate_columns=_PREDECESSOR_CANDIDATE_COLUMNS)
+        cur, expected_candidate_columns=_PREDECESSOR_CANDIDATE_COLUMNS,
+        expected_indexes_override=expected_indexes)
     await cur.execute(
         "ALTER TABLE office_module_candidate "
         "ADD COLUMN origin_project_id INT NOT NULL AFTER module_version,"
@@ -210,6 +219,30 @@ async def _upgrade_empty_candidate_predecessor(cur) -> None:
         "ADD CONSTRAINT fk_office_module_candidate_origin_scope "
         "FOREIGN KEY (origin_project_id,origin_tenant_id) "
         "REFERENCES jax_project_scope(project_id,tenant_id)"
+    )
+
+
+async def _upgrade_missing_release_identity_index(cur) -> None:
+    """Resume only the exact empty #231 cutpoint before staging added its key."""
+    found = await _index_set(cur)
+    if _RELEASE_IDENTITY_INDEX in found:
+        return
+    if not all([await _table_is_empty(cur, table) for table in _APPEND_ONLY]):
+        raise RuntimeError("Office module candidate interrupted predecessor has rows")
+    expected = dict(_INDEXES)
+    expected.pop(_RELEASE_IDENTITY_INDEX)
+    named = ("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate")
+    implicit = ("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)
+    if implicit in found:
+        expected.pop(named)
+        expected[implicit] = (False, ("candidate_revision_id", "candidate_id"))
+    # The index set, all columns, FKs, checks, triggers and engine are attested
+    # before an ALTER can convert a partial or substituted table into v15.
+    await assert_module_candidate_storage_metadata(cur, expected_indexes_override=expected)
+    await cur.execute(
+        "ALTER TABLE office_module_candidate_revision "
+        "ADD UNIQUE KEY uq_office_module_candidate_revision_release_identity "
+        "(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest)"
     )
 _CHECKS = {
     "chk_office_module_candidate_identity", "chk_office_module_candidate_revision_payload",
@@ -249,6 +282,7 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
     await _upgrade_empty_candidate_predecessor(cur)
     for statement in MODULE_CANDIDATE_DDL:
         await cur.execute(statement)
+    await _upgrade_missing_release_identity_index(cur)
     await _canonicalize_evidence_foreign_key_index(cur)
     for table in _APPEND_ONLY:
         for operation in ("UPDATE", "DELETE"):
