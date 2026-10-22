@@ -9,7 +9,7 @@ import secrets
 import pyotp
 import pytest
 
-from auth.jwt import create_access_token
+from auth.jwt import create_access_token, create_refresh_token, decode_token
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from virtual_office.mfa import (
@@ -110,6 +110,80 @@ def test_login_invalid_otp_commits_attempt_and_returns_denial(client):
         assert isinstance(denied, MFADenied) and denied.attempts_remaining == 2
         assert await sql("SELECT attempt_count FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))", (challenge.token,), True) == ((1,),)
     client.portal.call(scenario)
+
+
+def _enable_mfa_api(monkeypatch):
+    for name, value in {
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120",
+        "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300",
+        "OFFICE_MFA_RECENCY_SECONDS": "300",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT": "3",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_step_up_verify_mints_current_durable_mfa_claims_without_extending_refresh(client, monkeypatch):
+    _enable_mfa_api(monkeypatch)
+    async def scenario():
+        await _migrate()
+        user_id, start, _ = await _active_user()
+        return user_id, start.secret, (await sql(
+            "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True,
+        ))[0]
+
+    user_id, secret, versions = client.portal.call(scenario)
+    access = create_access_token(str(user_id), "1", "operator", versions[0])
+    original_refresh = create_refresh_token(
+        str(user_id), "1", "operator", versions[0], vida_segundos=600,
+    )
+    original_payload = decode_token(original_refresh)
+    headers = {"Authorization": f"Bearer {access}", "Cookie": f"refresh_token={original_refresh}"}
+    issued = client.post("/api/auth/mfa/step-up", headers={"Authorization": f"Bearer {access}"})
+    assert issued.status_code == 200
+    assert issued.headers["cache-control"] == "no-store"
+    verified = client.post("/api/auth/mfa/step-up/verify", headers=headers, json={
+        "challenge_token": issued.json()["challenge_token"], "otp": _previous_otp(secret),
+    })
+    assert verified.status_code == 200, verified.json()
+    assert verified.headers["cache-control"] == "no-store"
+    access_payload = decode_token(verified.json()["access_token"])
+    refresh_payload = decode_token(verified.cookies.get("refresh_token"))
+    assert access_payload["mfa_proof_event_id"] > 0
+    assert access_payload["mfa_version"] == versions[1]
+    assert refresh_payload["mfa_proof_event_id"] == access_payload["mfa_proof_event_id"]
+    assert (refresh_payload["iat"], refresh_payload["exp"]) == (original_payload["iat"], original_payload["exp"])
+    assert client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == (versions,)
+
+
+def test_step_up_verify_rejects_other_subject_before_consuming_its_challenge(client, monkeypatch):
+    _enable_mfa_api(monkeypatch)
+    async def scenario():
+        await _migrate()
+        owner, owner_start, _ = await _active_user()
+        other, _, _ = await _active_user()
+        return owner, owner_start.secret, other
+
+    owner, owner_secret, other = client.portal.call(scenario)
+    owner_versions = client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (owner,), True)[0]
+    owner_access = create_access_token(str(owner), "1", "operator", owner_versions[0])
+    owner_refresh = create_refresh_token(str(owner), "1", "operator", owner_versions[0], vida_segundos=600)
+    issued = client.post("/api/auth/mfa/step-up", headers={"Authorization": f"Bearer {owner_access}"})
+    assert issued.status_code == 200
+    other_versions = client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (other,), True)[0]
+    other_access = create_access_token(str(other), "1", "operator", other_versions[0])
+    other_refresh = create_refresh_token(str(other), "1", "operator", other_versions[0], vida_segundos=600)
+    denied = client.post("/api/auth/mfa/step-up/verify", headers={
+        "Authorization": f"Bearer {other_access}", "Cookie": f"refresh_token={other_refresh}",
+    }, json={"challenge_token": issued.json()["challenge_token"], "otp": _previous_otp(owner_secret)})
+    assert denied.status_code == 401
+    assert denied.headers["cache-control"] == "no-store"
+    # The owner can still consume the capability: the other subject did not
+    # burn its TOTP counter or turn its one-time challenge into a denial.
+    accepted = client.post("/api/auth/mfa/step-up/verify", headers={
+        "Authorization": f"Bearer {owner_access}", "Cookie": f"refresh_token={owner_refresh}",
+    }, json={"challenge_token": issued.json()["challenge_token"], "otp": _previous_otp(owner_secret)})
+    assert accepted.status_code == 200
 
 
 def test_pending_enrollment_budget_is_committed_and_reissue_does_not_replace_secret(client):

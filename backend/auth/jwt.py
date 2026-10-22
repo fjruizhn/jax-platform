@@ -62,6 +62,35 @@ def create_refresh_token(user_id: str, tenant_id: str, role: str, token_version:
                          mfa_version=mfa_version, mfa_at=mfa_at)
 
 
+def create_refresh_token_preserving_window(
+    user_id: str, tenant_id: str, role: str, token_version: int, *,
+    issued_at: int, expires_at: int, mfa_proof_event_id: int,
+    mfa_version: int, mfa_at: int,
+) -> str:
+    """Re-sign a refresh after STEP_UP without making its window sliding.
+
+    The old refresh is verified by the caller first.  Its iat/exp are still
+    validated here because these claims are the boundary that keeps a newly
+    minted MFA-bearing cookie inside the original absolute session lifetime.
+    """
+    if (type(issued_at) is not int or type(expires_at) is not int
+            or issued_at < 0 or expires_at <= issued_at):
+        raise ValueError("invalid refresh window")
+    payload = {
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "role": role,
+        "tv": int(token_version),
+        "iat": issued_at,
+        "exp": expires_at,
+        "type": "refresh",
+        "mfa_proof_event_id": int(mfa_proof_event_id),
+        "mfa_version": int(mfa_version),
+        "mfa_at": int(mfa_at),
+    }
+    return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
+
+
 def decode_token(token: str) -> dict:
     try:
         payload = jwt.decode(token, SECRET, algorithms=[ALGORITHM])

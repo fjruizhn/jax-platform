@@ -302,6 +302,38 @@ app.add_middleware(limite_de_subidas.LimiteDeSubidas)
 # before limiter/body/kill/quota code runs.
 app.add_middleware(OfficeSurfaceBarrierMiddleware)
 
+
+class _MfaNoStoreMiddleware:
+    """MFA capabilities and validation failures must never be cacheable.
+
+    This outer boundary covers dependency, barrier, validation and route
+    errors alike.  Individual handlers also declare no-store where a caller
+    uses them outside HTTP, but the HTTP contract is one finite namespace.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/auth/mfa/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def no_store(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", ()))
+                if not any(key.lower() == b"cache-control" for key, _ in headers):
+                    headers.append((b"cache-control", b"no-store"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, no_store)
+
+
+# Added after the Office barrier: the last registered middleware is outermost,
+# so even barrier/dependency/validation denials cannot leak a cacheable MFA
+# bearer response.
+app.add_middleware(_MfaNoStoreMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],

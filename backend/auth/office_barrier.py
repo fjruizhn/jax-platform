@@ -28,6 +28,7 @@ _AUTH_ALLOWLIST = frozenset({
     ("POST", "/api/auth/mfa/enrollment/start"),
     ("POST", "/api/auth/mfa/enrollment/confirm"),
     ("POST", "/api/auth/mfa/step-up"),
+    ("POST", "/api/auth/mfa/step-up/verify"),
     ("POST", "/api/auth/mfa/recover"),
     ("POST", "/api/auth/mfa/recovery/enrollment/start"),
     ("POST", "/api/auth/mfa/recovery-codes/regenerate"),
