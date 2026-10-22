@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from base64 import urlsafe_b64encode
 
 import aiomysql
@@ -231,19 +232,17 @@ _V14_LOCK_PREFIX = "axioma.office.critic-trust.v14:"
 
 
 def _v14_descriptor(contract: ActivationContract, state: str) -> str:
-    """A 64-byte marker binds the exact contract profile and lifecycle state."""
-    value = {
-        "allowed_client_uids": contract.allowed_client_uids, "charset": contract.database_charset, "collation": contract.database_collation,
-        "critic_principal": contract.critic_principal,
-        "definer": [contract.trigger_definer.user, contract.trigger_definer.host],
-        "generation": 14, "guard_account": [contract.guard_account.user, contract.guard_account.host],
-        "guard_gid": contract.guard_gid, "guard_uid": contract.guard_uid, "limits": [contract.timeout_seconds, contract.max_inflight],
-        "schema": contract.database_schema, "server_version": contract.database_server_version, "socket_path": contract.socket_path,
-        "sql_mode": contract.database_sql_mode,
-        "state": state,
-    }
+    """Return a bounded marker bound to the exact validated descriptor bytes."""
+    if state not in {"ready", "invalid"}:
+        raise ValueError("invalid critic-trust v14 marker state")
+    try:
+        fingerprint = bytes.fromhex(contract.fingerprint.sha256)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("critic-trust v14 contract fingerprint is invalid") from error
+    if len(fingerprint) != 32:
+        raise RuntimeError("critic-trust v14 contract fingerprint is invalid")
     digest = urlsafe_b64encode(hashlib.sha256(
-        b"axioma.office.critic-trust.v14\x00" + json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        b"axioma.office.critic-trust.v14\x00" + fingerprint
     ).digest()).rstrip(b"=").decode("ascii")
     return f"critic-v14-{state}-{digest}"
 
@@ -266,6 +265,8 @@ async def migrate_critic_trust_v14(contract: ActivationContract, *, connect=dedi
         raise TypeError("critic-trust v14 requires a validated ActivationContract")
     contract.assert_unchanged()
     conn = await connect()
+    primary_error: BaseException | None = None
+    lock_name: str | None = None
     try:
         if conn.get_autocommit() is not True:
             raise RuntimeError("critic-trust v14 requires an autocommit connection")
@@ -275,23 +276,42 @@ async def migrate_critic_trust_v14(contract: ActivationContract, *, connect=dedi
             await cur.execute("SELECT GET_LOCK(%s,%s)", (lock_name, contract.timeout_seconds))
             if tuple(await cur.fetchone() or ()) != (1,):
                 raise RuntimeError("critic-trust v14 migration lock is unavailable")
-            try:
-                prior = await _preflight_v14(cur, contract)
-                if prior == "ready":
-                    await _assert_critic_trust_anchor_metadata(
-                        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES, v14_contract=contract,
-                    )
-                    return
-                await _write_v14_marker(cur, contract, "invalid")
-                await _set_v14_table_defaults(cur, contract)
-                await _replace_v14_triggers(cur, contract)
+            prior = await _preflight_v14(cur, contract)
+            if prior == "ready":
+                # A ready seal is never trusted across an unattended re-attestation:
+                # interruption or drift leaves the separately durable invalid state.
+                await _transition_ready_to_invalid(cur, contract)
                 await _finalize_v14(cur, contract)
-            finally:
-                await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                if tuple(await cur.fetchone() or ()) != (1,):
-                    raise RuntimeError("critic-trust v14 migration lock was not released")
+                return
+            await _write_v14_marker(cur, contract, "invalid")
+            await _set_v14_table_defaults(cur, contract)
+            await _replace_v14_triggers(cur, contract)
+            await _finalize_v14(cur, contract)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        conn.close()
+        try:
+            if lock_name is not None:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    if tuple(await cur.fetchone() or ()) != (1,):
+                        raise RuntimeError("critic-trust v14 migration lock was not released")
+        except BaseException:
+            if primary_error is None:
+                raise
+        finally:
+            conn.close()
+
+
+async def _transition_ready_to_invalid(cur, contract: ActivationContract) -> None:
+    await cur.execute(
+        "UPDATE office_schema_revision SET revision=%s,applied_at=NOW(6) "
+        "WHERE component=%s AND revision=%s",
+        (_v14_descriptor(contract, "invalid"), _V14_COMPONENT, _v14_descriptor(contract, "ready")),
+    )
+    if cur.rowcount != 1:
+        raise RuntimeError("critic-trust v14 ready marker changed during migration")
 
 
 async def _set_v14_session(cur, contract: ActivationContract) -> None:
@@ -320,11 +340,53 @@ async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
     known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
     if state not in known:
         raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
-    await cur.execute("SELECT 1 FROM mysql.user WHERE User=%s AND Host=%s", (contract.trigger_definer.user, contract.trigger_definer.host))
-    if await cur.fetchone() is None:
-        raise RuntimeError("critic-trust v14 trigger definer is absent")
-    await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
+    await _assert_v14_definer_privileges(cur, contract)
+    if state != _v14_descriptor(contract, "ready"):
+        await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
     return "ready" if state == _v14_descriptor(contract, "ready") else "invalid" if state is not None else None
+
+
+async def _assert_v14_definer_privileges(cur, contract: ActivationContract) -> None:
+    """Require the locked definer to have exactly one non-grantable TRIGGER right."""
+    user, host, schema = (
+        contract.trigger_definer.user, contract.trigger_definer.host, contract.database_schema,
+    )
+    await cur.execute(
+        "SELECT CAST(JSON_VALUE(Priv,'$.access') AS UNSIGNED),JSON_VALUE(Priv,'$.account_locked'),"
+        "COALESCE(JSON_VALUE(Priv,'$.default_role'),'') FROM mysql.global_priv WHERE User=%s AND Host=%s",
+        (user, host),
+    )
+    global_privileges = tuple(await cur.fetchone() or ())
+    if len(global_privileges) != 3 or global_privileges[1] != "1":
+        raise RuntimeError("critic-trust v14 trigger definer must be account-locked")
+    if (global_privileges[0], global_privileges[2]) != (0, ""):
+        raise RuntimeError("critic-trust v14 trigger definer global privileges are incompatible")
+    await cur.execute(
+        "SELECT Select_priv,Insert_priv,Update_priv,Delete_priv,Create_priv,Drop_priv,Grant_priv,References_priv,"
+        "Index_priv,Alter_priv,Create_tmp_table_priv,Lock_tables_priv,Create_view_priv,Show_view_priv,"
+        "Create_routine_priv,Alter_routine_priv,Execute_priv,Event_priv,Trigger_priv,Delete_history_priv,"
+        "Show_create_routine_priv FROM mysql.db WHERE User=%s AND Host=%s AND Db=%s",
+        (user, host, schema),
+    )
+    expected = ("N",) * 18 + ("Y",) + ("N",) * 2
+    if tuple(await cur.fetchone() or ()) != expected:
+        raise RuntimeError("critic-trust v14 trigger definer schema privileges are incompatible")
+    for table in ("tables_priv", "columns_priv", "procs_priv", "roles_mapping"):
+        await cur.execute(f"SELECT 1 FROM mysql.{table} WHERE User=%s AND Host=%s LIMIT 1", (user, host))
+        if await cur.fetchone() is not None:
+            raise RuntimeError("critic-trust v14 trigger definer subordinate privileges are incompatible")
+    await cur.execute(
+        "SELECT 1 FROM mysql.proxies_priv WHERE (User=%s AND Host=%s) OR "
+        "(Proxied_user=%s AND Proxied_host=%s) LIMIT 1", (user, host, user, host),
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError("critic-trust v14 trigger definer proxy privileges are incompatible")
+    # PUBLIC is a role in MariaDB.  Any persisted mapping or privilege row for
+    # it would widen the effective identity independently of this account.
+    for table in ("global_priv", "db", "tables_priv", "columns_priv", "procs_priv", "roles_mapping"):
+        await cur.execute(f"SELECT 1 FROM mysql.{table} WHERE User='PUBLIC' LIMIT 1")
+        if await cur.fetchone() is not None:
+            raise RuntimeError("critic-trust v14 PUBLIC grants are incompatible")
 
 
 async def _write_v14_marker(cur, contract: ActivationContract, state: str) -> None:
@@ -361,6 +423,7 @@ async def _finalize_v14(cur, contract: ActivationContract) -> None:
         from virtual_office.migrations import RUNTIME_REVISION
         if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
             raise RuntimeError("critic-trust v14 global Office marker changed during migration")
+        await _assert_v14_definer_canary(cur, contract)
         for table in _APPEND_ONLY:
             await cur.execute(f"SELECT 1 FROM `{table}` WHERE 0 LOCK IN SHARE MODE")
         await _preflight_v14(cur, contract)
@@ -372,6 +435,46 @@ async def _finalize_v14(cur, contract: ActivationContract) -> None:
         raise
     else:
         await cur.execute("COMMIT")
+
+
+async def _assert_v14_definer_canary(cur, contract: ActivationContract) -> None:
+    """Exercise both append-only trigger pairs as the locked DEFINER."""
+    key_id = f"v14-canary-{uuid.uuid4().hex}"
+    await cur.execute("SAVEPOINT critic_trust_v14_canary")
+    try:
+        await cur.execute(
+            "INSERT INTO office_trusted_critic_key "
+            "(key_id,principal_ref,purpose,algorithm,public_key,not_before) "
+            "VALUES (%s,'v14:canary','rights.review','Ed25519',UNHEX(SHA2(%s,256)),UTC_TIMESTAMP(6))",
+            (key_id, key_id),
+        )
+        await cur.execute(
+            "INSERT INTO office_trusted_critic_key_revocation (key_id,revoked_at) VALUES (%s,UTC_TIMESTAMP(6))",
+            (key_id,),
+        )
+        for table, assignment in (
+            ("office_trusted_critic_key", "purpose=purpose"),
+            ("office_trusted_critic_key_revocation", "revoked_at=revoked_at"),
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                statement = (
+                    f"UPDATE `{table}` SET {assignment} WHERE key_id=%s"
+                    if operation == "UPDATE" else f"DELETE FROM `{table}` WHERE key_id=%s"
+                )
+                try:
+                    await cur.execute(statement, (key_id,))
+                except aiomysql.OperationalError as error:
+                    if not error.args or error.args[0] != 1644 or "append-only" not in str(error):
+                        raise RuntimeError("critic-trust v14 definer canary is incompatible") from error
+                else:
+                    raise RuntimeError("critic-trust v14 definer canary did not block DML")
+    finally:
+        await cur.execute("ROLLBACK TO SAVEPOINT critic_trust_v14_canary")
+        await cur.execute("RELEASE SAVEPOINT critic_trust_v14_canary")
+    for table in _APPEND_ONLY:
+        await cur.execute(f"SELECT COUNT(*) FROM `{table}` WHERE key_id=%s", (key_id,))
+        if tuple(await cur.fetchone() or ()) != (0,):
+            raise RuntimeError("critic-trust v14 definer canary did not roll back")
 
 
 async def _assert_critic_trust_anchor_metadata(

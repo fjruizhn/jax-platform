@@ -105,6 +105,10 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     "VALUES ('key-preserved','agent:critic','rights.review','Ed25519',%s,UTC_TIMESTAMP(6))",
                     (bytes.fromhex("42" * 32),),
                 )
+                await cur.execute(
+                    "INSERT INTO office_trusted_critic_key_revocation (key_id,revoked_at) "
+                    "VALUES ('key-preserved',UTC_TIMESTAMP(6))"
+                )
                 await cur.execute("CREATE USER IF NOT EXISTS `critic_v14_owner`@'localhost' IDENTIFIED BY 'unused-test-only'")
                 await cur.execute(f"GRANT TRIGGER ON `{schema}`.* TO `critic_v14_owner`@'localhost'")
                 owner_created = True
@@ -115,6 +119,13 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                         user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=schema,
                         autocommit=True, charset=contract.database_charset, connect_timeout=db_connect_timeout_seconds(),
                     )
+                # A login-capable definer has no authority to alter the
+                # registry contract, and preflight leaves its component marker absent.
+                with pytest.raises(RuntimeError, match="account-locked"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") is None
+                await cur.execute("ALTER USER `critic_v14_owner`@'localhost' ACCOUNT LOCK")
+
                 # The dedicated connection must reject an authorized profile
                 # whose target identity/version does not match its actual DB,
                 # before it can create a critic marker or execute DDL.
@@ -150,6 +161,52 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
+                # Exercise every atomic replacement while four independent
+                # append-only DML statements run at deterministic barriers.
+                # The test fails if any replacement exposes a mutable table.
+                barriers = [asyncio.Event() for _ in trust._trigger_definitions()]
+                replaced = asyncio.Queue()
+                original_replace = trust._replace_v14_triggers
+
+                async def interleaved_replace(cursor, active_contract):
+                    definer = active_contract.trigger_definer
+                    for index, (name, table, operation, statement) in enumerate(trust._trigger_definitions()):
+                        await cursor.execute(
+                            f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+                            f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+                        )
+                        await replaced.put(index)
+                        await barriers[index].wait()
+
+                await cur.execute(
+                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
+                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
+                )
+                monkeypatch.setattr(trust, "_replace_v14_triggers", interleaved_replace)
+                migrating = asyncio.create_task(trust.migrate_critic_trust_v14(contract, connect=dedicated))
+                for index in range(4):
+                    assert await replaced.get() == index
+                    for statement in (
+                        "UPDATE office_trusted_critic_key SET purpose=purpose WHERE key_id='key-preserved'",
+                        "DELETE FROM office_trusted_critic_key WHERE key_id='key-preserved'",
+                        "UPDATE office_trusted_critic_key_revocation SET revoked_at=revoked_at WHERE key_id='key-preserved'",
+                        "DELETE FROM office_trusted_critic_key_revocation WHERE key_id='key-preserved'",
+                    ):
+                        with pytest.raises(aiomysql.OperationalError, match="append-only") as blocked:
+                            await cur.execute(statement)
+                        assert blocked.value.args[0] == 1644
+                    barriers[index].set()
+                await migrating
+                monkeypatch.setattr(trust, "_replace_v14_triggers", original_replace)
+                await trust._assert_critic_trust_anchor_metadata(
+                    cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
+                    v14_contract=contract,
+                )
+                await cur.execute("SELECT key_id FROM office_trusted_critic_key ORDER BY key_id")
+                assert await cur.fetchall() == (("key-preserved",),)
+                await cur.execute("SELECT key_id FROM office_trusted_critic_key_revocation ORDER BY key_id")
+                assert await cur.fetchall() == (("key-preserved",),)
+
                 # Two independent dedicated connections serialize on the
                 # schema-derived advisory lock; neither can publish a partial
                 # trigger set or alter the global v13 marker.
@@ -204,10 +261,12 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                 # it never silently repairs a schema already called ready.
                 with pytest.raises(RuntimeError, match="triggers are invalid"):
                     await trust.migrate_critic_trust_v14(contract, connect=dedicated)
-                await cur.execute(
-                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
-                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
-                )
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "invalid")
+                # Exact same descriptor suffix encodes the contract identity;
+                # only the durable lifecycle prefix changes.
+                ready = trust._v14_descriptor(contract, "ready")
+                invalid = trust._v14_descriptor(contract, "invalid")
+                assert ready.removeprefix("critic-v14-ready-") == invalid.removeprefix("critic-v14-invalid-")
                 await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 await trust._assert_critic_trust_anchor_metadata(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
