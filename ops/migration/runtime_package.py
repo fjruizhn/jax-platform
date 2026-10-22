@@ -310,7 +310,9 @@ def main(argv: list[str]) -> int:
         def verify() -> None:
             _run_checked(["/usr/bin/systemctl", "daemon-reload"])
             _run_checked(["/usr/bin/systemd-analyze", "verify", "/etc/systemd/system/jax-platform.service", "/etc/systemd/system/jax-platform-migrate.service"])
-            _run_checked([str(validator)])
+            # The validator's fixed arguments bind it to the live effective
+            # systemd view; a zero-argument program cannot silently no-op.
+            _run_checked([str(validator), "/", "/usr/bin/busctl"])
 
         import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
     except PackageError as exc:
