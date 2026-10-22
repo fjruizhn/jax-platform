@@ -37,29 +37,60 @@ su respuesta cerrada sin capturar los demás dominios existentes.
    ingreso.
 
    El instalador prepara esa carpeta sin cambiar `current`, nginx ni DNS. El
-   SHA esperado se escribe desde el veredicto de auditoría, nunca desde el
-   artefacto que se está instalando. Primero se construye fuera del árbol que
-   sirve nginx y luego se instala como root:
+   SHA esperado y el SHA-256 de `manifest.json` se escriben desde el veredicto
+   de auditoría, nunca desde el artefacto que se está instalando. El digest del
+   manifiesto ata cada asset y su digest; el validador vuelve a calcularlos
+   después de la copia.
+
+   Root no ejecuta estos scripts desde el checkout de JAX: ese checkout puede
+   ser modificable por el usuario de la aplicación. Antes de instalar, el
+   operador descarga ambos scripts del SHA exacto auditado y los instala,
+   compara y verifica bajo un directorio root-owned:
+
+```bash
+AUDIT_SHA=SHA_DEL_VEREDICTO
+INSTALLER=/usr/local/libexec/jax-office-install-public-release.sh
+VALIDATOR=/usr/local/libexec/jax-office-validate-public-ingress.sh
+installer_tmp=$(mktemp)
+validator_tmp=$(mktemp)
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/install-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$installer_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/validate-public-ingress.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$validator_tmp"
+sudo install -d -o root -g root -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0755 "$installer_tmp" "$INSTALLER"
+sudo install -o root -g root -m 0755 "$validator_tmp" "$VALIDATOR"
+sudo cmp "$installer_tmp" "$INSTALLER"
+sudo cmp "$validator_tmp" "$VALIDATOR"
+sudo test "$(stat -c '%U:%G:%a' "$INSTALLER")" = root:root:755
+sudo test "$(stat -c '%U:%G:%a' "$VALIDATOR")" = root:root:755
+rm -- "$installer_tmp" "$validator_tmp"
+```
+
+   Después se construye e instala con las copias root-owned:
 
 ```bash
 SHA=SHA_COMPLETO_AUDITADO
+MANIFEST_SHA256=SHA256_DEL_MANIFEST_DESDE_EL_VEREDICTO
 BUILD_ROOT=$(mktemp -d)
 python3 ops/frontend/build.py --repo /RUTA/AL/REPO --releases "$BUILD_ROOT" --revision "$SHA"
-sudo ops/virtualoffice/install-public-release.sh \
+sudo "$INSTALLER" \
   --built-release "$BUILD_ROOT/$SHA" \
   --site-root /www/wwwroot/virtualoffice.axioma-ia.io \
   --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
+  --operational-root /www/wwwroot \
   --config /RUTA/AL/virtualoffice.axioma-ia.io.conf \
-  --expected-source-sha "$SHA" --nginx-user www
+  --validator "$VALIDATOR" --expected-source-sha "$SHA" \
+  --expected-manifest-sha256 "$MANIFEST_SHA256" --nginx-user www
 rm -rf -- "$BUILD_ROOT"
 ```
 
 El instalador rechaza un SHA, manifiesto, árbol o enlace que no sea el
-artefacto auditado. Copia a `releases/.SHA.new`, fija `root:root`, directorios
-0755 y archivos 0644, y sólo entonces renombra el directorio. También ejecuta
-la atestación `offline` sobre los bytes ya instalados. Si la atestación falla,
-no se cambia `current`; investigar el release conservado antes de intentar otra
-instalación.
+artefacto auditado, incluidos sockets, pipes y dispositivos. Exige que todos
+los ancestros desde `site-root` hasta `/www/wwwroot` sean `root` y no tengan
+escritura de grupo u otros, antes y después de copiar. Copia a
+`releases/.SHA.new`, fija `root:root`, directorios 0755 y archivos 0644, y sólo
+entonces renombra el directorio. También ejecuta la atestación `offline` sobre
+los bytes ya instalados. Si la atestación falla, no se cambia `current`;
+investigar el release conservado antes de intentar otra instalación.
 2. Instalar la plantilla como un nuevo archivo de vhost de aaPanel, sin editar
    el vhost de `axioma-ia.io`. Ajustar sólo rutas físicas que difieran de la
    plantilla y registrar el diff.

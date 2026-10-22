@@ -3,13 +3,18 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-installer="$root/install-public-release.sh"
-config="$root/virtualoffice.axioma-ia.io.conf"
 [[ ${EUID:-$(id -u)} == 0 ]] || { echo 'SKIP: requires root for ownership fixtures'; exit 77; }
 
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 chmod 755 "$fixture"
+trusted="$fixture/root-libexec"
+install -d -o root -g root -m 0755 "$trusted"
+install -o root -g root -m 0755 "$root/install-public-release.sh" "$trusted/install-public-release.sh"
+install -o root -g root -m 0755 "$root/validate-public-ingress.sh" "$trusted/validate-public-ingress.sh"
+installer="$trusted/install-public-release.sh"
+validator="$trusted/validate-public-ingress.sh"
+config="$root/virtualoffice.axioma-ia.io.conf"
 
 make_built_release() {
   local sha=$1 release="$fixture/built/$1"
@@ -29,9 +34,11 @@ make_built_release "$good"
 chown -R nobody:nogroup "$fixture/built"
 chown -R root:root "$fixture/site"
 chmod -R go-w "$fixture/site"
+manifest=$(sha256sum "$fixture/built/$good/manifest.json" | awk '{print $1}')
 
 "$installer" --built-release "$fixture/built/$good" --site-root "$fixture/site" \
-  --releases-root "$fixture/site/releases" --config "$config" --expected-source-sha "$good" --nginx-user nobody >/dev/null
+  --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$good" --expected-manifest-sha256 "$manifest" --nginx-user nobody >/dev/null
 target="$fixture/site/releases/$good"
 [[ $(stat -c '%U:%G:%a' "$target") == root:root:755 ]]
 [[ $(stat -c '%U:%G:%a' "$target/manifest.json") == root:root:644 ]]
@@ -39,12 +46,38 @@ target="$fixture/site/releases/$good"
 if runuser -u nobody -- sh -c "printf changed >> '$target/dist/index.html'" 2>/dev/null; then
   echo 'unexpected write to immutable asset' >&2; exit 1
 fi
+if "$installer" --built-release "$fixture/built/$good" --site-root "$fixture/site" \
+  --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$good" \
+  --expected-manifest-sha256 "0000000000000000000000000000000000000000000000000000000000000000" --nginx-user nobody >/dev/null 2>&1; then
+  echo 'unexpected self-attested manifest install' >&2; exit 1
+fi
 
 make_built_release "$bad"
 ln -s /etc/passwd "$fixture/built/$bad/dist/leak"
 if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site" \
-  --releases-root "$fixture/site/releases" --config "$config" --expected-source-sha "$bad" --nginx-user nobody >/dev/null 2>&1; then
+  --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$bad" \
+  --expected-manifest-sha256 "$(sha256sum "$fixture/built/$bad/manifest.json" | awk '{print $1}')" --nginx-user nobody >/dev/null 2>&1; then
   echo 'unexpected symlink release install' >&2; exit 1
 fi
 [[ ! -e "$fixture/site/releases/$bad" && ! -L "$fixture/site/releases/$bad" ]]
+rm "$fixture/built/$bad/dist/leak"
+mkfifo "$fixture/built/$bad/dist/pipe"
+if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site" \
+  --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$bad" \
+  --expected-manifest-sha256 "$(sha256sum "$fixture/built/$bad/manifest.json" | awk '{print $1}')" --nginx-user nobody >/dev/null 2>&1; then
+  echo 'unexpected special-file release install' >&2; exit 1
+fi
+[[ ! -e "$fixture/site/releases/$bad" && ! -L "$fixture/site/releases/$bad" ]]
+rm "$fixture/built/$bad/dist/pipe"
+chmod g+w "$fixture"
+if "$installer" --built-release "$fixture/built/$bad" --site-root "$fixture/site" \
+  --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
+  --validator "$validator" --expected-source-sha "$bad" \
+  --expected-manifest-sha256 "$(sha256sum "$fixture/built/$bad/manifest.json" | awk '{print $1}')" --nginx-user nobody >/dev/null 2>&1; then
+  echo 'unexpected writable operational ancestor' >&2; exit 1
+fi
+chmod g-w "$fixture"
 echo 'public release installer fixtures passed'
