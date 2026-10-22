@@ -379,7 +379,7 @@ async def _assert_v14_definer_privileges(cur, contract: ActivationContract) -> N
         (user, host),
     )
     expected = ("N",) * 18 + ("Y",) + ("N",) * 2 + (schema,)
-    if tuple(await cur.fetchone() or ()) != expected:
+    if tuple(await cur.fetchall()) != (expected,):
         raise RuntimeError("critic-trust v14 trigger definer schema privileges are incompatible")
     for table in ("tables_priv", "columns_priv", "procs_priv", "roles_mapping"):
         await cur.execute(f"SELECT 1 FROM mysql.{table} WHERE User=%s AND Host=%s LIMIT 1", (user, host))

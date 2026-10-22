@@ -125,7 +125,7 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 assert await _revision(cur, "virtual-office-critic-trust") is None
                 await cur.execute("ALTER USER `critic_v14_owner`@'localhost' ACCOUNT LOCK")
-                extra_schema = f"office_critic_v14_extra_{uuid.uuid4().hex[:12]}"
+                extra_schema = f"zz_office_critic_v14_extra_{uuid.uuid4().hex[:12]}"
                 await cur.execute(f"CREATE DATABASE `{extra_schema}`")
                 try:
                     await cur.execute(f"GRANT SELECT ON `{extra_schema}`.* TO `critic_v14_owner`@'localhost'")
@@ -171,6 +171,15 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
+                # A ready seal is invalidated before mutable v13 authority is
+                # examined, so a v13 drift cannot remain falsely ready.
+                await cur.execute("UPDATE office_schema_revision SET revision='wrong-v13' WHERE component='virtual-office'")
+                with pytest.raises(RuntimeError, match="global Office marker"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "invalid")
+                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (RUNTIME_REVISION,))
+                await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "ready")
                 # Prove each replacement overlaps independently-issued DML.
                 # A holds table MDL without a row lock; B is observed waiting
                 # to replace the trigger; C then issues the matching DML.  The
@@ -201,45 +210,73 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                 before_race = await snapshot()
                 blocker = await dedicated()
                 replacer = await dedicated()
-                contender = await dedicated()
                 fresh = await dedicated()
+                contenders = [await dedicated() for _ in range(4)]
                 try:
-                    async with blocker.cursor() as blocker_cur, replacer.cursor() as replacer_cur, contender.cursor() as contender_cur, fresh.cursor() as fresh_cur:
-                        await replacer_cur.execute("SELECT CONNECTION_ID()")
-                        replacer_id = (await replacer_cur.fetchone())[0]
-                        definer = contract.trigger_definer
-                        for name, table, operation, statement in trust._trigger_definitions():
-                            dml = (
-                                f"UPDATE `{table}` SET " + ("purpose='rights.review'" if table.endswith("key") else "revoked_at=revoked_at") +
-                                " WHERE key_id='key-preserved'"
-                                if operation == "UPDATE" else f"DELETE FROM `{table}` WHERE key_id='key-preserved'"
+                    async with blocker.cursor() as blocker_cur, replacer.cursor() as replacer_cur, fresh.cursor() as fresh_cur:
+                        contender_cursors = [await connection.cursor() for connection in contenders]
+                        try:
+                            await replacer_cur.execute("SELECT CONNECTION_ID()")
+                            replacer_id = (await replacer_cur.fetchone())[0]
+                            contender_ids = []
+                            for contender_cur in contender_cursors:
+                                await contender_cur.execute("SELECT CONNECTION_ID()")
+                                contender_ids.append((await contender_cur.fetchone())[0])
+                            dmls = (
+                                "UPDATE office_trusted_critic_key SET purpose='rights.review' WHERE key_id='key-preserved'",
+                                "DELETE FROM office_trusted_critic_key WHERE key_id='key-preserved'",
+                                "UPDATE office_trusted_critic_key_revocation SET revoked_at=revoked_at WHERE key_id='key-preserved'",
+                                "DELETE FROM office_trusted_critic_key_revocation WHERE key_id='key-preserved'",
                             )
-                            await assert_append_error(contender_cur, dml)
-                            await blocker_cur.execute("START TRANSACTION")
-                            await blocker_cur.execute(f"SELECT 1 FROM `{table}` LIMIT 0 LOCK IN SHARE MODE")
-                            replacing = asyncio.create_task(replacer_cur.execute(
-                                f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
-                                f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
-                            ))
-                            for _ in range(100):
-                                await cur.execute("SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=%s", (replacer_id,))
-                                state = (await cur.fetchone() or ("",))[0] or ""
-                                if "metadata lock" in state.lower():
-                                    break
-                                await asyncio.sleep(0.01)
-                            else:
-                                raise AssertionError("CREATE OR REPLACE did not wait for the MDL barrier")
-                            contended = asyncio.create_task(contender_cur.execute(dml))
-                            await asyncio.sleep(0)
-                            await blocker_cur.execute("COMMIT")
-                            await replacing
-                            await assert_append_error(contended, allow_deadlock=True)
-                            await assert_append_error(fresh_cur, dml)
+                            definer = contract.trigger_definer
+                            for name, table, operation, statement in trust._trigger_definitions():
+                                for contender_cur, dml in zip(contender_cursors, dmls):
+                                    await assert_append_error(contender_cur, dml)
+                                await blocker_cur.execute("START TRANSACTION")
+                                await blocker_cur.execute(f"SELECT 1 FROM `{table}` LIMIT 0 LOCK IN SHARE MODE")
+                                replacing = asyncio.create_task(replacer_cur.execute(
+                                    f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+                                    f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+                                ))
+                                for _ in range(100):
+                                    await cur.execute("SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=%s", (replacer_id,))
+                                    state = (await cur.fetchone() or ("",))[0] or ""
+                                    if "metadata lock" in state.lower():
+                                        break
+                                    await asyncio.sleep(0.01)
+                                else:
+                                    raise AssertionError("CREATE OR REPLACE did not wait for the MDL barrier")
+                                contended = [asyncio.create_task(contender_cur.execute(dml)) for contender_cur, dml in zip(contender_cursors, dmls)]
+                                observed = set()
+                                for _ in range(100):
+                                    for index, (task, connection_id) in enumerate(zip(contended, contender_ids)):
+                                        if task.done():
+                                            observed.add(index)
+                                            continue
+                                        await cur.execute("SELECT STATE,INFO FROM information_schema.PROCESSLIST WHERE ID=%s", (connection_id,))
+                                        row = await cur.fetchone()
+                                        if row is not None and ((row[0] or "") or (row[1] or "")):
+                                            observed.add(index)
+                                    if len(observed) == len(contended):
+                                        break
+                                    await asyncio.sleep(0.01)
+                                if len(observed) != len(contended):
+                                    raise AssertionError("all contended DML statements were not observed by MariaDB")
+                                await blocker_cur.execute("COMMIT")
+                                await replacing
+                                for task in contended:
+                                    await assert_append_error(task, allow_deadlock=True)
+                                for dml in dmls:
+                                    await assert_append_error(fresh_cur, dml)
+                        finally:
+                            for contender_cur in contender_cursors:
+                                await contender_cur.close()
                 finally:
                     blocker.close()
                     replacer.close()
-                    contender.close()
                     fresh.close()
+                    for contender in contenders:
+                        contender.close()
                 assert await snapshot() == before_race
                 await trust._assert_critic_trust_anchor_metadata(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
@@ -319,3 +356,39 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
             conn.close()
     _root_owned_contract_path(monkeypatch, tmp_path / "office-critic-trust-activation-v1.json")
     client.portal.call(scenario)
+
+
+def test_v14_release_lock_preserves_primary_error_and_fails_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A release failure cannot hide a migration failure, but is fatal alone."""
+    class Cursor:
+        def __init__(self): self.statement = ""
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def execute(self, statement, _params=None): self.statement = statement
+        async def fetchone(self): return (1,) if "GET_LOCK" in self.statement else (0,)
+    class Connection:
+        def __init__(self): self.closed = False
+        def get_autocommit(self): return True
+        def cursor(self): return Cursor()
+        def close(self): self.closed = True
+    contract = activation.ActivationContract(
+        "agent:critic", 1, 1, (1,), activation.SOCKET_PATH,
+        activation.DatabaseAccount("guard", "localhost"), activation.DatabaseAccount("owner", "localhost"),
+        "office_v14_unit", "12.3.3", "STRICT_TRANS_TABLES", "utf8mb4", "utf8mb4_general_ci", 1, 1,
+        Path("/unit"), activation.ContractFingerprint(1, 1, 1, 1, "42" * 32),
+    )
+    def no_change(_self): return None
+    async def no_session(_cursor, _contract): return None
+    monkeypatch.setattr(activation.ActivationContract, "assert_unchanged", no_change)
+    async def connect(): return Connection()
+    async def primary(_cursor, _contract): raise RuntimeError("primary-v14-failure")
+    monkeypatch.setattr(trust, "_set_v14_session", no_session)
+    monkeypatch.setattr(trust, "_preflight_v14", primary)
+    with pytest.raises(RuntimeError, match="primary-v14-failure"):
+        asyncio.run(trust.migrate_critic_trust_v14(contract, connect=connect))
+    async def ready(_cursor, _contract): return "ready"
+    async def finalized(_cursor, _contract): return None
+    monkeypatch.setattr(trust, "_preflight_v14", ready)
+    monkeypatch.setattr(trust, "_finalize_v14", finalized)
+    with pytest.raises(RuntimeError, match="lock was not released"):
+        asyncio.run(trust.migrate_critic_trust_v14(contract, connect=connect))
