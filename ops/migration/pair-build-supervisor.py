@@ -35,7 +35,7 @@ def empty_cgroup(group: Path) -> None:
   if (group/'cgroup.procs').read_text(encoding='ascii').strip(): die('builder cgroup not empty')
  finally:
   try: group.rmdir()
-  except OSError: pass
+  except OSError: pass  # fail-soft: preserve the original cgroup failure during cleanup
 def regular(path:Path, mode:int|None=None)->bytes:
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
  try:
@@ -74,11 +74,11 @@ def main()->None:
   empty_cgroup(group)
  except BaseException:
   try: os.close(write_fd)
-  except OSError: pass
+  except OSError: pass  # fail-soft: preserve the original build failure during FD cleanup
   try: os.close(read_fd)
-  except OSError: pass
+  except OSError: pass  # fail-soft: preserve the original build failure during FD cleanup
   try: empty_cgroup(group)
-  except SystemExit: pass
+  except SystemExit: pass  # fail-soft: preserve the original build failure during cgroup cleanup
   raise
  require_quiescent_jaxbuild()
  try: receipt=json.loads(raw)

@@ -27,19 +27,27 @@ def main():
     if os.environ.get('JAX_PAIR_TEST_MODE') == '1' and os.geteuid() == 0 and os.environ.get('JAX_PAIR_TEST_ROOT','').startswith('/tmp/'):
         root = Path(os.environ['JAX_PAIR_TEST_ROOT']); selection = root/'platform-pair-selection.json'
     lock = os.open(root/'.runtime.lock', os.O_RDONLY); fcntl.flock(lock, fcntl.LOCK_SH); os.set_inheritable(lock, True)
+    journal_path = root / 'activation-journal.json'
     try:
-        journal = json.loads((root / 'activation-journal.json').read_text(encoding='utf-8'))
+        journal_stat = journal_path.stat()
+        if not stat.S_ISREG(journal_stat.st_mode) or journal_stat.st_uid != 0 or journal_stat.st_gid != 0 or stat.S_IMODE(journal_stat.st_mode) != 0o644: die()
+        journal = json.loads(journal_path.read_text(encoding='utf-8'))
     except FileNotFoundError:
         journal = None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         die()
-    if journal is not None and journal.get('state') == 'PRE_DDL':
-        die()
+    if journal is not None:
+        expected = {'schema','state','previous_selection_b64','previous_current','target_release','target_manifest_sha256','target_selection_sha256'}
+        if not isinstance(journal, dict) or set(journal) != expected or journal.get('schema') != 'axioma.pair-activation/v1': die()
+        if journal.get('state') != 'DDL_STARTED': die()
     st = selection.stat()
     if stat.S_ISLNK(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o644: die()
     try: x=json.loads(selection.read_text(encoding='utf-8'))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError): die()
     if set(x) != {'release','jax_platform_revision','jax_revision','manifest_sha256'}: die()
+    if journal is not None:
+        digest = __import__('hashlib').sha256(selection.read_bytes()).hexdigest()
+        if journal['target_release'] != x['release'] or journal['target_manifest_sha256'] != x['manifest_sha256'] or journal['target_selection_sha256'] != digest: die()
     release=Path(x['release']).resolve(strict=True); releases=(root/'releases').resolve(strict=True)
     try: current=(root/'current').resolve(strict=True)
     except OSError: die()

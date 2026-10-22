@@ -41,4 +41,4 @@ def test_isolated_child_resolves_validated_backend_modules_without_running_migra
 def test_launcher_refuses_pre_ddl_activation_journal_before_release_execution():
     source = MODULE.read_text(encoding='utf-8')
     assert "activation-journal.json" in source
-    assert "journal.get('state') == 'PRE_DDL'" in source
+    assert "journal.get('state') != 'DDL_STARTED'" in source

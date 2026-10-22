@@ -136,6 +136,14 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     assert journal["schema"] == "axioma.pair-activation/v1"
     assert journal["state"] == "PRE_DDL"
     assert (root / "current").resolve() == release
+    for mode in ("migrate", "web"):
+        blocked = subprocess.run(
+            ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}",
+             "/usr/bin/python3", "-I", "-S", str(MIGRATION / "jax-platform-pair-exec.py"), mode, str(credential)],
+            text=True, capture_output=True, check=False,
+        )
+        assert blocked.returncode != 0
+    assert not migration_started.exists()
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 5
     while not calls.exists() and time.monotonic() < deadline:
