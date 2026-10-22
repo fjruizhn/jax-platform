@@ -50,6 +50,7 @@ if any(not values.get(key) or '\n' in values[key] or '\r' in values[key] for key
 path = Path(sys.argv[1])
 with path.open('x') as file:
     os.fchmod(file.fileno(), 0o600)
+    file.write('[client]\n')
     for option, key in (('host', 'JAX_DB_HOST'), ('port', 'JAX_DB_PORT'), ('user', 'JAX_DB_USER'), ('password', 'JAX_DB_PASSWORD')):
         file.write(f'{option}={values[key]}\n')
 PY
