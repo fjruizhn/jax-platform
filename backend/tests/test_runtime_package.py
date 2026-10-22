@@ -114,3 +114,15 @@ def test_failed_rollback_is_recovery_required(tmp_path, monkeypatch):
     monkeypatch.setattr(rp, "restore", lambda *_: (_ for _ in ()).throw(OSError("disk")))
     with pytest.raises(rp.PackageError, match="RECOVERY_REQUIRED"):
         rp.import_package(bundle, digest, tmp_path / "destination", tmp_path / "backup", lambda: (_ for _ in ()).throw(RuntimeError("verify")), package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+
+
+def test_import_uses_bytes_sealed_before_path_replacement(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"sealed", "0755")])
+    original = rp._destinations
+    def replace_after_load(data, root):
+        (bundle / "helpers/jax-platform-pair-exec").write_bytes(b"replacement")
+        return original(data, root)
+    monkeypatch.setattr(rp, "_destinations", replace_after_load)
+    root = tmp_path / "destination"
+    rp.import_package(bundle, digest, root, tmp_path / "backup", lambda: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert (root / "usr/local/libexec/jax-platform-pair-exec").read_bytes() == b"sealed"

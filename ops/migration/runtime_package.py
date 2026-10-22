@@ -92,7 +92,7 @@ def _canonical_manifest(raw: bytes, expected_digest: str) -> dict[str, object]:
     return data
 
 
-def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: int = 0) -> dict[str, object]:
+def _load(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: int = 0) -> tuple[dict[str, object], dict[str, bytes]]:
     """Validate every package byte and its closed destination contract."""
     _safe_node(root, directory=True, owner_uid=owner_uid, owner_gid=owner_gid)
     manifest = root / "manifest.json"
@@ -102,6 +102,7 @@ def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid:
     if not isinstance(payload, list) or not payload:
         raise PackageError("payload")
     paths: list[str] = []
+    sealed_bytes: dict[str, bytes] = {}
     for item in payload:
         if not isinstance(item, dict) or set(item) != {"path", "role", "sha256", "size", "mode", "owner"}:
             raise PackageError("entry")
@@ -115,9 +116,11 @@ def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid:
             raise PackageError("entry metadata")
         entry = root / path
         value = _safe_node(entry, owner_uid=owner_uid, owner_gid=owner_gid)
-        if value.st_size != item["size"] or f"{stat.S_IMODE(value.st_mode):04o}" != required_mode or _sha(entry) != item["sha256"]:
+        contents = entry.read_bytes()
+        if value.st_size != item["size"] or len(contents) != item["size"] or f"{stat.S_IMODE(value.st_mode):04o}" != required_mode or hashlib.sha256(contents).hexdigest() != item["sha256"]:
             raise PackageError("payload mismatch")
         paths.append(path)
+        sealed_bytes[path] = contents
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise PackageError("payload order")
     if not _REQUIRED_PATHS.issubset(paths):
@@ -134,7 +137,12 @@ def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid:
             actual.add(entry.relative_to(root).as_posix())
     if actual != set(paths) | {"manifest.json"}:
         raise PackageError("extra payload")
-    return data
+    return data, sealed_bytes
+
+
+def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: int = 0) -> dict[str, object]:
+    """Validate every package byte and its closed destination contract."""
+    return _load(root, expected_digest, owner_uid=owner_uid, owner_gid=owner_gid)[0]
 
 
 def _write_file(path: Path, contents: bytes, *, mode: int, uid: int, gid: int) -> None:
@@ -239,7 +247,7 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
                    package_owner_uid: int = 0, package_owner_gid: int = 0,
                    install_owner_uid: int = 0, install_owner_gid: int = 0) -> None:
     """Commit all files, D-Bus verification included, or restore every file."""
-    data = validate(bundle, digest, owner_uid=package_owner_uid, owner_gid=package_owner_gid)
+    data, sealed_bytes = _load(bundle, digest, owner_uid=package_owner_uid, owner_gid=package_owner_gid)
     destinations = _destinations(data, destination_root)
     snapshot(destinations, backup)
     declared = {entry["path"] for entry in data["payload"] if isinstance(entry, dict)}
@@ -249,7 +257,7 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
             assert isinstance(item, dict)
             path, destination = item["path"], destinations[item["path"]]
             assert isinstance(path, str)
-            _write_file(destination, (bundle / path).read_bytes(), mode=int(item["mode"], 8), uid=install_owner_uid, gid=install_owner_gid)
+            _write_file(destination, sealed_bytes[path], mode=int(item["mode"], 8), uid=install_owner_uid, gid=install_owner_gid)
             swaps += 1
             if fail_after == swaps:
                 raise PackageError("injected swap failure")
