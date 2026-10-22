@@ -278,9 +278,8 @@ async def migrate_critic_trust_v14(contract: ActivationContract, *, connect=dedi
                 raise RuntimeError("critic-trust v14 migration lock is unavailable")
             prior = await _preflight_v14(cur, contract)
             if prior == "ready":
-                # A ready seal is never trusted across an unattended re-attestation:
-                # interruption or drift leaves the separately durable invalid state.
-                await _transition_ready_to_invalid(cur, contract)
+                # Preflight already performed the ready→invalid CAS before any
+                # environment attestation; interruption or drift stays invalid.
                 await _finalize_v14(cur, contract)
                 return
             await _write_v14_marker(cur, contract, "invalid")
@@ -321,9 +320,28 @@ async def _set_v14_session(cur, contract: ActivationContract) -> None:
 
 
 async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
-    await cur.execute("SELECT DATABASE(),VERSION()")
-    database, version = await cur.fetchone()
-    if database != contract.database_schema or str(version).split("-", 1)[0] != contract.database_server_version:
+    # Identity is the sole pre-CAS attestation: a connection to another schema
+    # must never mutate its marker.  A known ready marker becomes durable
+    # invalid before any mutable-environment or metadata attestation.
+    await cur.execute("SELECT DATABASE()")
+    if tuple(await cur.fetchone() or ()) != (contract.database_schema,):
+        raise RuntimeError("critic-trust v14 database identity is incompatible")
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (_V14_COMPONENT,))
+    marker = await cur.fetchone()
+    state = None if marker is None else marker[0]
+    known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
+    if state not in known:
+        raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
+    if state == _v14_descriptor(contract, "ready"):
+        await _transition_ready_to_invalid(cur, contract)
+        return "ready"
+    await _assert_v14_preconditions(cur, contract)
+    return "invalid" if state is not None else None
+
+
+async def _assert_v14_preconditions(cur, contract: ActivationContract) -> None:
+    await cur.execute("SELECT VERSION()")
+    if str((await cur.fetchone() or ("",))[0]).split("-", 1)[0] != contract.database_server_version:
         raise RuntimeError("critic-trust v14 database identity is incompatible")
     await cur.execute(
         "SELECT DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=DATABASE()"
@@ -334,16 +352,8 @@ async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
     from virtual_office.migrations import RUNTIME_REVISION
     if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
         raise RuntimeError("critic-trust v14 requires the exact global Office v13 marker")
-    await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (_V14_COMPONENT,))
-    marker = await cur.fetchone()
-    state = None if marker is None else marker[0]
-    known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
-    if state not in known:
-        raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
     await _assert_v14_definer_privileges(cur, contract)
-    if state != _v14_descriptor(contract, "ready"):
-        await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
-    return "ready" if state == _v14_descriptor(contract, "ready") else "invalid" if state is not None else None
+    await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
 
 
 async def _assert_v14_definer_privileges(cur, contract: ActivationContract) -> None:
@@ -365,10 +375,10 @@ async def _assert_v14_definer_privileges(cur, contract: ActivationContract) -> N
         "SELECT Select_priv,Insert_priv,Update_priv,Delete_priv,Create_priv,Drop_priv,Grant_priv,References_priv,"
         "Index_priv,Alter_priv,Create_tmp_table_priv,Lock_tables_priv,Create_view_priv,Show_view_priv,"
         "Create_routine_priv,Alter_routine_priv,Execute_priv,Event_priv,Trigger_priv,Delete_history_priv,"
-        "Show_create_routine_priv FROM mysql.db WHERE User=%s AND Host=%s AND Db=%s",
-        (user, host, schema),
+        "Show_create_routine_priv,Db FROM mysql.db WHERE User=%s AND Host=%s ORDER BY Db",
+        (user, host),
     )
-    expected = ("N",) * 18 + ("Y",) + ("N",) * 2
+    expected = ("N",) * 18 + ("Y",) + ("N",) * 2 + (schema,)
     if tuple(await cur.fetchone() or ()) != expected:
         raise RuntimeError("critic-trust v14 trigger definer schema privileges are incompatible")
     for table in ("tables_priv", "columns_priv", "procs_priv", "roles_mapping"):

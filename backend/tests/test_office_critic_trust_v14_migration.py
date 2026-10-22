@@ -125,18 +125,28 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 assert await _revision(cur, "virtual-office-critic-trust") is None
                 await cur.execute("ALTER USER `critic_v14_owner`@'localhost' ACCOUNT LOCK")
+                extra_schema = f"office_critic_v14_extra_{uuid.uuid4().hex[:12]}"
+                await cur.execute(f"CREATE DATABASE `{extra_schema}`")
+                try:
+                    await cur.execute(f"GRANT SELECT ON `{extra_schema}`.* TO `critic_v14_owner`@'localhost'")
+                    with pytest.raises(RuntimeError, match="schema privileges"):
+                        await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                    assert await _revision(cur, "virtual-office-critic-trust") is None
+                finally:
+                    await cur.execute(f"REVOKE SELECT ON `{extra_schema}`.* FROM `critic_v14_owner`@'localhost'")
+                    await cur.execute(f"DROP DATABASE `{extra_schema}`")
 
                 # The dedicated connection must reject an authorized profile
                 # whose target identity/version does not match its actual DB,
                 # before it can create a critic marker or execute DDL.
-                with pytest.raises(RuntimeError, match="database identity"):
-                    await trust.migrate_critic_trust_v14(
-                        replace(contract, database_schema="other_schema"), connect=dedicated,
-                    )
-                with pytest.raises(RuntimeError, match="database identity"):
-                    await trust.migrate_critic_trust_v14(
-                        replace(contract, database_server_version="0.0.0"), connect=dedicated,
-                    )
+                for forged in (
+                    replace(contract, database_schema="other_schema"),
+                    replace(contract, database_server_version="0.0.0"),
+                    replace(contract, database_sql_mode="ANSI"),
+                    replace(contract, trigger_definer=activation.DatabaseAccount("forged_owner", "localhost")),
+                ):
+                    with pytest.raises(activation.ActivationContractChanged, match="changed after validation"):
+                        await trust.migrate_critic_trust_v14(forged, connect=dedicated)
                 assert await _revision(cur, "virtual-office-critic-trust") is None
                 await cur.execute(
                     "INSERT INTO office_schema_revision VALUES (%s,%s,NOW(6))",
@@ -161,51 +171,80 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
-                # Exercise every atomic replacement while four independent
-                # append-only DML statements run at deterministic barriers.
-                # The test fails if any replacement exposes a mutable table.
-                barriers = [asyncio.Event() for _ in trust._trigger_definitions()]
-                replaced = asyncio.Queue()
-                original_replace = trust._replace_v14_triggers
+                # Prove each replacement overlaps independently-issued DML.
+                # A holds table MDL without a row lock; B is observed waiting
+                # to replace the trigger; C then issues the matching DML.  The
+                # server may queue C behind DDL (then it must hit the new
+                # trigger) or reject it early as a deadlock; neither path may
+                # mutate history.
+                async def assert_append_error(task_or_cursor, statement=None, *, allow_deadlock=False):
+                    try:
+                        if statement is None:
+                            await task_or_cursor
+                        else:
+                            await task_or_cursor.execute(statement)
+                    except aiomysql.OperationalError as error:
+                        if error.args[0] == 1644 and "append-only" in str(error):
+                            return
+                        if allow_deadlock and error.args[0] == 1213:
+                            return
+                        raise
+                    raise AssertionError("append-only DML unexpectedly succeeded")
 
-                async def interleaved_replace(cursor, active_contract):
-                    definer = active_contract.trigger_definer
-                    for index, (name, table, operation, statement) in enumerate(trust._trigger_definitions()):
-                        await cursor.execute(
-                            f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
-                            f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
-                        )
-                        await replaced.put(index)
-                        await barriers[index].wait()
+                async def snapshot():
+                    result = []
+                    for table in trust._APPEND_ONLY:
+                        await cur.execute(f"SELECT * FROM `{table}` ORDER BY key_id")
+                        result.append(await cur.fetchall())
+                    return tuple(result)
 
-                await cur.execute(
-                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
-                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
-                )
-                monkeypatch.setattr(trust, "_replace_v14_triggers", interleaved_replace)
-                migrating = asyncio.create_task(trust.migrate_critic_trust_v14(contract, connect=dedicated))
-                for index in range(4):
-                    assert await replaced.get() == index
-                    for statement in (
-                        "UPDATE office_trusted_critic_key SET purpose=purpose WHERE key_id='key-preserved'",
-                        "DELETE FROM office_trusted_critic_key WHERE key_id='key-preserved'",
-                        "UPDATE office_trusted_critic_key_revocation SET revoked_at=revoked_at WHERE key_id='key-preserved'",
-                        "DELETE FROM office_trusted_critic_key_revocation WHERE key_id='key-preserved'",
-                    ):
-                        with pytest.raises(aiomysql.OperationalError, match="append-only") as blocked:
-                            await cur.execute(statement)
-                        assert blocked.value.args[0] == 1644
-                    barriers[index].set()
-                await migrating
-                monkeypatch.setattr(trust, "_replace_v14_triggers", original_replace)
+                before_race = await snapshot()
+                blocker = await dedicated()
+                replacer = await dedicated()
+                contender = await dedicated()
+                fresh = await dedicated()
+                try:
+                    async with blocker.cursor() as blocker_cur, replacer.cursor() as replacer_cur, contender.cursor() as contender_cur, fresh.cursor() as fresh_cur:
+                        await replacer_cur.execute("SELECT CONNECTION_ID()")
+                        replacer_id = (await replacer_cur.fetchone())[0]
+                        definer = contract.trigger_definer
+                        for name, table, operation, statement in trust._trigger_definitions():
+                            dml = (
+                                f"UPDATE `{table}` SET " + ("purpose='rights.review'" if table.endswith("key") else "revoked_at=revoked_at") +
+                                " WHERE key_id='key-preserved'"
+                                if operation == "UPDATE" else f"DELETE FROM `{table}` WHERE key_id='key-preserved'"
+                            )
+                            await assert_append_error(contender_cur, dml)
+                            await blocker_cur.execute("START TRANSACTION")
+                            await blocker_cur.execute(f"SELECT 1 FROM `{table}` LIMIT 0 LOCK IN SHARE MODE")
+                            replacing = asyncio.create_task(replacer_cur.execute(
+                                f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+                                f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+                            ))
+                            for _ in range(100):
+                                await cur.execute("SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=%s", (replacer_id,))
+                                state = (await cur.fetchone() or ("",))[0] or ""
+                                if "metadata lock" in state.lower():
+                                    break
+                                await asyncio.sleep(0.01)
+                            else:
+                                raise AssertionError("CREATE OR REPLACE did not wait for the MDL barrier")
+                            contended = asyncio.create_task(contender_cur.execute(dml))
+                            await asyncio.sleep(0)
+                            await blocker_cur.execute("COMMIT")
+                            await replacing
+                            await assert_append_error(contended, allow_deadlock=True)
+                            await assert_append_error(fresh_cur, dml)
+                finally:
+                    blocker.close()
+                    replacer.close()
+                    contender.close()
+                    fresh.close()
+                assert await snapshot() == before_race
                 await trust._assert_critic_trust_anchor_metadata(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
-                await cur.execute("SELECT key_id FROM office_trusted_critic_key ORDER BY key_id")
-                assert await cur.fetchall() == (("key-preserved",),)
-                await cur.execute("SELECT key_id FROM office_trusted_critic_key_revocation ORDER BY key_id")
-                assert await cur.fetchall() == (("key-preserved",),)
 
                 # Two independent dedicated connections serialize on the
                 # schema-derived advisory lock; neither can publish a partial

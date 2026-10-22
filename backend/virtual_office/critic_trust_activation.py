@@ -89,7 +89,7 @@ class ActivationContract:
     def assert_unchanged(self) -> None:
         """Invalidate this object when locator metadata or bytes have changed."""
         replacement = load_activation_contract(self.path)
-        if replacement.fingerprint != self.fingerprint:
+        if replacement != self:
             raise ActivationContractChanged("critic-trust activation contract changed after validation")
 
 
