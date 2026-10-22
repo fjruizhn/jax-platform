@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -271,20 +272,40 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
 
 
+def _errores_de_validacion_sin_entrada(errors: list[dict]) -> list[dict]:
+    """Expose field metadata only; Pydantic's ``input`` can carry a secret."""
+    return [
+        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        for error in errors
+    ]
+
+
+async def _es_login_json_vacio(request: Request) -> bool:
+    """Only the historical ``{}`` login request may receive field hints."""
+    media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    if media_type != "application/json":
+        return False
+    try:
+        return json.loads(await request.body()) == {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+
 @app.exception_handler(RequestValidationError)
 async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
     """MFA bearer/OTP/password validation must never echo a submitted secret."""
     # A completely empty Classic login has no submitted credential to protect.
     # It historically returned FastAPI's normal list-shaped 422, which older
     # clients use to render missing-field hints.  Keep that contract narrowly:
-    # as soon as there is any non-missing validation failure, including a
-    # malformed credential value, retain the opaque no-store response.
+    # as soon as there is any supplied body value, including a partial
+    # credential, retain the opaque no-store response.
     errors = _exc.errors()
     if (request.url.path == "/api/auth/login"
             and errors
-            and all(error.get("type") == "missing" for error in errors)):
+            and all(error.get("type") == "missing" for error in errors)
+            and await _es_login_json_vacio(request)):
         return JSONResponse(
-            status_code=422, content={"detail": errors},
+            status_code=422, content={"detail": _errores_de_validacion_sin_entrada(errors)},
             headers={"Cache-Control": "no-store"},
         )
     if request.url.path.startswith("/api/auth/"):
@@ -292,7 +313,7 @@ async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
             status_code=422, content={"detail": "mfa_invalid_request" if request.url.path.startswith("/api/auth/mfa/") else "auth_invalid_request"},
             headers={"Cache-Control": "no-store"},
         )
-    return JSONResponse(status_code=422, content={"detail": errors})
+    return JSONResponse(status_code=422, content={"detail": _errores_de_validacion_sin_entrada(errors)})
 
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).

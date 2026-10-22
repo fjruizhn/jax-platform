@@ -415,6 +415,32 @@ def test_auth_validation_keeps_missing_classic_login_fields_machine_readable(cli
     assert {tuple(error["loc"]) for error in response.json()["detail"]} == {
         ("body", "email"), ("body", "password"),
     }
+    assert all("input" not in error for error in response.json()["detail"])
+
+
+@pytest.mark.parametrize("payload", [
+    {"password": "secret-SENTINEL-partial-password"},
+    {"email": "secret-SENTINEL-partial-email"},
+    {
+        "email": ["secret-SENTINEL-extra"],
+        "password": "secret-SENTINEL-extra",
+        "extra": "secret-SENTINEL-extra",
+    },
+])
+def test_auth_validation_never_exposes_partial_or_extra_login_body(client, payload):
+    marker = next(value for value in payload.values() if isinstance(value, str) and value.startswith("secret-"))
+    response = client.post("/api/auth/login", json=payload)
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"detail": "auth_invalid_request"}
+    assert marker not in response.text
+
+
+def test_auth_validation_does_not_treat_empty_form_login_as_safe_json(client):
+    response = client.post("/api/auth/login", data={})
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"detail": "auth_invalid_request"}
 
 
 def test_reenrollment_http_preserves_active_factor_until_confirmation(client, monkeypatch):
