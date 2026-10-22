@@ -1695,6 +1695,7 @@ export default {
     newPasswordIntro: 'Choose a password for your new account.', newPassword: 'New password', confirmPassword: 'Confirm password',
     passwordMismatch: 'Passwords do not match.', accept: 'Accept invitation', accepting: 'Accepting invitation…',
     accepted: 'The invitation was accepted.', error: 'The invitation could not be accepted. Check the link and try again.',
+    login: 'Sign in', loginRequired: 'Sign in to continue with the invitation.', ambiguous: 'We could not confirm the result. Sign in to recover access; do not submit the invitation again.',
     manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
     send: 'Send invitation', revoke: 'Revoke invitation', revokeFor: (email) => `Revoke invitation for ${email}`,
     revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.', refreshError: 'The invitation was saved, but the list could not be refreshed.',

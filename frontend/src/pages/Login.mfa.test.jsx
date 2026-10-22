@@ -40,6 +40,18 @@ describe('Login MFA', () => {
     fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/virtual-office'))
   })
+  it('returns an invitation sign-in to the protected acceptance route after MFA', async () => {
+    verify.mockResolvedValue({ data: { access_token: 'new', account_class: 'OFFICE_INTERNAL' } })
+    show({ pathname: '/login', state: { officeInvitationFlow: 'accept' } }); credentials(); await screen.findByLabelText('Código de autenticación')
+    fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/office/invitation'))
+  })
+  it('takes an ambiguous invitation recovery to Virtual Office after MFA', async () => {
+    verify.mockResolvedValue({ data: { access_token: 'new', account_class: 'OFFICE_INTERNAL' } })
+    show({ pathname: '/login', state: { officeInvitationFlow: 'recovery' } }); credentials(); await screen.findByLabelText('Código de autenticación')
+    fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/virtual-office'))
+  })
   it('cancel clears the challenge and returns to password entry', async () => {
     show(); credentials(); await screen.findByLabelText('Código de autenticación'); fireEvent.click(screen.getByText(/Volver al inicio/))
     expect(await screen.findByPlaceholderText('nombre@empresa.com')).toBeInTheDocument()

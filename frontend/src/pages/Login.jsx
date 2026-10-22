@@ -64,7 +64,12 @@ export default function Login() {
   const clearTransient = () => { setChallenge(null); setEnrollment(null); setEnrollmentUnknown(false); setOtp(''); setRecoveryCode(''); setRecoveryPending(false); setRecoveryTerminal(false) }
   const cancel = () => { generation.current += 1; clearTransient(); setConfirmAbandonRecovery(false); setError(''); setView('login') }
   const requestCancel = () => recoveryPending ? setConfirmAbandonRecovery(true) : cancel()
-  const destination = (data) => navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
+  const destination = (data) => {
+    const invitationFlow = location.state?.officeInvitationFlow
+    if (invitationFlow === 'recovery') return navigate('/virtual-office')
+    if (invitationFlow === 'accept') return navigate('/office/invitation')
+    return navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
+  }
   async function submitLogin(e) {
     e.preventDefault(); setError(''); clearAvisoSesion(); setLoading(true); const request = ++generation.current; const epoch = sessionEpoch
     try {

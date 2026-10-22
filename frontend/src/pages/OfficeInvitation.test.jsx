@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 
@@ -10,13 +10,15 @@ vi.mock('../api/virtualOffice', () => ({ officeInvitationsApi: invitations }))
 
 import OfficeInvitation from './OfficeInvitation'
 
+function Location() { return <div data-testid="location">{useLocation().pathname}</div> }
 function show(hash = '#token=opaque-bearer') {
   window.history.replaceState({}, '', `/office/invitation${hash}`)
-  return render(<I18nProvider><MemoryRouter><OfficeInvitation /></MemoryRouter></I18nProvider>)
+  return render(<I18nProvider><MemoryRouter><OfficeInvitation /><Location /></MemoryRouter></I18nProvider>)
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  window.sessionStorage.clear()
   useJaxStore.setState({ token: null, user: null, sessionRestoring: false, _sessionEpoch: 1 })
 })
 
@@ -89,5 +91,40 @@ describe('Office invitation acceptance', () => {
     show('')
     expect(screen.getByRole('alert')).toHaveTextContent('El enlace de invitación no es válido.')
     expect(screen.queryByRole('button', { name: 'Aceptar invitación' })).not.toBeInTheDocument()
+  })
+
+  it('offers a neutral login path while retaining the bearer only in session memory', () => {
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/login')
+    expect(document.location.search).toBe('')
+    expect(document.location.hash).toBe('')
+    expect(window.sessionStorage.getItem('office-invitation-token-v1')).toBe('opaque-bearer')
+  })
+
+  it('handles existing_session_required without revealing account existence and sends the visitor to login', async () => {
+    invitations.accept.mockRejectedValue({ response: { status: 409, data: { detail: { code: 'existing_session_required' } } } })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Crear mi cuenta' }))
+    fireEvent.change(screen.getByLabelText('Contraseña nueva'), { target: { value: 'una-clave-segura' } })
+    fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: 'una-clave-segura' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Iniciá sesión para continuar con la invitación.')
+    expect(screen.queryByText(/cuenta existente/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/login')
+  })
+
+  it('treats a lost create-and-accept response as ambiguous and prevents a retry', async () => {
+    invitations.accept.mockRejectedValue(new Error('network lost'))
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Crear mi cuenta' }))
+    fireEvent.change(screen.getByLabelText('Contraseña nueva'), { target: { value: 'una-clave-segura' } })
+    fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: 'una-clave-segura' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('No pudimos confirmar el resultado. Iniciá sesión para recuperar el acceso; no reenvíes la invitación.')
+    expect(screen.queryByRole('button', { name: 'Aceptar invitación' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar sesión' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/login')
   })
 })

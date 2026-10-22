@@ -1,16 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import { officeInvitationsApi } from '../api/virtualOffice'
 import PasswordInput from '../components/PasswordInput'
 import { problemaDePassword } from '../lib/reglasPassword'
 import { TAMANO_BOTON_ACCION } from '../tema/botones'
+import { codigoDe } from '../api/errores'
 
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
+const INVITATION_TOKEN_KEY = 'office-invitation-token-v1'
 
 function tokenFromFragment(hash) {
   const value = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash).get('token')
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function invitationToken() {
+  const fragmentToken = tokenFromFragment(window.location.hash)
+  if (fragmentToken) {
+    window.sessionStorage.setItem(INVITATION_TOKEN_KEY, fragmentToken)
+    return fragmentToken
+  }
+  return window.sessionStorage.getItem(INVITATION_TOKEN_KEY)
 }
 
 export default function OfficeInvitation() {
@@ -19,7 +31,8 @@ export default function OfficeInvitation() {
   const sessionRestoring = useJaxStore((s) => s.sessionRestoring)
   const sessionEpoch = useJaxStore((s) => s._sessionEpoch)
   const sessionToken = useJaxStore((s) => s.token)
-  const [token] = useState(() => tokenFromFragment(window.location.hash))
+  const navigate = useNavigate()
+  const [token] = useState(invitationToken)
   const [newAccount, setNewAccount] = useState(false)
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -72,15 +85,23 @@ export default function OfficeInvitation() {
       if (!sameSession() || requestRef.current !== controller) return
       setPassword('')
       setConfirm('')
+      window.sessionStorage.removeItem(INVITATION_TOKEN_KEY)
       setResult('accepted')
-    } catch {
-      if (sameSession() && requestRef.current === controller) setResult('error')
+    } catch (err) {
+      if (!sameSession() || requestRef.current !== controller) return
+      if (err?.response?.status === 409 && codigoDe(err) === 'existing_session_required') setResult('login')
+      else if (!err?.response || err?.response?.status >= 500) setResult('ambiguous')
+      else setResult('error')
     } finally {
       if (requestRef.current === controller) {
         requestRef.current = null
         if (sameSession()) setLoading(false)
       }
     }
+  }
+
+  function continueWithLogin(recovery) {
+    navigate('/login', { state: { officeInvitationFlow: recovery ? 'recovery' : 'accept' } })
   }
 
   return (
@@ -108,7 +129,10 @@ export default function OfficeInvitation() {
           </>}
           {result === 'accepted' && <p role="status" className="text-sm text-exito">{t.officeInvitation.accepted}</p>}
           {result === 'error' && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.error}</p>}
-          {(useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
+          {result === 'login' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.loginRequired}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
+          {result === 'ambiguous' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.ambiguous}</p><button type="button" onClick={() => continueWithLogin(true)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
+          {!useExisting && !newAccount && !result && <button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded border border-borde text-texto hover:bg-hundido`}>{t.officeInvitation.login}</button>}
+          {!['login', 'ambiguous'].includes(result) && (useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
         </form>}
       </section>
     </main>
