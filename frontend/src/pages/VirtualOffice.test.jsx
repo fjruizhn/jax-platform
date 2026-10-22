@@ -42,6 +42,38 @@ describe('Virtual Office', () => {
     expect(await screen.findByRole('button', { name: 'Siguiente' })).toBeInTheDocument()
   })
 
+  it.each(['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'])('accepts a null published description for %s in list and detail', async (account_class) => {
+    useJaxStore.setState({ token: 'office-token', user: { user_id: 7, email: 'persona@example.test', account_class } })
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 21, name: 'Publicable', description: null, tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 21, name: 'Publicable', description: null, tenant_id: 4, scope_version: 7, audience: 'CLIENT_PUBLISHED' } })
+    show()
+    fireEvent.click(await screen.findByRole('button', { name: 'Publicable' }))
+    expect(await screen.findByRole('dialog', { name: 'Publicable' })).toHaveTextContent('Sin descripción.')
+  })
+
+  it('keeps a long unbroken detail scrollable and gives its close action a touch target', async () => {
+    const long = 'x'.repeat(2000)
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 22, name: 'Largo', description: long, tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 22, name: 'Largo', description: long, tenant_id: 4, scope_version: 7, audience: 'INTERNAL' } })
+    show()
+    fireEvent.click(await screen.findByRole('button', { name: 'Largo' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Largo' })
+    expect(dialog.className).toMatch(/max-h-/)
+    expect(screen.getByText(long).className).toMatch(/break-words/)
+    expect(screen.getByRole('button', { name: 'Cerrar' }).className).toMatch(/min-h-11/)
+  })
+
+  it('does not issue duplicate cursor requests while the next page is loading', async () => {
+    let resolveNext
+    projects.list.mockResolvedValueOnce({ data: { projects: [], next_after_id: 30 } }).mockReturnValueOnce(new Promise((resolve) => { resolveNext = resolve }))
+    show()
+    const more = await screen.findByRole('button', { name: 'Cargar más' })
+    fireEvent.click(more); fireEvent.click(more)
+    expect(projects.list).toHaveBeenCalledTimes(2)
+    expect(more).toBeDisabled()
+    resolveNext({ data: { projects: [], next_after_id: null } })
+  })
+
   it('shows translated empty and error states without retaining a prior project list', async () => {
     projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
     const { unmount } = show()

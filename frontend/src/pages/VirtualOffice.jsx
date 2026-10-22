@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import Dialogo from '../components/Dialogo'
-import { TAMANO_BOTON_ACCION } from '../tema/botones'
+import { TAMANO_BOTON_ACCION, TAMANO_BOTON_44 } from '../tema/botones'
 import { officeProjectsApi } from '../api/virtualOffice'
 
 const PAGE_SIZE = 25
-const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && typeof project.description === 'string' && Number.isInteger(project.tenant_id)
+const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
 const validList = (data) => data && Array.isArray(data.projects) && data.projects.every(validProject) && (data.next_after_id === null || Number.isInteger(data.next_after_id))
 const validDetail = (data) => validProject(data) && Number.isInteger(data.scope_version) && typeof data.audience === 'string'
 
@@ -19,41 +19,50 @@ export default function VirtualOffice({ onOfficeDenied }) {
   const [error, setError] = useState(false)
   const [detail, setDetail] = useState(null)
   const [detailError, setDetailError] = useState(false)
-  const generation = useRef(0)
+  const [pageLoading, setPageLoading] = useState(false)
+  const listGeneration = useRef(0)
+  const detailGeneration = useRef(0)
+  const listLoading = useRef(false)
 
   const loadProjects = async (afterId = null, append = false) => {
-    const request = ++generation.current
+    if (listLoading.current) return
+    listLoading.current = true
+    const request = ++listGeneration.current
+    setPageLoading(true)
     setError(false)
     if (!append) setProjects(null)
     try {
       const { data } = await officeProjectsApi.list({ limit: PAGE_SIZE, after_id: afterId })
-      if (request !== generation.current) return
+      if (request !== listGeneration.current) return
       if (!validList(data)) throw new Error('invalid office projects response')
       setProjects((current) => append ? [...(current || []), ...data.projects] : data.projects)
       setNextAfterId(data.next_after_id)
     } catch (err) {
-      if (request !== generation.current) return
+      if (request !== listGeneration.current) return
       if (err?.response?.status === 403) onOfficeDenied?.()
       setError(true)
+    } finally {
+      listLoading.current = false
+      if (request === listGeneration.current) setPageLoading(false)
     }
   }
 
   useEffect(() => {
     loadProjects()
-    return () => { generation.current += 1 }
+    return () => { listGeneration.current += 1; detailGeneration.current += 1; listLoading.current = false }
   }, [])
 
   async function openDetail(projectId) {
-    const request = ++generation.current
+    const request = ++detailGeneration.current
     setDetailError(false)
     setDetail({ loading: true })
     try {
       const { data } = await officeProjectsApi.detail(projectId)
-      if (request !== generation.current) return
+      if (request !== detailGeneration.current) return
       if (!validDetail(data)) throw new Error('invalid office project detail')
       setDetail(data)
     } catch (err) {
-      if (request !== generation.current) return
+      if (request !== detailGeneration.current) return
       if (err?.response?.status === 403) onOfficeDenied?.()
       setDetailError(true)
       setDetail({ failed: true })
@@ -81,18 +90,20 @@ export default function VirtualOffice({ onOfficeDenied }) {
           {projects?.length > 0 && <ul className="mt-3 divide-y divide-borde border-y border-borde">
             {projects.map((project) => <li key={project.id}><button type="button" onClick={() => openDetail(project.id)} className="w-full py-3 text-left text-sm text-texto hover:bg-hundido focus:outline-none focus-visible:ring-2 focus-visible:ring-foco">{project.name}</button></li>)}
           </ul>}
-          {nextAfterId !== null && <button type="button" onClick={() => loadProjects(nextAfterId, true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido`}>{t.virtualOffice.projects.more}</button>}
+          {nextAfterId !== null && <button type="button" disabled={pageLoading} aria-busy={pageLoading} onClick={() => loadProjects(nextAfterId, true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido disabled:opacity-60`}>{pageLoading ? t.virtualOffice.projects.loading : t.virtualOffice.projects.more}</button>}
         </section>
       </section>
       {showAccess && <Dialogo idTitulo="office-access-info" titulo={t.virtualOffice.accessTitle} onCerrar={() => setShowAccess(false)}>
         <p className="text-sm text-texto-suave">{t.virtualOffice.accessBody}</p>
         <div className="mt-5 flex justify-end"><button type="button" onClick={() => setShowAccess(false)} className={`${TAMANO_BOTON_ACCION} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>
       </Dialogo>}
-      {detail && <Dialogo idTitulo="office-project-detail" titulo={detail.loading || detail.failed ? t.virtualOffice.projects.detailTitle : detail.name} onCerrar={() => { generation.current += 1; setDetail(null); setDetailError(false) }}>
-        {detail.loading && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
-        {detailError && <p role="alert" className="text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
-        {!detail.loading && !detail.failed && <p className="text-sm text-texto-suave whitespace-pre-wrap">{detail.description || t.virtualOffice.projects.noDescription}</p>}
-        <div className="mt-5 flex justify-end"><button type="button" onClick={() => { generation.current += 1; setDetail(null); setDetailError(false) }} className={`${TAMANO_BOTON_ACCION} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>
+      {detail && <Dialogo idTitulo="office-project-detail" titulo={detail.loading || detail.failed ? t.virtualOffice.projects.detailTitle : detail.name} className="max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col" onCerrar={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }}>
+        <div className="min-h-0 overflow-y-auto break-words pr-1">
+          {detail.loading && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
+          {detailError && <p role="alert" className="text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
+          {!detail.loading && !detail.failed && <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>}
+        </div>
+        <div className="mt-5 flex justify-end"><button type="button" onClick={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }} className={`${TAMANO_BOTON_44} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>
       </Dialogo>}
     </main>
   )
