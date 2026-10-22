@@ -34,7 +34,7 @@ def main() -> int:
     except (InvitationDeliveryMaintenanceFailure, InvitationError) as error:
         logger.error("office invitation delivery worker failed class=%s code=%s", type(error).__name__, error.code)
         return 1
-    except BaseException as error:
+    except Exception as error:  # fail-soft: emit only the exception class and terminate nonzero without exposing invitation material
         # Do not serialize exceptions: SMTP libraries can include recipient
         # addresses and this process has transient bearer plaintext in memory.
         logger.error("office invitation delivery worker failed class=%s code=unexpected", type(error).__name__)
