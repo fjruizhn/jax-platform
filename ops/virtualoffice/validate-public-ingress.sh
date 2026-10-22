@@ -12,7 +12,7 @@ USAGE
 }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { [[ $# -eq 2 && -n $2 ]] || die "missing value for $1"; }
-has_header() { grep -Eiq "^$2: *$3\\r?$" <<<"$1"; }
+has_header() { printf '%s\n' "$1" | tr -d '\r' | grep -Eiq "^$2: *$3$"; }
 
 cmd=${1:-}; shift || true
 config= release= site_root= releases_root= nginx= nginx_root= nginx_user=www public_ip= expected_index_sha= expected_source_sha= expected_asset_sha= asset_path=
@@ -186,7 +186,7 @@ PY
   asset=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 "${resolve[@]}" "$base$asset_path" | sha256sum | awk '{print $1}')
   [[ $asset == "$expected_asset_sha" ]] || die 'asset hash mismatch'
   for h in "${headers[@]}"; do n=${h%%:*}; v=${h#*: }; has_header "$ih" "$n" "$v" || die "index missing $n"; has_header "$ah" "$n" "$v" || die "asset missing $n"; done
-  foreign_closed() { [[ $1 == 000 || $1 == 400 || $1 == 403 || $1 == 404 ]] || die "$2 was not closed (HTTP $1)"; }
+  foreign_closed() { [[ $1 == 000 || $1 == 400 || $1 == 403 || $1 == 404 || $1 == 421 ]] || die "$2 was not closed (HTTP $1)"; }
   mismatch=invalid-sni.axioma-ia.io
   badsni=$(curl --noproxy '*' -k --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 --resolve "$mismatch:443:$public_ip" "https://$mismatch/" || true)
   foreign_closed "$badsni" 'unknown SNI'

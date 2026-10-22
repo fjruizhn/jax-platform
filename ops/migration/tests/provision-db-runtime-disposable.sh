@@ -53,21 +53,55 @@ case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 
 
 ENV_FILE="$TEMP/deployment.env"
 printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
+printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
+
+# Provisioning reads the installed launcher in production.  A stale helper is
+# rejected before it can silently omit live Ejecutor settings from runtime.env.
+STALE_PAIR_EXEC="$TEMP/stale-pair-exec.py"
+printf '#!/usr/bin/python3\nimport sys\nif sys.argv[1:] == ["--list-allowed-keys"]: print("JAX_DB_HOST")\nelse: raise SystemExit(1)\n' > "$STALE_PAIR_EXEC"
+chmod 700 "$STALE_PAIR_EXEC"
+if JAX_PAIR_EXEC_FIXTURE="$STALE_PAIR_EXEC" "$HELPER" --plan --env "$ENV_FILE" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'stale runtime launcher was accepted' >&2; exit 1
+fi
+
+mkdir -p "$TEMP/state"
+printf 'OFFICE_INVITATION_LIFETIME_SECONDS=3600\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test\nOFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test\n' > "$TEMP/state/runtime.env"
+chown root:root "$TEMP/state/runtime.env"
+chmod 600 "$TEMP/state/runtime.env"
+INCOMPLETE_RUNTIME="$TEMP/incomplete-runtime.env"
+printf 'OFFICE_INVITATION_LIFETIME_SECONDS=3600\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test\n' > "$INCOMPLETE_RUNTIME"
+chown root:root "$INCOMPLETE_RUNTIME"
+chmod 600 "$INCOMPLETE_RUNTIME"
+if JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --plan --env "$ENV_FILE" --runtime-env "$INCOMPLETE_RUNTIME" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'incomplete existing Office invitation configuration was accepted' >&2; exit 1
+fi
 
 absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') AND Host='%s';\n" "$WEB" "$MIG" "$HOST" | admin)
 [ "$absent" = 0 ] || { echo 'random fixture principal already exists; refusing ownership' >&2; exit 2; }
 OWNED=1
 
-run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
-run_migrator_only() { "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_helper() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_migrator_only() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$WEB" "$HOST" | admin)" = 0
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
 test ! -e "$TEMP/state/runtime.env"
 test -f "$TEMP/state/migrate.env"
+printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
+
+# Existing production migrators have the exact predecessor schema grant.  It
+# may gain only CREATE VIEW; any other drift remains rejected by the helper.
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON \`%s\`.* TO '%s'@'%s';\n" "$MIG" "$HOST" "$DB" "$MIG" "$HOST" | admin >/dev/null
+run_migrator_only
+printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
+
+printf "REVOKE CREATE VIEW ON \`%s\`.* FROM '%s'@'%s'; GRANT SELECT ON mysql.* TO '%s'@'%s';\n" "$DB" "$MIG" "$HOST" "$MIG" "$HOST" | admin >/dev/null
+if run_migrator_only; then echo 'migration privilege drift was accepted' >&2; exit 1; fi
+printf "REVOKE SELECT ON mysql.* FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_migrator_only
 run_helper
 run_helper
 test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$WEB.password")" = root:root:600
@@ -75,13 +109,25 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
 ! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
-ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" python3 - <<'PY'
+for entry in OFFICE_INVITATION_LIFETIME_SECONDS=3600 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
+printf 'OFFICE_INVITATION_LIFETIME_SECONDS=7200\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test\nOFFICE_PUBLIC_ORIGIN=https://office-override.example.test\n' >> "$ENV_FILE"
+run_helper
+for entry in OFFICE_INVITATION_LIFETIME_SECONDS=7200 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20 OFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test OFFICE_PUBLIC_ORIGIN=https://office-override.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
+ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" MIGRATE_ENV="$TEMP/state/migrate.env" python3 - <<'PY'
 import importlib.util, os
 from pathlib import Path
 script=Path(os.environ['ROOT_DIR'])/'ops/migration/jax-platform-pair-exec.py'
 spec=importlib.util.spec_from_file_location('pair_exec',script); assert spec and spec.loader
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-assert module.credential(Path(os.environ['RUNTIME_ENV']))
+runtime = module.credential(Path(os.environ['RUNTIME_ENV']))
+assert runtime['JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA'] == 'fixture-platform-credential'
+assert runtime['JAX_GITHUB_TOKEN'] == 'fixture-github-token'
+for key in ('JAX_EJECUTOR_MISIONES', 'JAX_EJECUTOR_POLITICA',
+            'JAX_EJECUTOR_TURNO_TOPE_S', 'JAX_EJECUTOR_VIGIA_ESPERA_S',
+            'JAX_PROXY_CARRIL_MODELO', 'JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS'):
+    assert key in runtime
+assert 'JAX_LAS_MANOS_CREDENCIAL_JACOBS' not in runtime
+assert module.credential(Path(os.environ['MIGRATE_ENV']))
 PY
 test "$(wc -l < "$TEMP/state/migrate.env")" -eq 7
 grep -qx 'JAX_MIGRATE_DB_READINESS_ATTEMPTS=12' "$TEMP/state/migrate.env"

@@ -65,7 +65,7 @@ try:
 finally: os.close(fd)
 PY
 [[ ! -L $staged_source && $(stat -c %u "$staged_source") == 0 ]] || die 'pinned vhost source is unsafe'
-"$validator" offline --config "$staged_source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-user "$nginx_user"
+"$validator" offline --config "$staged_source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-root "$site/current/dist" --nginx-user "$nginx_user"
 current="$site/current"
 if [[ -e $vhost || -L $vhost ]]; then cp -a -- "$vhost" "$backup/vhost"; sha256sum "$vhost" | awk '{print $1}' > "$backup/previous-vhost-sha256"; else : > "$backup/VHOST_ABSENT"; fi
 if [[ -e $current || -L $current ]]; then
@@ -122,10 +122,21 @@ durable_marker ACTIVATION_IN_PROGRESS
 printf 'public Office activation snapshot (recover if interrupted): %s\n' "$backup"
 mv -f -- "$vhost.new" "$vhost"
 mv -Tf -- "$site/.current.new" "$current"
-"$validator" offline --config "$vhost" --site-root "$site" --releases-root "$releases" --release "$current" --expected-source-sha "$sha" --nginx-user "$nginx_user"
+"$validator" offline --config "$vhost" --site-root "$site" --releases-root "$releases" --release "$current" --expected-source-sha "$sha" --nginx-root "$site/current/dist" --nginx-user "$nginx_user"
 "$nginx" -t
 "$nginx" -s reload
-"$validator" smoke --public-ip "$ip" --expected-index-sha "$index" --asset-path "$asset" --expected-asset-sha "$asset_sha"
+smoke_ok=0
+for attempt in 1 2 3 4 5; do
+  if "$validator" smoke --public-ip "$ip" --expected-index-sha "$index" --asset-path "$asset" --expected-asset-sha "$asset_sha"; then
+    smoke_ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ $smoke_ok != 1 ]]; then
+  echo 'public Office smoke did not pass after nginx reload' >&2
+  false
+fi
 trap - ERR INT TERM
 python3 - "$backup/ACTIVATION_IN_PROGRESS" "$backup" <<'PY'
 import os,sys

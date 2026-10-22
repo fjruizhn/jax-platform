@@ -206,5 +206,8 @@ def test_operational_host_allowlist_rejects_ports_and_public_hosts(monkeypatch):
 
 def test_versioned_service_enables_proxy_headers_only_for_configured_proxies():
     unit = (Path(__file__).resolve().parents[2] / "ops/migration/systemd-units/jax-platform.service").read_text()
-    assert "--proxy-headers" in unit
-    assert "--forwarded-allow-ips=${JAX_TRUSTED_PROXIES}" in unit
+    launcher = (Path(__file__).resolve().parents[2] / "ops/migration/jax-platform-pair-exec.py").read_text()
+    assert "--proxy-headers" not in unit
+    assert "/usr/local/libexec/jax-platform-pair-exec.py web" in unit
+    assert "'--proxy-headers'" in launcher
+    assert 'f"--forwarded-allow-ips={child.get(\'JAX_TRUSTED_PROXIES\',\'\')}"' in launcher

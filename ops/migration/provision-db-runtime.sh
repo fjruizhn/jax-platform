@@ -46,6 +46,33 @@ note() { printf 'provision-db-runtime: %s\n' "$*"; }
 [[ -r "$ENV_FILE" ]] || die "environment file is not readable"
 
 declare -A CFG=()
+declare -A RUNTIME_ALLOWED=()
+declare -A OFFICE_INVITATION_CFG=()
+OFFICE_INVITATION_KEYS=(OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL OFFICE_PUBLIC_ORIGIN)
+load_runtime_allowlist() {
+  local pair_exec allowed_keys allowed_key required_runtime_key
+  # The service executes this installed helper, so provisioning derives the
+  # allowlist from those exact bytes.  A source checkout must never silently
+  # create a credential the installed launcher rejects.  The override exists
+  # solely for the root-owned disposable fixture, which deliberately has no
+  # installed runtime package.
+  pair_exec=/usr/local/libexec/jax-platform-pair-exec.py
+  if [[ -n ${JAX_PAIR_EXEC_FIXTURE:-} ]]; then
+    [[ -n $ADMIN_TRANSPORT ]] || die "pair-exec fixture override requires test transport"
+    pair_exec=$JAX_PAIR_EXEC_FIXTURE
+  fi
+  [[ -f $pair_exec && ! -L $pair_exec ]] || die "installed runtime credential launcher is unavailable"
+  allowed_keys=$(python3 -I -S "$pair_exec" --list-allowed-keys) || die "runtime credential allowlist is unavailable"
+  while IFS= read -r allowed_key; do
+    [[ -z $allowed_key ]] || RUNTIME_ALLOWED["$allowed_key"]=1
+  done <<< "$allowed_keys"
+  [[ ${#RUNTIME_ALLOWED[@]} -gt 0 ]] || die "runtime credential allowlist is empty"
+  # These are consumed by the platform's Ejecutor subprocess.  Reject a stale
+  # installed launcher before it can silently strip them while making runtime.env.
+  for required_runtime_key in JAX_GITHUB_TOKEN JAX_EJECUTOR_MISIONES JAX_EJECUTOR_POLITICA JAX_EJECUTOR_TURNO_TOPE_S JAX_EJECUTOR_VIGIA_ESPERA_S JAX_PROXY_CARRIL_MODELO JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS; do
+    [[ -n ${RUNTIME_ALLOWED[$required_runtime_key]+yes} ]] || die "installed runtime credential launcher lacks required key: $required_runtime_key"
+  done
+}
 parse_env() {
   local line key value line_no=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -61,6 +88,76 @@ parse_env() {
     [[ "$value" != *[\"\'\\\$\#[:space:]]* ]] || die "unsafe EnvironmentFile value for $key"
     CFG["$key"]=$value
   done < "$ENV_FILE"
+}
+load_office_invitation_config() {
+  local source=$1 strict_mode=$2 parsed line key value
+  if [ "$strict_mode" = runtime ]; then
+    [[ -f $source && ! -L $source ]] || die "existing runtime Office invitation configuration is unavailable"
+    [[ $(stat -c '%U:%G:%a' "$source") == root:root:600 ]] || die "existing runtime Office invitation configuration has unsafe permissions"
+  fi
+  parsed=$(python3 -I -S - "$source" "$strict_mode" <<'PY'
+import os, re, stat, sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+path = Path(sys.argv[1])
+strict_mode = sys.argv[2]
+keys = (
+    "OFFICE_INVITATION_LIFETIME_SECONDS", "OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS",
+    "OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT",
+    "OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "OFFICE_INVITATION_PUBLIC_BASE_URL",
+    "OFFICE_PUBLIC_ORIGIN",
+)
+values = {}
+try:
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        if key in keys:
+            if key in values:
+                raise ValueError("duplicate")
+            values[key] = value
+except (OSError, UnicodeDecodeError, ValueError):
+    raise SystemExit(1)
+if set(values) != set(keys):
+    raise SystemExit(1)
+limits = {
+    "OFFICE_INVITATION_LIFETIME_SECONDS": (1, 604800),
+    "OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS": (1, 3600),
+    "OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT": (1, 1000),
+    "OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT": (1, 100),
+    "OFFICE_INVITATION_DELIVERY_BATCH_LIMIT": (1, 25),
+}
+for key, (low, high) in limits.items():
+    raw = values[key]
+    if not re.fullmatch(r"[1-9][0-9]*", raw) or not low <= int(raw) <= high:
+        raise SystemExit(1)
+def origin(raw):
+    if not raw or raw != raw.strip() or len(raw) > 2048:
+        raise ValueError
+    parsed = urlsplit(raw)
+    if (parsed.scheme != "https" or not parsed.netloc or parsed.hostname is None
+            or not parsed.hostname.isascii() or parsed.username is not None
+            or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
+            or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
+        raise ValueError
+    return raw
+try:
+    public_base = origin(values["OFFICE_INVITATION_PUBLIC_BASE_URL"])
+    public_origin = origin(values["OFFICE_PUBLIC_ORIGIN"])
+except ValueError:
+    raise SystemExit(1)
+if public_base != public_origin:
+    raise SystemExit(1)
+for key in keys:
+    print(f"{key}={values[key]}")
+PY
+) || die "Office invitation configuration is incomplete or invalid"
+  while IFS= read -r line; do
+    key=${line%%=*}; value=${line#*=}
+    OFFICE_INVITATION_CFG["$key"]=$value
+  done <<< "$parsed"
 }
 parse_env
 
@@ -81,6 +178,18 @@ DB=${CFG[JAX_DB_NAME]}
 [[ "$RUNTIME_USER" != "$MIGRATE_USER" ]] || die "database principal names must differ"
 [[ "$RUNTIME_USER" =~ ^[A-Za-z0-9_]{1,32}$ && "$MIGRATE_USER" =~ ^[A-Za-z0-9_]{1,32}$ ]] || die "invalid database principal name"
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  load_runtime_allowlist
+  office_keys_in_deployment=0
+  for key in "${OFFICE_INVITATION_KEYS[@]}"; do [[ -v "CFG[$key]" ]] && office_keys_in_deployment=$((office_keys_in_deployment + 1)); done
+  if [ "$office_keys_in_deployment" = 0 ]; then
+    load_office_invitation_config "$RUNTIME_ENV" runtime
+  elif [ "$office_keys_in_deployment" = "${#OFFICE_INVITATION_KEYS[@]}" ]; then
+    load_office_invitation_config "$ENV_FILE" deployment
+  else
+    die "Office invitation configuration is incomplete in deployment environment"
+  fi
+fi
 
 declare -a RUNTIME_TABLES=()
 declare -A RUNTIME_TABLE_PRIVILEGES=()
@@ -221,7 +330,7 @@ verify_migrator_grants() {
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$") || die "migration principal lacks exact schema grants"
   [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || die "migration principal has ambiguous schema grants"
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
-  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW')
   [ "$actual_set" = "$expected_set" ] || die "migration principal schema privilege set is not exact"
   [ "$(printf '%s\n' "$grants" | grep -c '^GRANT ')" -eq 2 ] || die "migration principal has extra grants, roles, routines, columns, or grant option"
 }
@@ -359,7 +468,7 @@ runtime_grant_state() {
 }
 
 migrator_grant_state() {
-  local grants schema_line actual_set expected_set grant_count
+  local grants schema_line actual_set expected_set previous_exact_set grant_count
   grants=$(show_grants "$MIGRATE_USER") || die "could not inspect migration grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$MIGRATE_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$" || true)
@@ -370,9 +479,14 @@ migrator_grant_state() {
   fi
   [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] && [ "$grant_count" -eq 2 ] || { printf invalid; return; }
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
-  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
-  [ "$actual_set" = "$expected_set" ] || { printf invalid; return; }
-  printf new
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW')
+  previous_exact_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  [ "$actual_set" = "$expected_set" ] && { printf new; return; }
+  # The only accepted predecessor is the exact schema grant emitted before
+  # views became part of the migration contract.  Upgrade it with the one
+  # missing capability; every other difference stays fail-closed.
+  [ "$actual_set" = "$previous_exact_set" ] && { printf 'upgrade-create-view'; return; }
+  printf invalid
 }
 
 if [ "$MIGRATOR_ONLY" = 0 ]; then create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"; fi
@@ -433,7 +547,8 @@ fi
 migrate_state=$(migrator_grant_state)
 case "$migrate_state" in
   new) ;;
-  new-prefix:0) printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal" ;;
+  new-prefix:0) printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal" ;;
+  upgrade-create-view) printf 'GRANT CREATE VIEW ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not upgrade migration principal with CREATE VIEW" ;;
   *) die "migration principal is neither the exact new nor create-only grant state" ;;
 esac
 verify_migrator_grants
@@ -447,9 +562,11 @@ write_atomic() { local destination=$1 content=$2 temp parent; parent=$(dirname "
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   runtime_content=
   for key in "${!CFG[@]}"; do
-    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
+    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*|OFFICE_INVITATION_*|OFFICE_PUBLIC_ORIGIN) continue ;; esac
+    [[ -v "RUNTIME_ALLOWED[$key]" ]] || continue
     runtime_content+="$key=${CFG[$key]}"$'\n'
   done
+  for key in "${OFFICE_INVITATION_KEYS[@]}"; do runtime_content+="$key=${OFFICE_INVITATION_CFG[$key]}"$'\n'; done
   runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
   runtime_content+="JAX_DB_PASSWORD=$runtime_password"$'\n'
 fi
