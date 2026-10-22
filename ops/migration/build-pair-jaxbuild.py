@@ -177,7 +177,13 @@ def main() -> None:
     parser.add_argument("--wheelhouse-sha256", required=True)
     parser.add_argument("--lock-sha256", required=True)
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--request-nonce")
+    parser.add_argument("--receipt-fd", type=int)
     arguments = parser.parse_args()
+    if (arguments.request_nonce is None) != (arguments.receipt_fd is None):
+        die("receipt nonce and FD must be supplied together")
+    if arguments.request_nonce is not None and (len(arguments.request_nonce) != 64 or any(c not in "0123456789abcdef" for c in arguments.request_nonce)):
+        die("invalid request nonce")
     arguments.wheelhouse = arguments.inputs / "wheelhouse"
     arguments.lock = arguments.inputs / "lock"
     snapshot_stat = arguments.inputs.lstat() if arguments.inputs.exists() else None
@@ -186,6 +192,8 @@ def main() -> None:
     actual_wheelhouse = wheelhouse_digest(arguments.wheelhouse)
     if actual_wheelhouse != arguments.wheelhouse_sha256 or digest(arguments.lock) != arguments.lock_sha256:
         die("external dependency digest mismatch")
+    if arguments.receipt_fd is not None:
+        os.set_inheritable(arguments.receipt_fd, False)
     if arguments.bootstrap_predecessor:
         if arguments.platform_predecessor is not None or arguments.jax_predecessor is not None:
             die("bootstrap predecessor has no Git predecessor")
@@ -222,7 +230,18 @@ def main() -> None:
     readiness = __import__("importlib.util").util.module_from_spec(readiness_spec)
     readiness_spec.loader.exec_module(readiness)
     manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": arguments.platform_commit, "jax_revision": arguments.jax_commit, "dependency_lock_sha256": digest(arguments.lock), "wheelhouse_manifest_sha256": actual_wheelhouse, "jax_links": jax_links, "files": readiness._inventory(arguments.out, owner_uid=os.getuid(), owner_gid=os.getgid())}
-    (arguments.out / readiness.MANIFEST).write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    (arguments.out / readiness.MANIFEST).write_text(manifest_raw, encoding="utf-8")
+    if arguments.receipt_fd is not None:
+        out_stat = arguments.out.stat()
+        receipt = {"schema":"axioma.pair-build-receipt/v1", "nonce":arguments.request_nonce,
+                   "platform_commit":arguments.platform_commit, "platform_tree":platform_tree,
+                   "jax_commit":arguments.jax_commit, "jax_tree":jax_tree,
+                   "manifest_sha256":hashlib.sha256(manifest_raw.encode()).hexdigest(),
+                   "output_dev":out_stat.st_dev, "output_ino":out_stat.st_ino,
+                   "builder_sha256":digest(Path(__file__).resolve())}
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()+b"\n"
+        os.write(arguments.receipt_fd, raw)
 
 
 if __name__ == "__main__":
