@@ -347,16 +347,21 @@ async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdat
         ProjectAuthorityRetryable, ProjectNamespace, ProjectNotVisible,
     )
     try:
-        # JAX owns the transaction and canonical locks for project metadata.
-        # Fetching tenant is an untrusted hint only; the hook rereads and locks
-        # the scope before it writes and the callback reauthorizes in cursor.
+        # Resolve the Office operation first.  Reading the scope for a tenant
+        # hint before this gate would disclose whether a guessed id is absent
+        # or merely belongs to Classic.  JAX still owns the mutation's
+        # canonical locks and repeats this authorization in its callback.
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
-            row = await cur.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="office_project_update_not_found")
+            decision = await authorize_office_in_cursor(
+                cur, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
+                require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
+                mfa_config=config,
+            )
+            if not decision.allowed or decision.tenant_id is None:
+                raise HTTPException(status_code=403, detail="office_project_update_denied")
+            target_tenant_id = int(decision.tenant_id)
         result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).update_namespaced_project_metadata(
-            actor_user_id=actor_user_id, target_tenant_id=int(row[0]), project_id=project_id,
+            actor_user_id=actor_user_id, target_tenant_id=target_tenant_id, project_id=project_id,
             namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name=payload.name,
             description=payload.description,
             authorizer=_OfficeProjectMetadataAuthorizer(

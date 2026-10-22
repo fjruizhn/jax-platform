@@ -600,6 +600,28 @@ def test_root_updates_office_metadata_through_typed_jax_hook(client, monkeypatch
     assert client.portal.call(sql, "SELECT name,description FROM projects WHERE id=%s", (project,), True) == (("metadata after", "after"),)
 
 
+def test_metadata_update_does_not_distinguish_classic_or_missing_project_ids(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        classic = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                            ("classic-metadata-" + uuid.uuid4().hex,))
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'CLASSIC','ACTIVE',NOW(6),'test',NOW(6))", (classic,),
+        )
+        return classic
+
+    classic = client.portal.call(scenario)
+    headers = _proof_headers(root, tv, mv, proof, str(uuid.uuid4()))
+    body = {"name": "not-disclosed", "description": None}
+    classic_response = client.put(f"/api/virtual-office/projects/{classic}", json=body, headers=headers)
+    missing_response = client.put(f"/api/virtual-office/projects/{classic + 1000000}", json=body, headers=headers)
+    assert (classic_response.status_code, classic_response.json()) == (403, {"detail": "office_project_update_denied"})
+    assert (missing_response.status_code, missing_response.json()) == (403, {"detail": "office_project_update_denied"})
+
+
 def test_create_project_rejects_whitespace_name_and_invalid_idempotency_before_write(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
