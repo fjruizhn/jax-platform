@@ -8,6 +8,8 @@ PORT=33991
 DB=jax_memory_test
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/migration/provision-db-runtime.sh"
+V1_MANIFEST="$ROOT_DIR/ops/migration/runtime-table-privileges-v1.txt"
+V2_MANIFEST="$ROOT_DIR/ops/migration/runtime-table-privileges-v2.txt"
 [ "$(id -u)" = 0 ] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
 docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
@@ -69,12 +71,36 @@ if runtime_sql -e "DELETE FROM office_bootstrap_state WHERE ceremony_key='__acl_
   echo 'runtime DELETE on protected bootstrap state was accepted' >&2; exit 1
 fi
 
-# Simulate an interruption after the first narrow table GRANT but before the
-# legacy schema UPDATE/DELETE revoke.  The next invocation may resume that
-# exact manifest prefix; an arbitrary extra grant remains fail-closed below.
-printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+# v11/v1 has schema SELECT,INSERT plus every exact v1 UPDATE/DELETE row.
+# The first v2 GRANT (axioma_config) merges INSERT into an existing row, so
+# SHOW GRANTS does not grow.  That durable cut-point must still resume.
+seed_exact_v1_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+  while read -r table privileges; do
+    [[ -z "$table" || "$table" == \#* ]] && continue
+    printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+  done < "$V1_MANIFEST" | admin >/dev/null
+}
+assert_no_schema_insert() {
+  ! printf "SHOW GRANTS FOR '%s'@'%s';\n" "$WEB" "$HOST" | admin | grep -F " ON \`$DB\`.*" | grep -F INSERT >/dev/null
+}
+[ "$(awk '!/^#/ && NF {count++} END {print count+0}' "$V1_MANIFEST")" -eq 32 ] || { echo 'v1 fixture manifest is not the reviewed 32-row predecessor' >&2; exit 1; }
+
+seed_exact_v1_runtime
+printf "GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
+assert_no_schema_insert
 runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
+
+# The last durable v2 table GRANT is also a cut-point: all narrow rows exist,
+# but schema INSERT still has to be removed on the next invocation.
+seed_exact_v1_runtime
+while read -r table privileges; do
+  [[ -z "$table" || "$table" == \#* ]] && continue
+  printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+done < "$V2_MANIFEST" | admin >/dev/null
+run_helper
+assert_no_schema_insert
 
 # Every durable cut-point for a newly created principal is resumable and
 # bounded: CREATE USER (USAGE), schema grant, and the first table grant.  The
