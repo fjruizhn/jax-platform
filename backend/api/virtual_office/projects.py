@@ -151,8 +151,12 @@ async def list_projects(
         profile = await _active_profile_in_cursor(cur, actor_user_id)
         if profile is None:
             raise HTTPException(status_code=403, detail="office_access_denied")
-        proof_valid = False
-        if type(proof_event_id) is int and proof_event_id > 0:
+        # The candidate filter may treat a row as MFA-eligible only when the
+        # resolver can apply the same verified-proof contract.  A durable
+        # proof without its runtime configuration must fail closed here,
+        # rather than producing a permanent resolver mismatch/503.
+        proof_valid = config is not None and type(proof_event_id) is int and proof_event_id > 0
+        if proof_valid:
             proof_valid = not isinstance(
                 await reload_current_self_mfa_verified_in_cursor(
                     cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id,
@@ -161,9 +165,12 @@ async def list_projects(
             )
         predicate = " AND p.id>%s" if after_id is not None else ""
         cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
-        if profile["global_role"] == "OFFICE_SUPERUSER":
+        if profile["global_role"] in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}:
+            # Both global roles require verified MFA for every project view;
+            # never discover scopes when it is absent or unverifiable.
             if not proof_valid:
                 return {"projects": [], "next_after_id": None}
+        if profile["global_role"] == "OFFICE_SUPERUSER":
             query = (
                 "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
                 "JOIN jax_project_scope s ON s.project_id=p.id "

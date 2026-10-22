@@ -222,6 +222,43 @@ def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
     assert page["next_after_id"] is None
 
 
+
+def test_list_fails_closed_for_global_admin_or_missing_mfa_runtime_config(client, monkeypatch):
+    """No eligible proof/config means no privileged candidate discovery or 503."""
+    import api.virtual_office.projects as projects_api
+
+    async def scenario():
+        collaborator, tv, mv, proof = await _office_root_with_current_proof(role="COLLABORATOR")
+        general_admin, _, _, admin_proof = await _office_root_with_current_proof(role="GENERAL_ADMIN")
+        projects = []
+        for role, professional in (("PROJECT_ADMIN", False), ("COLLABORATOR", True), ("COLLABORATOR", False)):
+            project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", ("office-list-config-" + uuid.uuid4().hex,))
+            await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,))
+            for user_id in (collaborator, general_admin):
+                await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project_id, user_id))
+                await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,%s,'INTERNAL','ACTIVE',%s)", (project_id, user_id, role, user_id))
+            if professional:
+                await sql("INSERT INTO office_professional_grant (project_id,user_id,capability,basis,evidence_ref,status,granted_by) VALUES (%s,%s,'PROFESSIONAL_ACTION','test','test','ACTIVE',%s)", (project_id, collaborator, collaborator))
+            projects.append(project_id)
+        return collaborator, tv, mv, proof, general_admin, admin_proof, projects
+
+    collaborator, tv, mv, proof, general_admin, admin_proof, projects = client.portal.call(scenario)
+    monkeypatch.setattr(projects_api, "load_mfa_config_from_environment", lambda: None)
+    # The durable proof alone is not candidate eligibility if the canonical
+    # resolver cannot receive its runtime configuration.  A/B stay hidden;
+    # ordinary C remains available without a resolver mismatch.
+    collaborator_response = client.get(
+        "/api/virtual-office/projects?limit=3",
+        headers=_proof_headers(collaborator, tv, mv, proof, str(uuid.uuid4())),
+    )
+    assert collaborator_response.status_code == 200
+    assert [row["id"] for row in collaborator_response.json()["projects"] if row["id"] in projects] == [projects[2]]
+    # GENERAL_ADMIN is privileged for all views.  With no proof it returns the
+    # same opaque empty page regardless of a cursor at a real scope boundary.
+    for headers in (_headers(general_admin), _proof_headers(general_admin, 0, 0, admin_proof, str(uuid.uuid4()))):
+        assert client.get("/api/virtual-office/projects", headers=headers).json() == {"projects": [], "next_after_id": None}
+        assert client.get(f"/api/virtual-office/projects?after_id={projects[1]}", headers=headers).json() == {"projects": [], "next_after_id": None}
+
 def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(client, monkeypatch):
     import api.virtual_office.projects as projects_api
     from virtual_office.models import OfficeDecision
@@ -346,18 +383,20 @@ def test_list_queries_use_measured_user_leading_indexes_under_skew(client):
                 )
 
                 async def measure(name, statement, params, index):
+                    await cur.execute(statement, params)
+                    result = await cur.fetchall()
                     await cur.execute("EXPLAIN " + statement, params)
                     plan = await cur.fetchall()
                     assert any(row[5] == index for row in plan), (name, [(row[2], row[3], row[5], row[8], row[9]) for row in plan])
                     assert all(row[3] != "ALL" and "filesort" not in (row[9] or "").lower() and "temporary" not in (row[9] or "").lower() for row in plan)
                     await cur.execute("ANALYZE FORMAT=JSON " + statement, params)
                     analyzed = json.loads((await cur.fetchone())[0])
-                    return plan, analyzed
+                    return plan, analyzed, result
 
                 measurements = {}
-                for branch, base, params, index in (
-                    ("internal", internal_sql, (internal, internal, 1), "idx_office_project_grant_list"),
-                    ("external", external_sql, (external, external), "idx_office_external_relation_list"),
+                for branch, base, params, proof_actor, index in (
+                    ("internal", internal_sql, (internal, internal, 1), internal, "idx_office_project_grant_list"),
+                    ("external", external_sql, (external, external), external, "idx_office_external_relation_list"),
                 ):
                     for proof in ("valid", "missing"):
                         predicate = ""
@@ -365,7 +404,7 @@ def test_list_queries_use_measured_user_leading_indexes_under_skew(client):
                             predicate = "AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' AND pg.status='ACTIVE') "
                         for cursor_name, after in (("first", 0), ("after", owned[0])):
                             statement = base + predicate + "AND p.id>%s ORDER BY p.id LIMIT %s"
-                            query_params = (*params, *((internal,) if proof == "missing" else ()), after, 51)
+                            query_params = (*params, *((proof_actor,) if proof == "missing" else ()), after, 51)
                             measurements[(branch, proof, cursor_name)] = await measure(
                                 branch + ":" + proof + ":" + cursor_name, statement, query_params, index
                             )
@@ -375,9 +414,13 @@ def test_list_queries_use_measured_user_leading_indexes_under_skew(client):
     # ANALYZE's driving table reports actual examined index records.  In both
     # cursor positions and proof modes it stays within the three owned rows,
     # despite 1,200 unrelated confidential projects.
-    for name, (plan, analyzed) in measurements.items():
+    for name, (plan, analyzed, result) in measurements.items():
         first_table = analyzed["query_block"]["nested_loop"][0]["table"]
         assert first_table["r_rows"] <= 3, (name, first_table)
+        expected = owned if name[1] == "valid" or name[0] == "external" else [owned[2]]
+        if name[2] == "after":
+            expected = [project_id for project_id in expected if project_id > owned[0]]
+        assert [int(row[0]) for row in result] == expected, (name, result)
     assert owned == sorted(owned)
 
 
