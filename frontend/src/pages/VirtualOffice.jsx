@@ -134,7 +134,7 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
           {!detail.loading && !detail.failed && <>
             <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>
             {detail.capabilities?.manage_invitations === true && <OfficeInvitationManager projectId={detail.id} onForbidden={() => revalidateDetail(detail.id)} />}
-            {session?.capabilities?.administer_office === true && <OfficeProjectMembershipManager projectId={detail.id} canAssignProjectAdmin={session.identity?.global_role === 'OFFICE_SUPERUSER'} onForbidden={() => revalidateDetail(detail.id)} />}
+            {detail.capabilities?.manage_invitations === true && <OfficeProjectMembershipManager projectId={detail.id} canAssignProjectAdmin={session.identity?.global_role === 'OFFICE_SUPERUSER'} onForbidden={() => revalidateDetail(detail.id)} />}
           </>}
         </div>
         <div className="mt-5 flex justify-end"><button type="button" onClick={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }} className={`${TAMANO_BOTON_44} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>

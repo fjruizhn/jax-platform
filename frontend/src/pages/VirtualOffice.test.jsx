@@ -52,9 +52,30 @@ describe('Virtual Office', () => {
     await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 9, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
   })
 
+  it('shows member management to a project administrator from the project capability, without offering role elevation', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
+    people.list.mockRejectedValue({ response: { status: 403 } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'COLLABORATOR' }, capabilities: { administer_office: false } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
+    expect(await screen.findByRole('dialog', { name: 'Agregar una persona existente' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Papel en el proyecto')).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Administrador del proyecto' })).not.toBeInTheDocument()
+  })
+
+  it('does not show member management from a global session flag when the project capability is absent', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: false } } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'GENERAL_ADMIN' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    expect(await screen.findByRole('dialog', { name: 'Equipo' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agregar persona existente' })).not.toBeInTheDocument()
+  })
+
   it('offers the project-administrator role only to the Office superuser capability document', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
-    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
     render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'OFFICE_SUPERUSER' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
@@ -65,7 +86,7 @@ describe('Virtual Office', () => {
 
   it('updates and revokes a listed member against the exact server version, including a person outside the directory page', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
-    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [], next_after_user_id: null } })
     members.list.mockResolvedValue({ data: { project_id: 25, members: [{ user_id: 209, grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 3 }], next_cursor: null } })
     members.changeRole.mockResolvedValue({ data: { version: 4 } })
@@ -82,7 +103,7 @@ describe('Virtual Office', () => {
 
   it('refreshes the server member list after a role-version conflict', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
-    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [], next_after_user_id: null } })
     const current = { data: { project_id: 25, members: [{ user_id: 209, grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 3 }], next_cursor: null } }
     const refreshed = { data: { project_id: 25, members: [{ user_id: 209, grant_role: 'PROJECT_ADMIN', audience: 'INTERNAL', status: 'ACTIVE', version: 4 }], next_cursor: null } }
@@ -99,7 +120,7 @@ describe('Virtual Office', () => {
 
   it('keeps the member dialog open and explains a revoked administration capability', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
-    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
     members.grant.mockRejectedValue({ response: { status: 403 } })
     render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
