@@ -31,7 +31,7 @@ OFFICE_MODULE_PUBLICATION_STAGING_DDL = (
     "CREATE TABLE IF NOT EXISTS office_module_creative_review_event ("
     "creative_review_event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,human_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NOT NULL,decision VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_module_creative_review_identity (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),KEY idx_office_module_creative_review_candidate (candidate_id,candidate_revision_id,occurred_at),"
-    "CONSTRAINT fk_office_module_creative_review_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_creative_review_human FOREIGN KEY (human_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_creative_review_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_creative_review_decision CHECK (decision IN ('APPROVED','REJECTED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CONSTRAINT fk_office_module_creative_review_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_creative_review_human FOREIGN KEY (human_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_creative_review_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_creative_review_decision CHECK (decision='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_module_creative_review_head ("
     "candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,creative_review_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,"
     "UNIQUE KEY uq_office_module_creative_head_event (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_creative_head_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),CONSTRAINT fk_office_module_creative_head_event FOREIGN KEY (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_creative_review_event(creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_creative_head_version CHECK (head_version>=1)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -49,6 +49,42 @@ OFFICE_MODULE_PUBLICATION_STAGING_DDL = (
     "UNIQUE KEY uq_office_module_release_event (release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_release_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),CONSTRAINT fk_office_module_release_event FOREIGN KEY (release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_release_event(release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_release_head CHECK (head_version>=1 AND status='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 )
 _MODULE_PUBLICATION_STAGING_EVENT_TABLES = ("office_module_creative_review_event", "office_module_rights_review_event", "office_module_release_event")
+_MODULE_PUBLICATION_STAGING_COLUMNS = {
+    "office_module_creative_review_event": (("creative_review_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("candidate_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO"), ("human_user_id", "int(11)", "NO"), ("mfa_proof_event_id", "bigint(20) unsigned", "NO"), ("decision", "varchar(16)", "NO"), ("occurred_at", "datetime(6)", "NO")),
+    "office_module_creative_review_head": (("candidate_id", "bigint(20) unsigned", "NO"), ("head_version", "bigint(20) unsigned", "NO"), ("creative_review_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO")),
+    "office_module_rights_review_event": (("rights_review_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("candidate_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO"), ("critic_invocation_ref", "varchar(128)", "NO"), ("verification_state", "varchar(24)", "NO"), ("decision", "varchar(24)", "NO"), ("occurred_at", "datetime(6)", "NO")),
+    "office_module_rights_review_head": (("candidate_id", "bigint(20) unsigned", "NO"), ("head_version", "bigint(20) unsigned", "NO"), ("rights_review_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO")),
+    "office_module_release_event": (("release_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("candidate_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO"), ("creative_review_event_id", "bigint(20) unsigned", "NO"), ("rights_review_event_id", "bigint(20) unsigned", "NO"), ("decision_state", "varchar(24)", "NO"), ("canonical_receipt_sha256", "binary(32)", "YES"), ("canonical_receipt_signature", "mediumblob", "YES"), ("canonical_receipt_key_id", "varchar(128)", "YES"), ("occurred_at", "datetime(6)", "NO")),
+    "office_module_release": (("candidate_id", "bigint(20) unsigned", "NO"), ("head_version", "bigint(20) unsigned", "NO"), ("release_event_id", "bigint(20) unsigned", "NO"), ("candidate_revision_id", "bigint(20) unsigned", "NO"), ("manifest_sha256", "binary(32)", "NO"), ("artifact_set_digest", "binary(32)", "NO"), ("status", "varchar(24)", "NO")),
+}
+_MODULE_PUBLICATION_STAGING_INDEXES = {
+    "office_module_creative_review_event": {"PRIMARY": (True, ("creative_review_event_id",)), "uq_office_module_creative_review_identity": (True, ("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest")), "idx_office_module_creative_review_candidate": (False, ("candidate_id", "candidate_revision_id", "occurred_at"))},
+    "office_module_creative_review_head": {"PRIMARY": (True, ("candidate_id",)), "uq_office_module_creative_head_event": (True, ("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+    "office_module_rights_review_event": {"PRIMARY": (True, ("rights_review_event_id",)), "uq_office_module_rights_review_identity": (True, ("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest")), "idx_office_module_rights_review_candidate": (False, ("candidate_id", "candidate_revision_id", "occurred_at"))},
+    "office_module_rights_review_head": {"PRIMARY": (True, ("candidate_id",)), "uq_office_module_rights_head_event": (True, ("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+    "office_module_release_event": {"PRIMARY": (True, ("release_event_id",)), "uq_office_module_release_event_identity": (True, ("release_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest")), "idx_office_module_release_event_candidate": (False, ("candidate_id", "candidate_revision_id", "occurred_at"))},
+    "office_module_release": {"PRIMARY": (True, ("candidate_id",)), "uq_office_module_release_event": (True, ("release_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+}
+_MODULE_PUBLICATION_STAGING_FKS = {
+    "office_module_creative_review_event": {"fk_office_module_creative_review_revision": (("candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_candidate_revision", ("candidate_revision_id", "candidate_id", "manifest_sha256", "claimed_artifact_set_digest")), "fk_office_module_creative_review_human": (("human_user_id",), "jax_users", ("user_id",)), "fk_office_module_creative_review_mfa": (("mfa_proof_event_id",), "office_mfa_security_event", ("event_id",))},
+    "office_module_creative_review_head": {"fk_office_module_creative_head_candidate": (("candidate_id",), "office_module_candidate", ("candidate_id",)), "fk_office_module_creative_head_event": (("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_creative_review_event", ("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+    "office_module_rights_review_event": {"fk_office_module_rights_review_revision": (("candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_candidate_revision", ("candidate_revision_id", "candidate_id", "manifest_sha256", "claimed_artifact_set_digest"))},
+    "office_module_rights_review_head": {"fk_office_module_rights_head_candidate": (("candidate_id",), "office_module_candidate", ("candidate_id",)), "fk_office_module_rights_head_event": (("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_rights_review_event", ("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+    "office_module_release_event": {"fk_office_module_release_event_revision": (("candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_candidate_revision", ("candidate_revision_id", "candidate_id", "manifest_sha256", "claimed_artifact_set_digest")), "fk_office_module_release_event_creative": (("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_creative_review_event", ("creative_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest")), "fk_office_module_release_event_rights": (("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_rights_review_event", ("rights_review_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+    "office_module_release": {"fk_office_module_release_candidate": (("candidate_id",), "office_module_candidate", ("candidate_id",)), "fk_office_module_release_event": (("release_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"), "office_module_release_event", ("release_event_id", "candidate_revision_id", "candidate_id", "manifest_sha256", "artifact_set_digest"))},
+}
+_MODULE_PUBLICATION_STAGING_CHECKS = {
+    "chk_office_module_creative_review_decision": "decision='PENDING_CONTRACT'", "chk_office_module_creative_head_version": "head_version>=1", "chk_office_module_rights_review_staging": "critic_invocation_ref<>'' AND verification_state='PENDING_CONTRACT' AND decision='PENDING_CONTRACT'", "chk_office_module_rights_head_version": "head_version>=1", "chk_office_module_release_event_staging": "decision_state='PENDING_CONTRACT' AND canonical_receipt_sha256 IS NULL AND canonical_receipt_signature IS NULL AND canonical_receipt_key_id IS NULL", "chk_office_module_release_head": "head_version>=1 AND status='PENDING_CONTRACT'",
+}
+
+
+def _module_publication_expected_indexes(table: str):
+    """MariaDB creates named FK support indexes where no usable prefix exists."""
+    expected = dict(_MODULE_PUBLICATION_STAGING_INDEXES[table])
+    for name, (local, _target, _remote) in _MODULE_PUBLICATION_STAGING_FKS[table].items():
+        if not any(columns[:len(local)] == local for _unique, columns in expected.values()):
+            expected[name] = (False, local)
+    return expected
 
 
 async def apply_module_publication_staging_migrations(cursor) -> None:
@@ -65,15 +101,40 @@ async def apply_module_publication_staging_migrations(cursor) -> None:
 
 async def assert_module_publication_staging_metadata(cursor, *, allow_redacted_trigger_body: bool = False) -> None:
     """Attest authority separation and append-only event ledgers."""
-    tables = ("office_module_creative_review_event", "office_module_creative_review_head", "office_module_rights_review_event", "office_module_rights_review_head", "office_module_release_event", "office_module_release")
-    for table in tables:
+    for table, expected_columns in _MODULE_PUBLICATION_STAGING_COLUMNS.items():
         if not await _table_exists(cursor, table):
             raise RuntimeError(f"Office module publication staging table {table} is absent")
         await cursor.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if tuple(await cursor.fetchone() or ()) != ("InnoDB",):
             raise RuntimeError(f"Office module publication staging engine {table} is invalid")
+        await cursor.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+        if tuple(tuple(row) for row in await cursor.fetchall()) != expected_columns:
+            raise RuntimeError(f"Office module publication staging columns for {table} are invalid")
+        await cursor.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
+        found_indexes = {}
+        for name, non_unique, column in await cursor.fetchall():
+            unique, columns = found_indexes.get(name, (not bool(non_unique), []))
+            found_indexes[name] = (unique, [*columns, column])
+        normalized_indexes = {name: (unique, tuple(columns)) for name, (unique, columns) in found_indexes.items()}
+        if normalized_indexes != _module_publication_expected_indexes(table):
+            raise RuntimeError(f"Office module publication staging indexes for {table} are invalid")
     if not await _index_exists(cursor, "office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity"):
         raise RuntimeError("Office module publication revision identity index is absent")
+    await cursor.execute("SELECT TABLE_NAME,CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME LIKE 'office_module_%' AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY TABLE_NAME,CONSTRAINT_NAME,ORDINAL_POSITION")
+    found_fks = {}
+    for table, name, column, target, target_column in await cursor.fetchall():
+        local, current_target, remote = found_fks.get((table, name), ([], target, []))
+        found_fks[(table, name)] = ([*local, column], current_target, [*remote, target_column])
+    expected_fks = {(table, name): value for table, values in _MODULE_PUBLICATION_STAGING_FKS.items() for name, value in values.items()}
+    normalized_fks = {(table, name): (tuple(local), target, tuple(remote)) for (table, name), (local, target, remote) in found_fks.items() if table in _MODULE_PUBLICATION_STAGING_FKS}
+    if normalized_fks != expected_fks:
+        raise RuntimeError("Office module publication staging foreign keys are invalid")
+    await cursor.execute("SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME LIKE 'office_module_%' AND tc.CONSTRAINT_TYPE='CHECK'")
+    found_checks = {name: clause for table, name, clause in await cursor.fetchall() if table in _MODULE_PUBLICATION_STAGING_COLUMNS}
+    def normalized(clause):
+        return re.sub(r"[\s`]", "", str(clause).lower()).strip("()")
+    if {name: normalized(clause) for name, clause in found_checks.items()} != {name: normalized(clause) for name, clause in _MODULE_PUBLICATION_STAGING_CHECKS.items()}:
+        raise RuntimeError("Office module publication staging checks are invalid")
     for table in _MODULE_PUBLICATION_STAGING_EVENT_TABLES:
         await cursor.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
         rows = {row[0]: tuple(row[1:]) for row in await cursor.fetchall()}
@@ -82,10 +143,6 @@ async def assert_module_publication_staging_metadata(cursor, *, allow_redacted_t
             expected = {name: (body[0], body[1], None if rows.get(name, (None, None, None))[2] is None else body[2]) for name, body in expected.items()}
         if rows != expected:
             raise RuntimeError(f"Office module publication staging triggers for {table} are invalid")
-    await cursor.execute("SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME='chk_office_module_release_head'")
-    row = await cursor.fetchone()
-    if row is None or "PENDING_CONTRACT" not in str(row[0]):
-        raise RuntimeError("Office module release head is not pending-contract only")
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
