@@ -12,6 +12,8 @@ Sirve un release inmutable bajo `/www/wwwroot/virtualoffice.axioma-ia.io/current
 usa el certificado wildcard ya instalado para `axioma-ia.io`, y reenvía sólo:
 
 - las rutas de autenticación enumeradas en el archivo;
+- `GET /api/apariencia`, la configuración pública y de sólo lectura que carga
+  el shell antes de autenticar;
 - `/api/virtual-office` y sus hijos.
 
 Todo otro `/api` y cualquier `/ws` devuelve 404 antes de llegar a JAX. La SPA
@@ -68,9 +70,10 @@ ops/virtualoffice/validate-public-ingress.sh smoke \
 
 La comprobación exige el mismo HTML y confirma que la sesión Office existe
 (401 sin credenciales), mientras `/api/admin/users`, `/api/chat` y `/ws/`
-dan 404. Un 404 en `/api/auth/login` también detiene el proceso. Después se
-verifica TLS/SNI desde una red externa y únicamente entonces se crea DNS con
-el procedimiento administrado.
+dan 404. También exige que `GET /api/apariencia` responda 200 y que su POST
+reciba 404. Un 404 en `/api/auth/login` también detiene el proceso. Después se
+verifica TLS/SNI desde una red externa y únicamente entonces se crea DNS con el
+procedimiento administrado.
 
 ## Reversión
 

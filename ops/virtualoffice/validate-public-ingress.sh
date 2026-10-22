@@ -60,6 +60,8 @@ case $command_name in
     for route in "${auth_routes[@]}"; do
       grep -Fqx "    location = $route { proxy_pass http://virtualoffice_jax_api; }" "$config" || die "auth route is absent: $route"
     done
+    grep -Fqx '    location = /api/apariencia {' "$config" || die 'public appearance route is absent'
+    grep -Fqx '        if ($request_method != GET) { return 404; }' "$config" || die 'public appearance route does not deny non-GET methods'
     grep -Fq 'proxy_set_header Host $host;' "$config" || die 'public Host is not forwarded'
     grep -Fq 'proxy_set_header X-Forwarded-Proto https;' "$config" || die 'HTTPS proto is not forwarded'
     grep -Fq 'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' "$config" || die 'client chain is not forwarded'
@@ -79,13 +81,15 @@ case $command_name in
     [[ -n $public_ip ]] || die '--public-ip is required'
     [[ $expected_index_sha =~ ^[0-9a-f]{64}$ ]] || die '--expected-index-sha must be lowercase SHA-256'
     resolve=(--resolve "$host:443:$public_ip")
-    actual=$(curl --fail --silent --show-error --max-time 10 "${resolve[@]}" "https://$host/" | sha256sum | awk '{print $1}')
+    actual=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 "${resolve[@]}" "https://$host/" | sha256sum | awk '{print $1}')
     [[ $actual == "$expected_index_sha" ]] || die "index hash mismatch: expected $expected_index_sha got $actual"
-    status() { curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 "${resolve[@]}" "https://$host$1"; }
+    status() { curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 "${resolve[@]}" "https://$host$1"; }
     [[ $(status /api/virtual-office/session) == 401 ]] || die 'Office session must be present and unauthenticated (401)'
     [[ $(status /api/admin/users) == 404 ]] || die 'admin route is exposed'
     [[ $(status /api/chat) == 404 ]] || die 'classic API route is exposed'
     [[ $(status /ws/) == 404 ]] || die 'websocket route is exposed'
+    [[ $(status /api/apariencia) == 200 ]] || die 'public appearance route is unavailable'
+    [[ $(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -X POST "${resolve[@]}" "https://$host/api/apariencia") == 404 ]] || die 'public appearance route accepts a write method'
     [[ $(status /api/auth/login) != 404 ]] || die 'login route is unavailable'
     printf 'pre-DNS smoke passed for %s via %s\n' "$host" "$public_ip"
     ;;
