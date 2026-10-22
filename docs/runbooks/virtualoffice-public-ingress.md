@@ -131,13 +131,31 @@ enlace creado por root dentro de `SITE_ROOT`; sus directorios padre también son
 0755 root:root. No se acepta un `manifest.json` enlazado ni ningún enlace dentro
 del release.
 
-4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
-no sobre el fragmento aislado. Luego recargar sólo después de los gates de
-producción y de tener una reversión lista.
+4. Activar con el ejecutable root-owned descargado del SHA auditado. Este toma
+la instantánea 0700 del vhost y `current` antes de tocar nada, valida el
+release directo y a través de `current`, ejecuta `nginx -t`, recarga y hace el
+smoke pre-DNS. Un fallo después del cambio restaura automáticamente la
+instantánea. No sustituir estos pasos con `ln -s` o una recarga manual.
 
 ```bash
-sudo nginx -t
+sudo /usr/local/libexec/jax-office-activate-public-release.sh \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --releases-root /opt/jax-office/virtualoffice.axioma-ia.io/releases \
+  --release /opt/jax-office/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
+  --vhost-source /RUTA/A/virtualoffice.axioma-ia.io.conf \
+  --vhost-path /RUTA/EFECTIVA/AApanel/virtualoffice.axioma-ia.io.conf \
+  --backup-root /var/lib/jax-office/activation-backups \
+  --validator /usr/local/libexec/jax-office-validate-public-ingress.sh \
+  --nginx /usr/sbin/nginx --expected-source-sha SHA_DE_FUENTE \
+  --public-ip INGRESS_PUBLIC_IP --expected-index-sha SHA256_DE_INDEX_HTML \
+  --asset-path /assets/ARCHIVO_DEL_MANIFIESTO \
+  --expected-asset-sha SHA256_DEL_ASSET --nginx-user www
 ```
+
+Instalar `jax-office-activate-public-release.sh` y
+`jax-office-rollback-public-release.sh` de la misma manera root-owned y
+comparada que el instalador y validador del paso 1. Conservar la ruta de la
+instantánea que imprime el activador hasta que la publicación quede aceptada.
 
 ## Comprobación sin DNS
 
@@ -168,16 +186,25 @@ detiene el procedimiento.
 
 ## Reversión
 
-Antes de activar, guardar en un directorio de respaldo con permisos 0700: la
-salida de `nginx -T`, el vhost previo **o el marcador `VHOST_ABSENT`**, la ruta
-canónica de `current` **o el marcador `CURRENT_ABSENT`**, y el manifiesto
-original del release anterior. La reversión lee esos marcadores: si había
-vhost/current, los restaura; si era el primer despliegue, retira únicamente el
-vhost y el enlace `current` que instaló este cambio. En ambos casos ejecuta
-`nginx -t`, recarga nginx, y comprueba con `--resolve` que el SNI de Office ya
-no sirve su hash; para un estado previo existente, también repite el smoke con
-el hash anterior. No se borra el release nuevo hasta que la reversión pasó estas
-comprobaciones.
+El activador deja en su instantánea 0700 el vhost previo **o el marcador
+`VHOST_ABSENT`**, la ruta canónica de `current` **o el marcador
+`CURRENT_ABSENT`**, el manifiesto anterior y el hash del índice nuevo. La
+reversión ejecutable usa esos datos: si había vhost/current, los restaura y
+repite el smoke con el manifiesto anterior; si era primer despliegue, retira
+solamente el vhost y el enlace `current` creados y demuestra que ya no entrega
+el hash nuevo. En ambos casos hace `nginx -t` y recarga antes de declarar éxito.
+
+```bash
+sudo /usr/local/libexec/jax-office-rollback-public-release.sh \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --vhost-path /RUTA/EFECTIVA/AApanel/virtualoffice.axioma-ia.io.conf \
+  --backup /var/lib/jax-office/activation-backups/office-activation.XXXXXXXX \
+  --nginx /usr/sbin/nginx \
+  --validator /usr/local/libexec/jax-office-validate-public-ingress.sh \
+  --public-ip INGRESS_PUBLIC_IP --new-index-sha256 SHA256_DEL_INDICE_NUEVO
+```
+
+No se borra el release nuevo hasta que la reversión pasó estas comprobaciones.
 
 ## Gates que este archivo no reemplaza
 
