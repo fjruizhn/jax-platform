@@ -9,7 +9,7 @@ import time
 from auth.models import AuthUser
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
-from virtual_office.bootstrap import bootstrap_initial_office_root
+from virtual_office.bootstrap import _locked_current_target, bootstrap_initial_office_root
 from virtual_office.bootstrap import credential_self_control_in_cursor
 from virtual_office.mfa import (
     MFAConfig, confirm_enrollment_in_cursor, issue_login_challenge_after_password_in_cursor,
@@ -64,6 +64,27 @@ def test_bootstrap_cli_checks_runtime_contract_before_reading_or_mutating(monkey
     monkeypatch.setattr("sys.stdin.readline", lambda: "untrusted-token\n")
     args = argparse.Namespace(target_user_id=1, expected_email="root@example.invalid", basis_ref="test", access_token_stdin=True)
     assert asyncio.run(cli._run(args)) == 1
+
+
+def test_bootstrap_target_guard_rejects_inactive_tenant_user_and_external_class(client):
+    async def scenario():
+        user_id, email = await crear_usuario()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await _locked_current_target(cur, user_id, email) is not None
+        await sql("UPDATE jax_users SET status='inactive' WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await _locked_current_target(cur, user_id, email) is None
+        await sql("UPDATE jax_users SET status='active',account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await _locked_current_target(cur, user_id, email) is None
+        await sql("UPDATE jax_users SET account_class='INTERNAL' WHERE user_id=%s", (user_id,))
+        await sql("UPDATE jax_tenants SET status='inactive' WHERE tenant_id=1")
+        try:
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                assert await _locked_current_target(cur, user_id, email) is None
+        finally:
+            await sql("UPDATE jax_tenants SET status='active' WHERE tenant_id=1")
+    client.portal.call(scenario)
 
 
 async def _login_proof(user_id: int, secret: str, correlation: bytes, offset: int):
