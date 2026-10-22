@@ -211,4 +211,25 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
             pass
         else:
             raise AssertionError("bootstrap accepted forged proof")
+        # Durable proof freshness is evaluated from the ledger timestamp, not
+        # caller-controlled AuthUser.mfa_at.  Both stale and future evidence
+        # fail before receipt replay.
+        for interval in ("- INTERVAL 301 SECOND", "+ INTERVAL 600 SECOND"):
+            event_id = await sql(
+                "INSERT INTO office_mfa_security_event "
+                "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+                "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,UTC_TIMESTAMP(6) " + interval + ")",
+                (user_id, user_id, fresh_session.token_version, fresh_session.mfa_version, b"F" * 16),
+            )
+            invalid_time = AuthUser(user_id=str(user_id), tenant_id="1", role="operator", email=email,
+                                    token_version=fresh_session.token_version, account_class="INTERNAL",
+                                    mfa_proof_event_id=int(event_id), mfa_version=fresh_session.mfa_version,
+                                    mfa_at=fresh_session.mfa_at)
+            try:
+                await bootstrap_initial_office_root(session_user=invalid_time, target_user_id=user_id,
+                                                    expected_email=email, basis_ref="test-bootstrap")
+            except BootstrapDenied:
+                pass
+            else:
+                raise AssertionError("bootstrap accepted invalid-time proof")
     client.portal.call(scenario)
