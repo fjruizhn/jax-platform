@@ -26,14 +26,17 @@ def _pair(tmp_path: Path) -> tuple[Path, int, int]:
                  root / "jax", root / "jax" / "jax", root.parent, root.parent.parent):
         path.chmod(0o755)
     manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": "a" * 40,
-                "jax_revision": "b" * 40, "files": readiness._inventory(root, owner_uid=uid, owner_gid=gid)}
+                "jax_revision": "b" * 40, "dependency_lock_sha256": "c" * 64,
+                "wheelhouse_manifest_sha256": "d" * 64,
+                "files": readiness._inventory(root, owner_uid=uid, owner_gid=gid)}
     (root / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     (root / readiness.MANIFEST).chmod(0o644)
     return root, uid, gid
 
 
 def _verify(root: Path, uid: int, gid: int) -> None:
-    readiness.verify(root, expected_jxp="a" * 40, expected_jax="b" * 40, owner_uid=uid, owner_gid=gid)
+    readiness.verify(root, expected_jxp="a" * 40, expected_jax="b" * 40, owner_uid=uid, owner_gid=gid,
+                     ancestor_stop=root.parent.parent)
 
 
 def test_accepts_complete_pair_and_rejects_each_authoritative_mutation(tmp_path: Path) -> None:
@@ -81,5 +84,5 @@ def test_platform_units_bind_both_processes_to_the_same_pair() -> None:
     for name in ("jax-platform.service", "jax-platform-migrate.service"):
         unit = (root / "ops" / "migration" / "systemd-units" / name).read_text(encoding="utf-8")
         assert "WorkingDirectory=/opt/jax-platform-pair/current/jax-platform/backend" in unit
-        assert "Environment=JAX_REPO_PATH=/opt/jax-platform-pair/current/jax" in unit
+        assert "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax /opt/jax-platform-pair/current/jax-platform/backend/.venv/bin" in unit
         assert "ExecStartPre=/usr/local/libexec/jax-platform-pair-artifact-readiness" in unit

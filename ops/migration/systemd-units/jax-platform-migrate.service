@@ -10,7 +10,6 @@ Type=oneshot
 # The oneshot receives only its minimal migration credential and runner paths.
 User=jaxmigrate
 WorkingDirectory=/opt/jax-platform-pair/current/jax-platform/backend
-Environment=JAX_REPO_PATH=/opt/jax-platform-pair/current/jax
 EnvironmentFile=/etc/jax/migrate.env
 ExecStartPre=/usr/local/libexec/jax-platform-pair-artifact-readiness
-ExecStart=/opt/jax-platform-pair/current/jax-platform/backend/.venv/bin/python -m db.migrate
+ExecStart=/usr/bin/env JAX_REPO_PATH=/opt/jax-platform-pair/current/jax /opt/jax-platform-pair/current/jax-platform/backend/.venv/bin/python -m db.migrate

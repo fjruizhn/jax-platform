@@ -69,7 +69,9 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         source_backend = cwd[0]
         expected_backend = str(artifact / "backend")
-        if not source_backend.startswith("/") or not argv[0].startswith(source_backend + "/"):
+        if argv[:2] != ["/usr/bin/env", "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax"]:
+            raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
+        if not source_backend.startswith("/") or len(argv) < 3 or not argv[2].startswith(source_backend + "/"):
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         expected_argv = [expected_backend + argument[len(source_backend):] if argument.startswith(source_backend + "/") else argument for argument in argv]
         contract[unit] = {

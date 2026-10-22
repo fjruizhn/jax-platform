@@ -37,6 +37,10 @@ def _safe_relative(root: Path, path: Path) -> str:
     return value
 
 
+def _allowed_symlink(root: Path, path: Path) -> bool:
+    return path == root / "jax-platform" / "backend" / ".venv" / "lib64" and os.readlink(path) == "lib"
+
+
 def _check_node(path: Path, *, owner_uid: int, owner_gid: int = 0) -> os.stat_result:
     try:
         value = path.lstat()
@@ -58,6 +62,8 @@ def _inventory(root: Path, *, owner_uid: int, owner_gid: int = 0) -> list[dict[s
         dirs.sort(); files.sort()
         for name in [*dirs, *files]:
             path = current / name
+            if path.is_symlink() and _allowed_symlink(root, path):
+                continue
             node = _check_node(path, owner_uid=owner_uid, owner_gid=owner_gid)
             if stat.S_ISDIR(node.st_mode):
                 continue
@@ -74,18 +80,24 @@ def _inventory(root: Path, *, owner_uid: int, owner_gid: int = 0) -> list[dict[s
 
 
 def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str | None = None,
-           owner_uid: int = 0, owner_gid: int = 0) -> dict[str, object]:
+           owner_uid: int = 0, owner_gid: int = 0, ancestor_stop: Path | None = None) -> dict[str, object]:
     release = release.resolve(strict=True)
     _check_node(release, owner_uid=owner_uid, owner_gid=owner_gid)
-    for ancestor in (release.parent, release.parent.parent):
+    ancestor = release.parent
+    while True:
         _check_node(ancestor, owner_uid=owner_uid, owner_gid=owner_gid)
+        if ancestor_stop is not None and ancestor == ancestor_stop:
+            break
+        if ancestor.parent == ancestor:
+            break
+        ancestor = ancestor.parent
     for required in (release / "jax-platform" / "backend", release / "jax" / "jax", release / MANIFEST):
         _check_node(required, owner_uid=owner_uid, owner_gid=owner_gid)
     try:
         manifest = json.loads((release / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _reject("invalid manifest") from exc
-    if not isinstance(manifest, dict) or set(manifest) != {"schema", "jax_platform_revision", "jax_revision", "files"}:
+    if not isinstance(manifest, dict) or set(manifest) != {"schema", "jax_platform_revision", "jax_revision", "dependency_lock_sha256", "wheelhouse_manifest_sha256", "files"}:
         raise _reject("invalid manifest shape")
     if manifest["schema"] != SCHEMA:
         raise _reject("unsupported manifest schema")
@@ -95,6 +107,10 @@ def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str 
             raise _reject(f"invalid {key}")
         if expected is not None and revision != expected:
             raise _reject(f"unexpected {key}")
+    for key in ("dependency_lock_sha256", "wheelhouse_manifest_sha256"):
+        value = manifest[key]
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise _reject(f"invalid {key}")
     files = manifest["files"]
     if not isinstance(files, list) or files != _inventory(release, owner_uid=owner_uid, owner_gid=owner_gid):
         raise _reject("artifact inventory mismatch")

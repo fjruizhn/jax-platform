@@ -26,16 +26,16 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
     return {
         "jax-platform.service": {
             "WorkingDirectory": backend, "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
-            "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin", "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax"],
+            "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"],
             "EnvironmentFiles": [["/etc/jax/runtime.env", False]],
-            "ExecStartEx": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=127.0.0.1", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartEx": [["/usr/bin/env", ["/usr/bin/env", "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax", f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=127.0.0.1", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [["/usr/local/libexec/jax-platform-pair-artifact-readiness", ["/usr/local/libexec/jax-platform-pair-artifact-readiness"], [], 0, 0, 0, 0, 0, 0, 0]], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
         },
         "jax-platform-migrate.service": {
             "WorkingDirectory": backend, "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
-            "Environment": ["JAX_REPO_PATH=/opt/jax-platform-pair/current/jax"], "EnvironmentFiles": [["/etc/jax/migrate.env", False]],
-            "ExecStartEx": [[f"{backend}/.venv/bin/python", [f"{backend}/.venv/bin/python", "-m", "db.migrate"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "Environment": [], "EnvironmentFiles": [["/etc/jax/migrate.env", False]],
+            "ExecStartEx": [["/usr/bin/env", ["/usr/bin/env", "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax", f"{backend}/.venv/bin/python", "-m", "db.migrate"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [["/usr/local/libexec/jax-platform-pair-artifact-readiness", ["/usr/local/libexec/jax-platform-pair-artifact-readiness"], [], 0, 0, 0, 0, 0, 0, 0]], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
         },
