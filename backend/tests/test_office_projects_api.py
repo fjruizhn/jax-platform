@@ -552,3 +552,43 @@ def test_create_project_unexpected_core_failure_is_opaque_retryable(client, monk
                            headers=_proof_headers(root, tv, mv, proof, str(uuid.uuid4())))
     assert response.status_code == 503
     assert response.json() == {"detail": "office_project_create_retryable"}
+
+
+def test_project_detail_hides_internal_metadata_from_external_client(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, root_tv, root_mv, proof = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        external, _ = await crear_usuario()
+        await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (external,))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (external,))
+        project = await sql("INSERT INTO projects (project_uuid,name,description,status) VALUES (UUID(),%s,%s,'active')",
+                            ("detail-" + uuid.uuid4().hex, "internal-only metadata"))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (project, external, root))
+        group = await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project, root))
+        await sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (project, external, group))
+        return external, project
+
+    external, project = client.portal.call(scenario)
+    external_response = client.get(f"/api/virtual-office/projects/{project}", headers=_headers(external))
+    assert external_response.status_code == 200
+    assert external_response.json()["description"] is None
+    root_response = client.get(f"/api/virtual-office/projects/{project}", headers=_proof_headers(root, root_tv, root_mv, proof, str(uuid.uuid4())))
+    assert root_response.status_code == 200
+    assert root_response.json()["description"] == "internal-only metadata"
+
+
+def test_create_project_rejects_whitespace_name_and_invalid_idempotency_before_write(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    before = client.portal.call(sql, "SELECT COUNT(*) FROM jax_project_scope", (), True)[0][0]
+    headers = _proof_headers(root, tv, mv, proof, str(uuid.uuid4()))
+    whitespace = client.post("/api/virtual-office/projects", json={"tenant_id": 1, "name": "   "}, headers=headers)
+    assert whitespace.status_code == 422
+    invalid_headers = dict(headers)
+    invalid_headers["Idempotency-Key"] = "not-a-canonical-uuid"
+    invalid = client.post("/api/virtual-office/projects", json={"tenant_id": 1, "name": "valid"}, headers=invalid_headers)
+    assert invalid.status_code == 422
+    assert invalid.json() == {"detail": "office_project_idempotency_invalid"}
+    assert client.portal.call(sql, "SELECT COUNT(*) FROM jax_project_scope", (), True)[0][0] == before

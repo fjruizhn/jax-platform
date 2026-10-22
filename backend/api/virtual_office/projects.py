@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/virtual-office/projects")
 
 class ProjectCreate(BaseModel):
     tenant_id: int = Field(gt=0)
-    name: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=255, pattern=r".*\S.*")
     description: str | None = Field(default=None, max_length=2000)
 
 
@@ -247,6 +247,64 @@ async def list_projects(
     return {"projects": visible, "next_after_id": next_after_id}
 
 
+async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
+                                    proof_event_id: int | None, mfa_config) -> dict:
+    """Return a project only after the canonical Office resolver approves it.
+
+    The row is locked for mutation callers.  Reads use the same resolver and
+    intentionally omit confidential metadata for a published-client grant.
+    """
+    await cur.execute(
+        "SELECT p.id,p.name,p.description,s.tenant_id,s.version FROM projects p "
+        "JOIN jax_project_scope s ON s.project_id=p.id "
+        "WHERE p.id=%s AND s.authorization_namespace='OFFICE_CONFIDENTIAL' "
+        "AND s.status='ACTIVE'",
+        (project_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="office_project_not_found")
+    # The recipient group is relevant only for external callers.  Resolve it
+    # from the server-owned relationship; callers never submit it as a query
+    # parameter capable of selecting another client's publication.
+    await cur.execute(
+        "SELECT recipient_group_id FROM office_external_relation "
+        "WHERE project_id=%s AND user_id=%s AND status='ACTIVE'",
+        (project_id, actor_user_id),
+    )
+    relation = await cur.fetchone()
+    decision = await authorize_office_in_cursor(
+        cur, actor_user_id, OfficeOperation.VIEW_PROJECT, project_id,
+        recipient_group_id=None if relation is None else int(relation[0]),
+        mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,
+    )
+    if not decision.allowed:
+        # Do not turn a guessed confidential project id into an authority
+        # oracle.  A caller with a live Office identity sees a generic deny;
+        # unprovisioned callers are handled by the middleware/profile paths.
+        raise HTTPException(status_code=403, detail="office_project_access_denied")
+    return {
+        "id": int(row[0]), "name": row[1],
+        "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],
+        "tenant_id": int(row[3]), "scope_version": int(row[4]),
+        "audience": decision.audience or "INTERNAL",
+    }
+
+
+@router.get("/{project_id}")
+async def get_project(project_id: int, user: AuthUser = Depends(get_current_user)):
+    try:
+        actor_user_id = int(user.user_id)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=403, detail="office_project_access_denied") from error
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        return await _project_detail_in_cursor(
+            cur, actor_user_id=actor_user_id, project_id=project_id,
+            proof_event_id=user.mfa_proof_event_id,
+            mfa_config=load_mfa_config_from_environment(),
+        )
+
+
 @router.post("")
 async def create_project(payload: ProjectCreate, idempotency_key: str = Header(alias="Idempotency-Key"),
                          user: AuthUser = Depends(get_current_user)):
@@ -256,6 +314,7 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
     from jax.memory.b9_mariadb import MariaDBB9Store
     from jax.memory.project_authority import (
         AuthorizationDenied,
+        InvalidIdempotencyKey,
         IdempotencyKeyConflict,
         ProjectAuthorityAdmin,
         ProjectAuthorityError,
@@ -276,6 +335,8 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
         raise HTTPException(status_code=503, detail="office_project_create_retryable") from error
     except IdempotencyKeyConflict as error:
         raise HTTPException(status_code=409, detail="office_project_idempotency_conflict") from error
+    except InvalidIdempotencyKey as error:
+        raise HTTPException(status_code=422, detail="office_project_idempotency_invalid") from error
     except (OfficeNamespaceAuthorizationDenied, AuthorizationDenied, ScopeDenied,
             ProjectNotVisible, ProjectRoleInsufficient) as error:
         raise HTTPException(status_code=403, detail="office_project_create_denied") from error
