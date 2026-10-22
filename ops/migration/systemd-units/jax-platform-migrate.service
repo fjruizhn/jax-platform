@@ -7,9 +7,7 @@ Before=jax-platform.service
 
 [Service]
 Type=oneshot
-# The oneshot receives only its minimal migration credential and runner paths.
 User=jaxmigrate
 WorkingDirectory=/
-EnvironmentFile=/etc/jax/migrate.env
-UnsetEnvironment=BASH_ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV JAX_REPO_PATH
-ExecStart=/usr/local/libexec/jax-platform-pair-exec migrate
+LoadCredential=migrate.env:/etc/jax/migrate.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate %d/migrate.env

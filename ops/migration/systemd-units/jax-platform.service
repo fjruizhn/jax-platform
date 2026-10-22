@@ -7,14 +7,11 @@ Requires=jax-platform-migrate.service
 Wants=docker.service jax-las-manos.service
 
 [Service]
-Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Type=simple
 User=jaxweb
 WorkingDirectory=/
-# Runtime receives only the filtered web configuration and DML credential.
-EnvironmentFile=/etc/jax/runtime.env
-UnsetEnvironment=BASH_ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV JAX_REPO_PATH
-ExecStart=/usr/local/libexec/jax-platform-pair-exec web
+LoadCredential=runtime.env:/etc/jax/runtime.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web %d/runtime.env
 Restart=on-failure
 RestartSec=5
 

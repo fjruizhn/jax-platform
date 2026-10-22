@@ -15,7 +15,7 @@ SOURCE=${1:-}
   exit 1
 }
 
-for file in pair_artifact_readiness.py pair-artifact-readiness.sh jax-platform-pair-exec \
+for file in pair_artifact_readiness.py pair-artifact-readiness.sh jax-platform-pair-exec jax-platform-pair-exec.py \
             install-platform-pair-release.sh activate-platform-pair-release.sh; do
   [[ -f $SOURCE/$file && ! -L $SOURCE/$file ]] || { echo "missing trusted runtime file: $file" >&2; exit 1; }
 done
@@ -45,6 +45,7 @@ done
 
 /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec
 /usr/bin/install -o root -g root -m 0644 "$SOURCE/pair_artifact_readiness.py" /usr/local/libexec/pair_artifact_readiness.py
+/usr/bin/install -o root -g root -m 0644 "$SOURCE/jax-platform-pair-exec.py" /usr/local/libexec/jax-platform-pair-exec.py
 for file in pair-artifact-readiness.sh jax-platform-pair-exec install-platform-pair-release.sh activate-platform-pair-release.sh; do
   /usr/bin/install -o root -g root -m 0755 "$SOURCE/$file" "/usr/local/libexec/$file"
 done

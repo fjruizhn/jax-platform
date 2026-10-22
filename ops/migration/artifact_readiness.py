@@ -12,7 +12,7 @@ from pathlib import Path
 
 SERVICE_PROPERTIES = {
     "WorkingDirectory": "s", "User": "s", "Group": "s", "SupplementaryGroups": "as",
-    "Environment": "as", "EnvironmentFiles": "a(sb)", "UnsetEnvironment": "as", "ExecStartEx": "a(sasasttttuii)",
+    "Environment": "as", "EnvironmentFiles": "a(sb)", "LoadCredential": "as", "UnsetEnvironment": "as", "ExecStartEx": "a(sasasttttuii)",
     "ExecStartPreEx": "a(sasasttttuii)", "ExecStartPostEx": "a(sasasttttuii)",
     "ExecConditionEx": "a(sasasttttuii)", "Type": "s", "RemainAfterExit": "b",
 }
@@ -52,10 +52,10 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             return [value for candidate, value in sections[section_name] if candidate == key]
 
         cwd, users, groups, types, remain = (values("Service", key) for key in ("WorkingDirectory", "User", "Group", "Type", "RemainAfterExit"))
-        environment, envs, unset, starts = (values("Service", key) for key in ("Environment", "EnvironmentFile", "UnsetEnvironment", "ExecStart"))
+        environment, envs, creds, unset, starts = (values("Service", key) for key in ("Environment", "EnvironmentFile", "LoadCredential", "UnsetEnvironment", "ExecStart"))
         if len(cwd) != 1 or len(users) != 1 or len(groups) > 1 or len(types) != 1 or len(remain) > 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        if len(envs) != 1 or len(starts) != 1:
+        if envs or len(creds) != 1 or len(starts) != 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         pre, post, condition = (values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition"))
         if pre or post or condition:
@@ -65,15 +65,16 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             expected_environment = [item for value in environment for item in shlex.split(value)]
         except ValueError as exc:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed") from exc
-        if not argv or starts[0].startswith("-") or envs[0].startswith("-"):
+        if not argv or starts[0].startswith("-") or creds[0].startswith("-"):
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         mode = "web" if unit == "jax-platform.service" else "migrate"
-        if cwd[0] != "/" or argv != ["/usr/local/libexec/jax-platform-pair-exec", mode]:
+        credential = "runtime.env" if mode == "web" else "migrate.env"
+        if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"%d/{credential}"]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         contract[unit] = {
             "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
-            "EnvironmentFiles": [[envs[0], False]], "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
+            "EnvironmentFiles": [], "LoadCredential": creds, "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
             "ExecStart": argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
@@ -112,7 +113,7 @@ def verify(artifact: Path, command: list[str]) -> None:
     for unit in UNITS:
         actual = effective_contract(command, unit)
         wanted = expected[unit]
-        for field in ("WorkingDirectory", "User", "Group", "SupplementaryGroups", "Environment", "EnvironmentFiles", "UnsetEnvironment", "Type", "RemainAfterExit"):
+        for field in ("WorkingDirectory", "User", "Group", "SupplementaryGroups", "Environment", "EnvironmentFiles", "LoadCredential", "UnsetEnvironment", "Type", "RemainAfterExit"):
             if actual[field] != wanted[field]:
                 raise fail(unit, field)
         # ExecStart deliberately has no privilege-prefix information.  The

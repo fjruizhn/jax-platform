@@ -89,7 +89,9 @@ def test_platform_units_bind_both_processes_to_the_same_pair() -> None:
     for name, mode in (("jax-platform.service", "web"), ("jax-platform-migrate.service", "migrate")):
         unit = (root / "ops" / "migration" / "systemd-units" / name).read_text(encoding="utf-8")
         assert "WorkingDirectory=/" in unit
-        assert f"ExecStart=/usr/local/libexec/jax-platform-pair-exec {mode}" in unit
+        credential = "runtime.env" if mode == "web" else "migrate.env"
+        assert f"LoadCredential={credential}:/etc/jax/{credential}" in unit
+        assert f"ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py {mode} %d/{credential}" in unit
 
 
 def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() -> None:
@@ -120,4 +122,4 @@ def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() ->
     assert '"$SOURCE/artifact_readiness.py" / /usr/bin/busctl' in runtime_installer
     for unit in ("jax-platform.service", "jax-platform-migrate.service"):
         text = (root / "ops" / "migration" / "systemd-units" / unit).read_text(encoding="utf-8")
-        assert "UnsetEnvironment=BASH_ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV JAX_REPO_PATH" in text
+        assert "EnvironmentFile=" not in text
