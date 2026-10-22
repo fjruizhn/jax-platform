@@ -19,6 +19,7 @@ from virtual_office.audit import record_authorization_event
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
 from virtual_office.mfa import load_mfa_config_from_environment
+from virtual_office.bootstrap import credential_self_control_in_cursor
 
 
 router = APIRouter(prefix="/api/virtual-office/people")
@@ -31,6 +32,11 @@ class GlobalRoleUpdate(BaseModel):
 
 
 class DelegationUpdate(BaseModel):
+    expected_version: int = Field(ge=0)
+
+
+class ProfileEnable(BaseModel):
+    """Bind (or reactivate) an existing self-controlled Office identity."""
     expected_version: int = Field(ge=0)
 
 
@@ -66,6 +72,89 @@ async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id:
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
     return target_tenant_id
+
+
+@router.put("/{target_user_id}/profile")
+async def enable_existing_profile(target_user_id: int, payload: ProfileEnable,
+                                  user: AuthUser = Depends(get_current_user)):
+    """Enable only an existing identity that has proved control of its own credential.
+
+    This deliberately has no password input.  An administrator knowing or
+    resetting a password cannot create Office access for its subject.
+    """
+    actor_user_id = _actor_id(user)
+    if target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_person_not_found")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        decision = await _current_admin(cur, actor_user_id=actor_user_id,
+                                        proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_profile_enable_denied")
+        await cur.execute(
+            "SELECT u.status,u.account_class,t.status,p.status,p.version "
+            "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+            "LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+            "WHERE u.user_id=%s FOR UPDATE", (target_user_id,))
+        target = await cur.fetchone()
+        credential_audit_id = await credential_self_control_in_cursor(cur, user_id=target_user_id)
+        if (target is None or target[0] != "active" or target[2] != "active"
+                or target[1] not in {"INTERNAL", "OFFICE_INTERNAL"}
+                or credential_audit_id is None):
+            raise HTTPException(status_code=403, detail="office_profile_self_control_required")
+        status = target[3]
+        version = None if target[4] is None else int(target[4])
+        if status is None:
+            if payload.expected_version != 0:
+                raise HTTPException(status_code=409, detail="office_profile_version_conflict")
+            await cur.execute(
+                "INSERT INTO office_account_profile "
+                "(user_id,global_role,status,version,bound_by_user_id,credential_audit_id,created_at,updated_at) "
+                "VALUES (%s,'COLLABORATOR','ACTIVE',1,%s,%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                (target_user_id, actor_user_id, credential_audit_id))
+            next_version, replayed = 1, False
+        elif status == "ACTIVE":
+            if payload.expected_version not in {0, version}:
+                raise HTTPException(status_code=409, detail="office_profile_version_conflict")
+            next_version, replayed = version, True
+        else:
+            # A profile binding is permanent evidence.  Revocation never
+            # becomes an implicit re-enrolment path, even for a later root.
+            raise HTTPException(status_code=409, detail="office_profile_revoked")
+        decision = await _current_admin(cur, actor_user_id=actor_user_id,
+                                        proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_profile_enable_denied")
+        await record_authorization_event(cur, decision)
+    return {"user_id": target_user_id, "status": "ACTIVE", "version": next_version, "replayed": replayed}
+
+
+@router.delete("/{target_user_id}/profile")
+async def revoke_existing_profile(target_user_id: int, expected_version: int = Query(ge=1),
+                                  user: AuthUser = Depends(get_current_user)):
+    """Revoke a permanent profile without deleting its security history."""
+    actor_user_id = _actor_id(user)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        decision = await _current_admin(cur, actor_user_id=actor_user_id,
+                                        proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER" or target_user_id == actor_user_id:
+            raise HTTPException(status_code=403, detail="office_profile_revoke_denied")
+        await cur.execute("SELECT global_role,status,version FROM office_account_profile WHERE user_id=%s FOR UPDATE", (target_user_id,))
+        profile = await cur.fetchone()
+        if profile is None:
+            raise HTTPException(status_code=404, detail="office_person_not_found")
+        if profile[0] == "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
+        if int(profile[2]) != expected_version:
+            raise HTTPException(status_code=409, detail="office_profile_version_conflict")
+        if profile[1] == "REVOKED":
+            return {"user_id": target_user_id, "status": "REVOKED", "version": expected_version, "replayed": True}
+        await cur.execute("UPDATE office_account_profile SET status='REVOKED',version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s AND status='ACTIVE' AND version=%s", (target_user_id, expected_version))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="office_profile_version_conflict")
+        await record_authorization_event(cur, decision)
+    return {"user_id": target_user_id, "status": "REVOKED", "version": expected_version + 1, "replayed": False}
 
 
 @router.get("")

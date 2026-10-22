@@ -99,6 +99,44 @@ def test_global_role_mutation_never_creates_unprofiled_office_binding(client, mo
     assert client.portal.call(sql, "SELECT user_id FROM office_account_profile WHERE user_id=%s", (target,), True) == ()
 
 
+def test_root_enables_only_self_controlled_existing_profile_and_never_reactivates_revoked(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+
+    async def scenario():
+        target, _ = await crear_usuario()
+        # A root/admin-originated completion is not a subject-controlled credential.
+        await sql("INSERT INTO user_admin_audit (actor_user_id,target_user_id,action,detail,ts) VALUES (%s,%s,'password_reset_completed',JSON_OBJECT('source','test'),UTC_TIMESTAMP(6))", (root, target))
+        return target
+
+    target = client.portal.call(scenario)
+    headers = _headers(root, tv, mv, proof)
+    denied = client.put(f"/api/virtual-office/people/{target}/profile", json={"expected_version": 0}, headers=headers)
+    assert denied.status_code == 403
+    assert client.portal.call(sql, "SELECT user_id FROM office_account_profile WHERE user_id=%s", (target,), True) == ()
+
+    async def own_control():
+        return await sql("INSERT INTO user_admin_audit (actor_user_id,target_user_id,action,detail,ts) VALUES (%s,%s,'password_reset_completed',JSON_OBJECT('source','test'),UTC_TIMESTAMP(6))", (target, target))
+
+    audit_id = client.portal.call(own_control)
+    async def current_control():
+        from db.transaccion import transaccion, AISLAMIENTO_ADMIN
+        from virtual_office.bootstrap import credential_self_control_in_cursor
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            return await credential_self_control_in_cursor(cur, user_id=target)
+    assert client.portal.call(current_control) == audit_id
+    enabled = client.put(f"/api/virtual-office/people/{target}/profile", json={"expected_version": 0}, headers=headers)
+    assert enabled.status_code == 200
+    assert client.portal.call(
+        sql, "SELECT status,bound_by_user_id,credential_audit_id FROM office_account_profile WHERE user_id=%s", (target,), True,
+    ) == (("ACTIVE", root, audit_id),)
+    revoked = client.delete(f"/api/virtual-office/people/{target}/profile?expected_version=1", headers=headers)
+    assert revoked.status_code == 200
+    retry = client.put(f"/api/virtual-office/people/{target}/profile", json={"expected_version": 2}, headers=headers)
+    assert retry.status_code == 409
+    assert client.portal.call(sql, "SELECT status FROM office_account_profile WHERE user_id=%s", (target,), True) == (("REVOKED",),)
+
+
 def test_global_role_route_does_not_demote_a_root_without_recovery_ceremony(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)

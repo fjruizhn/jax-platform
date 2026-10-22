@@ -76,6 +76,77 @@ async def _current_project_grant_decision(cur, *, actor_user_id: int, project_id
     return decision
 
 
+async def _lock_grant_identities(cur, *, actor_user_id: int, target_user_id: int,
+                                 audience: str, cleanup: bool = False) -> int:
+    """Lock the target's canonical identity/profile before touching JAX membership.
+
+    A membership without a usable Office profile is an access pre-grant.  The
+    profile and recipient relation are therefore part of the same transaction
+    as the JAX callback, never repaired afterwards.
+    """
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
+    actor_hint = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
+    target_hint = await cur.fetchone()
+    if actor_hint is None or target_hint is None:
+        raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+    for tenant_id in sorted({int(actor_hint[0]), int(target_hint[0])}):
+        await cur.execute("SELECT tenant_id,status FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+        tenant = await cur.fetchone()
+        if tenant is None or tenant[1] != "active":
+            raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+    # Actor lock precedes target lock.  Do not ask the project resolver yet:
+    # JAX's in-transaction callback owns the first scope authorization.
+    await cur.execute(
+        "SELECT u.user_id FROM jax_users u LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+        "WHERE u.user_id=%s FOR UPDATE", (actor_user_id,))
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=403, detail="office_project_grant_denied")
+    await cur.execute(
+        "SELECT u.tenant_id,u.status,u.account_class,t.status,p.status "
+        "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+        "LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s FOR UPDATE",
+        (target_user_id,),
+    )
+    target = await cur.fetchone()
+    expected_classes = ({"INTERNAL", "OFFICE_INTERNAL"} if audience == "INTERNAL" else {"EXTERNAL_CLIENT"})
+    if target is None:
+        raise HTTPException(status_code=409, detail="office_project_grant_profile_required")
+    if not cleanup and (target[1] != "active" or target[3] != "active" or target[4] != "ACTIVE"
+                        or target[2] not in expected_classes):
+        raise HTTPException(status_code=409, detail="office_project_grant_profile_required")
+    return int(target[0])
+
+
+async def _lock_active_client_group(cur, *, project_id: int) -> int:
+    await cur.execute(
+        "SELECT recipient_group_id FROM office_recipient_group WHERE project_id=%s "
+        "AND group_kind='CLIENT' AND status='ACTIVE' FOR UPDATE", (project_id,))
+    group = await cur.fetchone()
+    if group is None:
+        raise HTTPException(status_code=409, detail="office_project_grant_recipient_group_required")
+    return int(group[0])
+
+
+async def _upsert_external_relation(cur, *, project_id: int, target_user_id: int,
+                                    recipient_group_id: int) -> None:
+    await cur.execute(
+        "SELECT status,version,recipient_group_id FROM office_external_relation "
+        "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
+    relation = await cur.fetchone()
+    if relation is None:
+        await cur.execute(
+            "INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) "
+            "VALUES (%s,%s,%s,'ACTIVE')", (project_id, target_user_id, recipient_group_id))
+    elif relation[0] != "ACTIVE" or int(relation[2]) != recipient_group_id:
+        await cur.execute(
+            "UPDATE office_external_relation SET recipient_group_id=%s,status='ACTIVE',version=version+1 "
+            "WHERE project_id=%s AND user_id=%s AND version=%s",
+            (recipient_group_id, project_id, target_user_id, int(relation[1])))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+
+
 @router.put("/{project_id}/members/{target_user_id}")
 async def grant_project_member(project_id: int, target_user_id: int, payload: ProjectGrantUpdate,
                                idempotency_key: str = Header(alias="Idempotency-Key"),
@@ -94,20 +165,11 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
         ProjectAuthorityError, ProjectNamespace,
     )
     member_kind = (NamespacedMemberKind.INTERNAL if payload.audience == "INTERNAL"
-                   else NamespacedMemberKind.EXTERNAL)
+                   else NamespacedMemberKind.EXTERNAL_CLIENT)
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            # The JAX hook takes tenant→actor→target→scope and invokes this
-            # callback in the same cursor before its idempotency record.
-            await _current_project_grant_decision(
-                cur, actor_user_id=actor_user_id, project_id=project_id,
-                proof_event_id=user.mfa_proof_event_id, config=config,
-            )
-            await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
-            target = await cur.fetchone()
-            if target is None:
-                raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
-            target_tenant_id = int(target[0])
+            target_tenant_id = await _lock_grant_identities(
+                cur, actor_user_id=actor_user_id, target_user_id=target_user_id, audience=payload.audience)
             result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
                 cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
                 project_id=project_id, target_user_id=target_user_id,
@@ -146,6 +208,11 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
                     if cur.rowcount != 1:
                         raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                     version, replayed = version + 1, False
+            if payload.audience == "CLIENT_PUBLISHED":
+                recipient_group_id = await _lock_active_client_group(cur, project_id=project_id)
+                await _upsert_external_relation(
+                    cur, project_id=project_id, target_user_id=target_user_id,
+                    recipient_group_id=recipient_group_id)
             decision = await _current_project_grant_decision(
                 cur, actor_user_id=actor_user_id, project_id=project_id,
                 proof_event_id=user.mfa_proof_event_id, config=config,
@@ -187,15 +254,13 @@ async def revoke_project_member(project_id: int, target_user_id: int,
     )
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            await _current_project_grant_decision(
-                cur, actor_user_id=actor_user_id, project_id=project_id,
-                proof_event_id=user.mfa_proof_event_id, config=config,
-            )
-            await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
-            target = await cur.fetchone()
-            if target is None:
+            await cur.execute("SELECT audience FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
+            existing_grant = await cur.fetchone()
+            if existing_grant is None:
                 raise HTTPException(status_code=404, detail="office_project_grant_not_found")
-            target_tenant_id = int(target[0])
+            target_tenant_id = await _lock_grant_identities(
+                cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+                audience=str(existing_grant[0]), cleanup=True)
             result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).revoke_namespaced_member_in_transaction(
                 cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
                 project_id=project_id, target_user_id=target_user_id,
@@ -226,6 +291,11 @@ async def revoke_project_member(project_id: int, target_user_id: int,
                 if cur.rowcount != 1:
                     raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                 version, replayed = expected_version + 1, False
+            if str(existing_grant[0]) == "CLIENT_PUBLISHED":
+                await cur.execute(
+                    "UPDATE office_external_relation SET status='REVOKED',version=version+1 "
+                    "WHERE project_id=%s AND user_id=%s AND status='ACTIVE'",
+                    (project_id, target_user_id))
             decision = await _current_project_grant_decision(
                 cur, actor_user_id=actor_user_id, project_id=project_id,
                 proof_event_id=user.mfa_proof_event_id, config=config,

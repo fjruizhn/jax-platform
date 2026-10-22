@@ -85,7 +85,10 @@ async def credential_self_control_in_cursor(cur, *, user_id: int) -> int | None:
             # administrator-originated completion must never satisfy the
             # bootstrap ceremony; any later admin credential control resets
             # the chain again.
-            if latest_admin is not None and audit_actor_user_id == user_id:
+            # A durable self-completion is sufficient when the historical
+            # audit starts after account creation; any later administrator
+            # control above has already reset this candidate to None.
+            if audit_actor_user_id == user_id:
                 latest_self_id = int(audit_id)
     return latest_self_id
 

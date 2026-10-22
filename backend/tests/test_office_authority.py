@@ -346,9 +346,11 @@ def test_audience_role_contract_and_decision_provenance_are_canonical(client):
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (external,))
         group = await _sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,%s,'CLIENT','ACTIVE',%s)", (fixture["project"], fixture["tenant_a"], fixture["actor"]))
         await _sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (fixture["project"], external, group))
-        await _sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','CLIENT_PUBLISHED','ACTIVE',%s)", (fixture["project"], external, fixture["actor"]))
-        assert (await authorize_office(None, external, OfficeOperation.VIEW_PROJECT, fixture["project"], group)).code == "office_grant_insufficient"
-        await _sql("UPDATE office_project_grant SET grant_role='COLLABORATOR' WHERE project_id=%s AND user_id=%s", (fixture["project"], external))
+        # The database contract makes this invalid state unrepresentable;
+        # it is not merely something the resolver notices afterwards.
+        with pytest.raises(aiomysql.OperationalError):
+            await _sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','CLIENT_PUBLISHED','ACTIVE',%s)", (fixture["project"], external, fixture["actor"]))
+        await _sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (fixture["project"], external, fixture["actor"]))
         decision = await authorize_office(None, external, OfficeOperation.VIEW_PROJECT, fixture["project"], group)
         assert (decision.audience, decision.grant_role, decision.recipient_group_id) == ("CLIENT_PUBLISHED", "COLLABORATOR", group)
     client.portal.call(scenario)

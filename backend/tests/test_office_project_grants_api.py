@@ -81,6 +81,53 @@ def test_project_admin_client_published_shape_is_rejected_before_membership(clie
     assert client.portal.call(sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True) == ()
 
 
+def test_client_published_grant_requires_active_external_profile_and_tracks_relation(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, _ = client.portal.call(_office_project_and_unassigned_member)
+
+    async def external_target():
+        target, _ = await crear_usuario()
+        await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (target,))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project, root))
+        return target
+
+    target = client.portal.call(external_target)
+    headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    response = client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "CLIENT_PUBLISHED", "expected_version": 0}, headers=headers)
+    assert response.status_code == 200
+    assert client.portal.call(
+        sql, "SELECT g.status,r.status,rg.status FROM office_project_grant g JOIN office_external_relation r "
+        "ON r.project_id=g.project_id AND r.user_id=g.user_id JOIN office_recipient_group rg "
+        "ON rg.recipient_group_id=r.recipient_group_id WHERE g.project_id=%s AND g.user_id=%s", (project, target), True,
+    ) == (("ACTIVE", "ACTIVE", "ACTIVE"),)
+    revoked = client.delete(
+        f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())})
+    assert revoked.status_code == 200
+    assert client.portal.call(
+        sql, "SELECT g.status,r.status FROM office_project_grant g JOIN office_external_relation r "
+        "ON r.project_id=g.project_id AND r.user_id=g.user_id WHERE g.project_id=%s AND g.user_id=%s", (project, target), True,
+    ) == (("REVOKED", "REVOKED"),)
+
+
+def test_unprofiled_or_revoked_target_never_receives_jax_membership(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    awaitable = lambda: sql("UPDATE office_account_profile SET status='REVOKED' WHERE user_id=%s", (target,))
+    client.portal.call(awaitable)
+    response = client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())})
+    assert response.status_code == 409
+    assert client.portal.call(sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True) == ()
+
+
 def test_project_admin_cannot_mint_project_admin_or_leave_partial_member(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, _, _, _ = client.portal.call(_root_with_proof)
