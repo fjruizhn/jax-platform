@@ -168,11 +168,11 @@ def main() -> None:
     actual_wheelhouse = wheelhouse_digest(arguments.wheelhouse)
     if actual_wheelhouse != arguments.wheelhouse_sha256 or digest(arguments.lock) != arguments.lock_sha256:
         die("external dependency digest mismatch")
-    arguments.out.mkdir(mode=0o700)
+    arguments.out.mkdir(mode=0o700); arguments.out.chmod(0o700)
     platform_output = arguments.out / "jax-platform"
     jax_output = arguments.out / "jax"
-    platform_output.mkdir()
-    jax_output.mkdir()
+    platform_output.mkdir(); platform_output.chmod(0o700)
+    jax_output.mkdir(); jax_output.chmod(0o700)
     platform_tree, platform_links = extract(arguments.platform, arguments.platform_commit, platform_output)
     if platform_links:
         die("platform source symlinks forbidden")
