@@ -132,3 +132,19 @@ def test_root_owned_load_rejects_writable_ancestor(tmp_path, monkeypatch):
     bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"sealed", "0755")])
     with pytest.raises(rp.PackageError, match="ownership"):
         rp._trusted_ancestors(bundle)
+
+
+def test_runtime_import_lock_is_exclusive(tmp_path):
+    lock = tmp_path / "runtime.lock"
+    with rp._exclusive_runtime_lock(lock):
+        with pytest.raises(rp.PackageError, match="already"):
+            with rp._exclusive_runtime_lock(lock):
+                pass
+
+
+def test_active_service_rejects_import(monkeypatch):
+    class Result:
+        stdout = "active\n"
+    monkeypatch.setattr(rp.subprocess, "run", lambda *_, **__: Result())
+    with pytest.raises(rp.PackageError, match="inactive"):
+        rp._require_units_inactive()

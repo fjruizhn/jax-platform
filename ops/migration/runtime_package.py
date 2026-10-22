@@ -9,6 +9,7 @@ it.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
+from contextlib import contextmanager
 
 SCHEMA = "axioma.platform-runtime-package/v1"
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -340,6 +342,30 @@ def _run_checked(command: list[str], *, pass_fds: tuple[int, ...] = ()) -> None:
         raise PackageError("effective runtime contract rejected") from exc
 
 
+@contextmanager
+def _exclusive_runtime_lock(path: Path = Path("/run/lock/jax-platform-runtime-import.lock")):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise PackageError("runtime import already in progress") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _require_units_inactive() -> None:
+    for unit in ("jax-platform.service", "jax-platform-migrate.service"):
+        try:
+            result = subprocess.run(["/usr/bin/systemctl", "show", unit, "--property=ActiveState", "--value"], check=True, text=True, capture_output=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise PackageError("cannot confirm runtime units inactive") from exc
+        if result.stdout.strip() != "inactive":
+            raise PackageError("runtime units must be inactive before import")
+
+
 def main(argv: list[str]) -> int:
     """Entry point for a separately installed root-owned bootstrap program."""
     if (len(argv) != 12 or argv[1] != "import" or argv[2] != "--package"
@@ -364,7 +390,9 @@ def main(argv: list[str]) -> int:
             _run_checked([f"/proc/self/fd/{validator_fd}", "/", "/usr/bin/busctl"], pass_fds=(validator_fd,))
 
         try:
-            import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
+            with _exclusive_runtime_lock():
+                _require_units_inactive()
+                import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
         finally:
             os.close(validator_fd)
     except PackageError as exc:
