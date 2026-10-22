@@ -76,4 +76,29 @@ first=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name CURRENT_ABSENT -pr
 PATH="$fixture/bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ ! -e $fixture/site/current && ! -e $fixture/vhosts/office.conf ]]
 grep -q 'nginx -t' "$fixture/log"; grep -q 'nginx -s reload' "$fixture/log"
+
+# Kill after the vhost mv but before current mv: only the durable marker may
+# authorize recovery, and a foreign vhost must never be overwritten.
+ln -s "$fixture/site/releases/$old" "$fixture/site/current"
+printf 'old-vhost\n' > "$fixture/vhosts/office.conf"
+printf 'new-vhost\n' > "$fixture/template.conf"; chown root:root "$fixture/template.conf"; chmod 644 "$fixture/template.conf"
+mkdir "$fixture/kill-bin"
+cat > "$fixture/kill-bin/mv" <<'SH'
+#!/usr/bin/env bash
+/bin/mv "$@"
+src=${@: -2:1}
+[[ $src == *office.conf.new ]] && kill -KILL "$PPID"
+SH
+chmod 755 "$fixture/kill-bin/mv"
+if PATH="$fixture/kill-bin:$PATH" "$fixture/bin/activate" "${args[@]}" >/dev/null 2>&1; then echo 'activation unexpectedly survived SIGKILL hook' >&2; exit 1; fi
+killed=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name ACTIVATION_IN_PROGRESS -printf '%h\n' | tail -1)
+[[ -f $killed/ACTIVATION_IN_PROGRESS ]]
+[[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'new-vhost' "$fixture/vhosts/office.conf"
+cp "$killed/vhost-source" "$fixture/exact-new-vhost"
+printf 'foreign-vhost\n' > "$fixture/vhosts/office.conf"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery overwrote foreign vhost' >&2; exit 1; fi
+grep -qx 'foreign-vhost' "$fixture/vhosts/office.conf"
+cp "$fixture/exact-new-vhost" "$fixture/vhosts/office.conf"
+"$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
+[[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"; [[ ! -f $killed/ACTIVATION_IN_PROGRESS ]]
 echo 'public release activation/rollback fixtures passed'
