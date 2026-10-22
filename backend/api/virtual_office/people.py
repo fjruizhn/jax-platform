@@ -58,19 +58,28 @@ async def _current_admin(cur, *, actor_user_id: int, proof_event_id: int | None)
     return decision
 
 
-async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id: int) -> int:
-    """Take the shared tenant mutexes before actor/profile then target rows."""
+async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id: int,
+                                     proof_event_id: int | None) -> int:
+    """Authorize the actor before target state can shape an API response."""
     await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
     actor = await cur.fetchone()
     await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
     target = await cur.fetchone()
-    if actor is None or target is None:
-        raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
-    target_tenant_id = int(target[0])
-    for tenant_id in sorted({int(actor[0]), target_tenant_id}):
+    # Target is an untrusted lock-order hint only.  An INTERNAL user without
+    # an Office profile must receive the same opaque denial whether it names
+    # a real user or an absent one.
+    if actor is None:
+        raise HTTPException(status_code=403, detail="office_people_access_denied")
+    target_tenant_id = None if target is None else int(target[0])
+    tenant_hints = {int(actor[0])}
+    if target_tenant_id is not None:
+        tenant_hints.add(target_tenant_id)
+    tenant_rows: set[int] = set()
+    for tenant_id in sorted(tenant_hints):
         await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
-        if await cur.fetchone() is None:
-            raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+        row = await cur.fetchone()
+        if row is not None:
+            tenant_rows.add(int(row[0]))
     # Hints establish only a deterministic tenant-lock order.  Re-read both
     # identities while locked so a tenant reassignment cannot turn the later
     # profile/delegation mutation into cross-tenant authority.
@@ -78,6 +87,16 @@ async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id:
     actor_locked = await cur.fetchone()
     if actor_locked is None or int(actor_locked[0]) != int(actor[0]):
         raise HTTPException(status_code=409, detail="office_delegation_target_drift")
+    if int(actor[0]) not in tenant_rows:
+        raise HTTPException(status_code=403, detail="office_people_access_denied")
+    decision = await _current_admin(cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id)
+    # Every target-taking people route is root-only.  Reject before target
+    # discovery so a delegated/general Office administrator cannot enumerate
+    # identities through their different target outcomes.
+    if decision.global_role != "OFFICE_SUPERUSER":
+        raise HTTPException(status_code=403, detail="office_people_access_denied")
+    if target_tenant_id is None or target_tenant_id not in tenant_rows:
+        raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
     await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s FOR UPDATE", (target_user_id,))
     target_locked = await cur.fetchone()
     if target_locked is None or int(target_locked[0]) != target_tenant_id:
@@ -97,7 +116,8 @@ async def enable_existing_profile(target_user_id: int, payload: ProfileEnable,
     if target_user_id < 1:
         raise HTTPException(status_code=404, detail="office_person_not_found")
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+                                         proof_event_id=user.mfa_proof_event_id)
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":
@@ -146,7 +166,8 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
     """Revoke a permanent profile without deleting its security history."""
     actor_user_id = _actor_id(user)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        await _lock_actor_target_tenants(cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+                                         proof_event_id=user.mfa_proof_event_id)
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER" or target_user_id == actor_user_id:
@@ -234,22 +255,11 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
     if target_user_id < 1:
         raise HTTPException(status_code=404, detail="office_person_not_found")
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        # Discover tenant ids only as lock-order hints, then lock every row
-        # and re-read the target below.  This matches the 3C shared order.
-        await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
-        actor_hint = await cur.fetchone()
-        await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
-        target_hint = await cur.fetchone()
-        if actor_hint is None or target_hint is None:
-            raise HTTPException(status_code=404, detail="office_person_not_found")
-        for tenant_id in sorted({int(actor_hint[0]), int(target_hint[0])}):
-            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
-            if await cur.fetchone() is None:
-                raise HTTPException(status_code=404, detail="office_person_not_found")
+        target_tenant_hint = await _lock_actor_target_tenants(
+            cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+            proof_event_id=user.mfa_proof_event_id)
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
-        if decision.tenant_id != int(actor_hint[0]):
-            raise HTTPException(status_code=409, detail="office_global_role_target_drift")
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_global_role_denied")
         await cur.execute(
@@ -260,7 +270,7 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
             (target_user_id,),
         )
         target = await cur.fetchone()
-        if (target is None or int(target[0]) != int(target_hint[0]) or target[1] != "active" or target[3] != "active"
+        if (target is None or int(target[0]) != target_tenant_hint or target[1] != "active" or target[3] != "active"
                 or target[4] is None or target[5] != "ACTIVE"):
             raise HTTPException(status_code=404, detail="office_person_not_found")
         if target[2] == "EXTERNAL_CLIENT" and payload.global_role != "COLLABORATOR":
@@ -299,7 +309,8 @@ async def grant_tenant_administration(target_user_id: int, payload: DelegationUp
     config = load_mfa_config_from_environment()
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         target_tenant_hint = await _lock_actor_target_tenants(
-            cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+            cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+            proof_event_id=user.mfa_proof_event_id)
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":
@@ -345,7 +356,8 @@ async def revoke_tenant_administration(target_user_id: int, expected_version: in
     actor_user_id = _actor_id(user)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         target_tenant_hint = await _lock_actor_target_tenants(
-            cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+            cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+            proof_event_id=user.mfa_proof_event_id)
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":

@@ -66,18 +66,20 @@ async def _locked_membership_receipt(cur, *, idempotency_key: str):
 async def _assert_receipt_companion(cur, *, project_id: int, target_user_id: int, receipt) -> None:
     """A receipt replay is valid only while its saved Office companion matches."""
     await cur.execute(
-        "SELECT version,status FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
+        "SELECT grant_role,audience,version,status FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
         (project_id, target_user_id))
     grant = await cur.fetchone()
-    if grant is None or int(grant[0]) != int(receipt[3]) or str(grant[1]) != str(receipt[4]):
+    if (grant is None or str(grant[0]) != str(receipt[8]) or str(grant[1]) != str(receipt[9])
+            or int(grant[2]) != int(receipt[3]) or str(grant[3]) != str(receipt[4])):
         raise HTTPException(status_code=503, detail="office_project_grant_retryable")
     if receipt[5] is not None:
         await cur.execute(
-            "SELECT relation_id,version,recipient_group_id FROM office_external_relation "
+            "SELECT relation_id,version,recipient_group_id,status FROM office_external_relation "
             "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
         relation = await cur.fetchone()
         if (relation is None or int(relation[0]) != int(receipt[5])
-                or int(relation[1]) != int(receipt[6]) or int(relation[2]) != int(receipt[7])):
+                or int(relation[1]) != int(receipt[6]) or int(relation[2]) != int(receipt[7])
+                or str(relation[3]) != str(receipt[4])):
             raise HTTPException(status_code=503, detail="office_project_grant_retryable")
 
 
@@ -128,6 +130,19 @@ class _OfficeMembershipAuthorizer:
         # mint the Office-side PROJECT_ADMIN authority.
         if self._grant_role == "PROJECT_ADMIN" and decision.global_role != "OFFICE_SUPERUSER":
             raise AuthorizationDenied("only an Office root may grant project administration")
+        if operation.value == "REVOKE_OFFICE_MEMBER":
+            # This runs after JAX locked the scope but before it locks the
+            # canonical request/membership.  Therefore an administrator
+            # cannot race a target's Office-side PROJECT_ADMIN role between
+            # authorization and revoke, while the lock order remains shared.
+            await cursor.execute(
+                "SELECT grant_role FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
+                (project_id, target_user_id),
+            )
+            target_grant = await cursor.fetchone()
+            if (target_grant is not None and target_grant[0] == "PROJECT_ADMIN"
+                    and decision.global_role != "OFFICE_SUPERUSER"):
+                raise AuthorizationDenied("only an Office root may revoke project administration")
 
 
 def _actor_id(user: AuthUser) -> int:

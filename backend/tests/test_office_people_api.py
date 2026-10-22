@@ -99,6 +99,35 @@ def test_global_role_mutation_never_creates_unprofiled_office_binding(client, mo
     assert client.portal.call(sql, "SELECT user_id FROM office_account_profile WHERE user_id=%s", (target,), True) == ()
 
 
+def test_non_office_actor_cannot_probe_people_targets_through_root_only_routes(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+
+    async def scenario():
+        actor, _ = await crear_usuario()
+        target, _ = await crear_usuario()
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (actor,), True))[0]
+        return actor, target, int(versions[0]), int(versions[1])
+
+    actor, target, tv, mv = client.portal.call(scenario)
+    headers = _headers(actor, tv, mv, 1)
+    cases = (
+        ("put", f"/api/virtual-office/people/{target}/profile", {"expected_version": 0}),
+        ("delete", f"/api/virtual-office/people/{target}/profile?expected_version=1", None),
+        ("put", f"/api/virtual-office/people/{target}/global-role", {"global_role": "GENERAL_ADMIN", "expected_version": 1}),
+        ("put", f"/api/virtual-office/people/{target}/delegation", {"expected_version": 0}),
+        ("delete", f"/api/virtual-office/people/{target}/delegation?expected_version=1", None),
+    )
+    for method, existing_path, body in cases:
+        missing_path = existing_path.replace(f"/{target}", f"/{target + 1000000}", 1)
+        kwargs = {"headers": headers}
+        if body is not None:
+            kwargs["json"] = body
+        existing = getattr(client, method)(existing_path, **kwargs)
+        missing = getattr(client, method)(missing_path, **kwargs)
+        assert (existing.status_code, existing.json()) == (403, {"detail": "office_people_access_denied"})
+        assert (missing.status_code, missing.json()) == (403, {"detail": "office_people_access_denied"})
+
+
 def test_external_client_cannot_receive_administrative_global_role_or_appear_after_revocation(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)

@@ -313,6 +313,85 @@ def test_replay_refuses_drifted_office_companion(client, monkeypatch):
     assert (replay.status_code, replay.json()["detail"]) == (503, "office_project_grant_retryable")
 
 
+def test_replay_refuses_authority_drift_without_a_companion_version_change(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    body = {"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}
+    assert client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers).status_code == 200
+    client.portal.call(
+        sql,
+        "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s",
+        (project, target),
+    )
+    replay = client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
+    assert (replay.status_code, replay.json()["detail"]) == (503, "office_project_grant_retryable")
+
+
+def test_client_receipt_replay_refuses_relation_status_drift_without_version_change(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, _ = client.portal.call(_office_project_and_unassigned_member)
+
+    async def external_target():
+        target, _ = await crear_usuario()
+        await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (target,))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project, root))
+        return target
+
+    target = client.portal.call(external_target)
+    headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    body = {"grant_role": "COLLABORATOR", "audience": "CLIENT_PUBLISHED", "expected_version": 0}
+    assert client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers).status_code == 200
+    client.portal.call(
+        sql, "UPDATE office_external_relation SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (project, target),
+    )
+    replay = client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
+    assert (replay.status_code, replay.json()["detail"]) == (503, "office_project_grant_retryable")
+
+
+def test_project_admin_cannot_revoke_another_project_admin(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _root_tv, _root_mv, _root_proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def project_admin():
+        admin, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (admin,))
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (admin,), True))[0]
+        proof = await sql(
+            "INSERT INTO office_mfa_security_event "
+            "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+            "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,UTC_TIMESTAMP(6))",
+            (admin, admin, versions[0], versions[1], uuid.uuid4().bytes),
+        )
+        for user_id in (admin, target):
+            await sql(
+                "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,grant_origin,created_at,created_by,updated_at) "
+                "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE','OFFICE',NOW(6),'test',NOW(6))",
+                (str(uuid.uuid4()), project, user_id),
+            )
+            await sql(
+                "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+                "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project, user_id, root),
+            )
+        return admin, int(versions[0]), int(versions[1]), int(proof)
+
+    admin, tv, mv, proof = client.portal.call(project_admin)
+    denied = client.delete(
+        f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+        headers={**_headers(admin, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert (denied.status_code, denied.json()) == (403, {"detail": "office_project_grant_denied"})
+    assert client.portal.call(
+        sql, "SELECT m.status,g.status FROM jax_project_membership m JOIN office_project_grant g "
+             "ON g.project_id=m.project_id AND g.user_id=m.user_id WHERE m.project_id=%s AND m.user_id=%s",
+        (project, target), True,
+    ) == (("ACTIVE", "ACTIVE"),)
+
+
 def test_concurrent_same_membership_request_has_one_receipt(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
