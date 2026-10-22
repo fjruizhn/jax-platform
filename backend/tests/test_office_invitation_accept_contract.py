@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
+import asyncio
 
 import pytest
 from api.virtual_office.invitations import InvitationAcceptRequest, accept_invitation
@@ -103,10 +104,17 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
             "SELECT o.payload_ciphertext FROM office_invitation_outbox o WHERE o.invitation_id=%s",
             (invitation.invitation_id,), True))[0][0]
         _recipient, bearer_token, _expires_at = _decode_outbox_payload(ciphertext)
-        async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            replayed = await accept_invitation_in_cursor(
-                cur, accepting_user_id=None, accepting_email=None, new_password_hash=password_hash,
-                bearer_token=bearer_token)
+        async def consume(candidate_hash):
+            try:
+                async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                    return await accept_invitation_in_cursor(
+                        cur, accepting_user_id=None, accepting_email=None, new_password_hash=candidate_hash,
+                        bearer_token=bearer_token)
+            except InvitationError as error:
+                return error.code
+        first, second = await asyncio.gather(
+            consume(password_hash), consume(_hash("a-different-password")))
+        assert sorted((first, second), key=str) == [False, "office_invitation_existing_session_required"]
         with pytest.raises(InvitationError, match="office_invitation_existing_session_required"):
             async with transaccion(AISLAMIENTO_ADMIN) as cur:
                 await accept_invitation_in_cursor(
@@ -117,6 +125,6 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
             "JOIN office_account_profile p ON p.user_id=u.user_id "
             "JOIN office_project_grant g ON g.user_id=u.user_id AND g.project_id=%s "
                 "WHERE u.email=%s", (project_id, invitee_email), True)
-        return replayed, rows[0]
+        return rows[0]
 
-    assert client.portal.call(scenario) == (False, (invitee_email, "OFFICE_INTERNAL", "ACTIVE", "COLLABORATOR"))
+    assert client.portal.call(scenario) == (invitee_email, "OFFICE_INTERNAL", "ACTIVE", "COLLABORATOR")
