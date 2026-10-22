@@ -1,0 +1,1 @@
+{"algorithm":"Ed25519","allowed_peer_uids":[1001],"database_user":"jax_critic_guard","domain":"axioma.office","guard_gid":1001,"guard_protocol":"office-critic-trust-guard/v1","guard_uid":1001,"limits":{"max_frame_bytes":20480,"max_inflight":8,"timeout_seconds":3},"purpose":"rights.review","trust_definer_user":"jax_critic_trust_owner","version":1}
