@@ -514,8 +514,8 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
                 await migrations.run_migrations()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
-                    assert await cur.fetchone() is None
+                    await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
+                    assert (await cur.fetchone()) == (INVALIDATED_RUNTIME_REVISION,)
         finally:
             monkeypatch.setattr(migrations, "_reclassify_provenance_mismatch", original)
             await migrations.run_migrations()
