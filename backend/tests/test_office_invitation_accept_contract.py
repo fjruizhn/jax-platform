@@ -78,6 +78,7 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
         monkeypatch.setenv(name, value)
     issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(_office_root_with_current_proof)
     password_hash = _hash("password-for-new-invitee")
+    invitee_email = "accept-" + uuid.uuid4().hex + "@example.test"
 
     async def scenario():
         project_id = await sql(
@@ -95,7 +96,7 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             invitation = await issue_invitation_in_cursor(
                 cur, actor_user_id=issuer, project_id=project_id,
-                email="accept-invitee@example.test", audience="INTERNAL",
+                email=invitee_email, audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
                 invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30))
         ciphertext = (await sql(
@@ -115,7 +116,7 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
             "SELECT u.email,u.account_class,p.status,g.grant_role FROM jax_users u "
             "JOIN office_account_profile p ON p.user_id=u.user_id "
             "JOIN office_project_grant g ON g.user_id=u.user_id AND g.project_id=%s "
-            "WHERE u.email='accept-invitee@example.test'", (project_id,), True)
+                "WHERE u.email=%s", (project_id, invitee_email), True)
         return replayed, rows[0]
 
-    assert client.portal.call(scenario) == (False, ("accept-invitee@example.test", "OFFICE_INTERNAL", "ACTIVE", "COLLABORATOR"))
+    assert client.portal.call(scenario) == (False, (invitee_email, "OFFICE_INTERNAL", "ACTIVE", "COLLABORATOR"))
