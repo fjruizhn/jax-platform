@@ -170,8 +170,12 @@ async def _probe(pool, statement: str) -> None:
                 try:
                     await cur.execute(statement, (FENCE_KEY,))
                 except aiomysql.OperationalError as exc:
-                    if getattr(exc, "args", ()) != (1644, APPEND_ONLY_MESSAGE):
-                        raise RuntimeDbContractError("Office audit trigger did not reject canonically") from exc
+                    # The runtime ACL denies this before MariaDB evaluates the
+                    # append-only trigger.  Trigger body attestation belongs
+                    # to the migration principal, which can read it without
+                    # granting the web process DDL-adjacent privileges.
+                    if getattr(exc, "args", (None,))[0] != 1142:
+                        raise RuntimeDbContractError("Office audit ACL did not reject canonically") from exc
                 else:
                     raise RuntimeDbContractError("Office audit trigger permitted a mutation")
                 after = await _fence_snapshot(cur)
@@ -195,8 +199,8 @@ async def _mfa_probe(pool, statement: str, parameter=MFA_FENCE_KEY) -> None:
                 try:
                     await cur.execute(statement, (parameter,))
                 except aiomysql.OperationalError as error:
-                    if error.args != (1644, MFA_APPEND_ONLY_MESSAGE):
-                        raise RuntimeDbContractError("Office MFA trigger did not reject canonically") from error
+                    if getattr(error, "args", (None,))[0] != 1142:
+                        raise RuntimeDbContractError("Office MFA ACL did not reject canonically") from error
                 else:
                     raise RuntimeDbContractError("Office MFA trigger permitted a mutation")
                 if await _mfa_fence_snapshot(cur) != before:
@@ -223,11 +227,9 @@ async def _mfa_normal_event_id(pool):
 async def _mfa_pristine_ledger_probe(pool) -> None:
     """Prove append-only behavior without committing fabricated MFA evidence.
 
-    A database that contains only the migration fence must still reject a
-    conditional trigger which protects that fence alone.  The DML principal
-    creates a contract-valid ``DENIED`` row in its transaction, probes both
-    mutations, and rolls the entire transaction back.  It never persists a
-    successful verification canary.
+    The web principal may append a contract-valid ``DENIED`` row in its
+    transaction, but its ACL must deny both later mutations.  It never
+    persists fabricated MFA evidence.
     """
     before = None
     async with pool.acquire() as conn:
@@ -254,8 +256,8 @@ async def _mfa_pristine_ledger_probe(pool) -> None:
                     try:
                         await cur.execute(statement, (event_id,))
                     except aiomysql.OperationalError as error:
-                        if error.args != (1644, MFA_APPEND_ONLY_MESSAGE):
-                            raise RuntimeDbContractError("Office MFA trigger did not reject canonically") from error
+                        if getattr(error, "args", (None,))[0] != 1142:
+                            raise RuntimeDbContractError("Office MFA ACL did not reject canonically") from error
                     else:
                         raise RuntimeDbContractError("Office MFA trigger permitted a mutation")
                 if await _mfa_fence_snapshot(cur) != before:
@@ -372,8 +374,8 @@ async def _bootstrap_append_only_probe(pool) -> None:
                         try:
                             await cur.execute(statement, (BOOTSTRAP_KEY,))
                         except aiomysql.OperationalError as error:
-                            if error.args != (1644, BOOTSTRAP_APPEND_ONLY_MESSAGE):
-                                raise RuntimeDbContractError("Office bootstrap trigger did not reject canonically") from error
+                            if getattr(error, "args", (None,))[0] != 1142:
+                                raise RuntimeDbContractError("Office bootstrap ACL did not reject canonically") from error
                         else:
                             raise RuntimeDbContractError("Office bootstrap trigger permitted a mutation")
                         if await _bootstrap_snapshot(cur) != before:

@@ -89,6 +89,17 @@ _MFA_TRIGGER_METADATA = {
     "no_delete_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
 }
 
+_AUDIT_TRIGGER_METADATA = {
+    "no_update_office_authorization_event": (
+        "office_authorization_event", "BEFORE", "UPDATE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_authorization_event append-only'",
+    ),
+    "no_delete_office_authorization_event": (
+        "office_authorization_event", "BEFORE", "DELETE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_authorization_event append-only'",
+    ),
+}
+
 _BOOTSTRAP_FOREIGN_KEYS = {
     "fk_office_bootstrap_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
     "fk_office_bootstrap_actor": (("identity_actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
@@ -377,6 +388,24 @@ async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body
         raise RuntimeError("Office MFA triggers are missing or invalid")
 
 
+async def assert_audit_runtime_metadata(cur) -> None:
+    """Attest the audit ledger trigger bodies before stamping readiness.
+
+    Runtime principals cannot read trigger bodies on the target MariaDB
+    version, so the runtime guard can only check trigger identity.  The
+    migrator has DDL metadata access and therefore owns this full-body check.
+    """
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,"
+        "ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS "
+        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
+        "('no_update_office_authorization_event','no_delete_office_authorization_event')"
+    )
+    found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    if found != _AUDIT_TRIGGER_METADATA:
+        raise RuntimeError("Office authorization audit triggers are missing or invalid")
+
+
 async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
     """Attest bootstrap's signed/unsigned foreign keys and append-only guard."""
     await cur.execute(
@@ -514,6 +543,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
+    await assert_audit_runtime_metadata(cursor)
     ledger_existed = await _table_exists(cursor, "office_mfa_security_event")
     for statement in OFFICE_MFA_DDL:
         if "office_mfa_security_event" not in statement:
