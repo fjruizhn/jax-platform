@@ -224,3 +224,117 @@ Estado del escritor Tier 2: **FREEZE CANDIDATE para auditoría exacta de Task
 producción.
 
 Parent independiente finalcandidate:302passed20.51s3076fixturewarnings. Mismo comando fullselected anterior más tests/test_sesion_unica.py y tests/test_office_session_barrier.py. Gitdiff-check limpio. Endpointload/RPS/p95 siguegatepublishingTask6, no publicreadinessclaim. Próximo fullTask3BscopedSol exactSHA contra4223b7d (3A2approved); no3Cconsumerantesverdictclean.
+
+## Sol rejection round 1/5 · partial implementation
+
+Implemented source fixes before this writer window ended:
+
+- password login now rejects any MFA credential state other than ACTIVE, so
+  `PENDING`/`RECOVERY_REQUIRED` cannot fall through to classic token/cookie;
+- OTP verification re-reads `locked_until` under the canonical user lock,
+  invalidates an issued LOGIN/STEP_UP challenge when a live lock is observed,
+  and returns before proof/version/cookie work;
+- STEP_UP refresh replacement calls `sesion_vencida` with the current absolute
+  session policy before preserving iat/exp;
+- added authenticated `POST /api/auth/mfa/reenrollment/start`, requiring
+  current password plus recent proof and using the existing atomic primitive;
+- auth-wide validation sanitization/no-store now covers `/api/auth/`, while
+  retaining `mfa_invalid_request` in the MFA namespace.
+
+Focused existing validation:
+
+```text
+/usr/bin/python3 .../cv-office-run-tests.py jxp -q \
+  tests/test_office_mfa_api_security.py tests/test_office_mfa_login_api.py \
+  tests/test_login_bloqueo.py
+GREEN: 40 passed (518 migration warnings).
+```
+
+**Not ready for Sol re-audit:** new dedicated HTTP regressions for all five
+findings and the requested full suite have not yet been added/run. No commit,
+push, PR or production action.
+
+## Sol round 1/5 · final writer state (not audit-ready)
+
+Corrected the login-state implementation to preserve the canonical distinction:
+first-enrollment PENDING and DISABLED retain their existing login semantics;
+only RECOVERY_REQUIRED and PENDING with current recovery lineage are denied.
+The selected existing matrix passed after the source changes:
+
+```text
+/usr/bin/python3 .../cv-office-run-tests.py jxp -q --disable-warnings \
+  tests/test_office_authority.py tests/test_office_identity_guard.py \
+  tests/test_office_mfa.py tests/test_office_mfa_api_security.py \
+  tests/test_office_mfa_events.py tests/test_office_mfa_login_api.py \
+  tests/test_office_migrations.py tests/test_login_bloqueo.py \
+  tests/test_login_rate_limit.py tests/test_login_residuos.py \
+  tests/test_login_sin_enumeracion.py tests/test_sesiones_token_version.py \
+  tests/test_fijar_password.py tests/test_sesion_unica.py \
+  tests/test_office_session_barrier.py
+GREEN: 303 passed (3076 migration warnings); git diff --check clean.
+```
+
+A real HTTP validation-sentinel regression was added. The planned reenrollment
+end-to-end regression was removed after the STEP_UP test fixture failed at the
+existing refresh/CSRF boundary; it must be rebuilt using the repository's
+canonical authenticated STEP_UP fixture before claiming coverage. Dedicated
+HTTP regressions for recovery-origin PENDING/RECOVERY_REQUIRED, future-lock
+challenge invalidation, and absolute-window STEP_UP refresh also remain
+required. Therefore this is **not ready for Sol re-audit** despite the green
+existing suite. No commit, push, PR or production action.
+
+## Sol round 1/5 · resumed evidence
+
+Rebuilt the authenticated reenrollment HTTP regression using the canonical
+pre-login access+refresh STEP_UP fixture (not a session-client cookie). It
+proves recent-proof/password access to the endpoint, no-store, ACTIVE old
+factor plus pending replacement before confirmation, and atomic ACTIVE
+confirmation afterward.
+
+```text
+/usr/bin/python3 .../cv-office-run-tests.py jxp -q --disable-warnings [full selected list]
+GREEN: 304 passed (3097 migration warnings); git diff --check clean.
+```
+
+The remaining dedicated HTTP regressions for recovery-state password login,
+live lock challenge retirement, and shortened absolute STEP_UP refresh remain
+unimplemented; this remains not Sol-ready. No commit/push/prod.
+
+## Sol round 1/5 · three HTTP groups
+
+Added real HTTP regressions for RECOVERY_REQUIRED password login (403, no
+refresh cookie), live lock imposed after LOGIN challenge (challenge becomes
+INVALIDATED, no version bump), and a STEP_UP refresh rejected under a
+shortened current absolute session policy (401/no-store). The full selected
+matrix passed:
+
+```text
+...cv-office-run-tests.py jxp -q --disable-warnings [15 selected files]
+GREEN: 307 passed (3160 migration warnings); git diff --check clean.
+```
+
+The recovery-origin PENDING variant is still not an independent HTTP setup in
+this file; the name was intentionally not overstated. Existing primitive
+coverage proves its lineage behavior. This report is therefore not a claim of
+Sol approval. No commit/push/prod.
+
+## Sol round 1/5 · Fix 1 freeze candidate
+
+The final recovery-origin PENDING HTTP fixture uses the real sequence:
+ACTIVE enrollment → recovery-code consumption → recovery capability → recovery
+enrollment PENDING → password login. Login returns 403 with no access payload
+or refresh cookie while the credential remains PENDING.
+
+The absolute-window regression now preserves a JWT expiration 600 seconds in
+the future while setting original iat two seconds earlier; a positive current
+one-second policy rejects STEP_UP refresh with 401/no-store. This proves the
+current absolute policy, rather than JWT exp, controls the denial.
+
+```text
+/usr/bin/python3 .../cv-office-run-tests.py jxp -q --disable-warnings [15 selected files]
+GREEN: 308 passed (3181 migration warnings); git diff --check clean.
+```
+
+All five Sol round 1 findings now have source changes and focused HTTP
+coverage. **FREEZE CANDIDATE for exact Sol re-audit; not a Sol approval and
+not authorization for 3C.** No commit, push, PR or production action.

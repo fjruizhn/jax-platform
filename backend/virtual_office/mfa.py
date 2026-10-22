@@ -320,6 +320,17 @@ async def verify_and_consume_totp_in_cursor(cur, *, challenge_token: str, otp: s
             "WHERE token_hash=%s", (hashed,),
         )
         return MFADenied("challenge_expired", terminal=True)
+    # `_user` already holds the canonical PK lock.  Re-read the live lock
+    # state under that same lock: a lock imposed after challenge issuance may
+    # never be cleared by a subsequently presented OTP.
+    await cur.execute("SELECT locked_until FROM jax_users WHERE user_id=%s FOR UPDATE", (user_id,))
+    locked = await cur.fetchone()
+    if locked is None or (locked[0] is not None and locked[0] > now):
+        await cur.execute(
+            "UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) "
+            "WHERE token_hash=%s AND state='ISSUED'", (hashed,),
+        )
+        return MFADenied("challenge_unavailable", terminal=True)
     if versions != (int(tv), int(mv)):
         await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
         return MFADenied("challenge_version", terminal=True)

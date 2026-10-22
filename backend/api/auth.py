@@ -31,6 +31,8 @@ from virtual_office.mfa import (
     verify_and_consume_totp_in_cursor, issue_step_up_challenge_in_cursor,
     start_first_enrollment_after_password_in_cursor, confirm_enrollment_in_cursor,
     consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
+    start_reenrollment_after_password_in_cursor,
+    _has_current_recovery_lineage,
     regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
     reset_mfa_by_office_root_in_cursor,
     load_mfa_config_from_environment,
@@ -185,7 +187,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     # before the TOTP verifier atomically produces its durable receipt.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         await cur.execute(
-            "SELECT password_hash,status FROM jax_users WHERE user_id=%s FOR UPDATE",
+            "SELECT password_hash,status,token_version,mfa_version FROM jax_users WHERE user_id=%s FOR UPDATE",
             (user_id,),
         )
         current = await cur.fetchone()
@@ -195,6 +197,15 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
         await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
         credential = await cur.fetchone()
+        # Recovery is enrollment-only.  A first-enrollment PENDING (and a
+        # deliberately DISABLED factor) keeps the historic classic-login
+        # contract; a PENDING credential with current recovery lineage does
+        # not.
+        recovery_pending = credential is not None and credential[0] == "PENDING" and await _has_current_recovery_lineage(
+            cur, user=int(user_id), versions=(int(current[2]), int(current[3])),
+        )
+        if credential is not None and (credential[0] == "RECOVERY_REQUIRED" or recovery_pending):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="mfa_recovery_required")
         if credential is not None and credential[0] == "ACTIVE":
             config = _mfa_config()
             if config is None:
@@ -454,6 +465,9 @@ async def verify_mfa_step_up(
             or issued_at < 0 or expires_at <= issued_at or expires_at <= int(time.time())):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA,
                             headers={"Cache-Control": "no-store"})
+    if sesion_vencida(refresh_payload, await vida_de_sesion_segundos(), time.time()):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA,
+                            headers={"Cache-Control": "no-store"})
 
     denial: MFADenied | None = None
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -537,6 +551,28 @@ async def mfa_recovery_enrollment_start(req: MFARecoveryEnrollmentRequest, respo
         )
         if isinstance(result, MFADenied): denial = result
     if denial is not None: raise _mfa_denial(denial)
+    response.headers["Cache-Control"] = "no-store"
+    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
+            "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/reenrollment/start")
+async def mfa_reenrollment_start(req: MFAPasswordRequest, request: Request, response: Response,
+                                 user: AuthUser = Depends(get_current_user)):
+    """Start active-factor replacement without retiring the old factor."""
+    _check_mfa_password_rate(request, user)
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    if user.mfa_proof_event_id is None:
+        raise HTTPException(status_code=403, detail="office_mfa_required")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _verify_current_password_in_cursor(cur, int(user.user_id), req.password):
+            raise _credenciales_invalidas()
+        result = await start_reenrollment_after_password_in_cursor(
+            cur, actor_user_id=int(user.user_id), proof_event_id=user.mfa_proof_event_id,
+            config=config,
+        )
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
     response.headers["Cache-Control"] = "no-store"
     return {"enrollment_token": result.enrollment_id, "secret": result.secret,
             "expires_at": result.expires_at.isoformat()}

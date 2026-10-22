@@ -6,13 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 import pyotp
 import pytest
 
-from auth.jwt import create_access_token, decode_token
+from auth.jwt import create_access_token, create_refresh_token, create_refresh_token_preserving_window, decode_token
 from auth.rate_limit import reset_login_limiters
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from virtual_office.mfa import (
     MFAConfig, confirm_enrollment_in_cursor,
     issue_step_up_challenge_in_cursor, start_first_enrollment_after_password_in_cursor,
+    consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
 )
 from virtual_office.migrations import apply_office_migrations
 
@@ -278,3 +279,113 @@ def test_classic_no_factor_login_remains_compatible_when_mfa_config_is_absent(cl
     assert response.json()["user_id"] == user_id
     assert "access_token" in response.json()
     assert "refresh_token" in response.headers.get("set-cookie", "")
+
+
+def test_auth_validation_hides_login_password_and_sets_no_store(client):
+    sentinel = "password-SENTINEL-must-not-echo"
+    response = client.post("/api/auth/login", json={"email": [sentinel], "password": sentinel})
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert sentinel not in response.text
+    assert response.json() == {"detail": "auth_invalid_request"}
+
+
+def test_reenrollment_http_preserves_active_factor_until_confirmation(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    user_id, _email, old_secret = client.portal.call(_active_factor_user)
+    versions = client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)[0]
+    access = create_access_token(str(user_id), "1", "operator", versions[0])
+    now = int(__import__("time").time())
+    refresh = create_refresh_token_preserving_window(
+        str(user_id), "1", "operator", versions[0], issued_at=now - 2, expires_at=now + 600,
+        mfa_proof_event_id=1, mfa_version=versions[1], mfa_at=now - 2,
+    )
+    issued = client.post("/api/auth/mfa/step-up", headers={"Authorization": f"Bearer {access}"})
+    proof = client.post("/api/auth/mfa/step-up/verify", headers={
+        "Authorization": f"Bearer {access}", "Cookie": f"refresh_token={refresh}",
+    }, json={"challenge_token": issued.json()["challenge_token"], "otp": _previous_otp(old_secret)})
+    assert proof.status_code == 200, proof.text
+    started = client.post("/api/auth/mfa/reenrollment/start", headers={
+        "Authorization": f"Bearer {proof.json()['access_token']}"}, json={"password": PASSWORD})
+    assert started.status_code == 200 and started.headers["cache-control"] == "no-store"
+    assert client.portal.call(sql, "SELECT state,secret_ciphertext IS NOT NULL,pending_secret_ciphertext IS NOT NULL FROM office_mfa_credential WHERE user_id=%s", (user_id,), True) == (("ACTIVE", 1, 1),)
+    confirmed = client.post("/api/auth/mfa/enrollment/confirm", json={
+        "enrollment_token": started.json()["enrollment_token"],
+        "otp": pyotp.TOTP(started.json()["secret"], digits=6, interval=30).now(),
+    })
+    assert confirmed.status_code == 200
+    assert client.portal.call(sql, "SELECT state,pending_secret_ciphertext FROM office_mfa_credential WHERE user_id=%s", (user_id,), True) == (("ACTIVE", None),)
+
+
+def test_recovery_required_password_login_never_mints_session(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    user_id, email, _secret = client.portal.call(_active_factor_user)
+    async def recovery():
+        rows = await sql("SELECT code_hash FROM office_mfa_recovery_code WHERE user_id=%s LIMIT 1", (user_id,), True)
+        # Use the stored plaintext unavailable here: switch state directly only
+        # for the RECOVERY_REQUIRED HTTP boundary, then construct pending with
+        # the real recovery lineage primitives in their dedicated tests.
+        await sql("UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL WHERE user_id=%s", (user_id,))
+    client.portal.call(recovery)
+    denied = client.post("/api/auth/login", json={"email": email, "password": PASSWORD})
+    assert denied.status_code == 403
+    assert "refresh_token" not in denied.headers.get("set-cookie", "")
+
+
+def test_recovery_origin_pending_password_login_never_mints_session(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    async def arrange():
+        from virtual_office.migrations import apply_office_migrations
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur: await apply_office_migrations(cur)
+        user_id, email = await crear_usuario(password=PASSWORD)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            first = await start_first_enrollment_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            enrolled = await confirm_enrollment_in_cursor(cur, enrollment_capability_token=first.enrollment_id, otp=pyotp.TOTP(first.secret, digits=6, interval=30).now(), config=CONFIG, server_correlation_id=b"P" * 16)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            recovery = await consume_recovery_code_in_cursor(cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG, server_correlation_id=b"Q" * 16)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await start_recovery_enrollment_in_cursor(cur, recovery_capability_token=recovery.token, config=CONFIG)
+        return user_id, email, pending
+    user_id, email, pending = client.portal.call(arrange)
+    assert pending.enrollment_id
+    assert client.portal.call(sql, "SELECT state FROM office_mfa_credential WHERE user_id=%s", (user_id,), True) == (("PENDING",),)
+    denied = client.post("/api/auth/login", json={"email": email, "password": PASSWORD})
+    assert denied.status_code == 403
+    assert "access_token" not in denied.text and "refresh_token" not in denied.headers.get("set-cookie", "")
+
+
+def test_live_lock_retires_login_challenge_without_proof_or_version_bump(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    user_id, email, secret = client.portal.call(_active_factor_user)
+    before = client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)
+    challenge = _login_challenge(client, email)
+    client.portal.call(sql, "UPDATE jax_users SET locked_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 5 MINUTE) WHERE user_id=%s", (user_id,))
+    denied = client.post("/api/auth/mfa/login/verify", json={"challenge_token": challenge, "otp": _previous_otp(secret)})
+    assert denied.status_code in {401, 429}
+    assert client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == before
+    assert client.portal.call(sql, "SELECT state FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))", (challenge,), True) == (("INVALIDATED",),)
+
+
+def test_step_up_refresh_obeys_current_absolute_session_policy(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    user_id, _email, secret = client.portal.call(_active_factor_user)
+    versions = client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)[0]
+    access = create_access_token(str(user_id), "1", "operator", versions[0])
+    now = int(__import__("time").time())
+    refresh = create_refresh_token_preserving_window(
+        str(user_id), "1", "operator", versions[0], issued_at=now - 2, expires_at=now + 600,
+        mfa_proof_event_id=1, mfa_version=versions[1], mfa_at=now - 2,
+    )
+    import api.auth as auth_api
+    # JWT exp remains ten minutes away; only the *current* absolute policy is
+    # shortened below its original iat age.
+    async def shortened_lifetime(): return 1
+    monkeypatch.setattr(auth_api, "vida_de_sesion_segundos", shortened_lifetime)
+    issued = client.post("/api/auth/mfa/step-up", headers={"Authorization": f"Bearer {access}"})
+    denied = client.post("/api/auth/mfa/step-up/verify", headers={"Authorization": f"Bearer {access}", "Cookie": f"refresh_token={refresh}"}, json={"challenge_token": issued.json()["challenge_token"], "otp": _previous_otp(secret)})
+    assert denied.status_code == 401
+    assert denied.headers["cache-control"] == "no-store"

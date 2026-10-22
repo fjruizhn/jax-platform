@@ -270,9 +270,9 @@ app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
 @app.exception_handler(RequestValidationError)
 async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
     """MFA bearer/OTP/password validation must never echo a submitted secret."""
-    if request.url.path.startswith("/api/auth/mfa/"):
+    if request.url.path.startswith("/api/auth/"):
         return JSONResponse(
-            status_code=422, content={"detail": "mfa_invalid_request"},
+            status_code=422, content={"detail": "mfa_invalid_request" if request.url.path.startswith("/api/auth/mfa/") else "auth_invalid_request"},
             headers={"Cache-Control": "no-store"},
         )
     return JSONResponse(status_code=422, content={"detail": _exc.errors()})
@@ -314,7 +314,7 @@ class _MfaNoStoreMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not scope["path"].startswith("/api/auth/mfa/"):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/auth/"):
             await self.app(scope, receive, send)
             return
 
