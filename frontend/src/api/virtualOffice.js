@@ -32,7 +32,9 @@ export const officePeopleApi = {
 }
 
 export const officeMembersApi = {
+  list: (projectId, { limit, cursor } = {}) => api.get(`/virtual-office/projects/${projectId}/members`, { params: { limit, cursor } }),
   grant: (projectId, userId, payload, idempotencyKey) => api.put(`/virtual-office/projects/${projectId}/members/${userId}`, payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
+  revoke: (projectId, userId, expectedVersion, idempotencyKey) => api.delete(`/virtual-office/projects/${projectId}/members/${userId}`, { params: { expected_version: expectedVersion }, headers: { 'Idempotency-Key': idempotencyKey } }),
 }
 
 // El token de aceptación sólo llega aquí desde el fragmento del navegador y

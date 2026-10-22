@@ -7,7 +7,7 @@ import { useJaxStore } from '../store/useJaxStore'
 const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), create: vi.fn() }))
 const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
 const people = vi.hoisted(() => ({ list: vi.fn() }))
-const members = vi.hoisted(() => ({ grant: vi.fn() }))
+const members = vi.hoisted(() => ({ list: vi.fn(), grant: vi.fn(), revoke: vi.fn() }))
 vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations, officePeopleApi: people, officeMembersApi: members, officeSessionApi: { read: vi.fn() } }))
 import VirtualOffice from './VirtualOffice'
 
@@ -18,6 +18,7 @@ function show() {
 beforeEach(() => {
   vi.clearAllMocks()
   invitations.list.mockResolvedValue({ data: { invitations: [], next_cursor: null } })
+  members.list.mockResolvedValue({ data: { project_id: 25, members: [], next_cursor: null } })
   useJaxStore.setState({ token: 'office-token', user: {
     user_id: 7, email: 'persona@example.test', account_class: 'OFFICE_INTERNAL',
   } })
@@ -40,12 +41,57 @@ describe('Virtual Office', () => {
     projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
     members.grant.mockResolvedValue({ data: { user_id: 9 } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'GENERAL_ADMIN' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
+    fireEvent.change(await screen.findByLabelText('Persona'), { target: { value: '9' } })
+    expect(screen.getByText('La persona se agregará como colaboradora.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Papel en el proyecto')).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'Administrador del proyecto' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar persona' }))
+    await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 9, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
+  })
+
+  it('offers the project-administrator role only to the Office superuser capability document', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'OFFICE_SUPERUSER' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
+    expect(await screen.findByLabelText('Papel en el proyecto')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Administrador del proyecto' })).toBeInTheDocument()
+  })
+
+  it('updates and revokes a listed member against the exact server version, including a person outside the directory page', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    people.list.mockResolvedValue({ data: { people: [], next_after_user_id: null } })
+    members.list.mockResolvedValue({ data: { project_id: 25, members: [{ user_id: 209, grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 3 }], next_cursor: null } })
+    members.grant.mockResolvedValue({ data: { version: 4 } })
+    members.revoke.mockResolvedValue({ data: { version: 5 } })
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'OFFICE_SUPERUSER' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
+    expect(await screen.findByText('Usuario #209')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Papel de Usuario #209'), { target: { value: 'PROJECT_ADMIN' } })
+    await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 209, { grant_role: 'PROJECT_ADMIN', audience: 'INTERNAL', expected_version: 3 }, expect.any(String)))
+    fireEvent.click(screen.getByRole('button', { name: 'Revocar acceso' }))
+    await waitFor(() => expect(members.revoke).toHaveBeenCalledWith(25, 209, 4, expect.any(String)))
+  })
+
+  it('keeps the member dialog open and explains a revoked administration capability', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: {} } })
+    people.list.mockResolvedValue({ data: { people: [{ user_id: 9, email: 'equipo@example.test' }], next_after_user_id: null } })
+    members.grant.mockRejectedValue({ response: { status: 403 } })
     render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
     fireEvent.change(await screen.findByLabelText('Persona'), { target: { value: '9' } })
     fireEvent.click(screen.getByRole('button', { name: 'Agregar persona' }))
-    await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 9, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Tu acceso cambió y ya no podés administrar personas en este proyecto.')
+    expect(screen.getByRole('dialog', { name: 'Agregar una persona existente' })).toBeInTheDocument()
   })
   it('shows only the server-filtered project fields and opens a read-only detail', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 12, name: 'Casa Omoa', description: 'Entrega inicial', tenant_id: 4 }], next_after_id: null } })

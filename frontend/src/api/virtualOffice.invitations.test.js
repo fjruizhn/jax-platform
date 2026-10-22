@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./client', () => ({ default: { post: vi.fn(), delete: vi.fn() } }))
+vi.mock('./client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }))
 
 import api from './client'
-import { officeInvitationsApi } from './virtualOffice'
+import { officeInvitationsApi, officeMembersApi } from './virtualOffice'
 
 describe('office invitation client', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -16,6 +16,15 @@ describe('office invitation client', () => {
   it('revokes the exact invitation version', async () => {
     await officeInvitationsApi.revoke(12, 44, 3, 'idempotency-2')
     expect(api.delete).toHaveBeenCalledWith('/virtual-office/projects/12/invitations/44', { params: { expected_version: 3 }, headers: { 'Idempotency-Key': 'idempotency-2' } })
+  })
+
+  it('reads and changes existing memberships with their server cursor and exact version', async () => {
+    await officeMembersApi.list(12, { limit: 50, cursor: 9 })
+    expect(api.get).toHaveBeenCalledWith('/virtual-office/projects/12/members', { params: { limit: 50, cursor: 9 } })
+    await officeMembersApi.grant(12, 44, { grant_role: 'PROJECT_ADMIN', audience: 'INTERNAL', expected_version: 3 }, 'member-grant')
+    expect(api.put).toHaveBeenCalledWith('/virtual-office/projects/12/members/44', { grant_role: 'PROJECT_ADMIN', audience: 'INTERNAL', expected_version: 3 }, { headers: { 'Idempotency-Key': 'member-grant' } })
+    await officeMembersApi.revoke(12, 44, 4, 'member-revoke')
+    expect(api.delete).toHaveBeenCalledWith('/virtual-office/projects/12/members/44', { params: { expected_version: 4 }, headers: { 'Idempotency-Key': 'member-revoke' } })
   })
 
   it('binds an existing acceptance to its captured access token, never a later store token', async () => {
