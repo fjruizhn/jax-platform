@@ -25,7 +25,55 @@ RUNTIME_COMPONENT = "virtual-office"
 # keyset index.  Keep the ACL manifest digest as part of the stamp too:
 # either the schema contract or the runtime privilege contract changing
 # requires the platform migrator to restamp before web readiness.
-RUNTIME_REVISION = f"office-runtime-v10-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v11-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+
+# Office engines are a product catalogue, deliberately separate from global
+# facets and motors.  It contains no URL, credential, or model-name text: the
+# central model/provider/credential catalogue remains the only such source.
+# It starts empty because choosing a real model is an administrative binding,
+# not a migration default.  It has no Office ingress or dispatch path while
+# the web principal retains schema-wide INSERT; treating a writable row as an
+# authority would let that principal forge an engine selection.
+OFFICE_ENGINE_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_engine ("
+    "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "display_name_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,"
+    "model_ref INT NOT NULL,"
+    "transport ENUM('http_openai_compat') NOT NULL,"
+    "allowed_data_classifications JSON NOT NULL,"
+    "enabled BOOLEAN NOT NULL DEFAULT FALSE,"
+    "version BIGINT NOT NULL DEFAULT 1,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),"
+    "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),"
+    "CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
+    "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
+    "CONSTRAINT chk_office_engine_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
+_OFFICE_ENGINE_COLUMNS = (
+    ("engine_key", "varchar", "varchar(64)", "NO", "ascii", "ascii_bin", "", None),
+    ("display_name_key", "varchar", "varchar(128)", "NO", "utf8mb4", "utf8mb4_bin", "", None),
+    ("model_ref", "int", "int(11)", "NO", None, None, "", None),
+    ("transport", "enum", "enum('http_openai_compat')", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("allowed_data_classifications", "longtext", "longtext", "NO", "utf8mb4", "utf8mb4_bin", "", None),
+    ("enabled", "tinyint", "tinyint(1)", "NO", None, None, "", "0"),
+    ("version", "bigint", "bigint(20)", "NO", None, None, "", "1"),
+    ("created_at", "datetime", "datetime(6)", "NO", None, None, "", "current_timestamp(6)"),
+    ("updated_at", "datetime", "datetime(6)", "NO", None, None, "on update current_timestamp(6)", "current_timestamp(6)"),
+)
+_OFFICE_ENGINE_FOREIGN_KEYS = {
+    "fk_office_engine_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"),
+}
+_OFFICE_ENGINE_CHECKS = {
+    "allowed_data_classifications": "json_valid(`allowed_data_classifications`)",
+    "chk_office_engine_key": "`engine_key` <> ''",
+    "chk_office_engine_display_name_key": "`display_name_key` <> ''",
+    "chk_office_engine_classifications": "json_type(`allowed_data_classifications`) = 'ARRAY' and json_length(`allowed_data_classifications`) > 0",
+    "chk_office_engine_version": "`version` >= 1",
+}
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -1601,6 +1649,44 @@ async def assert_audit_runtime_metadata(cur) -> None:
         raise RuntimeError("Office authorization audit triggers are missing or invalid")
 
 
+async def assert_office_engine_runtime_metadata(cur) -> None:
+    """Attest every authority-bearing engine binding before readiness exists."""
+    table = "office_engine"
+    if not await _table_exists(cur, table):
+        raise RuntimeError("Office engine catalogue is missing")
+    try:
+        await _assert_columns(cur, table=table, expected=_OFFICE_ENGINE_COLUMNS)
+        await _assert_indexes(cur, table=table, expected={
+            "PRIMARY": (("engine_key",), True),
+            "fk_office_engine_model": (("model_ref",), False),
+        })
+        await _assert_foreign_keys(cur, table=table, expected=_OFFICE_ENGINE_FOREIGN_KEYS)
+    except RuntimeError as error:
+        raise RuntimeError("Office engine catalogue metadata is invalid") from error
+    await cur.execute(
+        "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,),
+    )
+    if {row[0] for row in await cur.fetchall()} != {"PRIMARY", "fk_office_engine_model"}:
+        raise RuntimeError("Office engine catalogue indexes are invalid")
+    await cur.execute(
+        "SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,),
+    )
+    if {row[0] for row in await cur.fetchall()} != set(_OFFICE_ENGINE_FOREIGN_KEYS):
+        raise RuntimeError("Office engine catalogue foreign keys are invalid")
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,),
+    )
+    checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
+    expected_checks = {
+        name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_CHECKS.items()
+    }
+    if checks != expected_checks:
+        raise RuntimeError("Office engine catalogue checks are invalid")
+
+
 async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
     """Attest bootstrap's signed/unsigned foreign keys and append-only guard."""
     await cur.execute(
@@ -1737,6 +1823,9 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
+    for statement in OFFICE_ENGINE_DDL:
+        await cursor.execute(statement)
+    await assert_office_engine_runtime_metadata(cursor)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
     await _ensure_office_list_indexes(cursor)

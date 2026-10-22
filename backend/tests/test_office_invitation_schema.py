@@ -30,6 +30,25 @@ _RECEIPT_GUARD_2E86051 = (
 )
 
 
+# These scenarios apply the whole Office migration contract in an isolated
+# schema.  ``office_engine`` is deliberately an empty catalogue, but its
+# approved foreign key still requires the central ``model`` table to exist.
+# Clone only its physical shape: no model/provider data is needed for an
+# invitation migration and copying it would turn these tests into a catalogue
+# fixture.
+_OFFICE_MIGRATION_PARENT_TABLES = (
+    'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+    'jax_project_membership', 'jax_project_membership_event',
+    'jax_namespace_membership_mutation_request', 'model',
+)
+
+
+async def _clone_office_migration_parent_tables(cur, *, source: str, schema: str) -> None:
+    """Create the exact central parents needed before isolated Office DDL."""
+    for table in _OFFICE_MIGRATION_PARENT_TABLES:
+        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+
+
 async def _migration_admin_pool():
     """Use the dedicated migrator when provisioned, never the web principal."""
     migrator = cargar("/etc/jax/migrate.env")
@@ -112,12 +131,7 @@ def test_invitation_attestation_rejects_a_homonymous_noop_issuance_guard(client)
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
-                        'jax_project_membership', 'jax_project_membership_event',
-                        'jax_namespace_membership_mutation_request',
-                    ):
-                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
                     await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
@@ -158,12 +172,7 @@ def test_invitation_attestation_rejects_extra_foreign_key_index_and_check(client
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
-                        'jax_project_membership', 'jax_project_membership_event',
-                        'jax_namespace_membership_mutation_request',
-                    ):
-                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
                     await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
@@ -200,10 +209,7 @@ def test_invitation_receipt_attestation_rejects_weaker_named_check(client):
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ('jax_users', 'jax_tenants', 'projects', 'jax_project_scope',
-                                  'user_admin_audit', 'jax_project_membership',
-                                  'jax_project_membership_event', 'jax_namespace_membership_mutation_request'):
-                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
                     await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
@@ -349,12 +355,7 @@ def test_predecessor_receipt_guard_upgrades_idempotently(client):
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
-                        'jax_project_membership', 'jax_project_membership_event',
-                        'jax_namespace_membership_mutation_request',
-                    ):
-                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
                     await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
@@ -401,12 +402,7 @@ def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(c
                         pytest.skip("requires a seeded USER_SESSION MFA proof")
                     proof_event_id, issuer = proof
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
-                        'jax_project_membership', 'jax_project_membership_event',
-                        'jax_namespace_membership_mutation_request',
-                    ):
-                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                     await cur.execute(f"INSERT INTO `{schema}`.jax_tenants SELECT * FROM `{source}`.jax_tenants")
                     await cur.execute(f"INSERT INTO `{schema}`.jax_users SELECT * FROM `{source}`.jax_users WHERE user_id=%s", (issuer,))
                     await cur.execute(f"USE `{schema}`")
@@ -479,12 +475,7 @@ def test_b44_invitation_guards_resume_expiry_index_repair_in_isolated_schema():
                 async with conn.cursor() as cur:
                     try:
                         await cur.execute(f"CREATE DATABASE `{schema}`")
-                        for table in (
-                            'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
-                            'jax_project_membership', 'jax_project_membership_event',
-                            'jax_namespace_membership_mutation_request',
-                        ):
-                            await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                        await _clone_office_migration_parent_tables(cur, source=source, schema=schema)
                         await cur.execute(f"USE `{schema}`")
                         await apply_office_migrations(cur)
                         for name in (

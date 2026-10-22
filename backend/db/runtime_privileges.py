@@ -28,6 +28,7 @@ _FORBIDDEN_TABLES = frozenset((
     "office_module_candidate",
     "office_module_candidate_revision",
     "office_module_candidate_evidence",
+    "office_engine",
 ))
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
