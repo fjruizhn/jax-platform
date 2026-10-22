@@ -376,6 +376,10 @@ async def revoke_invitation_in_cursor(
     )
     if receipt is not None:
         return int(receipt[6]), True
+    # Revoke receipts share the global key space with issuance and other
+    # projects.  A losing unique-key race must discard its lifecycle mutation
+    # before the winner's receipt is re-read.
+    await cur.execute("SAVEPOINT office_invitation_revoke")
     await cur.execute(
         "SELECT i.status,i.version,i.project_id,s.correlation_id FROM office_invitation i "
         "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
@@ -408,12 +412,25 @@ async def revoke_invitation_in_cursor(
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     response_version = expected_version + 1
-    await _write_mutation_receipt(
-        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
-        actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
-        expected_version=expected_version, response_version=response_version,
-        result_event_id=revoked_event_id, authorization_event_id=authorization_event_id, expires_at=None,
-    )
+    try:
+        await _write_mutation_receipt(
+            cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
+            actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
+            expected_version=expected_version, response_version=response_version,
+            result_event_id=revoked_event_id, authorization_event_id=authorization_event_id, expires_at=None,
+        )
+    except Exception as error:
+        if not (getattr(error, "args", ()) and error.args[0] == 1062):
+            raise
+        await cur.execute("ROLLBACK TO SAVEPOINT office_invitation_revoke")
+        await cur.execute("RELEASE SAVEPOINT office_invitation_revoke")
+        winner = await _load_mutation_receipt(
+            cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
+            actor_user_id=actor_user_id, project_id=project_id)
+        if winner is None:
+            raise InvitationError("office_invitation_retryable", status_code=503) from error
+        return int(winner[6]), True
+    await cur.execute("RELEASE SAVEPOINT office_invitation_revoke")
     return response_version, False
 
 
@@ -508,16 +525,35 @@ async def accept_invitation_in_cursor(
     # actor → scope → invitation order as revoke and prevents their former
     # lock inversion.
     await cur.execute(
-        "SELECT issued_by_user_id,project_id,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at "
+        "SELECT issued_by_user_id,project_id,tenant_id,target_user_id,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at "
         "FROM office_invitation_issuance WHERE token_hash=%s", (token_hash,))
     discovered = await cur.fetchone()
     if discovered is None:
         raise InvitationError("office_invitation_invalid", status_code=403)
-    discovered_issuer, discovered_project, discovered_proof, discovered_mfa_version, discovered_mfa_at = discovered
-    await authorize_invitation_issuer_in_cursor(
+    (discovered_issuer, discovered_project, discovered_tenant, discovered_target,
+     discovered_proof, discovered_mfa_version, discovered_mfa_at) = discovered
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (discovered_project,))
+    discovered_scope = await cur.fetchone()
+    tenant_ids = {int(discovered_tenant)}
+    if discovered_scope is not None:
+        tenant_ids.add(int(discovered_scope[0]))
+    for tenant_id in sorted(tenant_ids):
+        await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+        if await cur.fetchone() is None:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+    await cur.execute("SELECT user_id FROM jax_users WHERE user_id=%s FOR UPDATE", (discovered_issuer,))
+    if await cur.fetchone() is None:
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    if discovered_target is not None and int(discovered_target) != int(discovered_issuer):
+        await cur.execute("SELECT user_id FROM jax_users WHERE user_id=%s FOR UPDATE", (discovered_target,))
+        if await cur.fetchone() is None:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+    predecision = await authorize_invitation_issuer_in_cursor(
         cur, issuer_user_id=int(discovered_issuer), project_id=int(discovered_project),
         proof_event_id=int(discovered_proof), issued_mfa_version=int(discovered_mfa_version),
         issued_mfa_at=discovered_mfa_at)
+    if not predecision.allowed:
+        raise InvitationError("office_invitation_issuer_denied", status_code=403)
     await cur.execute(
         "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,s.email_normalized,"
         "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_proof_event_id,"
@@ -618,13 +654,19 @@ async def accept_invitation_in_cursor(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
         target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version),
         proof_event_id=int(proof_event_id), mfa_at=issuer_mfa_at)
-    result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
-        cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
-        target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
-        member_kind=(NamespacedMemberKind.INTERNAL if account_class == "OFFICE_INTERNAL" else NamespacedMemberKind.EXTERNAL_CLIENT),
-        idempotency_key=str(uuid.uuid5(uuid.NAMESPACE_URL, f"office-invitation-acceptance/v1/{invitation_id}")), authorizer=authorizer,
-        execution=NamespaceMembershipExecution(NamespaceMembershipExecutionKind.INVITATION_ACCEPTANCE, invitation_id),
-    )
+    try:
+        result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
+            cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
+            target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
+            member_kind=(NamespacedMemberKind.INTERNAL if account_class == "OFFICE_INTERNAL" else NamespacedMemberKind.EXTERNAL_CLIENT),
+            idempotency_key=str(uuid.uuid5(uuid.NAMESPACE_URL, f"office-invitation-acceptance/v1/{invitation_id}")), authorizer=authorizer,
+            execution=NamespaceMembershipExecution(NamespaceMembershipExecutionKind.INVITATION_ACCEPTANCE, invitation_id),
+        )
+    except Exception as error:
+        from jax.memory.project_authority import AuthorizationDenied, ProjectStateConflict
+        if isinstance(error, (AuthorizationDenied, ProjectStateConflict)):
+            raise InvitationError("office_invitation_issuer_denied", status_code=403) from error
+        raise
     if result.replayed or authorizer.authorization_event_id is None:
         raise InvitationError("office_invitation_retryable", status_code=503)
     await cur.execute(
@@ -873,6 +915,7 @@ async def deliver_one_invitation() -> bool:
     if config is None:
         raise InvitationError("office_invitation_transport_unavailable", status_code=503)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await expire_stale_invitations_in_cursor(cur, config=config)
         await settle_stale_invitation_claims_in_cursor(cur, config=config)
         delivery = await claim_next_invitation_delivery_in_cursor(cur)
     if delivery is None:
