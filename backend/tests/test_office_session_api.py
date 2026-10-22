@@ -215,15 +215,21 @@ def test_office_session_rechecks_token_cut_after_dependency_before_response(clie
     assert (response.status_code, response.json()) == (401, {"detail": "sesion_invalida"})
 
 
-def test_office_session_never_returns_partial_capabilities_on_configuration_or_database_failure(client, monkeypatch):
+def test_office_session_keeps_entry_available_when_mfa_configuration_is_absent(client, monkeypatch):
     _configure_mfa(monkeypatch)
     user_id, tv, mv, proof = client.portal.call(_office_user)
     for name in ("OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
                  "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
                  "OFFICE_MFA_RECOVERY_CODE_COUNT"):
         monkeypatch.delenv(name)
-    unavailable = client.get("/api/virtual-office/session", headers=_headers(user_id, tv, mv, proof))
-    assert (unavailable.status_code, unavailable.json()) == (503, {"detail": "office_session_unavailable"})
+    without_mfa_config = client.get("/api/virtual-office/session", headers=_headers(user_id, tv, mv, proof))
+    assert without_mfa_config.status_code == 200
+    assert without_mfa_config.json()["mfa"] == {"verified": False, "recent": False}
+    assert without_mfa_config.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
+    }
 
     _configure_mfa(monkeypatch)
     import api.virtual_office.session as session_api

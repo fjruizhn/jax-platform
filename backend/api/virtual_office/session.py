@@ -30,6 +30,11 @@ class OfficeBootstrapRequest(BaseModel):
 
 async def _mfa_state(cur, *, actor_user_id: int, proof_event_id: int | None, config) -> dict[str, bool]:
     """Reload the bearer reference; it is never authority by itself."""
+    # MFA configuration is required to validate a proof's recency.  Without
+    # it, expose neither a verified nor a recent state so MFA-bound
+    # capabilities fail closed, while ordinary Office entry remains usable.
+    if config is None:
+        return {"verified": False, "recent": False}
     if type(proof_event_id) is not int or proof_event_id < 1:
         return {"verified": False, "recent": False}
     verified = await reload_current_self_mfa_verified_in_cursor(
@@ -115,10 +120,6 @@ async def office_session(user: AuthUser = Depends(get_current_user)):
                     or (account_class == "EXTERNAL_CLIENT" and global_role != "COLLABORATOR")):
                 raise HTTPException(status_code=403, detail="office_access_denied")
             config = load_mfa_config_from_environment()
-            if config is None:
-                # A partial capability document would make a configuration
-                # incident indistinguishable from a role decision.
-                raise HTTPException(status_code=503, detail="office_session_unavailable")
             mfa = await _mfa_state(
                 cur, actor_user_id=actor_user_id, proof_event_id=user.mfa_proof_event_id, config=config,
             )
