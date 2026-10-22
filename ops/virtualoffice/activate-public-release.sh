@@ -99,6 +99,25 @@ sha256sum "$vhost.new" | awk '{print $1}' > "$backup/new-vhost-sha256"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"
 changed=1
+python3 - "$backup" <<'PY' || die 'could not durably record activation snapshot'
+import os,stat,sys
+d=sys.argv[1]
+for name in ('vhost-path','new-release','new-index-sha256','new-vhost-sha256'):
+ fd=os.open(os.path.join(d,name),os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  if not stat.S_ISREG(os.fstat(fd).st_mode): raise SystemExit('non-regular snapshot entry')
+  os.fsync(fd)
+ finally: os.close(fd)
+for name in ('vhost','current-target','previous-manifest.json','VHOST_ABSENT','CURRENT_ABSENT'):
+ p=os.path.join(d,name)
+ if os.path.exists(p):
+  fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)
+  try:
+   if not stat.S_ISREG(os.fstat(fd).st_mode): raise SystemExit('non-regular snapshot entry')
+   os.fsync(fd)
+  finally: os.close(fd)
+fd=os.open(d,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
 durable_marker ACTIVATION_IN_PROGRESS
 printf 'public Office activation snapshot (recover if interrupted): %s\n' "$backup"
 mv -f -- "$vhost.new" "$vhost"
