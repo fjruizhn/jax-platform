@@ -38,11 +38,14 @@ def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch
             self.issued = 0
             self.issue_summary_counts = []
             self.unsafe_headers = []
+            self.accept_headers = []
         async def get(self, _path, **_kwargs):
             clock.now += 1.0
             return Response({"invitations": [{}] * 100})
         async def post(self, path, **_kwargs):
             self.unsafe_headers.append(_kwargs["headers"])
+            if path.endswith("/invitations/accept"):
+                self.accept_headers.append(_kwargs["headers"])
             if path.endswith("/invitations"):
                 self.issue_summary_counts.append(len(summary_times))
                 self.issued += 1
@@ -69,6 +72,7 @@ def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch
     assert summary_times[0] == 4.0
     assert client.issue_summary_counts[0] == 1
     assert all(headers["Origin"] == "http://127.0.0.1:54321" for headers in client.unsafe_headers)
+    assert client.accept_headers == [{"Origin": "http://127.0.0.1:54321"}] * oi.OPERATIONS_PER_WORKER
     assert result["list"] == {"errors": 0, "p95_ms": 1.0}
 
 
@@ -148,6 +152,9 @@ def test_clean_git_revision_rejects_untracked_or_modified_sources(monkeypatch, t
 def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(monkeypatch, tmp_path):
     monkeypatch.setenv("JAX_PUBLIC_HOST_ORIGIN_BINDINGS", "evil.example.test=https://evil.example.test")
     monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://evil.example.test")
+    monkeypatch.setenv("JAX_OPERATIONAL_TRUSTED_HOSTS", "127.0.0.1")
+    monkeypatch.setenv("JAX_TRUSTED_PROXIES", "127.0.0.1")
+    monkeypatch.setenv("JAX_REFRESH_COOKIE_SECURE", "true")
     cfg = {
         "JAX_OFFICE_LOAD_DB": "jax_memory_test_a1b2c3d4", "JAX_DB_HOST": "127.0.0.1",
         "JAX_DB_PORT": "33991", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p",
@@ -163,6 +170,9 @@ def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(monke
     assert env["FRONTEND_ORIGIN"] == "http://127.0.0.1:54321"
     assert env["JAX_PUBLIC_HOST_ORIGIN_BINDINGS"] == "127.0.0.1=http://127.0.0.1:54321"
     assert env["OFFICE_PUBLIC_ORIGIN"] == "http://127.0.0.1:54321"
+    assert env["JAX_OPERATIONAL_TRUSTED_HOSTS"] == ""
+    assert env["JAX_TRUSTED_PROXIES"] == ""
+    assert env["JAX_REFRESH_COOKIE_SECURE"] == "false"
 
 
 @pytest.mark.parametrize("base", ["http://example.test", "https://127.0.0.1:54321", "http://127.0.0.1:54321/path"])

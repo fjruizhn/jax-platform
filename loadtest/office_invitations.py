@@ -267,6 +267,7 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
                FERNET_KEY=base64.urlsafe_b64encode(os.urandom(32)).decode(),
                JAX_ENVIRONMENT="test", JAX_PLATFORM_URL=origin, FRONTEND_ORIGIN=origin,
                JAX_PUBLIC_HOST_ORIGIN_BINDINGS=f"127.0.0.1={origin}", OFFICE_PUBLIC_ORIGIN=origin,
+               JAX_OPERATIONAL_TRUSTED_HOSTS="", JAX_TRUSTED_PROXIES="", JAX_REFRESH_COOKIE_SECURE="false",
                # Configuration validates the canonical public origin even
                # though this harness never sends an email or opens that URL.
                OFFICE_INVITATION_PUBLIC_BASE_URL="https://virtualoffice.example.test",
@@ -408,8 +409,9 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
     accept_ids = [iid for iid, _ in issued]
     tokens = await asyncio.to_thread(outbox_tokens, cfg, fernet_key, accept_ids)
     accept_started, accept_stats, accept_lat, accept_errors = time.perf_counter(), {}, [], []
+    anonymous_headers = {"Origin": headers["Origin"]}
     async def accept(iid: str):
-        before = time.perf_counter(); response = await client.post("/api/virtual-office/invitations/accept", headers=headers, json={"token": tokens[iid], "password": "Loadtest-Only-Password-123!"}); return response, (time.perf_counter()-before)*1000
+        before = time.perf_counter(); response = await client.post("/api/virtual-office/invitations/accept", headers=anonymous_headers, json={"token": tokens[iid], "password": "Loadtest-Only-Password-123!"}); return response, (time.perf_counter()-before)*1000
     accepts = await sequential_workers(concurrency, OPERATIONS_PER_WORKER,
                                        lambda worker, operation: accept(accept_ids[worker * OPERATIONS_PER_WORKER + operation]))
     for response, latency in accepts:
