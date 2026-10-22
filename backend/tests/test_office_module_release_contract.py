@@ -45,3 +45,38 @@ def test_rejects_byte_and_directory_limits(tmp_path, monkeypatch):
     with pytest.raises(module.ModuleReleaseContractRejected): module.build_artifact_set(tmp_path)
     monkeypatch.setattr(module, "_MAX_FILE_BYTES", 1 << 30); monkeypatch.setattr(module, "_MAX_DIRECTORIES", 1); (tmp_path / "child").mkdir()
     with pytest.raises(module.ModuleReleaseContractRejected): module.build_artifact_set(tmp_path)
+
+def test_rejects_directory_over_budget_while_scanning(tmp_path, monkeypatch):
+    file(tmp_path, "one.txt"); file(tmp_path, "two.txt")
+    monkeypatch.setattr(module, "_MAX_FILES", 1)
+    monkeypatch.setattr(module, "_MAX_DIRECTORIES", 1)
+    with pytest.raises(module.ModuleReleaseContractRejected, match="entry count"):
+        module.build_artifact_set(tmp_path)
+
+def test_rejects_non_utf8_name_without_file_descriptor_leak(tmp_path):
+    raw = os.fsencode(tmp_path) + b"/bad-\xff"
+    fd = os.open(raw, os.O_CREAT | os.O_WRONLY, 0o644); os.close(fd)
+    before = len(os.listdir("/proc/self/fd"))
+    with pytest.raises(module.ModuleReleaseContractRejected, match="valid UTF-8"):
+        module.build_artifact_set(tmp_path)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+def test_closes_root_fd_when_initial_scandir_fails(tmp_path, monkeypatch):
+    file(tmp_path)
+    before = len(os.listdir("/proc/self/fd"))
+    def fail(_fd): raise OSError("injected scandir failure")
+    monkeypatch.setattr(module.os, "scandir", fail)
+    with pytest.raises(module.ModuleReleaseContractRejected, match="directory cannot be read"):
+        module.build_artifact_set(tmp_path)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+@pytest.mark.parametrize("value", [[], "not-an-object"])
+def test_rejects_hostile_artifact_set_types(value):
+    with pytest.raises(module.ModuleReleaseContractRejected):
+        module.validate_artifact_set(value)
+
+def test_rejects_unhashable_mode_in_inventory(tmp_path):
+    file(tmp_path); artifact = module.build_artifact_set(tmp_path)
+    artifact["entries"][0]["mode"] = []
+    with pytest.raises(module.ModuleReleaseContractRejected):
+        module.validate_artifact_set(artifact)

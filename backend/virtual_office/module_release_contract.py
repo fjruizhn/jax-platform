@@ -44,7 +44,9 @@ def _path(parts: tuple[str, ...]) -> str:
     value = "/".join(parts)
     if "\\" in value or any(ord(c) <= 31 or 127 <= ord(c) <= 159 for c in value): _reject("artifact path contains a forbidden character")
     if unicodedata.normalize("NFC", value) != value: _reject("artifact path must be NFC")
-    if len(value.encode()) > 1024: _reject("artifact path exceeds 1024 UTF-8 bytes")
+    try: encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
+    if len(encoded) > 1024: _reject("artifact path exceeds 1024 UTF-8 bytes")
     return value
 
 
@@ -52,10 +54,17 @@ def _stable(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, stat.S_IMODE(value.st_mode), value.st_mtime_ns, value.st_ctime_ns
 
 
-def _frame(fd: int, parts: tuple[str, ...]) -> dict[str, Any]:
+def _frame(fd: int, parts: tuple[str, ...], budget: list[int]) -> dict[str, Any]:
     before = os.fstat(fd)
     try:
-        with os.scandir(fd) as listing: names = [entry.name for entry in listing]
+        names = []
+        with os.scandir(fd) as listing:
+            for entry in listing:
+                try: entry.name.encode("utf-8")
+                except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
+                budget[0] += 1
+                if budget[0] > _MAX_FILES + _MAX_DIRECTORIES - 1: _reject("artifact exceeds entry count limit")
+                names.append(entry.name)
     except OSError as error:
         raise ModuleReleaseContractRejected("artifact directory cannot be read safely") from error
     names.sort(key=lambda value: value.encode())
@@ -74,20 +83,31 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
     except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be opened safely") from error
     stack: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []; folded: set[str] = set()
-    total = enumerated = 0; directories = 1
+    total = 0; directories = 1; budget = [0]
     try:
         opened_root = os.fstat(root_fd)
         if (opened_root.st_dev, opened_root.st_ino) != (root_stat.st_dev, root_stat.st_ino): _reject("artifact root changed before traversal")
-        stack.append(_frame(root_fd, ()))
+        try: stack.append(_frame(root_fd, (), budget))
+        except Exception:
+            os.close(root_fd)
+            raise
         while stack:
             current = stack[-1]
             if current["index"] == len(current["names"]):
                 after = os.fstat(current["fd"])
-                with os.scandir(current["fd"]) as listing: names_after = sorted((entry.name for entry in listing), key=lambda value: value.encode())
+                try:
+                    with os.scandir(current["fd"]) as listing:
+                        names_after = []
+                        for entry in listing:
+                            try: entry.name.encode("utf-8")
+                            except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
+                            names_after.append(entry.name)
+                    names_after.sort(key=lambda value: value.encode("utf-8"))
+                except OSError as error:
+                    raise ModuleReleaseContractRejected("artifact directory cannot be read safely") from error
                 if names_after != current["names"] or after.st_mtime_ns != current["before"].st_mtime_ns or after.st_ctime_ns != current["before"].st_ctime_ns: _reject("artifact directory changed during traversal")
                 os.close(current["fd"]); stack.pop(); continue
-            name = current["names"][current["index"]]; current["index"] += 1; enumerated += 1
-            if enumerated > _MAX_FILES + _MAX_DIRECTORIES - 1: _reject("artifact exceeds entry count limit")
+            name = current["names"][current["index"]]; current["index"] += 1
             path = _path(current["parts"] + (name,))
             try: before = os.stat(name, dir_fd=current["fd"], follow_symlinks=False)
             except OSError as error: raise ModuleReleaseContractRejected("artifact changed during traversal") from error
@@ -98,7 +118,12 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
                 except OSError as error: raise ModuleReleaseContractRejected(f"artifact directory cannot be opened safely: {path}") from error
                 opened = os.fstat(child_fd)
                 if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino): os.close(child_fd); _reject(f"artifact directory changed during traversal: {path}")
-                directories += 1; stack.append(_frame(child_fd, current["parts"] + (name,))); continue
+                directories += 1
+                try: child_frame = _frame(child_fd, current["parts"] + (name,), budget)
+                except Exception:
+                    os.close(child_fd)
+                    raise
+                stack.append(child_frame); continue
             if not stat.S_ISREG(before.st_mode): _reject(f"artifact contains non-regular file: {path}")
             if before.st_nlink != 1: _reject(f"artifact contains hard-linked file: {path}")
             mode = stat.S_IMODE(before.st_mode)
@@ -132,6 +157,7 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
 
 
 def validate_artifact_set(artifact_set: dict[str, Any]) -> None:
+    if not isinstance(artifact_set, dict): _reject("artifact set must be an object")
     if set(artifact_set) != {"schema_version", "domain", "entries", "root_digest"} or artifact_set.get("schema_version") != 1 or artifact_set.get("domain") != _DOMAIN: _reject("artifact set is not artifact-set/v1")
     entries = artifact_set.get("entries")
     if not isinstance(entries, list) or not entries or len(entries) > _MAX_FILES: _reject("artifact inventory has invalid entry count")
@@ -142,7 +168,8 @@ def validate_artifact_set(artifact_set: dict[str, Any]) -> None:
         if not isinstance(path, str) or _path(tuple(path.split("/"))) != path: _reject("artifact inventory path is invalid")
         if not isinstance(entry["size"], int) or isinstance(entry["size"], bool) or not 0 <= entry["size"] <= _MAX_FILE_BYTES: _reject("artifact inventory size is invalid")
         digest = entry["digest"]
-        if entry["mode"] not in {"0444", "0555", "0644", "0755"} or not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or digest != digest.lower():
+        mode = entry["mode"]
+        if not isinstance(mode, str) or mode not in {"0444", "0555", "0644", "0755"} or not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or digest != digest.lower():
             _reject("artifact inventory mode or digest is invalid")
         try: int(digest[7:], 16)
         except ValueError as error: raise ModuleReleaseContractRejected("artifact inventory digest is invalid") from error
