@@ -57,7 +57,10 @@ async def _grant_bootstrap_probe_acl(cur, database: str, user: str) -> None:
     )
     await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
     for table in required:
-        assert grants[table] == frozenset(("INSERT",)), table
+        # The fixture needs only its append path.  Some production tables
+        # (jax_users) also have a v2 UPDATE grant, which must not leak into
+        # this minimal empty-schema principal.
+        assert "INSERT" in grants[table], table
         await cur.execute(f"GRANT INSERT ON `{database}`.`{table}` TO `{user}`@'%'")
 
 
