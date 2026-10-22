@@ -27,6 +27,7 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
             "WorkingDirectory": "/", "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
             "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"],
             "EnvironmentFiles": [["/etc/jax/runtime.env", False]],
+            "UnsetEnvironment": ["BASH_ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "JAX_REPO_PATH"],
             "ExecStartEx": [["/usr/local/libexec/jax-platform-pair-exec", ["/usr/local/libexec/jax-platform-pair-exec", "web"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
@@ -34,6 +35,7 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
         "jax-platform-migrate.service": {
             "WorkingDirectory": "/", "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
             "Environment": [], "EnvironmentFiles": [["/etc/jax/migrate.env", False]],
+            "UnsetEnvironment": ["BASH_ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "JAX_REPO_PATH"],
             "ExecStartEx": [["/usr/local/libexec/jax-platform-pair-exec", ["/usr/local/libexec/jax-platform-pair-exec", "migrate"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
@@ -53,7 +55,7 @@ def _fake_busctl(tmp_path: Path, contract: dict[str, dict[str, object]]) -> Path
         " unit=args[-1]; print(json.dumps({'type':'o','data':['/org/freedesktop/systemd1/unit/'+unit.replace('-', '_2d').replace('.', '_2e')]})); raise SystemExit(0)\n"
         "if args[:3] == ['--json=short', 'get-property', 'org.freedesktop.systemd1']:\n"
         " prop=args[-1]; unit='jax-platform-migrate.service' if 'migrate' in args[3] else 'jax-platform.service'; value=contract[unit][prop]\n"
-        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','ExecStartEx':'a(sasasttttuii)','ExecStartPreEx':'a(sasasttttuii)','ExecStartPostEx':'a(sasasttttuii)','ExecConditionEx':'a(sasasttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
+        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','UnsetEnvironment':'as','ExecStartEx':'a(sasasttttuii)','ExecStartPreEx':'a(sasasttttuii)','ExecStartPostEx':'a(sasasttttuii)','ExecConditionEx':'a(sasasttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
         " print(json.dumps({'type':types[prop],'data':value})); raise SystemExit(0)\nraise SystemExit(9)\n",
         encoding="utf-8",
     )
@@ -86,6 +88,7 @@ def test_restore_rejects_effective_contract_tampering(tmp_path: Path) -> None:
         "legacy credential group": lambda c: c["jax-platform.service"].__setitem__("SupplementaryGroups", ["jaxlegacy"]),
         "common and extra environment": lambda c: c["jax-platform.service"].__setitem__("EnvironmentFiles", [["/etc/jax/runtime.env", False], ["/etc/jax/.env", False]]),
         "injected environment": lambda c: c["jax-platform.service"].__setitem__("Environment", ["JAX_DB_PASSWORD=unexpected"]),
+        "unsafe inherited environment": lambda c: c["jax-platform.service"].__setitem__("UnsetEnvironment", []),
         "ignored environment file": lambda c: c["jax-platform.service"].__setitem__("EnvironmentFiles", [["/etc/jax/runtime.env", True]]),
         "additional start command": lambda c: c["jax-platform.service"].__setitem__("ExecStartEx", c["jax-platform.service"]["ExecStartEx"] * 2),
         "legacy start property only": lambda c: c["jax-platform.service"].__setitem__("ExecStart", c["jax-platform.service"].pop("ExecStartEx")),

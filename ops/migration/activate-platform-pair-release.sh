@@ -14,14 +14,17 @@ if [[ $ROOT != /opt/jax-platform-pair ]]; then
   [[ -n ${JAX_PAIR_SYSTEMCTL_BIN:-} && -x ${JAX_PAIR_SYSTEMCTL_BIN} ]] || { echo 'test systemctl rejected' >&2; exit 2; }
   SYSTEMCTL=$JAX_PAIR_SYSTEMCTL_BIN
 fi
-[[ $(/usr/bin/id -u) == 0 && $RELEASE == "$ROOT/releases/"* && $EXPECTED =~ ^[0-9a-f]{64}$ ]] || exit 2
+[[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ ]] || exit 2
 exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -n 9 || { echo 'pair activation already in progress' >&2; exit 1; }
 install -o root -g root -m 0644 /dev/null "$ROOT/.runtime.lock"
-[[ ! -L $RELEASE && -d $RELEASE ]] || { echo 'unsafe release' >&2; exit 1; }
+releases_real=$(/usr/bin/realpath -e -- "$ROOT/releases") || { echo 'release root unavailable' >&2; exit 1; }
+release_real=$(/usr/bin/realpath -e -- "$RELEASE") || { echo 'unsafe release' >&2; exit 1; }
+[[ $release_real == "$releases_real/"* && -d $release_real && ! -L $release_real ]] || { echo 'unsafe release' >&2; exit 1; }
+RELEASE=$release_real
 actual=$(/usr/bin/sha256sum "$RELEASE/pair-manifest.json" | /usr/bin/cut -d' ' -f1); [[ $actual == "$EXPECTED" ]] || { echo 'unexpected manifest digest' >&2; exit 1; }
 /usr/bin/python3 -Es "$HELPER" "$RELEASE" || exit 1
 if [[ -n $PREVIOUS ]]; then
- current=$(readlink -f "$ROOT/current" 2>/dev/null || true)
+ current=$(/usr/bin/realpath -e "$ROOT/current" 2>/dev/null || true)
  [[ -n $current && $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'predecessor digest mismatch' >&2; exit 1; }
 fi
 exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x 8

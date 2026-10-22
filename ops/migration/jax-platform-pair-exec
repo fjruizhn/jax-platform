@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # The only systemd ExecStart for the paired platform. Keeps a shared runtime
 # lock over the complete Python process, so activation cannot swap selection.
 set -euo pipefail

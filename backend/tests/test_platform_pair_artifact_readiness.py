@@ -97,6 +97,7 @@ def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() ->
     launcher = (root / "ops" / "migration" / "jax-platform-pair-exec").read_text(encoding="utf-8")
     activator = (root / "ops" / "migration" / "activate-platform-pair-release.sh").read_text(encoding="utf-8")
     installer = (root / "ops" / "migration" / "install-platform-pair-release.sh").read_text(encoding="utf-8")
+    runtime_installer = (root / "ops" / "migration" / "install-platform-pair-runtime.sh").read_text(encoding="utf-8")
 
     assert "selection=/etc/jax/platform-pair-selection.json" in launcher
     assert "unset JAX_REPO_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV" in launcher
@@ -115,3 +116,8 @@ def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() ->
     assert "-m venv --copies" in installer
     assert "--require-hashes --no-deps" in installer
     assert "current" not in installer.split("name=", 1)[1]
+    assert "refusing existing drop-in" in runtime_installer
+    assert '"$SOURCE/artifact_readiness.py" / /usr/bin/busctl' in runtime_installer
+    for unit in ("jax-platform.service", "jax-platform-migrate.service"):
+        text = (root / "ops" / "migration" / "systemd-units" / unit).read_text(encoding="utf-8")
+        assert "UnsetEnvironment=BASH_ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV JAX_REPO_PATH" in text

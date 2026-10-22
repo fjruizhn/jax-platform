@@ -55,6 +55,8 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     }
     (release / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     (release / readiness.MANIFEST).chmod(0o644)
+    outside = root / "outside"
+    shutil.copytree(release, outside)
     (root / "libexec").mkdir()
     shutil.copy2(MIGRATION / "pair_artifact_readiness.py", root / "libexec" / "pair_artifact_readiness.py")
     calls = tmp_path / "systemctl.calls"
@@ -98,7 +100,13 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "start jax-platform-migrate.service", "start jax-platform.service",
     ]
     assert output.read_text(encoding="utf-8") == str(release / "jax")
-    launcher = ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}", "JAX_REPO_PATH=/attacker/checkout", "JAX_TRUSTED_PROXIES=127.0.0.1", f"JAX_PAIR_TEST_OUTPUT={output}", str(MIGRATION / "jax-platform-pair-exec"), "web"]
+    escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest], text=True, capture_output=True, check=False)
+    assert escaped.returncode != 0
+    assert "unsafe release" in escaped.stderr
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(f"touch {tmp_path / 'bash-env-ran'}\n", encoding="utf-8")
+    launcher = ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}", "JAX_REPO_PATH=/attacker/checkout", "PATH=/attacker", f"BASH_ENV={bash_env}", "JAX_TRUSTED_PROXIES=127.0.0.1", f"JAX_PAIR_TEST_OUTPUT={output}", str(MIGRATION / "jax-platform-pair-exec"), "web"]
     result = subprocess.run(launcher, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8") == str(release / "jax")
+    assert not (tmp_path / "bash-env-ran").exists()

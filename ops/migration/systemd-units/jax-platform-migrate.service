@@ -11,4 +11,5 @@ Type=oneshot
 User=jaxmigrate
 WorkingDirectory=/
 EnvironmentFile=/etc/jax/migrate.env
+UnsetEnvironment=BASH_ENV LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV JAX_REPO_PATH
 ExecStart=/usr/local/libexec/jax-platform-pair-exec migrate
