@@ -136,7 +136,7 @@ def test_jax_retryable_authority_error_is_a_stable_retryable_http_response(monke
     async def transaction_stub(*_args):
         yield object()
 
-    async def retryable_authority_error(**_kwargs):
+    async def retryable_authority_error(*_args, **_kwargs):
         raise ProjectAuthorityRetryable()
 
     monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
