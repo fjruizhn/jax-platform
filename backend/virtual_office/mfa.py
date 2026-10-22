@@ -1,4 +1,4 @@
-"""Transactional MFA persistence primitives.  HTTP and JWT wiring belongs to Task 3B."""
+"""MFA persistence operations.  Every public operation receives its caller's cursor."""
 from __future__ import annotations
 
 import datetime as dt
@@ -11,47 +11,31 @@ from typing import Literal
 import pyotp
 
 from crypto_secrets import decrypt_db_secret, encrypt_secret
-from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
 ChallengePurpose = Literal["LOGIN", "STEP_UP", "ENROLLMENT", "RECOVERY"]
-_PURPOSES = frozenset({"LOGIN", "STEP_UP", "ENROLLMENT", "RECOVERY"})
 
 
 class MFAError(RuntimeError):
-    """Deliberately opaque service error; callers map it to their own ingress response."""
+    def __init__(self, code: str): self.code = code; super().__init__(code)
 
-    def __init__(self, code: str):
-        self.code = code
-        super().__init__(code)
+
+@dataclass(frozen=True)
+class MFADenied:
+    code: str
+    attempts_remaining: int = 0
+    terminal: bool = False
 
 
 @dataclass(frozen=True)
 class MFAConfig:
-    """Technical controls are supplied explicitly by the application configuration."""
-
     challenge_lifetime_seconds: int
     challenge_max_attempts: int
     enrollment_lifetime_seconds: int
     recency_seconds: int
     recovery_code_count: int
-
-    def __post_init__(self) -> None:
-        for name, value in self.__dict__.items():
-            if type(value) is not int or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-
-
-@dataclass(frozen=True)
-class EnrollmentStart:
-    enrollment_id: str
-    secret: str
-    expires_at: dt.datetime
-
-
-@dataclass(frozen=True)
-class EnrollmentConfirmation:
-    recovery_codes: tuple[str, ...]
-    mfa_version: int
+    def __post_init__(self):
+        if any(type(v) is not int or v <= 0 for v in self.__dict__.values()):
+            raise ValueError("MFAConfig values must be positive integers")
 
 
 @dataclass(frozen=True)
@@ -62,321 +46,293 @@ class MFAChallenge:
 
 
 @dataclass(frozen=True)
-class MFAProof:
-    """3B may construct this only after independently verifying its caller contract."""
+class EnrollmentStart:
+    enrollment_id: str
+    secret: str
+    expires_at: dt.datetime
 
+
+@dataclass(frozen=True)
+class MFAProofReceipt:
+    event_id: int
+    subject_user_id: int
+    purpose: ChallengePurpose
+    token_version: int
+    mfa_version: int
+    occurred_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class RecoveryCapability:
+    token: str
+    expires_at: dt.datetime
+
+
+@dataclass(frozen=True)
+class EnrollmentConfirmation:
+    recovery_codes: tuple[str, ...]
+    token_version: int
+    mfa_version: int
+    state_event_id: int
+
+
+@dataclass(frozen=True)
+class MFAStateReceipt:
+    event_id: int
     subject_user_id: int
     token_version: int
     mfa_version: int
-    mfa_at: dt.datetime
-    kind: Literal["SELF_RECENT", "ROOT_RECENT"]
 
 
-def _now(value: dt.datetime | None) -> dt.datetime:
-    value = value or dt.datetime.now(dt.timezone.utc)
-    if value.tzinfo is None:
-        raise ValueError("MFA time must be timezone aware")
-    return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
-
-
-def _hash(value: str) -> bytes:
-    return hashlib.sha256(value.encode("ascii")).digest()
-
-
-def _opaque(bits: int = 256) -> str:
-    return secrets.token_urlsafe(bits // 8)
-
-
-def _recovery_code() -> str:
-    # URL-safe alphabet has six bits per character; 22 chars exceeds 128 bits.
-    return secrets.token_urlsafe(24)
-
-
-def _valid_otp(otp: str) -> bool:
-    return isinstance(otp, str) and len(otp) == 6 and otp.isascii() and otp.isdecimal()
-
-
-def _counter_for(secret: str, otp: str, now: dt.datetime) -> int | None:
-    if not _valid_otp(otp):
-        return None
+def _hash(value: str) -> bytes: return hashlib.sha256(value.encode("ascii")).digest()
+def _opaque() -> str: return secrets.token_urlsafe(32)
+def _code() -> str: return secrets.token_urlsafe(24)
+def _cid(value: bytes) -> bytes:
+    if not isinstance(value, bytes) or len(value) != 16: raise ValueError("server_correlation_id must be 16 bytes")
+    return value
+def _utc(value: dt.datetime) -> dt.datetime: return value.replace(tzinfo=dt.timezone.utc)
+def _otp_counter(secret: str, otp: str, now: dt.datetime) -> int | None:
+    if not isinstance(otp, str) or len(otp) != 6 or not otp.isascii() or not otp.isdecimal(): return None
     totp = pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1)
-    # MariaDB DATETIME is deliberately UTC-naive; restore that meaning before
-    # deriving the RFC 6238 counter so host locale cannot shift a valid code.
-    current = int(now.replace(tzinfo=dt.timezone.utc).timestamp() // 30)
+    current = int(_utc(now).timestamp() // 30)
     for counter in (current - 1, current, current + 1):
-        if hmac.compare_digest(totp.at(counter * 30), otp):
-            return counter
+        if hmac.compare_digest(totp.at(counter * 30), otp): return counter
     return None
 
 
-async def _locked_user(cur, user_id: int) -> tuple[int, int, str] | None:
-    await cur.execute(
-        "SELECT token_version,mfa_version,status FROM jax_users WHERE user_id=%s FOR UPDATE", (user_id,)
-    )
+async def _db_now(cur) -> dt.datetime:
+    await cur.execute("SELECT NOW(6)")
+    return (await cur.fetchone())[0]
+
+
+async def _user(cur, user_id: int):
+    await cur.execute("SELECT token_version,mfa_version,status FROM jax_users WHERE user_id=%s FOR UPDATE", (user_id,))
     row = await cur.fetchone()
-    if row is None or row[2] != "active":
-        return None
-    return int(row[0]), int(row[1]), str(row[2])
+    return None if row is None or row[2] != "active" else (int(row[0]), int(row[1]))
 
 
-async def _record(cur, user_id: int, operation: str, reason: str) -> None:
-    # Reuse the proven append-only Office event stream.  No token, OTP, secret,
-    # recovery code, ciphertext, or input-derived correlation is written.
+async def _challenge_id(cur, token_hash: bytes) -> int:
+    await cur.execute("SELECT challenge_id FROM office_mfa_challenge WHERE token_hash=%s", (token_hash,))
+    return int((await cur.fetchone())[0])
+
+
+async def _append_proof(cur, *, subject: int, purpose: str, token_version: int, mfa_version: int, principal: str, actor: int | None, challenge_id: int | None, cid: bytes) -> MFAProofReceipt:
+    await cur.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) VALUES ('MFA_PROOF',%s,%s,%s,%s,'MFA_PROOF',%s,%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL)", (actor, principal, challenge_id, subject, purpose, token_version, mfa_version, cid))
+    event_id = cur.lastrowid
+    await cur.execute("SELECT occurred_at FROM office_mfa_security_event WHERE event_id=%s", (event_id,))
+    return MFAProofReceipt(int(event_id), subject, purpose, token_version, mfa_version, (await cur.fetchone())[0])
+
+
+async def _append_state(cur, *, subject: int, operation: str, purpose: str, principal: str, actor: int | None, challenge_id: int | None, previous: tuple[int,int], current: tuple[int,int], proof_id: int, cid: bytes) -> int:
+    await cur.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) VALUES ('MFA_STATE_CHANGE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,'RECORDED',%s,NULL)", (actor, principal, challenge_id, subject, operation, purpose, current[0], current[1], previous[0], previous[1], proof_id, cid))
+    return int(cur.lastrowid)
+
+
+async def _invalidate(cur, user: int) -> None:
+    await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=NOW(6) WHERE user_id=%s AND state IN ('ISSUED','EXHAUSTED')", (user,))
+
+
+async def _deny_attempt(cur, token_hash: bytes, count: int, maximum: int) -> MFADenied:
+    """Persist an OTP denial; callers must return normally so it commits."""
+    next_count = count + 1
+    terminal = next_count >= maximum
     await cur.execute(
-        "INSERT INTO office_authorization_event "
-        "(actor_user_id,actor_principal,event_kind,fence_key,operation,requested_project_id,project_id,tenant_id,result,reason_code,correlation_id,occurred_at) "
-        "VALUES (%s,NULL,'AUTHORIZATION',NULL,%s,NULL,NULL,NULL,'ALLOWED',%s,NULL,NOW(6))",
-        (user_id, operation, reason),
+        "UPDATE office_mfa_challenge SET attempt_count=%s,state=%s,"
+        "used_at=IF(%s,NOW(6),NULL) WHERE token_hash=%s AND state='ISSUED'",
+        (next_count, "EXHAUSTED" if terminal else "ISSUED", terminal, token_hash),
     )
+    if cur.rowcount != 1:
+        return MFADenied("challenge_unavailable", terminal=True)
+    return MFADenied("challenge_exhausted" if terminal else "totp_invalid", maximum - next_count, terminal)
 
 
-async def _insert_recovery_codes(cur, user_id: int, mfa_version: int, count: int) -> tuple[str, ...]:
-    codes = tuple(_recovery_code() for _ in range(count))
-    await cur.executemany(
-        "INSERT INTO office_mfa_recovery_code (user_id,mfa_version,code_hash,created_at) VALUES (%s,%s,%s,NOW(6))",
-        [(user_id, mfa_version, _hash(code)) for code in codes],
+async def _insert_challenge(cur, *, user: int, purpose: ChallengePurpose, versions: tuple[int,int], token: str, ttl: int, attempts: int):
+    now = await _db_now(cur); expiry = now + dt.timedelta(seconds=ttl)
+    # The indexed policy-window lookup makes re-issuance unable to erase an
+    # exhausted budget (or mint a parallel live capability) for this version.
+    await cur.execute("SELECT attempt_count,max_attempts,state FROM office_mfa_challenge WHERE user_id=%s AND purpose=%s AND expected_token_version=%s AND expected_mfa_version=%s AND state IN ('ISSUED','EXHAUSTED') AND expires_at >= %s ORDER BY created_at DESC LIMIT 1 FOR UPDATE", (user,purpose,versions[0],versions[1],now))
+    previous = await cur.fetchone()
+    if previous:
+        if previous[2] == "EXHAUSTED": return MFADenied("challenge_exhausted", 0, True)
+        return MFADenied("challenge_live", int(previous[1])-int(previous[0]))
+    await cur.execute("INSERT INTO office_mfa_challenge (token_hash,user_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state,created_at) VALUES (%s,%s,%s,%s,%s,0,%s,%s,'ISSUED',NOW(6))", (_hash(token), user, purpose, versions[0], versions[1], attempts, expiry))
+    return MFAChallenge(token, purpose, _utc(expiry))
+
+
+async def _active_credential(cur, user: int):
+    await cur.execute("SELECT state,secret_ciphertext FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user,))
+    row = await cur.fetchone()
+    return row if row and row[0] == "ACTIVE" else None
+
+
+async def issue_login_challenge_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
+    versions = await _user(cur, preauthenticated_user_id)
+    if versions is None or not await _active_credential(cur, preauthenticated_user_id): return MFADenied("mfa_subject_invalid", terminal=True)
+    return await _insert_challenge(cur, user=preauthenticated_user_id, purpose="LOGIN", versions=versions, token=_opaque(), ttl=config.challenge_lifetime_seconds, attempts=config.challenge_max_attempts)
+
+
+async def issue_step_up_challenge_in_cursor(cur, *, actor_user_id: int, config: MFAConfig):
+    versions = await _user(cur, actor_user_id)
+    if versions is None or not await _active_credential(cur, actor_user_id): return MFADenied("mfa_subject_invalid", terminal=True)
+    return await _insert_challenge(cur, user=actor_user_id, purpose="STEP_UP", versions=versions, token=_opaque(), ttl=config.challenge_lifetime_seconds, attempts=config.challenge_max_attempts)
+
+
+async def verify_and_consume_totp_in_cursor(cur, *, challenge_token: str, otp: str, server_correlation_id: bytes):
+    cid = _cid(server_correlation_id); hashed = _hash(challenge_token)
+    await cur.execute("SELECT user_id FROM office_mfa_challenge WHERE token_hash=%s", (hashed,)); found = await cur.fetchone()
+    if not found: return MFADenied("challenge_invalid", terminal=True)
+    user_id = int(found[0]); versions = await _user(cur, user_id)
+    await cur.execute("SELECT challenge_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state FROM office_mfa_challenge WHERE token_hash=%s FOR UPDATE", (hashed,)); row = await cur.fetchone()
+    if row is None or versions is None: return MFADenied("challenge_invalid", terminal=True)
+    challenge_id, purpose, tv, mv, count, maximum, expiry, state = row
+    now = await _db_now(cur)
+    if purpose not in ("LOGIN", "STEP_UP") or state != "ISSUED":
+        return MFADenied("challenge_unavailable", terminal=True)
+    if expiry < now:
+        await cur.execute("UPDATE office_mfa_challenge SET state='EXPIRED',used_at=NOW(6) WHERE token_hash=%s", (hashed,)); return MFADenied("challenge_expired", terminal=True)
+    if versions != (int(tv), int(mv)):
+        await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        return MFADenied("challenge_version", terminal=True)
+    credential = await _active_credential(cur, user_id)
+    secret = decrypt_db_secret(str(credential[1])) if credential else ""
+    counter = _otp_counter(secret, otp, now) if secret else None
+    if counter is None:
+        return await _deny_attempt(cur, hashed, int(count), int(maximum))
+    try:
+        await cur.execute("INSERT INTO office_mfa_totp_use (user_id,mfa_version,time_counter,purpose,used_at) VALUES (%s,%s,%s,%s,NOW(6))", (user_id, versions[1], counter, purpose))
+    except Exception as exc:
+        if getattr(exc, "args", [None])[0] != 1062: raise
+        await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        return MFADenied("totp_replayed", int(maximum)-int(count), True)
+    await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+    if cur.rowcount != 1: raise RuntimeError("challenge CAS lost after TOTP insert")
+    return await _append_proof(cur, subject=user_id, purpose=purpose, token_version=versions[0], mfa_version=versions[1], principal="PASSWORD_PREAUTH" if purpose == "LOGIN" else "USER_SESSION", actor=None if purpose == "LOGIN" else user_id, challenge_id=int(challenge_id) if purpose == "LOGIN" else None, cid=cid)
+
+
+async def start_first_enrollment_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
+    versions = await _user(cur, preauthenticated_user_id)
+    if versions is None: return MFADenied("mfa_subject_invalid", terminal=True)
+    await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (preauthenticated_user_id,)); existing = await cur.fetchone()
+    if existing and existing[0] == "ACTIVE": return MFADenied("mfa_already_active", terminal=True)
+    token, secret = _opaque(), pyotp.random_base32(length=32); now = await _db_now(cur); expiry = now + dt.timedelta(seconds=config.enrollment_lifetime_seconds)
+    challenge = await _insert_challenge(
+        cur, user=preauthenticated_user_id, purpose="ENROLLMENT", versions=versions,
+        token=token, ttl=config.enrollment_lifetime_seconds, attempts=config.challenge_max_attempts,
     )
-    return codes
+    if isinstance(challenge, MFADenied):
+        return challenge
+    cipher = encrypt_secret(secret)
+    if existing:
+        await cur.execute("UPDATE office_mfa_credential SET state='PENDING',secret_ciphertext=NULL,pending_secret_ciphertext=%s,pending_enrollment_id=%s,pending_expires_at=%s,updated_at=NOW(6) WHERE user_id=%s", (cipher, _hash(token), expiry, preauthenticated_user_id))
+    else:
+        await cur.execute("INSERT INTO office_mfa_credential (user_id,state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at,created_at,updated_at) VALUES (%s,'PENDING',NULL,%s,%s,%s,NOW(6),NOW(6))", (preauthenticated_user_id, cipher, _hash(token), expiry))
+    return EnrollmentStart(token, secret, _utc(expiry))
 
 
-async def begin_enrollment(user_id: int, *, config: MFAConfig, now: dt.datetime | None = None) -> EnrollmentStart:
-    now = _now(now)
-    enrollment_id, secret = _opaque(), pyotp.random_base32(length=32)
-    expiry = now + dt.timedelta(seconds=config.enrollment_lifetime_seconds)
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if await _locked_user(cur, user_id) is None:
-            raise MFAError("mfa_subject_invalid")
-        await cur.execute("SELECT user_id FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
-        ciphertext = encrypt_secret(secret)
-        if await cur.fetchone() is None:
-            await cur.execute(
-                "INSERT INTO office_mfa_credential "
-                "(user_id,state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at,created_at,updated_at) "
-                "VALUES (%s,'PENDING',NULL,%s,%s,%s,NOW(6),NOW(6))",
-                (user_id, ciphertext, _hash(enrollment_id), expiry),
-            )
-        else:
-            await cur.execute(
-                "UPDATE office_mfa_credential SET state='PENDING',secret_ciphertext=NULL,pending_secret_ciphertext=%s,"
-                "pending_enrollment_id=%s,pending_expires_at=%s,confirmed_at=NULL,updated_at=NOW(6) WHERE user_id=%s",
-                (ciphertext, _hash(enrollment_id), expiry, user_id),
-            )
-        await _record(cur, user_id, "MFA_ENROLL_START", "mfa_enrollment_pending")
-    return EnrollmentStart(enrollment_id, secret, expiry.replace(tzinfo=dt.timezone.utc))
+async def reload_current_self_mfa_proof_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
+    versions = await _user(cur, actor_user_id)
+    if versions is None: return MFADenied("proof_invalid", terminal=True)
+    await cur.execute("SELECT subject_user_id,purpose,token_version,mfa_version,occurred_at,result,principal_kind,actor_user_id FROM office_mfa_security_event WHERE event_id=%s FOR UPDATE", (proof_event_id,)); row = await cur.fetchone()
+    if not row: return MFADenied("proof_invalid", terminal=True)
+    subject,purpose,tv,mv,when,result,principal,actor = row; now = await _db_now(cur)
+    okay = subject == actor_user_id and result == "VERIFIED" and (purpose == "LOGIN" and principal == "PASSWORD_PREAUTH" and actor is None or purpose == "STEP_UP" and principal == "USER_SESSION" and actor == actor_user_id)
+    if not okay or versions != (int(tv),int(mv)) or when > now or now - when > dt.timedelta(seconds=config.recency_seconds): return MFADenied("proof_stale", terminal=True)
+    return MFAProofReceipt(proof_event_id, actor_user_id, purpose, int(tv), int(mv), when)
 
 
-async def confirm_enrollment(user_id: int, enrollment_id: str, otp: str, *, config: MFAConfig, now: dt.datetime | None = None) -> EnrollmentConfirmation:
-    now = _now(now)
-    result: EnrollmentConfirmation | None = None
-    error: str | None = None
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        user = await _locked_user(cur, user_id)
-        if user is None:
-            error = "mfa_subject_invalid"
-        else:
-            await cur.execute(
-                "SELECT state,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at FROM office_mfa_credential WHERE user_id=%s FOR UPDATE",
-                (user_id,),
-            )
-            credential = await cur.fetchone()
-            if credential is None or credential[0] != "PENDING" or not hmac.compare_digest(bytes(credential[2] or b""), _hash(enrollment_id)):
-                error = "enrollment_invalid"
-            elif credential[3] is None or credential[3] < now:
-                error = "enrollment_expired"
-            else:
-                secret = decrypt_db_secret(str(credential[1] or ""))
-                counter = _counter_for(secret, otp, now) if secret else None
-                if counter is None:
-                    error = "totp_invalid"
-                else:
-                    next_version = user[1] + 1
-                    await cur.execute(
-                        "UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s", (user_id,)
-                    )
-                    await cur.execute(
-                        "UPDATE office_mfa_credential SET state='ACTIVE',secret_ciphertext=pending_secret_ciphertext,"
-                        "pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NOW(6),updated_at=NOW(6) WHERE user_id=%s",
-                        (user_id,),
-                    )
-                    await cur.execute(
-                        "INSERT INTO office_mfa_totp_use (user_id,mfa_version,time_counter,purpose,used_at) VALUES (%s,%s,%s,'ENROLLMENT',NOW(6))",
-                        (user_id, next_version, counter),
-                    )
-                    await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,))
-                    codes = await _insert_recovery_codes(cur, user_id, next_version, config.recovery_code_count)
-                    await _record(cur, user_id, "MFA_ENROLL_CONFIRM", "mfa_enrollment_confirmed")
-                    result = EnrollmentConfirmation(codes, next_version)
-    if error:
-        raise MFAError(error)
-    assert result is not None
-    # The canonical stream cut is explicitly after the successful transaction.
-    from auth.conexiones import _cortar_conexiones
-    await _cortar_conexiones(user_id)
-    return result
+async def start_reenrollment_after_password_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
+    proof = await reload_current_self_mfa_proof_in_cursor(cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id, config=config)
+    if isinstance(proof, MFADenied): return proof
+    credential = await _active_credential(cur, actor_user_id)
+    if not credential: return MFADenied("mfa_not_active", terminal=True)
+    token, secret = _opaque(), pyotp.random_base32(length=32); now = await _db_now(cur); expiry = now + dt.timedelta(seconds=config.enrollment_lifetime_seconds)
+    challenge = await _insert_challenge(
+        cur, user=actor_user_id, purpose="ENROLLMENT",
+        versions=(proof.token_version, proof.mfa_version), token=token,
+        ttl=config.enrollment_lifetime_seconds, attempts=config.challenge_max_attempts,
+    )
+    if isinstance(challenge, MFADenied):
+        return challenge
+    await cur.execute("UPDATE office_mfa_credential SET pending_secret_ciphertext=%s,pending_enrollment_id=%s,pending_expires_at=%s,updated_at=NOW(6) WHERE user_id=%s", (encrypt_secret(secret),_hash(token),expiry,actor_user_id))
+    return EnrollmentStart(token,secret,_utc(expiry))
 
 
-async def issue_challenge(user_id: int, purpose: ChallengePurpose, *, config: MFAConfig, now: dt.datetime | None = None) -> MFAChallenge:
-    if purpose not in _PURPOSES:
-        raise MFAError("challenge_purpose")
-    now = _now(now)
-    token, expiry = _opaque(), now + dt.timedelta(seconds=config.challenge_lifetime_seconds)
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        user = await _locked_user(cur, user_id)
-        if user is None:
-            raise MFAError("mfa_subject_invalid")
-        await cur.execute(
-            "INSERT INTO office_mfa_challenge "
-            "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state,created_at) "
-            "VALUES (%s,%s,%s,%s,%s,0,%s,%s,'ISSUED',NOW(6))",
-            (_hash(token), user_id, purpose, user[0], user[1], config.challenge_max_attempts, expiry),
-        )
-    return MFAChallenge(token, purpose, expiry.replace(tzinfo=dt.timezone.utc))
+async def consume_recovery_code_in_cursor(cur, *, recovery_code: str, config: MFAConfig, server_correlation_id: bytes):
+    cid=_cid(server_correlation_id); hashed=_hash(recovery_code)
+    await cur.execute("SELECT user_id FROM office_mfa_recovery_code WHERE code_hash=%s", (hashed,)); found=await cur.fetchone()
+    if not found: return MFADenied("recovery_invalid",terminal=True)
+    user_id=int(found[0]); versions=await _user(cur,user_id)
+    await cur.execute("SELECT recovery_code_id,mfa_version,used_at FROM office_mfa_recovery_code WHERE code_hash=%s FOR UPDATE",(hashed,)); row=await cur.fetchone()
+    if not row or versions is None or row[2] is not None or int(row[1]) != versions[1]: return MFADenied("recovery_invalid",terminal=True)
+    await cur.execute("UPDATE office_mfa_recovery_code SET used_at=NOW(6) WHERE recovery_code_id=%s AND used_at IS NULL",(row[0],))
+    if cur.rowcount != 1: return MFADenied("recovery_used",terminal=True)
+    token=_opaque(); current=(versions[0]+1,versions[1]+1)
+    await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s",(user_id,))
+    await cur.execute("UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NULL,updated_at=NOW(6) WHERE user_id=%s",(user_id,))
+    await cur.execute("UPDATE office_mfa_recovery_code SET used_at=COALESCE(used_at,NOW(6)) WHERE user_id=%s",(user_id,)); await _invalidate(cur,user_id)
+    challenge=await _insert_challenge(cur,user=user_id,purpose="RECOVERY",versions=current,token=token,ttl=config.challenge_lifetime_seconds,attempts=config.challenge_max_attempts)
+    challenge_id=await _challenge_id(cur,_hash(token)); proof=await _append_proof(cur,subject=user_id,purpose="RECOVERY",token_version=current[0],mfa_version=current[1],principal="RECOVERY_CAPABILITY",actor=None,challenge_id=challenge_id,cid=cid)
+    await _append_state(cur,subject=user_id,operation="RECOVERY_CONSUME",purpose="RECOVERY",principal="RECOVERY_CAPABILITY",actor=None,challenge_id=challenge_id,previous=versions,current=current,proof_id=proof.event_id,cid=cid)
+    return RecoveryCapability(challenge.token,challenge.expires_at)
 
 
-async def consume_totp_challenge(user_id: int, token: str, purpose: ChallengePurpose, otp: str, *, config: MFAConfig, now: dt.datetime | None = None) -> int:
-    if purpose not in _PURPOSES:
-        raise MFAError("challenge_purpose")
-    now = _now(now)
-    error: str | None = None
-    version: int | None = None
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        await cur.execute(
-            "SELECT user_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state "
-            "FROM office_mfa_challenge WHERE token_hash=%s FOR UPDATE", (_hash(token),)
-        )
-        challenge = await cur.fetchone()
-        if challenge is None or int(challenge[0]) != user_id:
-            error = "challenge_invalid"
-        elif challenge[1] != purpose:
-            error = "challenge_purpose"
-        elif challenge[7] != "ISSUED":
-            error = "challenge_used"
-        elif challenge[6] < now:
-            await cur.execute("UPDATE office_mfa_challenge SET state='EXPIRED',used_at=NOW(6) WHERE token_hash=%s", (_hash(token),))
-            error = "challenge_expired"
-        else:
-            user = await _locked_user(cur, user_id)
-            if user is None or user[0] != int(challenge[2]) or user[1] != int(challenge[3]):
-                error = "challenge_version"
-            else:
-                await cur.execute("SELECT state,secret_ciphertext FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
-                credential = await cur.fetchone()
-                secret = "" if credential is None or credential[0] != "ACTIVE" else decrypt_db_secret(str(credential[1] or ""))
-                counter = _counter_for(secret, otp, now) if secret else None
-                if counter is None:
-                    attempts = int(challenge[4]) + 1
-                    state = "EXHAUSTED" if attempts >= int(challenge[5]) else "ISSUED"
-                    await cur.execute("UPDATE office_mfa_challenge SET attempt_count=%s,state=%s,used_at=IF(%s='EXHAUSTED',NOW(6),NULL) WHERE token_hash=%s", (attempts, state, state, _hash(token)))
-                    error = "challenge_exhausted" if state == "EXHAUSTED" else "totp_invalid"
-                else:
-                    try:
-                        await cur.execute(
-                            "INSERT INTO office_mfa_totp_use (user_id,mfa_version,time_counter,purpose,used_at) VALUES (%s,%s,%s,%s,NOW(6))",
-                            (user_id, user[1], counter, purpose),
-                        )
-                    except Exception as exc:
-                        if getattr(exc, "args", (None,))[0] != 1062:
-                            raise
-                        error = "totp_replayed"
-                    else:
-                        await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=NOW(6) WHERE token_hash=%s", (_hash(token),))
-                        await _record(cur, user_id, "MFA_CHALLENGE_OK", "mfa_totp_verified")
-                        version = user[1]
-    if error:
-        raise MFAError(error)
-    assert version is not None
-    return version
+async def start_recovery_enrollment_in_cursor(cur, *, recovery_capability_token: str, config: MFAConfig):
+    hashed=_hash(recovery_capability_token); await cur.execute("SELECT user_id FROM office_mfa_challenge WHERE token_hash=%s",(hashed,)); found=await cur.fetchone()
+    if not found:return MFADenied("recovery_invalid",terminal=True)
+    user_id=int(found[0]); versions=await _user(cur,user_id); await cur.execute("SELECT purpose,expected_token_version,expected_mfa_version,expires_at,state FROM office_mfa_challenge WHERE token_hash=%s FOR UPDATE",(hashed,)); row=await cur.fetchone(); now=await _db_now(cur)
+    if not row or versions is None or row[0]!="RECOVERY" or row[4]!="ISSUED" or row[3]<now or versions != (int(row[1]),int(row[2])): return MFADenied("recovery_invalid",terminal=True)
+    await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'",(hashed,))
+    token,secret=_opaque(),pyotp.random_base32(length=32); expiry=now+dt.timedelta(seconds=config.enrollment_lifetime_seconds)
+    await cur.execute("UPDATE office_mfa_credential SET state='PENDING',pending_secret_ciphertext=%s,pending_enrollment_id=%s,pending_expires_at=%s,updated_at=NOW(6) WHERE user_id=%s",(encrypt_secret(secret),_hash(token),expiry,user_id))
+    await _insert_challenge(cur,user=user_id,purpose="ENROLLMENT",versions=versions,token=token,ttl=config.enrollment_lifetime_seconds,attempts=config.challenge_max_attempts)
+    return EnrollmentStart(token,secret,_utc(expiry))
 
 
-async def consume_recovery_code(user_id: int, code: str, *, config: MFAConfig, now: dt.datetime | None = None) -> MFAChallenge:
-    """Consume one code and return only an opaque re-enrollment capability."""
-    now = _now(now)
-    capability, expiry = _opaque(), now + dt.timedelta(seconds=config.challenge_lifetime_seconds)
-    error: str | None = None
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        user = await _locked_user(cur, user_id)
-        if user is None:
-            error = "mfa_subject_invalid"
-        else:
-            await cur.execute(
-                "SELECT recovery_code_id,mfa_version,used_at FROM office_mfa_recovery_code WHERE user_id=%s AND code_hash=%s FOR UPDATE",
-                (user_id, _hash(code)),
-            )
-            row = await cur.fetchone()
-            if row is None or int(row[1]) != user[1]:
-                error = "recovery_invalid"
-            elif row[2] is not None:
-                error = "recovery_used"
-            else:
-                await cur.execute("UPDATE office_mfa_recovery_code SET used_at=NOW(6) WHERE recovery_code_id=%s AND used_at IS NULL", (row[0],))
-                if cur.rowcount != 1:
-                    error = "recovery_used"
-                else:
-                    next_version = user[1] + 1
-                    await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s", (user_id,))
-                    await cur.execute(
-                        "UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,"
-                        "pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NULL,updated_at=NOW(6) WHERE user_id=%s", (user_id,)
-                    )
-                    await cur.execute(
-                        "INSERT INTO office_mfa_challenge (token_hash,user_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state,created_at) "
-                        "VALUES (%s,%s,'RECOVERY',%s,%s,0,%s,%s,'ISSUED',NOW(6))",
-                        (_hash(capability), user_id, user[0] + 1, next_version, config.challenge_max_attempts, expiry),
-                    )
-                    await _record(cur, user_id, "MFA_RECOVERY_USED", "mfa_recovery_required")
-    if error:
-        raise MFAError(error)
-    from auth.conexiones import _cortar_conexiones
-    await _cortar_conexiones(user_id)
-    return MFAChallenge(capability, "RECOVERY", expiry.replace(tzinfo=dt.timezone.utc))
+async def confirm_enrollment_in_cursor(cur, *, enrollment_capability_token: str, otp: str, config: MFAConfig, server_correlation_id: bytes):
+    cid=_cid(server_correlation_id); hashed=_hash(enrollment_capability_token); await cur.execute("SELECT user_id FROM office_mfa_challenge WHERE token_hash=%s",(hashed,)); found=await cur.fetchone()
+    if not found:return MFADenied("enrollment_invalid",terminal=True)
+    user_id=int(found[0]); versions=await _user(cur,user_id); await cur.execute("SELECT challenge_id,purpose,expected_token_version,expected_mfa_version,attempt_count,max_attempts,expires_at,state FROM office_mfa_challenge WHERE token_hash=%s FOR UPDATE",(hashed,)); ch=await cur.fetchone(); now=await _db_now(cur)
+    await cur.execute("SELECT state,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at FROM office_mfa_credential WHERE user_id=%s FOR UPDATE",(user_id,)); cred=await cur.fetchone()
+    if not ch or not cred or versions is None or ch[1] != "ENROLLMENT" or ch[7] != "ISSUED":
+        return MFADenied("enrollment_invalid", terminal=True)
+    if ch[6] < now:
+        await cur.execute("UPDATE office_mfa_challenge SET state='EXPIRED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        return MFADenied("enrollment_expired", terminal=True)
+    if versions != (int(ch[2]), int(ch[3])):
+        await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
+        return MFADenied("enrollment_version", terminal=True)
+    if not hmac.compare_digest(bytes(cred[2] or b""), hashed) or cred[3] is None or cred[3] < now:
+        return MFADenied("enrollment_invalid", terminal=True)
+    secret=decrypt_db_secret(str(cred[1]))
+    counter=_otp_counter(secret,otp,now) if secret else None
+    if counter is None:
+        return await _deny_attempt(cur, hashed, int(ch[4]), int(ch[5]))
+    current=(versions[0]+1,versions[1]+1)
+    await cur.execute("INSERT INTO office_mfa_totp_use (user_id,mfa_version,time_counter,purpose,used_at) VALUES (%s,%s,%s,'ENROLLMENT',NOW(6))",(user_id,current[1],counter))
+    await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=NOW(6) WHERE token_hash=%s AND state='ISSUED'",(hashed,))
+    await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s",(user_id,)); await cur.execute("UPDATE office_mfa_credential SET state='ACTIVE',secret_ciphertext=pending_secret_ciphertext,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NOW(6),updated_at=NOW(6) WHERE user_id=%s",(user_id,)); await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s",(user_id,)); codes=tuple(_code() for _ in range(config.recovery_code_count)); await cur.executemany("INSERT INTO office_mfa_recovery_code (user_id,mfa_version,code_hash,created_at) VALUES (%s,%s,%s,NOW(6))",[(user_id,current[1],_hash(code)) for code in codes]); await _invalidate(cur,user_id)
+    proof=await _append_proof(cur,subject=user_id,purpose="ENROLLMENT",token_version=versions[0],mfa_version=versions[1],principal="ENROLLMENT_CAPABILITY",actor=None,challenge_id=int(ch[0]),cid=cid)
+    state=await _append_state(cur,subject=user_id,operation="ENROLLMENT_CONFIRM",purpose="ENROLLMENT",principal="ENROLLMENT_CAPABILITY",actor=None,challenge_id=int(ch[0]),previous=versions,current=current,proof_id=proof.event_id,cid=cid)
+    return EnrollmentConfirmation(codes,current[0],current[1],state)
 
 
-async def regenerate_recovery_codes(user_id: int, password: str, proof: MFAProof | None, *, config: MFAConfig, now: dt.datetime | None = None) -> tuple[str, ...]:
-    """Caller supplies a previously verified, recent self-proof; missing proof denies."""
-    if proof is None or proof.kind != "SELF_RECENT" or proof.subject_user_id != user_id:
-        raise MFAError("proof_required")
-    now = _now(now)
-    if proof.mfa_at.tzinfo is None or now - proof.mfa_at.astimezone(dt.timezone.utc).replace(tzinfo=None) > dt.timedelta(seconds=config.recency_seconds):
-        raise MFAError("proof_stale")
-    from db.seed import verify_password
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        user = await _locked_user(cur, user_id)
-        if user is None or user[0] != proof.token_version or user[1] != proof.mfa_version:
-            raise MFAError("proof_invalid")
-        await cur.execute("SELECT password_hash FROM jax_users WHERE user_id=%s", (user_id,))
-        row = await cur.fetchone()
-        # This is async and uses asyncio.to_thread in the canonical helper.
-        if row is None or not await verify_password(password, row[0]):
-            raise MFAError("password_invalid")
-        await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
-        credential = await cur.fetchone()
-        if credential is None or credential[0] != "ACTIVE":
-            raise MFAError("mfa_not_active")
-        next_version = user[1] + 1
-        await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s", (user_id,))
-        await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,))
-        codes = await _insert_recovery_codes(cur, user_id, next_version, config.recovery_code_count)
-        await _record(cur, user_id, "MFA_RECOVERY_REGEN", "mfa_recovery_regenerated")
-    from auth.conexiones import _cortar_conexiones
-    await _cortar_conexiones(user_id)
-    return codes
+async def regenerate_recovery_codes_after_password_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig, server_correlation_id: bytes):
+    proof=await reload_current_self_mfa_proof_in_cursor(cur,actor_user_id=actor_user_id,proof_event_id=proof_event_id,config=config)
+    if isinstance(proof,MFADenied):return proof
+    if not await _active_credential(cur,actor_user_id):return MFADenied("mfa_not_active",terminal=True)
+    current=(proof.token_version+1,proof.mfa_version+1)
+    await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s",(actor_user_id,))
+    await cur.execute("UPDATE office_mfa_credential SET pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,updated_at=NOW(6) WHERE user_id=%s", (actor_user_id,))
+    await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s",(actor_user_id,))
+    await _invalidate(cur, actor_user_id)
+    codes=tuple(_code() for _ in range(config.recovery_code_count))
+    await cur.executemany("INSERT INTO office_mfa_recovery_code (user_id,mfa_version,code_hash,created_at) VALUES (%s,%s,%s,NOW(6))",[(actor_user_id,current[1],_hash(c)) for c in codes])
+    event=await _append_state(cur,subject=actor_user_id,operation="RECOVERY_REGENERATE",purpose="RECOVERY",principal="USER_SESSION",actor=actor_user_id,challenge_id=None,previous=(proof.token_version,proof.mfa_version),current=current,proof_id=proof.event_id,cid=_cid(server_correlation_id))
+    return MFAStateReceipt(event,actor_user_id,*current)
 
 
-async def disable_or_reset_mfa(user_id: int, proof: MFAProof | None, *, config: MFAConfig, now: dt.datetime | None = None) -> None:
-    """No unguarded reset path: only a current, recent root proof may target another subject."""
-    if proof is None or proof.kind != "ROOT_RECENT" or proof.subject_user_id == user_id:
-        raise MFAError("proof_required")
-    now = _now(now)
-    if proof.mfa_at.tzinfo is None or now - proof.mfa_at.astimezone(dt.timezone.utc).replace(tzinfo=None) > dt.timedelta(seconds=config.recency_seconds):
-        raise MFAError("proof_stale")
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        target = await _locked_user(cur, user_id)
-        actor = await _locked_user(cur, proof.subject_user_id)
-        if target is None or actor is None or actor[0] != proof.token_version or actor[1] != proof.mfa_version:
-            raise MFAError("proof_invalid")
-        await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s", (user_id,))
-        await cur.execute("UPDATE office_mfa_credential SET state='DISABLED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NULL,updated_at=NOW(6) WHERE user_id=%s", (user_id,))
-        await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,))
-        await _record(cur, user_id, "MFA_RESET", "mfa_reset_by_root")
-    from auth.conexiones import _cortar_conexiones
-    await _cortar_conexiones(user_id)
+async def disable_mfa_after_password_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig, server_correlation_id: bytes):
+    proof=await reload_current_self_mfa_proof_in_cursor(cur,actor_user_id=actor_user_id,proof_event_id=proof_event_id,config=config)
+    if isinstance(proof,MFADenied):return proof
+    if not await _active_credential(cur,actor_user_id):return MFADenied("mfa_not_active",terminal=True)
+    current=(proof.token_version+1,proof.mfa_version+1); await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s",(actor_user_id,)); await cur.execute("UPDATE office_mfa_credential SET state='DISABLED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NULL,updated_at=NOW(6) WHERE user_id=%s",(actor_user_id,)); await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s",(actor_user_id,)); await _invalidate(cur,actor_user_id); event=await _append_state(cur,subject=actor_user_id,operation="MFA_DISABLE",purpose="STEP_UP",principal="USER_SESSION",actor=actor_user_id,challenge_id=None,previous=(proof.token_version,proof.mfa_version),current=current,proof_id=proof.event_id,cid=_cid(server_correlation_id)); return MFAStateReceipt(event,actor_user_id,*current)
