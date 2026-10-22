@@ -164,8 +164,12 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                                 await runtime_cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',UNHEX(REPEAT('00',32)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation,))
                     await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,correlation_id,occurred_at) VALUES (%s,'ISSUED',%s,UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))", (invitation, issuer))
                     issued_event = cur.lastrowid
+                    with pytest.raises(aiomysql.OperationalError, match='acceptance event denied'):
+                        await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, issued_event, issuer))
                     await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, issued_event, issuance))
                     bearer_event = cur.lastrowid
+                    with pytest.raises(aiomysql.OperationalError, match='acceptance event denied'):
+                        await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',UNHEX(REPEAT('02',16)),UTC_TIMESTAMP(6))", (invitation, bearer_event, issuer))
                     await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, bearer_event, issuer))
                     async with runtime.acquire() as runtime_conn:
                         async with runtime_conn.cursor() as runtime_cur:
