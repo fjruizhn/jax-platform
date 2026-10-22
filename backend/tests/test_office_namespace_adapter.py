@@ -7,7 +7,11 @@ import pytest
 
 from db.connection import get_pool
 from db.transaccion import transaccion
+from virtual_office.mfa import MFAConfig
 from virtual_office.namespace_adapter import OfficeNamespaceAuthorizer, OfficeNamespaceMembershipAuthorizer
+
+
+_MFA_CONFIG = MFAConfig(120, 3, 300, 300, 3)
 
 
 async def _sql(statement, params=(), fetch=False):
@@ -30,17 +34,37 @@ async def _root_and_tenants():
     return actor, actor_tenant, target_tenant
 
 
+async def _current_step_up_proof(user_id: int) -> int:
+    """Create the durable current proof required for an Office mutation."""
+    versions = await _sql(
+        "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s",
+        (user_id,), True,
+    )
+    token_version, mfa_version = versions[0]
+    return await _sql(
+        "INSERT INTO office_mfa_security_event "
+        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,"
+        "token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,"
+        "authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+        "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,"
+        "NULL,NULL,'VERIFIED',%s,NULL,UTC_TIMESTAMP(6))",
+        (user_id, user_id, int(token_version), int(mfa_version), uuid.uuid4().bytes),
+    )
+
+
 def test_root_creates_cross_tenant_office_scope_and_audits_canonical_target(client):
     async def scenario():
         from jax.memory.b9_mariadb import MariaDBB9Store
         from jax.memory.project_authority import ProjectAuthorityAdmin, ProjectNamespace
 
         actor, _actor_tenant, target_tenant = await _root_and_tenants()
+        proof_id = await _current_step_up_proof(actor)
         admin = ProjectAuthorityAdmin(MariaDBB9Store(await get_pool()))
         created = await admin.create_namespaced_project(
             actor_user_id=actor, target_tenant_id=target_tenant,
             namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name="Office adapter test",
-            description=None, idempotency_key=str(uuid.uuid4()), authorizer=OfficeNamespaceAuthorizer())
+            description=None, idempotency_key=str(uuid.uuid4()),
+            authorizer=OfficeNamespaceAuthorizer(mfa_proof_event_id=proof_id, mfa_config=_MFA_CONFIG))
         assert created.created is True
         assert await _sql(
             "SELECT tenant_id,authorization_namespace,status FROM jax_project_scope WHERE project_id=%s",
@@ -78,6 +102,7 @@ def test_membership_callback_uses_typed_jax_contract_and_current_root_authority(
         )
 
         actor, _actor_tenant, target_tenant = await _root_and_tenants()
+        proof_id = await _current_step_up_proof(actor)
         target = await _sql(
             "INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) "
             "VALUES (%s,%s,'x','operator','active','OFFICE_INTERNAL')",
@@ -91,7 +116,8 @@ def test_membership_callback_uses_typed_jax_contract_and_current_root_authority(
                 cursor, actor_user_id=actor, target_tenant_id=target_tenant, project_id=project,
                 target_user_id=target, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
                 member_kind=NamespacedMemberKind.INTERNAL, idempotency_key=str(uuid.uuid4()),
-                authorizer=OfficeNamespaceMembershipAuthorizer())
+                authorizer=OfficeNamespaceMembershipAuthorizer(
+                    mfa_proof_event_id=proof_id, mfa_config=_MFA_CONFIG))
         assert (result.project_id, result.target_user_id, result.status, result.replayed) == (project, target, "ACTIVE", False)
         assert await _sql("SELECT project_role,status FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True) == (("CONTRIBUTOR", "ACTIVE"),)
         assert await _sql(

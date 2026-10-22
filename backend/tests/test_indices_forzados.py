@@ -35,9 +35,16 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         # La cola del despachador de documentos (2026-10-06): sin la pista, con la cola llena, un recorrido cuadratico
         # (276 s con 200k filas). Ver el comentario de `sql_tomar_en_cola`. El indice es DDL de jax (migracion 006a).
         ("project_documents", "idx_project_documents_despacho"),
+        ("office_external_relation", "idx_office_external_relation_list"),
+        ("office_mfa_security_event", "idx_office_mfa_security_event_proof"),
     }, forzados
     for (tabla, _indice), donde in forzados.items():
-        origen = "proyectos_documentos/repositorio.py:" if tabla == "project_documents" else "api/pipelines.py:"
+        origen = (
+            "proyectos_documentos/repositorio.py:" if tabla == "project_documents"
+            else "api/virtual_office/projects.py:" if tabla == "office_external_relation"
+            else "virtual_office/mfa.py:" if tabla == "office_mfa_security_event"
+            else "api/pipelines.py:"
+        )
         assert all(d.startswith(origen) for d in donde), donde
 
 

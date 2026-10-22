@@ -180,6 +180,28 @@ async def test_poll_one_pipeline_dispara_el_aviso_para_disputed_con_su_propio_st
     assert llamados == ["disputed"]
 
 
+async def test_poll_one_pipeline_releases_the_resource_slot_on_outcome_unknown(monkeypatch):
+    """A terminal unknown result needs human review, never a leaked slot."""
+    import aviso_pipeline
+
+    llamados = []
+    monkeypatch.setattr(
+        aviso_pipeline, "encolar_aviso_fin_pipeline",
+        lambda pid, tenant_id, user_id, status, nombre: llamados.append(status),
+    )
+    pid = "pid-release-outcome-unknown"
+    state = _make_state_with_pipeline(pid)
+    pipeline = state._state.active_pipelines[pid]
+    await resource_manager.admit_pipeline(TENANT_ID, pid)
+
+    client = _FakeClient(_FakeResponse(200, {"pipeline": {"status": "outcome_unknown"}, "steps": []}))
+    await state._poll_one_pipeline(client, pid, pipeline)
+
+    assert pid not in state._state.active_pipelines
+    assert await resource_manager.active_count(TENANT_ID) == 0
+    assert llamados == ["outcome_unknown"]
+
+
 # Task 4 (2026-09-22, descartar-pipelines, Ruling 5 del controlador): `jax`
 # agrega DOS estados terminales nuevos, `discarded` y `hidden` -- MISMO
 # defecto exacto que `expired` y `disputed` tuvieron: sin entrada en

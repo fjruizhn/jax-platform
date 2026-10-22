@@ -57,6 +57,10 @@ class OfficeNamespaceMembershipAuthorizer:
     already typed execution value from that contract and has no HTTP entry.
     """
 
+    def __init__(self, *, mfa_proof_event_id: int | None = None, mfa_config=None):
+        self._proof_event_id = mfa_proof_event_id
+        self._mfa_config = mfa_config
+
     async def authorize_membership_in_transaction(
         self, cursor, *, actor_user_id: int, target_tenant_id: int, project_id: int,
         target_user_id: int, namespace, operation, member_kind, idempotency_key: str, execution,
@@ -74,7 +78,10 @@ class OfficeNamespaceMembershipAuthorizer:
         if getattr(getattr(execution, "kind", None), "value", getattr(execution, "kind", None)) == "INVITATION_ACCEPTANCE":
             raise OfficeNamespaceAuthorizationDenied("Office invitation acceptance proof is unavailable")
         decision = await authorize_office_in_cursor(
-            cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id)
+            cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
+            mfa_config=self._mfa_config,
+        )
         if not decision.allowed:
             raise OfficeNamespaceAuthorizationDenied("Office membership administration denied")
         if decision.tenant_id != target_tenant_id:

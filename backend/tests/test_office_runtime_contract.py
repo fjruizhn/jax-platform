@@ -19,7 +19,7 @@ from virtual_office.migrations import apply_office_migrations, stamp_office_runt
 
 
 async def _runtime_pool(user: str, password: str, database: str | None = None):
-    return await aiomysql.create_pool(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=user, password=password, db=database or os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True)
+    return await aiomysql.create_pool(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=user, password=password, db=database or os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True, connect_timeout=10)
 
 
 async def _fence(pool):
@@ -296,7 +296,7 @@ def test_runtime_metadata_denies_stamped_schema_without_terminal_membership_rece
         pool = await aiomysql.create_pool(
             host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
             user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
-            db=database, charset="utf8mb4", autocommit=True,
+            db=database, charset="utf8mb4", autocommit=True, connect_timeout=10,
         )
         try:
             async with pool.acquire() as conn:
@@ -336,7 +336,7 @@ def test_migrator_rejects_mfa_trigger_that_only_protects_the_fence(client):
         admin = await aiomysql.connect(
             host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
             user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
-            db=database, charset="utf8mb4", autocommit=True,
+            db=database, charset="utf8mb4", autocommit=True, connect_timeout=10,
         )
         try:
             async with admin.cursor() as cur:
@@ -468,7 +468,7 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
         admin = await aiomysql.connect(
             host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
             user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
-            db=database, charset="utf8mb4", autocommit=True,
+            db=database, charset="utf8mb4", autocommit=True, connect_timeout=10,
         )
         runtime = None
         try:
