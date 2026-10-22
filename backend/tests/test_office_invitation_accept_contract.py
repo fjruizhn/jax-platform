@@ -349,3 +349,97 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
         return rows[0]
 
     assert client.portal.call(scenario) == (invitee_email, "OFFICE_INTERNAL", "ACTIVE", "COLLABORATOR")
+
+
+def test_delegated_acceptance_allows_an_issuance_proof_older_than_901_seconds(client):
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-old-proof-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+        # The proof is still inside the issuance window (1,000s), but beyond
+        # the ordinary interactive 901s threshold accepted by the contract.
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (issuer,), True))[0]
+        old_proof = await sql(
+            "INSERT INTO office_mfa_security_event "
+            "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+            "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 902 SECOND))",
+            (issuer, issuer, *versions, uuid.uuid4().bytes))
+        email = "old-proof-" + uuid.uuid4().hex + "@example.test"
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitation = await issue_invitation_in_cursor(
+                cur, actor_user_id=issuer, project_id=project_id, email=email, audience="INTERNAL",
+                proof_event_id=old_proof, mfa_config=MFAConfig(120, 3, 300, 1000, 3),
+                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30),
+                idempotency_key=str(uuid.uuid4()))
+        ciphertext = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
+        _recipient, bearer, _expiry = _decode_outbox_payload(ciphertext)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            accepted = await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
+                                                          new_password_hash=_hash("old-proof-password"), bearer_token=bearer)
+        return accepted, await sql("SELECT status FROM office_invitation WHERE invitation_id=%s", (invitation.invitation_id,), True)
+
+    accepted, status = client.portal.call(scenario)
+    assert accepted is False
+    assert status == (("ACCEPTED",),)
+
+
+def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_rollback(client):
+    from jax.memory.project_authority import AuthorizationDenied, ProjectStateConflict
+
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        prior_role = (await sql("SELECT global_role FROM office_account_profile WHERE user_id=%s", (issuer,), True))[0][0]
+        # Exercise the project-admin grant path instead of the root bypass.
+        await sql("UPDATE office_account_profile SET global_role='COLLABORATOR' WHERE user_id=%s", (issuer,))
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-recheck-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,grant_origin,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE','OFFICE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (str(uuid.uuid4()), project_id, issuer))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+
+        async def issue(label):
+            email = f"recheck-{label}-{uuid.uuid4().hex}@example.test"
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                    email=email, audience="INTERNAL", proof_event_id=proof_event_id,
+                    mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                    invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30), idempotency_key=str(uuid.uuid4()))
+            ciphertext = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
+            return invitation.invitation_id, email, _decode_outbox_payload(ciphertext)[1]
+
+        results = []
+        for label, deny, restore in (
+            ("token", "UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", "UPDATE jax_users SET token_version=token_version-1 WHERE user_id=%s"),
+            ("mfa", "UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", "UPDATE jax_users SET mfa_version=mfa_version-1 WHERE user_id=%s"),
+            ("grant", "UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s", "UPDATE office_project_grant SET status='ACTIVE' WHERE project_id=%s AND user_id=%s"),
+            ("project", "UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", "UPDATE jax_project_scope SET status='ACTIVE' WHERE project_id=%s"),
+        ):
+            invitation_id, email, bearer = await issue(label)
+            args = (issuer,) if label in {"token", "mfa"} else ((project_id, issuer) if label == "grant" else (project_id,))
+            await sql(deny, args)
+            if label == "token":
+                assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (issuer,), True))[0][0] != _tv
+            try:
+                async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                    await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
+                                                      new_password_hash=_hash("rollback-password"), bearer_token=bearer)
+            except (AuthorizationDenied, ProjectStateConflict):
+                pass
+            else:
+                raise AssertionError(f"delegated acceptance unexpectedly survived {label} revocation")
+            await sql(restore, args)
+            invitation = await sql("SELECT status,accepted_user_id FROM office_invitation WHERE invitation_id=%s", (invitation_id,), True)
+            identities = await sql("SELECT COUNT(*) FROM jax_users WHERE email=%s", (email,), True)
+            grants = await sql("SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id IN (SELECT user_id FROM jax_users WHERE email=%s)", (project_id, email), True)
+            results.append((invitation, identities, grants))
+        await sql("UPDATE office_account_profile SET global_role=%s WHERE user_id=%s", (prior_role, issuer))
+        return results
+
+    for invitation, identities, grants in client.portal.call(scenario):
+        assert invitation == (("ISSUED", None),)
+        assert identities == ((0,),)
+        assert grants == ((0,),)

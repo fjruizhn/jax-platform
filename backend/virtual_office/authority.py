@@ -71,6 +71,17 @@ async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
                                 project_id, None, False, True)
     if not decision.allowed:
         return decision
+    # ADMINISTER_PROJECT_MEMBERS deliberately permits cleanup against an
+    # archived scope.  Delegated acceptance is a grant, never cleanup, so its
+    # narrow capability must separately require the current scope to be live.
+    await cur.execute(
+        "SELECT status FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
+    scope = await cur.fetchone()
+    if scope is None or scope[0] != "ACTIVE":
+        return _decision(False, "office_invitation_project_inactive", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
     proof = await reload_current_self_mfa_verified_in_cursor(
         cur, actor_user_id=issuer_user_id, proof_event_id=proof_event_id)
     if isinstance(proof, MFADenied):
