@@ -104,7 +104,7 @@ def verify_critic_receipt(receipt: object, resolve_public_key: Callable[[str], b
         _reject("critic receipt candidate identifiers are invalid")
     manifest_sha256 = _digest(candidate["manifest_sha256"], "manifest digest")
     artifact_set_digest = _digest(candidate["artifact_set_digest"], "artifact digest")
-    if unsigned["decision"] not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
+    if not isinstance(unsigned["decision"], str) or unsigned["decision"] not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
         _reject("critic receipt decision is invalid")
     issued_at, expires_at = _utc(unsigned["issued_at"], "issued_at"), _utc(unsigned["expires_at"], "expires_at")
     if expires_at <= issued_at or expires_at - issued_at > _MAX_VALIDITY or now < issued_at or now >= expires_at:

@@ -26,7 +26,7 @@ def test_valid_receipt_is_exactly_bound_and_canonical() -> None:
     assert verified.canonical_bytes.startswith(b'{"candidate"')
 
 
-@pytest.mark.parametrize("change", ["bad_signature", "unknown_key", "changed_root", "wrong_operation", "bool_version", "too_long", "expired", "future", "ttl"])
+@pytest.mark.parametrize("change", ["bad_signature", "unknown_key", "changed_root", "wrong_operation", "bool_version", "too_long", "expired", "future", "ttl", "decision_list", "decision_object"])
 def test_negative_envelopes_fail_closed(change: str) -> None:
     private = Ed25519PrivateKey.generate(); receipt, now = _receipt(private)
     resolver = _resolver(private)
@@ -38,6 +38,8 @@ def test_negative_envelopes_fail_closed(change: str) -> None:
     elif change == "too_long": receipt["signature"] = "A" * 129
     elif change == "expired": now += timedelta(seconds=300)
     elif change == "future": now -= timedelta(seconds=1)
+    elif change == "decision_list": receipt["decision"] = []
+    elif change == "decision_object": receipt["decision"] = {}
     else:
         receipt, now = _receipt(private, lifetime=301)
     with pytest.raises(CriticReceiptRejected): verify_critic_receipt(receipt, resolver, now=now)
