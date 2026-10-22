@@ -1,7 +1,9 @@
 """The critic trust anchor is inert evidence plumbing, never release authority."""
 from __future__ import annotations
 
+import ast
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -13,21 +15,56 @@ from db_connect_config import db_connect_timeout_seconds
 from virtual_office import module_critic_trust as trust
 
 
+_TRUST_WRITER = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|REPLACE)\b\s+(?:(?:INTO|FROM)\s+)?`?office_trusted_critic_",
+    re.IGNORECASE,
+)
+
+
+def _trust_writer_functions(source: str) -> set[str]:
+    """Return functions that contain a literal SQL write to trust tables."""
+    tree = ast.parse(source)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        literals = "\n".join(
+            child.value for child in ast.walk(node)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
+        )
+        if _TRUST_WRITER.search(literals):
+            found.add(node.name)
+    return found
+
+
 def test_trust_anchor_has_no_writer_or_release_surface() -> None:
     source = Path(trust.__file__).read_text(encoding="utf-8")
-    canary_start = source.index("async def _assert_v14_definer_canary(")
-    canary_end = source.index("\n\nasync def _assert_critic_trust_anchor_metadata", canary_start)
-    canary = source[canary_start:canary_end]
-    outside_canary = source[:canary_start] + source[canary_end:]
-    # v14 alone may INSERT ephemeral canary rows inside a savepoint, then
-    # prove both append-only pairs reject UPDATE/DELETE and roll everything
-    # back.  No runtime, guard, signer, resolver, or release path can write.
-    assert "SAVEPOINT critic_trust_v14_canary" in canary
-    assert "ROLLBACK TO SAVEPOINT critic_trust_v14_canary" in canary
-    assert "RELEASE SAVEPOINT critic_trust_v14_canary" in canary
+    tree = ast.parse(source)
+    canaries = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_assert_v14_definer_canary"]
+    assert len(canaries) == 1
+    canary = ast.get_source_segment(source, canaries[0]) or ""
+    # Only the v14 attestation canary may create ephemeral rows, and it must
+    # always execute under/revert/release its named savepoint.
     assert canary.count("INSERT INTO office_trusted") == 2
-    for forbidden in ("INSERT INTO office_trusted", "UPDATE office_trusted", "release.publish", "PUBLISHED"):
-        assert forbidden not in outside_canary
+    for required in (
+        "SAVEPOINT critic_trust_v14_canary",
+        "ROLLBACK TO SAVEPOINT critic_trust_v14_canary",
+        "RELEASE SAVEPOINT critic_trust_v14_canary",
+    ):
+        assert required in canary
+    assert _trust_writer_functions(source) == {"_assert_v14_definer_canary"}
+    for forbidden in ("release.publish", "PUBLISHED"):
+        assert forbidden not in source
+
+
+def test_trust_writer_scanner_rejects_all_sql_verbs_outside_canary() -> None:
+    for verb in ("INSERT INTO", "update", "Delete From", "replace into"):
+        source = f"async def sibling():\n    sql = {(verb + ' office_trusted_critic_key VALUES (1)')!r}\n"
+        assert _trust_writer_functions(source) == {"sibling"}
+    canary = """async def _assert_v14_definer_canary():
+    sql = 'INSERT INTO office_trusted_critic_key VALUES (1)'
+"""
+    assert _trust_writer_functions(canary) == {"_assert_v14_definer_canary"}
 
 
 def test_mariadb_trust_anchor_is_append_only_and_attested(client) -> None:
