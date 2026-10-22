@@ -460,6 +460,10 @@ def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(c
     client.portal.call(scenario)
 
 
+@pytest.mark.skipif(
+    os.getenv("JAX_CI_NO_DB") == "1",
+    reason="requires disposable MariaDB schema (JAX_CI_NO_DB=1)",
+)
 def test_b44_invitation_guards_resume_expiry_index_repair_in_isolated_schema():
     """The exact reviewed b44 bodies resume the measured MariaDB partial schema."""
     assert SOURCE_COMMIT == "b44dd06cc9fe7cc88f8f83566be7c565f76e6675"
