@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 import pyotp
+import pytest
 import time
 
 from auth.models import AuthUser
@@ -91,14 +92,11 @@ def test_bootstrap_password_reauth_elevates_only_the_current_classic_superadmin(
         assert replay.replay is True
         assert await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((1,),)
         denied_session = replay_session.model_copy(update={"role": "operator"})
-        try:
+        from virtual_office.bootstrap import BootstrapDenied
+        with pytest.raises(BootstrapDenied):
             await bootstrap_initial_office_root_after_password_reauth(
                 session_user=denied_session, current_password="wrong-password",
             )
-        except __import__("virtual_office.bootstrap", fromlist=["BootstrapDenied"]).BootstrapDenied:
-            pass
-        else:
-            raise AssertionError("bootstrap accepted a wrong current password")
     client.portal.call(scenario)
 
 
