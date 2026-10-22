@@ -72,15 +72,20 @@ def _frame(fd: int, parts: tuple[str, ...], budget: list[int]) -> dict[str, Any]
     return {"fd": fd, "parts": parts, "before": before, "names": names, "index": 0}
 
 
-def build_artifact_set(root: str | Path) -> dict[str, Any]:
+def build_artifact_set(root: str | Path, *, _allow_proc_fd: bool = False) -> dict[str, Any]:
     """Hash a bounded, descriptor-relative package snapshot with artifact-set/v1."""
     root_path = Path(root)
     try: root_stat = root_path.lstat()
     except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be inspected") from error
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode): _reject("artifact root must be a real directory")
+    proc_fd = str(root_path).startswith("/proc/self/fd/") and str(root_path).removeprefix("/proc/self/fd/").isdigit()
+    if stat.S_ISLNK(root_stat.st_mode):
+        if not (_allow_proc_fd and proc_fd): _reject("artifact root must be a real directory")
+        try: root_stat = root_path.stat()
+        except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be inspected") from error
+    if not stat.S_ISDIR(root_stat.st_mode): _reject("artifact root must be a real directory")
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-    try: root_fd = os.open(root_path, dir_flags)
+    try: root_fd = os.open(root_path, dir_flags if not proc_fd else os.O_RDONLY | os.O_DIRECTORY)
     except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be opened safely") from error
     owned_fds = {root_fd}
     stack: list[dict[str, Any]] = []
