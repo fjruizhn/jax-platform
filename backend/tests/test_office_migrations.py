@@ -210,6 +210,65 @@ def test_membership_receipt_attestation_rejects_weakened_matrix_and_wrong_digest
     client.portal.call(scenario)
 
 
+def test_project_role_receipt_attestation_rejects_weakened_check_and_column_drift(client):
+    """A homonymous role receipt cannot weaken replay or change its bytes."""
+    async def scenario():
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_role_receipt_attest_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_project_membership", "jax_project_membership_event",
+                        "jax_namespace_membership_mutation_request",
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_project_role_mutation_receipt "
+                        "DROP CONSTRAINT chk_office_project_role_receipt_shape"
+                    )
+                    await cur.execute(
+                        "ALTER TABLE office_project_role_mutation_receipt "
+                        "ADD CONSTRAINT chk_office_project_role_receipt_shape CHECK("
+                        "old_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND "
+                        "new_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND "
+                        "old_grant_role<>new_grant_role AND expected_version>=1 AND "
+                        "result_version=expected_version+1 OR 1=1)"
+                    )
+                    with pytest.raises(RuntimeError, match="project role receipt check is invalid"):
+                        await apply_office_migrations(cur)
+                    await cur.execute(
+                        "ALTER TABLE office_project_role_mutation_receipt "
+                        "DROP CONSTRAINT chk_office_project_role_receipt_shape"
+                    )
+                    await cur.execute(
+                        "ALTER TABLE office_project_role_mutation_receipt "
+                        "ADD CONSTRAINT chk_office_project_role_receipt_shape CHECK("
+                        "old_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND "
+                        "new_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND "
+                        "old_grant_role<>new_grant_role AND expected_version>=1 AND "
+                        "result_version=expected_version+1)"
+                    )
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_project_role_mutation_receipt "
+                        "MODIFY request_digest CHAR(64) NOT NULL"
+                    )
+                    with pytest.raises(RuntimeError, match="project role receipt.*column metadata is invalid"):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
 def test_terminal_ledger_attestation_rejects_wrong_grant_and_profile_links(client):
     """Terminal evidence must be bound to its Office companion rows."""
     async def scenario():

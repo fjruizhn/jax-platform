@@ -308,6 +308,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
         denied_target, _ = await crear_usuario()
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (denied_target,))
+        receipt_denied_target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (receipt_denied_target,))
         project = await sql(
             "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
             ("office-runtime-http-" + tag,),
@@ -329,7 +331,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             "VALUES (%s,'COLLABORATOR','ACTIVE',%s,%s)",
             (profile_target, root, audit_id),
         )
-        return root, token_version, mfa_version, proof, project, target, denied_target, delegate, profile_target
+        return (root, token_version, mfa_version, proof, project, target, denied_target,
+                receipt_denied_target, delegate, profile_target)
 
     async def close_application_pool():
         from db.connection import close_pool
@@ -344,7 +347,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
                 await cur.execute(f"DROP USER IF EXISTS `{denied_runtime_user}`@'%'")
 
     try:
-        root, tv, mv, proof, project, target, denied_target, delegate, profile_target = client.portal.call(seed)
+        (root, tv, mv, proof, project, target, denied_target,
+         receipt_denied_target, delegate, profile_target) = client.portal.call(seed)
         headers = _headers(root, tv, mv, proof)
         monkeypatch.setenv("JAX_DB_USER", runtime_user)
         monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
@@ -356,8 +360,21 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert granted.status_code == 200, granted.text
+        role_key = str(uuid.uuid4())
+        promoted = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": role_key},
+        )
+        assert promoted.status_code == 200, promoted.text
+        role_replay = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": role_key},
+        )
+        assert role_replay.status_code == 200 and role_replay.json()["replayed"] is True, role_replay.text
         revoked = client.delete(
-            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=2",
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert revoked.status_code == 200, revoked.text
@@ -370,6 +387,54 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             json={"expected_version": 0}, headers=headers,
         )
         assert delegation.status_code == 200, delegation.text
+
+        # Missing precisely the new terminal INSERT must roll back the role
+        # CAS and its authorization event, even though this principal retains
+        # every other web capability.
+        receipt_grant = client.put(
+            f"/api/virtual-office/projects/{project}/members/{receipt_denied_target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert receipt_grant.status_code == 200, receipt_grant.text
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        client.portal.call(
+            sql,
+            f"REVOKE INSERT ON `{database}`.`office_project_role_mutation_receipt` FROM `{runtime_user}`@'%%'",
+        )
+        role_audits_before = client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s "
+            "AND operation='ADMINISTER_PROJECT_MEMBERS'", (root, project), True,
+        )
+        monkeypatch.setenv("JAX_DB_USER", runtime_user)
+        monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
+        client.portal.call(close_application_pool)
+        denied_role_key = str(uuid.uuid4())
+        denied_role = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{receipt_denied_target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": denied_role_key},
+        )
+        assert denied_role.status_code == 503, denied_role.text
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        assert client.portal.call(
+            sql, "SELECT grant_role,version FROM office_project_grant WHERE project_id=%s AND user_id=%s",
+            (project, receipt_denied_target), True,
+        ) == (("COLLABORATOR", 1),)
+        assert client.portal.call(
+            sql, "SELECT idempotency_key FROM office_project_role_mutation_receipt WHERE idempotency_key=%s",
+            (denied_role_key,), True,
+        ) == ()
+        assert client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s "
+            "AND operation='ADMINISTER_PROJECT_MEMBERS'", (root, project), True,
+        ) == role_audits_before
 
         # A second principal differs by precisely one required UPDATE grant.
         # It can create the initial membership, but the HTTP revoke must fail

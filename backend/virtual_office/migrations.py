@@ -451,6 +451,10 @@ _PROJECT_ROLE_RECEIPT_INDEXES = {
     "PRIMARY": (("receipt_id",), True),
     "uq_office_project_role_receipt_idempotency": (("idempotency_key",), True),
     "idx_office_project_role_receipt_scope": (("project_id", "target_user_id", "created_at"), False),
+    "fk_office_project_role_receipt_actor": (("actor_user_id",), False),
+    "fk_office_project_role_receipt_target": (("target_user_id",), False),
+    "fk_office_project_role_receipt_scope": (("project_id", "target_tenant_id"), False),
+    "fk_office_project_role_receipt_auth": (("authorization_event_id",), False),
 }
 _PROJECT_ROLE_RECEIPT_FOREIGN_KEYS = {
     "fk_office_project_role_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
@@ -463,6 +467,23 @@ _PROFILE_REVOCATION_TRIGGERS = {
     "no_update_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
     "no_delete_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
 }
+
+_PROJECT_ROLE_RECEIPT_COLUMNS = (
+    ("receipt_id", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("idempotency_key", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("request_digest", "binary", "binary(32)", "NO", None, None, "", None),
+    ("actor_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_tenant_id", "int", "int(11)", "NO", None, None, "", None),
+    ("project_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("old_grant_role", "varchar", "varchar(24)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("new_grant_role", "varchar", "varchar(24)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("expected_version", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("result_version", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
+    ("created_at", "datetime", "datetime(6)", "NO", None, None, "", None),
+)
+_PROJECT_ROLE_RECEIPT_CHECK_DIGEST = "1b457db7058f455d38016135d41ca0b1aef9c9d9e49f22c176403a63e65a76c6"
 
 # These ledgers are release authority, not diagnostics.  The migration
 # principal therefore attests the complete physical contract before it can
@@ -1240,7 +1261,14 @@ async def assert_project_role_receipt_runtime_metadata(cur, *, allow_redacted_tr
     table = "office_project_role_mutation_receipt"
     if not await _table_exists(cur, table):
         raise RuntimeError("Office project role receipt table is missing")
+    await _assert_columns(cur, table=table, expected=_PROJECT_ROLE_RECEIPT_COLUMNS)
     await _assert_indexes(cur, table=table, expected=_PROJECT_ROLE_RECEIPT_INDEXES)
+    await cur.execute(
+        "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,),
+    )
+    if {row[0] for row in await cur.fetchall()} != set(_PROJECT_ROLE_RECEIPT_INDEXES):
+        raise RuntimeError("Office project role receipt index set is invalid")
     await _assert_foreign_keys(cur, table=table, expected=_PROJECT_ROLE_RECEIPT_FOREIGN_KEYS)
     await cur.execute(
         "SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
@@ -1255,6 +1283,9 @@ async def assert_project_role_receipt_runtime_metadata(cur, *, allow_redacted_tr
     )
     if {row[0] for row in await cur.fetchall()} != {"chk_office_project_role_receipt_shape"}:
         raise RuntimeError("Office project role receipt check set is invalid")
+    if (_check_digest(await _check_clause(cur, "chk_office_project_role_receipt_shape"))
+            != _PROJECT_ROLE_RECEIPT_CHECK_DIGEST):
+        raise RuntimeError("Office project role receipt check is invalid")
     await _assert_append_only_table_metadata(
         cur, table=table, triggers=_PROJECT_ROLE_RECEIPT_TRIGGERS,
         allow_redacted_trigger_body=allow_redacted_trigger_body, primary_key=("receipt_id",))

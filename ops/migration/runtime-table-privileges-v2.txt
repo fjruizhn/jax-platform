@@ -57,6 +57,7 @@ office_mfa_totp_use INSERT
 office_professional_grant INSERT,UPDATE
 office_profile_revocation_event INSERT
 office_project_grant INSERT,UPDATE
+office_project_role_mutation_receipt INSERT
 office_recipient_group INSERT,UPDATE
 password_reset_tokens INSERT,UPDATE,DELETE
 pipeline_aviso_enviado INSERT
