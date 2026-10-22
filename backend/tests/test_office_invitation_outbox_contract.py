@@ -170,4 +170,9 @@ def test_stale_settler_and_revoke_race_on_one_fenced_invitation_without_deadlock
     assert settled == 1
     assert revoked == (2, False)
     assert invitation_row == (("REVOKED", 2),)
-    assert outbox_row == (("UNKNOWN", 1),)
+    # If revocation obtains the lifecycle row first, its trigger marks the
+    # claimed outbox cancelled before the stale settler records UNKNOWN.  If
+    # the settler wins, UNKNOWN is already terminal when revoke follows.  In
+    # both serializations the attempt stays non-retryable and no delivery can
+    # be resurrected.
+    assert outbox_row in ((("UNKNOWN", 0),), (("UNKNOWN", 1),))
