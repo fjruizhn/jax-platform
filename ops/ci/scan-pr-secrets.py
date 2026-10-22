@@ -43,7 +43,11 @@ EXCLUIDOS = {"ops/ci/known-secrets-ci.txt"}
 MAX_TOKENS = 50000
 MAX_WORK_UNITS = 100000
 MAX_UBICACIONES = 100000
-MAX_WORKERS = 2
+# `hashlib.scrypt` libera el GIL. Cuatro KDF simultáneos caben en la memoria
+# del runner estándar (~64 MiB para los estados de scrypt) y evitan que una
+# lista corta de entradas limite el escaneo a dos núcleos.
+MAX_WORKERS = 4
+TOKENS_POR_TAREA = 512
 MAX_DIFF_LINE_BYTES = 1024 * 1024
 MAX_DIFF_BYTES = 128 * 1024 * 1024
 MAX_GIT_BYTES = 32 * 1024 * 1024
@@ -170,6 +174,19 @@ def comparar_entrada(entrada, tokens):
     return hallados
 
 
+def tareas_de_comparacion(entradas, tokens):
+    """Parte cada entrada en lotes, sin omitir ni repetir token/entrada.
+
+    Antes había una tarea por entrada: la lista actual tiene dos, así que el
+    runner nunca podía usar más de dos núcleos aunque el diff tuviera decenas
+    de miles de tokens. El lote limita los Futures sin imponer un límite nuevo
+    al contenido que ya pasó MAX_WORK_UNITS.
+    """
+    for entrada in entradas:
+        for inicio in range(0, len(tokens), TOKENS_POR_TAREA):
+            yield entrada, tokens[inicio:inicio + TOKENS_POR_TAREA]
+
+
 def main():
     if len(sys.argv) != 3:
         fallar("uso: scan-pr-secrets.py <base-sha> <head-sha>")
@@ -276,11 +293,17 @@ def main():
     print(f"scan-pr-secrets: {len(archivos)} archivos, {len(unicos)} tokens unicos, "
           f"{ubicaciones} ubicaciones, {len(entradas)} entradas conocidas, {trabajo} comparaciones")
 
-    # Una tarea por entrada, nunca por token: como maximo dos workers y no
-    # miles de Futures. executor.map conserva las excepciones como fallo duro.
+    # Los lotes dan paralelismo aunque haya pocas entradas conocidas. Cada
+    # token/entrada aparece exactamente una vez y executor.map propaga una
+    # excepción del KDF como fallo duro.
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ejecutor:
-        coincidencias = ejecutor.map(lambda entrada: comparar_entrada(entrada, unicos), entradas)
-        tokens_hallados = set().union(*coincidencias)
+        coincidencias = ejecutor.map(
+            lambda tarea: comparar_entrada(*tarea),
+            tareas_de_comparacion(entradas, unicos),
+        )
+        tokens_hallados = set()
+        for hallados_entrada in coincidencias:
+            tokens_hallados.update(hallados_entrada)
     hallados = [(archivo, etiqueta)
                 for token, etiqueta in tokens_hallados
                 for archivo in cands[token]]
