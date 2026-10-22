@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from db.connection import get_pool
-from virtual_office.migrations import apply_office_migrations
+from virtual_office.migrations import _upgrade_exact_empty_office_engine_v16, apply_office_migrations
 
 
 _V16_ENGINE_DDL = (
@@ -62,6 +62,9 @@ def test_engine_activation_epoch_prevents_enabled_binding_replay(client):
                 assert getattr(rejected_without_revision.value, "args", (None,))[0] == 1644
                 await cur.execute("UPDATE office_engine SET enabled=1,activation_epoch=1,version=2 WHERE engine_key='epoch-test'")
                 await cur.execute("UPDATE office_engine SET enabled=0,version=3 WHERE engine_key='epoch-test'")
+                with pytest.raises(Exception) as rename:
+                    await cur.execute("UPDATE office_engine SET engine_key='epoch-renamed',version=4 WHERE engine_key='epoch-test'")
+                assert getattr(rename.value, "args", (None,))[0] == 1644
                 with pytest.raises(Exception) as replay:
                     await cur.execute("UPDATE office_engine SET enabled=1,version=4 WHERE engine_key='epoch-test'")
                 assert getattr(replay.value, "args", (None,))[0] == 1644
@@ -83,12 +86,19 @@ def test_exact_empty_v16_engine_upgrades_but_rows_or_drift_fail_closed(client):
                     await cur.execute(f"DROP TRIGGER {trigger}")
                 await cur.execute("DROP TABLE office_engine")
                 await cur.execute(_V16_ENGINE_DDL)
+                await _upgrade_exact_empty_office_engine_v16(cur)
                 await apply_office_migrations(cur)
                 await cur.execute("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_engine' AND COLUMN_NAME='activation_epoch'")
                 assert await cur.fetchone() == ("bigint(20) unsigned",)
                 for trigger in ("guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"):
                     await cur.execute("SELECT 1 FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=%s", (trigger,))
                     assert await cur.fetchone() == (1,)
+                await cur.execute("DROP TRIGGER guard_office_engine_delete")
+                with pytest.raises(RuntimeError, match="v17 cutpoint is not exact and empty"):
+                    await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER guard_office_engine_insert")
+                await cur.execute("DROP TRIGGER guard_office_engine_update")
+                await apply_office_migrations(cur)
                 for trigger in ("guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"):
                     await cur.execute(f"DROP TRIGGER {trigger}")
                 await cur.execute("DROP TABLE office_engine")
@@ -97,6 +107,11 @@ def test_exact_empty_v16_engine_upgrades_but_rows_or_drift_fail_closed(client):
                 model = await cur.fetchone()
                 assert model is not None
                 await cur.execute("INSERT INTO office_engine (engine_key,display_name_key,model_ref,transport,allowed_data_classifications,binding_fingerprint) VALUES ('legacy-row','legacy-row',%s,'http_openai_compat',%s,REPEAT('a',64))", (*model, '["SYSTEM_SMOKE"]'))
+                with pytest.raises(RuntimeError, match="v16 predecessor is not exact and empty"):
+                    await apply_office_migrations(cur)
+                await cur.execute("DROP TABLE office_engine")
+                await cur.execute(_V16_ENGINE_DDL)
+                await cur.execute("ALTER TABLE office_engine ADD CONSTRAINT fk_office_engine_rogue FOREIGN KEY (model_ref) REFERENCES model(id)")
                 with pytest.raises(RuntimeError, match="v16 predecessor is not exact and empty"):
                     await apply_office_migrations(cur)
                 await cur.execute("DROP TABLE office_engine")

@@ -33,6 +33,7 @@ INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 # old enabled binding cannot be replayed after it has been disabled.
 _OFFICE_ENGINE_UPDATE_GUARD = (
     "BEGIN IF NEW.version <= OLD.version OR "
+    "NEW.engine_key <> OLD.engine_key OR "
     "(NEW.enabled = OLD.enabled AND NEW.activation_epoch <> OLD.activation_epoch) OR "
     "(OLD.enabled = 0 AND NEW.enabled = 1 AND NEW.activation_epoch <> OLD.activation_epoch + 1) OR "
     "(OLD.enabled = 1 AND NEW.enabled = 0 AND NEW.activation_epoch <> OLD.activation_epoch) "
@@ -1829,6 +1830,9 @@ async def _upgrade_exact_empty_office_engine_v16(cur) -> None:
         await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if {row[0] for row in await cur.fetchall()} != {"PRIMARY", "fk_office_engine_model"}:
             raise RuntimeError("index drift")
+        await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(_OFFICE_ENGINE_FOREIGN_KEYS):
+            raise RuntimeError("foreign key drift")
         await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
         expected = {name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_V16_CHECKS.items()}
@@ -1846,6 +1850,43 @@ async def _upgrade_exact_empty_office_engine_v16(cur) -> None:
         "ALTER TABLE office_engine ADD COLUMN activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0 "
         "AFTER enabled, ADD CONSTRAINT chk_office_engine_activation_epoch CHECK (activation_epoch>=0)"
     )
+
+
+async def _prepare_office_engine_v17_cutpoint(cur) -> None:
+    """Permit only the empty, triggerless post-ALTER cutpoint to resume."""
+    table = "office_engine"
+    if not await _table_exists(cur, table) or not await _column_exists(cur, table, "activation_epoch"):
+        return
+    try:
+        await _assert_columns(cur, table=table, expected=_OFFICE_ENGINE_COLUMNS)
+        await _assert_indexes(cur, table=table, expected={
+            "PRIMARY": (("engine_key",), True),
+            "fk_office_engine_model": (("model_ref",), False),
+        })
+        await _assert_foreign_keys(cur, table=table, expected=_OFFICE_ENGINE_FOREIGN_KEYS)
+        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if {row[0] for row in await cur.fetchall()} != {"PRIMARY", "fk_office_engine_model"}:
+            raise RuntimeError("index drift")
+        await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(_OFFICE_ENGINE_FOREIGN_KEYS):
+            raise RuntimeError("foreign key drift")
+        await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
+        expected = {name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_CHECKS.items()}
+        if checks != expected:
+            raise RuntimeError("check drift")
+        await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
+        triggers = {row[0] for row in await cur.fetchall()}
+        expected_triggers = {"guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"}
+        if triggers == expected_triggers:
+            return
+        if triggers:
+            raise RuntimeError("trigger drift")
+        await cur.execute("SELECT COUNT(*) FROM office_engine")
+        if tuple(await cur.fetchone() or ()) != (0,):
+            raise RuntimeError("nonempty triggerless cutpoint")
+    except RuntimeError as error:
+        raise RuntimeError("Office engine catalogue v17 cutpoint is not exact and empty") from error
 
 
 async def assert_office_engine_runtime_metadata(cur) -> None:
@@ -2043,6 +2084,7 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
     await _upgrade_exact_empty_office_engine_v16(cursor)
+    await _prepare_office_engine_v17_cutpoint(cursor)
     for statement in OFFICE_ENGINE_DDL:
         await cursor.execute(statement)
     await assert_office_engine_runtime_metadata(cursor)
