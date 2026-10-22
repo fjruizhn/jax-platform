@@ -3,9 +3,26 @@
 set -euo pipefail
 umask 077
 
-CONTAINER=cv-op343-db-20261020
-PORT=33991
-DB=jax_memory_test
+# The fixture target is selected by name, never by arbitrary container, port,
+# or schema input.  Each allowed target is independently pinned below and the
+# live Docker port binding is rechecked before any principal is created.
+FIXTURE=${JAX_OFFICE_PROVISION_FIXTURE:-aligned}
+case "$FIXTURE" in
+  aligned)
+    CONTAINER=cv-office-explain-db-20261022
+    PORT=33994
+    DB=jax_memory_test_ac1d2e12
+    ;;
+  legacy)
+    CONTAINER=cv-op343-db-20261020
+    PORT=33991
+    DB=jax_memory_test
+    ;;
+  *)
+    echo "unknown JAX_OFFICE_PROVISION_FIXTURE (allowed: aligned, legacy)" >&2
+    exit 2
+    ;;
+esac
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/migration/provision-db-runtime.sh"
 V1_MANIFEST="$ROOT_DIR/ops/migration/runtime-table-privileges-v1.txt"
@@ -35,7 +52,7 @@ HOST=$(mariadb "--defaults-extra-file=$ROOT_CNF" --batch --skip-column-names -e 
 case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 2;; esac
 
 ENV_FILE="$TEMP/deployment.env"
-printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=jax_memory_test\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
+printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
