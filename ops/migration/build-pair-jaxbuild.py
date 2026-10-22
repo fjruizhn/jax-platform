@@ -88,6 +88,12 @@ def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[
                 or (object_type == b"blob" and mode not in REGULAR_MODES | {b"120000"})):
             die("unsafe tree entry")
         entries[name] = (mode, object_type, object_id)
+    # `ls-tree -r -t` exposes every nested tree OID.  Rehash each object before
+    # any output is created; validating only the root tree leaves a corrupt
+    # nested tree able to redirect a claimed clean commit to hostile blobs.
+    for mode, object_type, object_id in entries.values():
+        if object_type == b"tree" and git_oid("tree", run("cat-file", "tree", object_id.decode("ascii"), cwd=repo)) != object_id.decode("ascii"):
+            die("corrupt git tree")
     links: list[dict[str, str]] = []
     for name, (mode, object_type, object_id) in entries.items():
         if object_type != b"blob" or mode not in REGULAR_MODES:

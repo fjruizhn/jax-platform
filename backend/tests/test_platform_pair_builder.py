@@ -106,6 +106,23 @@ def test_rejects_gitlink_and_blob_bytes_that_do_not_hash_to_claimed_oid(tmp_path
         builder.extract(source, commit, tmp_path / "corrupt-out")
 
 
+def test_rejects_corrupt_nested_tree_before_writing_source_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source, commit = _repository(tmp_path)
+    nested_tree = _git(source, "rev-parse", f"{commit}:backend")
+    original = builder.run
+
+    def corrupt_nested_tree(*args: str, cwd: Path) -> bytes:
+        if args == ("cat-file", "tree", nested_tree):
+            return b"hostile nested tree"
+        return original(*args, cwd=cwd)
+
+    monkeypatch.setattr(builder, "run", corrupt_nested_tree)
+    target = tmp_path / "out"
+    with pytest.raises(SystemExit, match="corrupt git tree"):
+        builder.extract(source, commit, target)
+    assert not target.exists()
+
+
 def test_mountinfo_octal_paths_are_decoded_before_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "with space"; root.mkdir()
     encoded = os.fsencode(str(root)).replace(b" ", b"\\040")
