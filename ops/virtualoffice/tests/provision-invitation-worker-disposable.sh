@@ -117,6 +117,11 @@ set +a
 if OFFICE_PUBLIC_ORIGIN=https://evil.example.test "$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/state/invitation-worker.env" >/dev/null 2>&1; then
   echo 'worker readiness accepted a mismatched public origin' >&2; exit 1
 fi
+# The post-install effective gate must supply its own root-owned environment;
+# an operator's clean shell has none of the worker values to inherit.
+env -i PATH=/usr/bin:/bin /usr/bin/systemd-run --wait --pipe --collect --property=User=root \
+  --property=EnvironmentFile="$TEMP/state/invitation-worker.env" \
+  "$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/state/invitation-worker.env"
 
 password=$(<"$TEMP/state/secrets/$USER_NAME.password")
 CLIENT="$TEMP/worker.cnf"

@@ -71,7 +71,10 @@ systemctl daemon-reload
 systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /usr/local/libexec/axioma-office-invitation-worker-readiness
 systemd-run --wait --pipe --working-directory=/opt/axioma-office-invitation-worker/backend --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_smtp_preflight
 systemctl enable --now axioma-office-invitation-worker.timer
-/usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE" --effective
+if ! /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE" --effective; then
+  systemctl disable --now axioma-office-invitation-worker.timer
+  exit 1
+fi
 ```
 
 El wheelhouse se construye como `jaxbuild` a partir del lock del SHA auditado,

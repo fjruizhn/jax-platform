@@ -43,6 +43,15 @@ def test_systemd_unit_uses_the_immutable_worker_release():
     assert "--attestor /usr/local/libexec/axioma-office-invitation-delivery-attest" in runbook
 
 
+def test_effective_worker_gate_loads_its_root_owned_environment():
+    artifact_readiness = (ROOT / "ops" / "virtualoffice" / "invitation-worker-artifact-readiness.sh").read_text(encoding="utf-8")
+    assert "/usr/bin/systemd-run --wait --pipe --collect" in artifact_readiness
+    assert "--property=WorkingDirectory=/opt/axioma-office-invitation-worker/backend" in artifact_readiness
+    assert "--property=EnvironmentFile=/etc/jax/invitation-worker.env" in artifact_readiness
+    runbook = (ROOT / "docs" / "runbooks" / "invitation-delivery-worker.md").read_text(encoding="utf-8")
+    assert "systemctl disable --now axioma-office-invitation-worker.timer" in runbook
+
+
 def test_routine_installer_requires_fixed_sql_and_installed_attestor():
     installer = ROOT / "ops" / "virtualoffice" / "install-invitation-delivery-routines.sh"
     source = installer.read_text(encoding="utf-8")

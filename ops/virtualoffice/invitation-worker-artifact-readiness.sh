@@ -50,7 +50,10 @@ if [[ "$effective" == --effective ]]; then
   systemctl show axioma-office-invitation-worker.service -p ProtectSystem | grep -Fqx 'ProtectSystem=strict'
   test -x /usr/local/libexec/axioma-office-invitation-worker-readiness
   test "$(stat -c '%U:%G:%a' /usr/local/libexec/axioma-office-invitation-worker-readiness)" = root:root:755
-  /usr/local/libexec/axioma-office-invitation-worker-readiness --deep
+  /usr/bin/systemd-run --wait --pipe --collect --property=User=jaxinvite --property=Group=jaxinvite \
+    --property=WorkingDirectory=/opt/axioma-office-invitation-worker/backend \
+    --property=EnvironmentFile=/etc/jax/invitation-worker.env \
+    /usr/local/libexec/axioma-office-invitation-worker-readiness --deep
   systemctl is-active axioma-office-invitation-worker.timer | grep -qx active
   systemctl cat aviso-fallo@.service >/dev/null
 fi
