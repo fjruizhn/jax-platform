@@ -1,0 +1,246 @@
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+
+MODULE = Path(__file__).resolve().parents[2] / "ops/migration/runtime_package.py"
+spec = importlib.util.spec_from_file_location("runtime_package", MODULE)
+rp = importlib.util.module_from_spec(spec)
+assert spec.loader
+spec.loader.exec_module(rp)
+
+
+def package(tmp_path, payload):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir(parents=True)
+    bundle.chmod(0o755)
+    supplied = {path for path, _, _, _ in payload}
+    for path, (destination, mode) in rp._HELPERS.items():
+        if path not in supplied:
+            payload.append((path, "helper", path.encode(), mode))
+    for path in rp._UNITS:
+        if path not in supplied:
+            payload.append((path, "unit", path.encode(), "0644"))
+    if rp._MANIFEST not in supplied:
+        payload.append((rp._MANIFEST, "manifest", b"runtime receipt", "0644"))
+    records = []
+    for path, role, contents, mode in payload:
+        item = bundle / path
+        item.parent.mkdir(parents=True, exist_ok=True)
+        item.parent.chmod(0o755)
+        item.write_bytes(contents)
+        item.chmod(int(mode, 8))
+        records.append({"path": path, "role": role, "sha256": hashlib.sha256(contents).hexdigest(), "size": len(contents), "mode": mode, "owner": "root:root"})
+    data = {"schema": rp.SCHEMA, "payload": sorted(records, key=lambda value: value["path"])}
+    raw = json.dumps(data, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    (bundle / "manifest.json").write_bytes(raw)
+    (bundle / "manifest.json").chmod(0o644)
+    return bundle, hashlib.sha256(raw).hexdigest()
+
+
+def test_rejects_bad_digest_extra_and_non_closed_role(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"x", "0755")])
+    with pytest.raises(rp.PackageError):
+        rp.validate(bundle, "0" * 64, owner_uid=os.getuid(), owner_gid=os.getgid())
+    (bundle / "extra").write_text("x")
+    with pytest.raises(rp.PackageError):
+        rp.validate(bundle, digest, owner_uid=os.getuid(), owner_gid=os.getgid())
+
+
+def test_rejects_partial_package_even_when_its_digest_is_valid(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"x", "0755")])
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest["payload"] = [manifest["payload"][0]]
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    (bundle / "manifest.json").write_bytes(raw)
+    with pytest.raises(rp.PackageError, match="incomplete"):
+        rp.validate(bundle, hashlib.sha256(raw).hexdigest(), owner_uid=os.getuid(), owner_gid=os.getgid())
+    bundle, digest = package(tmp_path / "two", [("helpers/nope", "helper", b"x", "0755")])
+    with pytest.raises(rp.PackageError):
+        rp.validate(bundle, digest, owner_uid=os.getuid(), owner_gid=os.getgid())
+
+
+def test_rejects_unsealed_symlink_and_mode(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"x", "0755")])
+    (bundle / "helpers/jax-platform-pair-exec").chmod(0o777)
+    with pytest.raises(rp.PackageError):
+        rp.validate(bundle, digest, owner_uid=os.getuid(), owner_gid=os.getgid())
+    bundle, digest = package(tmp_path / "two", [("helpers/jax-platform-pair-exec", "helper", b"x", "0755")])
+    os.unlink(bundle / "helpers/jax-platform-pair-exec")
+    os.symlink("/etc/passwd", bundle / "helpers/jax-platform-pair-exec")
+    with pytest.raises(rp.PackageError):
+        rp.validate(bundle, digest)
+
+
+def test_import_removes_stale_dropin_and_commits_only_after_effective_check(tmp_path):
+    bundle, digest = package(tmp_path, [
+        ("helpers/jax-platform-pair-exec", "helper", b"new", "0755"),
+        ("units/jax-platform.service", "unit", b"unit", "0644"),
+    ])
+    root = tmp_path / "destination"
+    stale = root / "etc/systemd/system/jax-platform.service.d/old.conf"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old")
+    calls = []
+    rp.import_package(bundle, digest, root, tmp_path / "backup", lambda _: calls.append("effective"), package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert calls == ["effective"]
+    assert (root / "usr/local/libexec/jax-platform-pair-exec").read_bytes() == b"new"
+    assert not stale.exists()
+
+
+def test_import_rolls_back_bytes_modes_and_absence_after_failed_effective_check(tmp_path):
+    bundle, digest = package(tmp_path, [
+        ("helpers/jax-platform-pair-exec", "helper", b"new", "0755"),
+        ("units/jax-platform.service", "unit", b"unit", "0644"),
+    ])
+    root = tmp_path / "destination"
+    helper = root / "usr/local/libexec/jax-platform-pair-exec"
+    helper.parent.mkdir(parents=True)
+    helper.write_bytes(b"old")
+    helper.chmod(0o700)
+    with pytest.raises(RuntimeError):
+        rp.import_package(bundle, digest, root, tmp_path / "backup", lambda _: (_ for _ in ()).throw(RuntimeError("dbus mismatch")), package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert helper.read_bytes() == b"old"
+    assert helper.stat().st_mode & 0o777 == 0o700
+    assert not (root / "etc/systemd/system/jax-platform.service").exists()
+
+
+def test_failed_rollback_is_recovery_required(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"new", "0755")])
+    monkeypatch.setattr(rp, "restore", lambda *_: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(rp.PackageError, match="RECOVERY_REQUIRED"):
+        rp.import_package(bundle, digest, tmp_path / "destination", tmp_path / "backup", lambda _: (_ for _ in ()).throw(RuntimeError("verify")), package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+
+
+def test_import_uses_bytes_sealed_before_path_replacement(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"sealed", "0755")])
+    original = rp._destinations
+    def replace_after_load(data, root):
+        (bundle / "helpers/jax-platform-pair-exec").write_bytes(b"replacement")
+        return original(data, root)
+    monkeypatch.setattr(rp, "_destinations", replace_after_load)
+    root = tmp_path / "destination"
+    rp.import_package(bundle, digest, root, tmp_path / "backup", lambda _: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert (root / "usr/local/libexec/jax-platform-pair-exec").read_bytes() == b"sealed"
+
+
+def test_root_owned_load_rejects_writable_ancestor(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"sealed", "0755")])
+    with pytest.raises(rp.PackageError, match="ownership"):
+        rp._trusted_ancestors(bundle)
+
+
+def test_runtime_import_lock_is_exclusive(tmp_path):
+    lock = tmp_path / "runtime.lock"
+    with rp._exclusive_runtime_lock(lock):
+        with pytest.raises(rp.PackageError, match="already"):
+            with rp._exclusive_runtime_lock(lock):
+                pass
+
+
+def test_active_service_rejects_import(monkeypatch):
+    class Result:
+        stdout = "active\n"
+    monkeypatch.setattr(rp.subprocess, "run", lambda *_, **__: Result())
+    with pytest.raises(rp.PackageError, match="inactive"):
+        rp._require_units_inactive()
+
+
+def test_import_leaves_durable_verified_journal(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"new", "0755")])
+    backup = tmp_path / "backup"
+    rp.import_package(bundle, digest, tmp_path / "destination", backup, lambda _: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert json.loads((backup / "journal.json").read_text())["phase"] == "VERIFIED"
+
+
+def test_incomplete_journal_restores_snapshot(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("old")
+    backup = tmp_path / "backup"
+    rp.snapshot({"unit": target}, backup)
+    rp._journal(backup, "MUTATING", {"unit": target})
+    target.write_text("candidate")
+    rp.recover_incomplete(backup)
+    assert target.read_text() == "old"
+    assert json.loads((backup / "journal.json").read_text())["phase"] == "ROLLED_BACK"
+
+
+def test_effective_check_receives_candidate_units_sealed_before_bundle_swap(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [
+        ("units/jax-platform.service", "unit", b"sealed-web", "0644"),
+        ("units/jax-platform-migrate.service", "unit", b"sealed-migrate", "0644"),
+    ])
+    original = rp._destinations
+    def replace_after_load(data, root):
+        (bundle / "units/jax-platform.service").write_bytes(b"swapped-web")
+        return original(data, root)
+    monkeypatch.setattr(rp, "_destinations", replace_after_load)
+    received = {}
+    def verify(source):
+        received["web"] = (source / "jax-platform.service").read_bytes()
+        received["migrate"] = (source / "jax-platform-migrate.service").read_bytes()
+    rp.import_package(bundle, digest, tmp_path / "destination", tmp_path / "backup", verify,
+                      package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                      install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert received == {"web": b"sealed-web", "migrate": b"sealed-migrate"}
+
+
+def test_rollback_and_crash_recovery_verify_preimport_unit_bytes(tmp_path):
+    bundle, digest = package(tmp_path, [
+        ("units/jax-platform.service", "unit", b"candidate-web", "0644"),
+        ("units/jax-platform-migrate.service", "unit", b"candidate-migrate", "0644"),
+    ])
+    root = tmp_path / "destination"
+    old = {"jax-platform.service": b"old-web", "jax-platform-migrate.service": b"old-migrate"}
+    for name, contents in old.items():
+        path = root / "etc/systemd/system" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+    restored = {}
+    with pytest.raises(RuntimeError, match="effective"):
+        rp.import_package(bundle, digest, root, tmp_path / "backup",
+                          lambda _: (_ for _ in ()).throw(RuntimeError("effective")),
+                          verify_restored=lambda source: restored.update({name: (source / name).read_bytes() for name in old}),
+                          package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                          install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert restored == old
+
+
+def test_import_rechecks_units_immediately_before_mutation(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"new", "0755")])
+    called = []
+    rp.import_package(bundle, digest, tmp_path / "destination", tmp_path / "backup", lambda _: None,
+                      before_mutate=lambda: called.append("inactive"),
+                      package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                      install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert called == ["inactive"]
+
+
+def test_runtime_lock_is_the_launcher_pair_lock() -> None:
+    assert rp.PAIR_RUNTIME_LOCK == Path("/opt/jax-platform-pair/.runtime.lock")
+
+def test_runtime_package_contains_all_root_pair_helpers() -> None:
+    assert {"helpers/adopt-pair-root.py", "helpers/bootstrap-pair-predecessor.py", "helpers/build-pair-jaxbuild.py", "helpers/pair-build-supervisor.py"}.issubset(rp._HELPERS)
+
+def test_root_helpers_install_with_declared_modes_and_rollback(tmp_path):
+    bundle, digest = package(tmp_path, [])
+    root = tmp_path / 'destination'
+    old = root / 'usr/local/libexec/adopt-pair-root.py'
+    old.parent.mkdir(parents=True); old.write_bytes(b'old'); old.chmod(0o700)
+    with pytest.raises(RuntimeError):
+        rp.import_package(bundle, digest, root, tmp_path / 'backup',
+                          lambda _: (_ for _ in ()).throw(RuntimeError('effective')),
+                          package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                          install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert old.read_bytes() == b'old'
+    assert old.stat().st_mode & 0o777 == 0o700
+    rp.import_package(bundle, digest, root, tmp_path / 'success', lambda _: None,
+                      package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                      install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    for path in ('adopt-pair-root.py', 'bootstrap-pair-predecessor.py', 'build-pair-jaxbuild.py', 'pair-build-supervisor.py'):
+        installed = root / 'usr/local/libexec' / path
+        assert installed.is_file() and installed.stat().st_mode & 0o777 == 0o755

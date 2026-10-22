@@ -7,12 +7,14 @@ import ipaddress
 import shlex
 import subprocess
 import sys
+import os
+import stat
 from pathlib import Path
 
 
 SERVICE_PROPERTIES = {
     "WorkingDirectory": "s", "User": "s", "Group": "s", "SupplementaryGroups": "as",
-    "Environment": "as", "EnvironmentFiles": "a(sb)", "ExecStartEx": "a(sasasttttuii)",
+    "Environment": "as", "EnvironmentFiles": "a(sb)", "LoadCredential": "a(ss)", "UnsetEnvironment": "as", "ExecStartEx": "a(sasasttttuii)",
     "ExecStartPreEx": "a(sasasttttuii)", "ExecStartPostEx": "a(sasasttttuii)",
     "ExecConditionEx": "a(sasasttttuii)", "Type": "s", "RemainAfterExit": "b",
 }
@@ -34,8 +36,18 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
         sections: dict[str, list[tuple[str, str]]] = {"Unit": [], "Service": []}
         section = ""
         try:
-            lines = (units_dir / unit).read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
+            descriptor = os.open(units_dir / unit, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                value = os.fstat(descriptor)
+                if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+                    raise OSError("unsafe source unit")
+                chunks: list[bytes] = []
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    chunks.append(chunk)
+                lines = b"".join(chunks).decode("utf-8").splitlines()
+            finally:
+                os.close(descriptor)
+        except (OSError, UnicodeDecodeError) as exc:
             raise ReadinessError(f"artifact readiness: {unit}: source unit unavailable") from exc
         for raw in lines:
             line = raw.strip()
@@ -52,30 +64,32 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             return [value for candidate, value in sections[section_name] if candidate == key]
 
         cwd, users, groups, types, remain = (values("Service", key) for key in ("WorkingDirectory", "User", "Group", "Type", "RemainAfterExit"))
-        environment, envs, starts = values("Service", "Environment"), values("Service", "EnvironmentFile"), values("Service", "ExecStart")
+        environment, envs, creds, unset, starts = (values("Service", key) for key in ("Environment", "EnvironmentFile", "LoadCredential", "UnsetEnvironment", "ExecStart"))
         if len(cwd) != 1 or len(users) != 1 or len(groups) > 1 or len(types) != 1 or len(remain) > 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        if len(envs) != 1 or len(starts) != 1:
+        if envs or len(creds) != 1 or len(starts) != 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        if any(values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition")):
+        pre, post, condition = (values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition"))
+        if pre or post or condition:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         try:
             argv = shlex.split(starts[0])
             expected_environment = [item for value in environment for item in shlex.split(value)]
         except ValueError as exc:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed") from exc
-        if not argv or starts[0].startswith("-") or envs[0].startswith("-"):
+        if not argv or starts[0].startswith("-") or creds[0].startswith("-"):
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        source_backend = cwd[0]
-        expected_backend = str(artifact / "backend")
-        if not source_backend.startswith("/") or not argv[0].startswith(source_backend + "/"):
+        mode = "web" if unit == "jax-platform.service" else "migrate"
+        credential = "runtime.env" if mode == "web" else "migrate.env"
+        if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"${{CREDENTIALS_DIRECTORY}}/{credential}"]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        expected_argv = [expected_backend + argument[len(source_backend):] if argument.startswith(source_backend + "/") else argument for argument in argv]
         contract[unit] = {
-            "WorkingDirectory": expected_backend, "User": users[0], "Group": groups[0] if groups else "",
+            "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
-            "EnvironmentFiles": [[envs[0], False]],
-            "ExecStart": expected_argv, "Type": types[0], "RemainAfterExit": remain == ["yes"],
+            "EnvironmentFiles": [], "LoadCredential": [credential.split(":", 1) for credential in creds], "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
+            # D-Bus exposes the literal unit token here; expansion happens only
+            # when systemd starts the process, so compare that canonical token.
+            "ExecStart": argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
         }
@@ -108,18 +122,12 @@ def effective_contract(command: list[str], unit: str) -> dict[str, object]:
     return values
 
 
-def verify(artifact: Path, command: list[str]) -> None:
-    backend = artifact / "backend"
-    if not backend.is_dir():
-        raise ReadinessError("artifact readiness: artifact: missing backend")
-    for unit, executable in ((UNITS[0], backend / ".venv/bin/uvicorn"), (UNITS[1], backend / ".venv/bin/python")):
-        if not executable.is_file() or not executable.stat().st_mode & 0o111:
-            raise ReadinessError(f"artifact readiness: {unit}: missing executable")
-    expected = source_contract(Path(__file__).with_name("systemd-units"), artifact)
+def verify(artifact: Path, command: list[str], units_dir: Path) -> None:
+    expected = source_contract(units_dir, artifact)
     for unit in UNITS:
         actual = effective_contract(command, unit)
         wanted = expected[unit]
-        for field in ("WorkingDirectory", "User", "Group", "SupplementaryGroups", "Environment", "EnvironmentFiles", "Type", "RemainAfterExit"):
+        for field in ("WorkingDirectory", "User", "Group", "SupplementaryGroups", "Environment", "EnvironmentFiles", "LoadCredential", "UnsetEnvironment", "Type", "RemainAfterExit"):
             if actual[field] != wanted[field]:
                 raise fail(unit, field)
         # ExecStart deliberately has no privilege-prefix information.  The
@@ -138,29 +146,17 @@ def verify(artifact: Path, command: list[str]) -> None:
             raise fail(unit, "ExecStartEx")
         actual_argv = starts[0][1]
         expected_argv = wanted["ExecStart"]
-        if unit == "jax-platform.service":
-            placeholder = "--forwarded-allow-ips=${JAX_TRUSTED_PROXIES}"
-            if placeholder not in expected_argv:
-                raise fail(unit, "ExecStartEx")
-            position = expected_argv.index(placeholder)
-            if (len(actual_argv) != len(expected_argv)
-                    or actual_argv[:position] != expected_argv[:position]
-                    or actual_argv[position + 1:] != expected_argv[position + 1:]):
-                raise fail(unit, "ExecStartEx")
-            proxy_arg = actual_argv[position]
-            if not proxy_arg.startswith("--forwarded-allow-ips="):
-                raise fail(unit, "ExecStartEx")
-            try:
-                proxies = tuple(value for value in proxy_arg.split("=", 1)[1].split(",") if value)
-                if not proxies or len(proxies) != len(set(proxies)):
-                    raise ValueError
-                for proxy in proxies:
-                    ipaddress.ip_address(proxy)
-            except ValueError:
-                raise fail(unit, "ExecStartEx") from None
-        elif actual_argv != expected_argv:
+        if actual_argv != expected_argv:
             raise fail(unit, "ExecStartEx")
-        for field in ("ExecStartPreEx", "ExecStartPostEx", "ExecConditionEx"):
+        pre = actual["ExecStartPreEx"]
+        expected_pre = wanted["ExecStartPre"]
+        if expected_pre == []:
+            if pre != []:
+                raise fail(unit, "ExecStartPreEx")
+        elif (not isinstance(pre, list) or len(pre) != 1 or not isinstance(pre[0], list) or len(pre[0]) != 10
+                or pre[0][0] != expected_pre[0] or pre[0][1] != expected_pre or pre[0][2] != []):
+            raise fail(unit, "ExecStartPreEx")
+        for field in ("ExecStartPostEx", "ExecConditionEx"):
             if actual[field] != []:
                 raise fail(unit, field)
         for field in ("Requires", "After"):
@@ -170,10 +166,10 @@ def verify(artifact: Path, command: list[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3:
+    if len(argv) < 5 or argv[2] != "--units-dir":
         return 2
     try:
-        verify(Path(argv[1]), argv[2:])
+        verify(Path(argv[1]), argv[4:], Path(argv[3]))
     except ReadinessError as exc:
         print(exc, file=sys.stderr)
         return 1

@@ -3,7 +3,7 @@
 set -euo pipefail
 DB= ADMIN_TRANSPORT= WORKER_DB_USER=jaxinvite WORKER_HOST= SQL_FILE= ATTESTOR=
 while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; --worker-db-user) WORKER_DB_USER=${2:?}; shift;; --worker-host) WORKER_HOST=${2:?}; shift;; --sql-file) SQL_FILE=${2:?}; shift;; --attestor) ATTESTOR=${2:?}; shift;; *) exit 2;; esac; shift; done
-[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && -n $ADMIN_TRANSPORT && -x $ADMIN_TRANSPORT && $WORKER_DB_USER =~ ^[a-z][a-z0-9_]{0,31}$ && $WORKER_HOST =~ ^[A-Za-z0-9._-]{1,255}$ ]] || exit 2
+[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && -n $ADMIN_TRANSPORT && -x $ADMIN_TRANSPORT && $WORKER_DB_USER =~ ^[a-z][a-z0-9_]{0,31}$ && $WORKER_HOST =~ ^[A-Za-z0-9.:-]{1,255}$ && $WORKER_HOST != *'%'* && $WORKER_HOST != *'_'* ]] || exit 2
 # This helper is installed in /usr/local/libexec.  Never derive an authority
 # helper from its own path: there is no audited repository under /usr.
 [[ -f $SQL_FILE && ! -L $SQL_FILE && $(stat -c %U:%G:%a "$SQL_FILE") == root:root:644 && $(sha256sum "$SQL_FILE" | awk '{print $1}') == 39ebe406f1a42e8daac93fde3bd6427cbaaee1bcbbad1ac0ff2cd0438710c32d ]] || { echo "unsafe routine SQL" >&2; exit 2; }
@@ -21,6 +21,10 @@ case "$count" in
   3) : ;;
   *) printf '%s\n' 'ambiguous invitation delivery component is denied' >&2; exit 1 ;;
 esac
+# Body, metadata, definer and parameter authority must be established before
+# either durable principal receives EXECUTE.  The full attestation below then
+# verifies the exact closed grant sets after the two grants are applied.
+JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ATTESTOR" --structural --db "$DB" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$WORKER_HOST"
 # MariaDB requires the locked SQL SECURITY DEFINER account to hold EXECUTE on
 # every procedure it defines. Install the routines first, then grant exactly
 # those procedures; repeated installation cannot widen that authority.

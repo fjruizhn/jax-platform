@@ -1,0 +1,27 @@
+#!/bin/bash -p
+# The only systemd ExecStart for the paired platform. Keeps a shared runtime
+# lock over the complete Python process, so activation cannot swap selection.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+mode=${1:?web|migrate}; [[ $# == 1 && ( $mode == web || $mode == migrate ) ]] || exit 2
+root=/opt/jax-platform-pair; selection=/etc/jax/platform-pair-selection.json; helper=/usr/local/libexec/pair_artifact_readiness.py
+if [[ ${JAX_PAIR_TEST_MODE:-} == 1 && $(/usr/bin/id -u) == 0 && ${JAX_PAIR_TEST_ROOT:-} == /tmp/* ]]; then
+  root=$JAX_PAIR_TEST_ROOT; selection="$root/platform-pair-selection.json"; helper="$root/libexec/pair_artifact_readiness.py"
+fi
+exec 9<"$root/.runtime.lock"; /usr/bin/flock -s 9
+[[ ! -L $selection && $(/usr/bin/stat -c '%U:%G:%a' "$selection") == root:root:644 ]] || exit 1
+read -r release jxp jax digest < <(/usr/bin/python3 -Es - "$selection" <<'PY'
+import json, sys
+x=json.load(open(sys.argv[1], encoding='utf-8'))
+if set(x) != {'release','jax_platform_revision','jax_revision','manifest_sha256'}: raise SystemExit(1)
+print(x['release'], x['jax_platform_revision'], x['jax_revision'], x['manifest_sha256'])
+PY
+)
+[[ $release == "$root/releases/"* && $jxp =~ ^[0-9a-f]{40}$ && $jax =~ ^[0-9a-f]{40}$ && $digest =~ ^[0-9a-f]{64}$ ]] || exit 1
+[[ $(/usr/bin/sha256sum "$release/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$digest" ]] || exit 1
+/usr/bin/python3 -Es "$helper" "$release" "$jxp" "$jax"
+cd "$release/jax-platform/backend"
+unset JAX_REPO_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV
+export JAX_REPO_PATH="$release/jax"
+if [[ $mode == web ]]; then exec "$release/jax-platform/backend/.venv/bin/python" -Es -m uvicorn main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips="${JAX_TRUSTED_PROXIES:?}" --no-access-log --log-level warning; fi
+exec "$release/jax-platform/backend/.venv/bin/python" -Es -m db.migrate

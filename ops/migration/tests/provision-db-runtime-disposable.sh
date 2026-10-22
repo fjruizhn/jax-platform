@@ -74,6 +74,15 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$WEB.password")" = root:root:600
 test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
+! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
+ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" python3 - <<'PY'
+import importlib.util, os
+from pathlib import Path
+script=Path(os.environ['ROOT_DIR'])/'ops/migration/jax-platform-pair-exec.py'
+spec=importlib.util.spec_from_file_location('pair_exec',script); assert spec and spec.loader
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+assert module.credential(Path(os.environ['RUNTIME_ENV']))
+PY
 test "$(wc -l < "$TEMP/state/migrate.env")" -eq 7
 grep -qx 'JAX_MIGRATE_DB_READINESS_ATTEMPTS=12' "$TEMP/state/migrate.env"
 grep -qx 'JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=10' "$TEMP/state/migrate.env"

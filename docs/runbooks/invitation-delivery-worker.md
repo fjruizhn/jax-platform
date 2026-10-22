@@ -10,7 +10,7 @@ checkout `jaxsvc`-escribible. Con el SHA aprobado exacto, ejecuta como root:
 
 ```bash
 set -euo pipefail
-SHA=<sha-aprobado-de-40-hex>
+SHA='SHA_COMPLETO_AUDITADO'
 ORIGIN=https://github.com/fjruizhn/jax-platform.git
 WHEELHOUSE=/opt/axioma-office-invitation-worker-wheelhouse
 LOCK=$WHEELHOUSE/worker-requirements.lock
@@ -30,9 +30,33 @@ read_runtime_value () {
   test -n "$value" && printf '%s\n' "$value"
 }
 JAX_DB_NAME=$(read_runtime_value JAX_DB_NAME)
-JAX_DB_GRANTEE_HOST=$(read_runtime_value JAX_DB_GRANTEE_HOST)
 case "$JAX_DB_NAME" in *[!A-Za-z0-9_]*|'') exit 2 ;; esac
-case "$JAX_DB_GRANTEE_HOST" in ''|*%*|*_*|*[!A-Za-z0-9.:-]*) exit 2 ;; esac
+PROBE_DIR=$(sudo mktemp -d /run/axioma-office-db-probe.XXXXXXXX)
+trap 'sudo rm -rf -- "$PROBE_DIR"; rm -rf -- "$SOURCE"' EXIT
+sudo python3 - "$PROBE_DIR/client.cnf" <<'PY'
+from pathlib import Path
+import os, sys
+values = {}
+for line in Path('/etc/jax/runtime.env').read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    key, value = line.split('=', 1)
+    if key in values:
+        raise SystemExit('duplicate runtime key')
+    values[key] = value
+needed = ('JAX_DB_HOST', 'JAX_DB_PORT', 'JAX_DB_USER', 'JAX_DB_PASSWORD')
+if any(not values.get(key) or '\n' in values[key] or '\r' in values[key] for key in needed):
+    raise SystemExit('incomplete runtime DB credentials')
+path = Path(sys.argv[1])
+with path.open('x') as file:
+    os.fchmod(file.fileno(), 0o600)
+    file.write('[client]\n')
+    for option, key in (('host', 'JAX_DB_HOST'), ('port', 'JAX_DB_PORT'), ('user', 'JAX_DB_USER'), ('password', 'JAX_DB_PASSWORD')):
+        file.write(f'{option}={values[key]}\n')
+PY
+MEASURED_GRANTEE_HOST=$(sudo mariadb --defaults-extra-file="$PROBE_DIR/client.cnf" --batch --skip-column-names "$JAX_DB_NAME" -e "SELECT SUBSTRING_INDEX(CURRENT_USER(),'@',-1)")
+case "$MEASURED_GRANTEE_HOST" in ''|*%*|*_*|*[!A-Za-z0-9.:-]*) exit 2 ;; esac
+sudo rm -rf -- "$PROBE_DIR"
 install_from_audited_commit () {
   src=$1 dst=$2 mode=$3 tmp=$(mktemp -d)
   GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" archive "$SHA" "$src" | tar -x -C "$tmp"
@@ -45,12 +69,15 @@ install_from_audited_commit ops/virtualoffice/install-invitation-worker-release.
 install_from_audited_commit ops/virtualoffice/provision-invitation-worker.sh /usr/local/libexec/axioma-office-invitation-worker-provision 0750
 install_from_audited_commit ops/virtualoffice/install-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-install 0750
 install_from_audited_commit ops/virtualoffice/attest-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-attest 0750
+install_from_audited_commit ops/virtualoffice/office-mariadb-admin-transport.sh /usr/local/libexec/axioma-mariadb-admin 0750
+ATTESTOR_SHA256=$(GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" show "$SHA:ops/virtualoffice/attest-invitation-delivery-routines.sh" | sha256sum | awk '{print $1}')
+test "$(sudo sha256sum /usr/local/libexec/axioma-office-invitation-delivery-attest | awk '{print $1}')" = "$ATTESTOR_SHA256"
 install_from_audited_commit ops/virtualoffice/office-invitation-delivery-v1.sql /usr/local/share/axioma-office-invitation-delivery-v1.sql 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
 install_from_audited_commit ops/virtualoffice/enable-invitation-worker-timer.sh /usr/local/libexec/axioma-office-invitation-worker-enable 0750
-sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
-sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$JAX_DB_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
-sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --admin-transport /usr/local/libexec/axioma-mariadb-admin --measured-grantee-host "$MEASURED_GRANTEE_HOST"
+sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$MEASURED_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --admin-transport /usr/local/libexec/axioma-mariadb-admin --measured-grantee-host "$MEASURED_GRANTEE_HOST" --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest --attestor-sha256 "$ATTESTOR_SHA256"
 test ! -L "$WHEELHOUSE"
 if [[ ! -e "$WHEELHOUSE" ]]; then
   SUPPLY_STAGE=$(mktemp -d /opt/.axioma-office-invitation-wheelhouse.XXXXXX)
@@ -82,12 +109,18 @@ Si ya existe el directorio de suministro, se conserva y el instalador exige que
 su lock coincida byte a byte con el del release. Una actualización del lock
 requiere preparar otro wheelhouse auditado antes de instalar.
 
-El provisionador crea el usuario de sistema y principal MariaDB `jaxinvite`. El
+El provisionador recibe el host grantee medido explícitamente; no lo toma de
+`runtime.env`. Con ese host crea el usuario de sistema y principal MariaDB `jaxinvite`. El
 principal recibe solamente SELECT para configuración y las columnas de observación
 del outbox, más EXECUTE en los tres procedimientos auditados. No recibe privilegios
 directos para emitir, revocar, expirar o liquidar invitaciones, administrar usuarios,
 ni DDL. El instalador sólo acepta el SQL con el SHA-256 fijado y siempre ejecuta el
-atestado instalado root-owned antes de devolver éxito.
+atestado instalado root-owned antes de devolver éxito. El segundo llamado al
+provisionador no escribe MariaDB: compara los grants completos, fija el hash del
+atestado contra el SHA auditado y vuelve a atestar la capacidad terminada.
+`axioma-mariadb-admin` es un transporte instalado desde ese mismo SHA: recibe
+SQL únicamente por stdin y usa dentro del contenedor la credencial root montada;
+no recibe ni imprime la contraseña en el host.
 
 `/etc/jax/invitation-worker.env` es el único `EnvironmentFile` del worker. Es
 `root:root 0600` e incluye sólo conexión del principal, `FERNET_KEY`,
