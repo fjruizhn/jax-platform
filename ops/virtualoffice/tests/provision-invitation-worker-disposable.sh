@@ -57,7 +57,6 @@ cat > "$ENV_FILE" <<EOF
 JAX_DB_HOST=127.0.0.1
 JAX_DB_PORT=$PORT
 JAX_DB_NAME=$DB
-JAX_DB_GRANTEE_HOST=$HOST
 FERNET_KEY=fixture_fernet_key
 JAX_ENVIRONMENT=production
 OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test
@@ -77,9 +76,18 @@ chmod 700 "$TRANSPORT"
 # a disposable allowlisted container and the component is rebuilt below.
 printf "USE \`%s\`; DROP PROCEDURE IF EXISTS office_invitation_claim_next_v1; DROP PROCEDURE IF EXISTS office_invitation_expire_due_v1; DROP PROCEDURE IF EXISTS office_invitation_settle_delivery_v1;\n" "$DB" | admin
 
-run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME"; }
+run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST"; }
+if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" >/dev/null 2>&1; then
+  echo 'provisioner accepted a missing measured grantee host' >&2; exit 1
+fi
+if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host '%' >/dev/null 2>&1; then
+  echo 'provisioner accepted a wildcard measured grantee host' >&2; exit 1
+fi
+if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host 'host$' >/dev/null 2>&1; then
+  echo 'provisioner accepted an invalid measured grantee host' >&2; exit 1
+fi
 ln -s "$ENV_FILE" "$TEMP/runtime-link.env"
-if "$HELPER" --env "$TEMP/runtime-link.env" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" >/dev/null 2>&1; then
+if "$HELPER" --env "$TEMP/runtime-link.env" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" >/dev/null 2>&1; then
   echo 'symlinked runtime env was accepted' >&2; exit 1
 fi
 chmod 666 "$ENV_FILE"

@@ -11,6 +11,7 @@ ADMIN_TRANSPORT=
 PREPARE_OS=1
 WORKER_DB_USER=jaxinvite
 WORKER_OS_USER=jaxinvite
+MEASURED_GRANTEE_HOST=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV_FILE=${2:?}; shift ;;
@@ -19,13 +20,18 @@ while [[ $# -gt 0 ]]; do
     --skip-os-identities) PREPARE_OS=0 ;;
     --worker-db-user) WORKER_DB_USER=${2:?}; shift ;;
     --worker-os-user) WORKER_OS_USER=${2:?}; shift ;;
-    -h|--help) printf '%s\n' 'usage: provision-invitation-worker.sh [--env FILE] [--state-root DIR] [--admin-transport FILE] [--skip-os-identities] [--worker-db-user USER] [--worker-os-user USER]'; exit 0 ;;
+    --measured-grantee-host) MEASURED_GRANTEE_HOST=${2:?}; shift ;;
+    -h|--help) printf '%s\n' 'usage: provision-invitation-worker.sh --measured-grantee-host HOST [--env FILE] [--state-root DIR] [--admin-transport FILE] [--skip-os-identities] [--worker-db-user USER] [--worker-os-user USER]'; exit 0 ;;
     *) printf '%s\n' "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 [[ $(id -u) == 0 ]] || { printf '%s\n' 'must run as root' >&2; exit 1; }
 [[ "$WORKER_DB_USER" =~ ^[a-z][a-z0-9_]{0,31}$ && "$WORKER_OS_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { printf '%s\n' 'unsafe worker user name' >&2; exit 1; }
+[[ -n "$MEASURED_GRANTEE_HOST" ]] || { printf '%s\n' 'an explicit measured grantee host is required' >&2; exit 1; }
+[[ "$MEASURED_GRANTEE_HOST" != *%* && "$MEASURED_GRANTEE_HOST" != *_* && "$MEASURED_GRANTEE_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || {
+  printf '%s\n' 'invalid measured grantee host' >&2; exit 1;
+}
 [[ -f $ENV_FILE && ! -L $ENV_FILE && -r $ENV_FILE && $(stat -c '%U:%G' "$ENV_FILE") == root:root ]] || {
   printf '%s\n' 'runtime environment is not a regular root-owned file' >&2; exit 1;
 }
@@ -41,11 +47,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   }
   cfg[$key]=$value
 done < "$ENV_FILE"
-for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_GRANTEE_HOST FERNET_KEY JAX_ENVIRONMENT OFFICE_PUBLIC_ORIGIN OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL; do
+for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME FERNET_KEY JAX_ENVIRONMENT OFFICE_PUBLIC_ORIGIN OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL; do
   [[ -n ${cfg[$key]:-} ]] || { printf '%s\n' "missing $key" >&2; exit 1; }
 done
-host=${cfg[JAX_DB_GRANTEE_HOST]}; db=${cfg[JAX_DB_NAME]}
-[[ "$host" != *%* && "$host" != *_* ]] || { printf '%s\n' 'wildcard DB host is forbidden' >&2; exit 1; }
+host=$MEASURED_GRANTEE_HOST; db=${cfg[JAX_DB_NAME]}
 [[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { printf '%s\n' 'unsafe database name' >&2; exit 1; }
 if [[ "$PREPARE_OS" == 1 ]]; then
   validate_system_account() {

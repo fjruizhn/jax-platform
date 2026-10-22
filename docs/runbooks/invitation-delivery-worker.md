@@ -30,9 +30,9 @@ read_runtime_value () {
   test -n "$value" && printf '%s\n' "$value"
 }
 JAX_DB_NAME=$(read_runtime_value JAX_DB_NAME)
-JAX_DB_GRANTEE_HOST=$(read_runtime_value JAX_DB_GRANTEE_HOST)
 case "$JAX_DB_NAME" in *[!A-Za-z0-9_]*|'') exit 2 ;; esac
-case "$JAX_DB_GRANTEE_HOST" in ''|*%*|*_*|*[!A-Za-z0-9.:-]*) exit 2 ;; esac
+MEASURED_GRANTEE_HOST=<host-medido-desde-el-cliente-de-despliegue>
+case "$MEASURED_GRANTEE_HOST" in ''|*%*|*_*|*[!A-Za-z0-9.:-]*) exit 2 ;; esac
 install_from_audited_commit () {
   src=$1 dst=$2 mode=$3 tmp=$(mktemp -d)
   GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" archive "$SHA" "$src" | tar -x -C "$tmp"
@@ -48,9 +48,9 @@ install_from_audited_commit ops/virtualoffice/attest-invitation-delivery-routine
 install_from_audited_commit ops/virtualoffice/office-invitation-delivery-v1.sql /usr/local/share/axioma-office-invitation-delivery-v1.sql 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
 install_from_audited_commit ops/virtualoffice/enable-invitation-worker-timer.sh /usr/local/libexec/axioma-office-invitation-worker-enable 0750
-sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
-sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$JAX_DB_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
-sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --measured-grantee-host "$MEASURED_GRANTEE_HOST"
+sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$MEASURED_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --measured-grantee-host "$MEASURED_GRANTEE_HOST"
 test ! -L "$WHEELHOUSE"
 if [[ ! -e "$WHEELHOUSE" ]]; then
   SUPPLY_STAGE=$(mktemp -d /opt/.axioma-office-invitation-wheelhouse.XXXXXX)
@@ -82,7 +82,8 @@ Si ya existe el directorio de suministro, se conserva y el instalador exige que
 su lock coincida byte a byte con el del release. Una actualización del lock
 requiere preparar otro wheelhouse auditado antes de instalar.
 
-El provisionador crea el usuario de sistema y principal MariaDB `jaxinvite`. El
+El provisionador recibe el host grantee medido explícitamente; no lo toma de
+`runtime.env`. Con ese host crea el usuario de sistema y principal MariaDB `jaxinvite`. El
 principal recibe solamente SELECT para configuración y las columnas de observación
 del outbox, más EXECUTE en los tres procedimientos auditados. No recibe privilegios
 directos para emitir, revocar, expirar o liquidar invitaciones, administrar usuarios,
