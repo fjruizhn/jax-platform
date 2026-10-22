@@ -81,9 +81,9 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         mode = "web" if unit == "jax-platform.service" else "migrate"
         credential = "runtime.env" if mode == "web" else "migrate.env"
-        if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"%d/{credential}"]:
+        if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"${{CREDENTIALS_DIRECTORY}}/{credential}"]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        effective_argv = [argument.replace("%d", f"/run/credentials/{unit}") for argument in argv]
+        effective_argv = [argument.replace("${CREDENTIALS_DIRECTORY}", f"/run/credentials/{unit}") for argument in argv]
         contract[unit] = {
             "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
