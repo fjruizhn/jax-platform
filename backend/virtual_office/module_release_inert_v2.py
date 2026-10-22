@@ -75,6 +75,23 @@ for _table, _ddl in _DDL_BY_TABLE.items():
     if _primary: _EXPECTED_INDEX_SHAPES[(_table, "PRIMARY")] = (True, tuple(_primary.group(1).split(",")))
     for _kind, _name, _columns in re.findall(r"(UNIQUE KEY|KEY) ([a-z0-9_]+) \(([^)]*)\)", _ddl):
         _EXPECTED_INDEX_SHAPES[(_table, _name)] = (_kind == "UNIQUE KEY", tuple(_columns.split(",")))
+def _check_clauses(ddl: str) -> dict[str, str]:
+    """Extract balanced CHECK bodies from the canonical DDL, not a regex prefix."""
+    result: dict[str, str] = {}
+    for match in re.finditer(r"CONSTRAINT (chk_[a-z0-9_]+) CHECK ", ddl):
+        start = match.end()
+        if ddl[start] != "(": raise AssertionError("checked DDL is malformed")
+        depth = 0
+        for end in range(start, len(ddl)):
+            depth += ddl[end] == "("
+            depth -= ddl[end] == ")"
+            if depth == 0:
+                result[match.group(1)] = ddl[start + 1:end]
+                break
+        else: raise AssertionError("checked DDL is unbalanced")
+    return result
+def _normalize_clause(value: str) -> str: return re.sub(r"[`\s]", "", value).lower()
+_EXPECTED_CHECK_CLAUSES = {table: {name: _normalize_clause(body) for name, body in _check_clauses(ddl).items()} for table, ddl in _DDL_BY_TABLE.items()}
 
 class ReleaseReceiptRejected(ValueError): pass
 
@@ -138,6 +155,8 @@ async def assert_inert_release_v2_metadata(cur) -> None:
             if tuple(row[0] for row in rows) != local or not rows or rows[0][1] != target or tuple(row[2] for row in rows) != remote or any((row[3], row[4]) != ("RESTRICT", "RESTRICT") for row in rows): raise RuntimeError(f"inert release v2 foreign key {name} is invalid")
         await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK'", (table,))
         if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_CHECKS[table]: raise RuntimeError(f"inert release v2 checks {table} are invalid")
+        await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK')", (table,))
+        if {name: _normalize_clause(clause) for name, clause in await cur.fetchall()} != _EXPECTED_CHECK_CLAUSES[table]: raise RuntimeError(f"inert release v2 check clauses {table} are invalid")
         await cur.execute("SELECT TRIGGER_NAME,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
         expected_triggers = ((f"no_delete_{table}", "DELETE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"), (f"no_update_{table}", "UPDATE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"))
         if tuple(tuple(row) for row in await cur.fetchall()) != expected_triggers: raise RuntimeError(f"inert release v2 triggers {table} are invalid")
