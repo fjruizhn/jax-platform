@@ -178,7 +178,9 @@ comparada que el instalador y validador del paso 1. Conservar la ruta de la
 instantánea que imprime el activador hasta que la publicación quede aceptada.
 La instantánea contiene `ACTIVATION_IN_PROGRESS` desde antes del primer cambio;
 si queda tras un corte o un `SIGKILL`, no hacer otro despliegue: ejecutar la
-reversión con esa ruta y conservar `RECOVERY_REQUIRED` si ella falla.
+reversión con `--recover-incomplete` y esa ruta; el ejecutable exige el
+marcador y los bytes previo/nuevo exactos. Conservar `RECOVERY_REQUIRED` si
+ella falla.
 
 ## Comprobación sin DNS
 

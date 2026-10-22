@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Restore the exact vhost/current state captured by activate-public-release.sh.
 set -euo pipefail
-usage(){ echo 'Usage: rollback-public-release.sh [--allow-pre-activation] [--lock-held] --site-root DIR --vhost-path FILE --backup DIR --nginx FILE --validator FILE --public-ip IP --new-index-sha256 SHA256'; }
+usage(){ echo 'Usage: rollback-public-release.sh [--recover-incomplete] [--lock-held] --site-root DIR --vhost-path FILE --backup DIR --nginx FILE --validator FILE --public-ip IP --new-index-sha256 SHA256'; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }; need(){ [[ $# == 2 && -n $2 ]] || die "missing value for $1"; }
 [[ ${EUID:-$(id -u)} == 0 ]] || die 'must run as root'
 original_args=("$@")
-site= vhost= backup= nginx= validator= ip= new_index= allow_pre_activation=0 lock_held=0
+site= vhost= backup= nginx= validator= ip= new_index= recover_incomplete=0 lock_held=0
 while (($#)); do case $1 in
- --allow-pre-activation) allow_pre_activation=1; shift;;
+ --recover-incomplete) recover_incomplete=1; shift;;
  --lock-held) lock_held=1; shift;;
  --site-root) need "$1" "${2:-}"; site=$2; shift 2;; --vhost-path) need "$1" "${2:-}"; vhost=$2; shift 2;; --backup) need "$1" "${2:-}"; backup=$2; shift 2;; --nginx) need "$1" "${2:-}"; nginx=$2; shift 2;; --validator) need "$1" "${2:-}"; validator=$2; shift 2;; --public-ip) need "$1" "${2:-}"; ip=$2; shift 2;; --new-index-sha256) need "$1" "${2:-}"; new_index=$2; shift 2;; -h|--help) usage; exit 0;; *) die "unknown argument: $1";; esac; done
 [[ -n $site && -n $vhost && -n $backup && -n $nginx && -n $validator && -n $ip && $new_index =~ ^[0-9a-f]{64}$ ]] || { usage >&2; exit 2; }
 [[ -d $backup && -x $nginx && -x $validator ]] || die 'backup, nginx, or validator unavailable'
+if (( recover_incomplete )); then [[ -f $backup/ACTIVATION_IN_PROGRESS ]] || die 'incomplete recovery requires durable activation marker'; fi
 site=$(readlink -f -- "$site"); current="$site/current"
 [[ $(readlink -m -- "$vhost") == "$(cat "$backup/vhost-path")" ]] || die 'rollback vhost path differs from snapshot'
 snapshot_index=$(cat "$backup/new-index-sha256")
@@ -33,16 +34,16 @@ new_release=$(cat "$backup/new-release")
 [[ -d $new_release ]] || die 'recorded new release disappeared'
 if [[ -L $current ]]; then current_target=$(readlink -f -- "$current"); else current_target=ABSENT; fi
 if [[ $current_target != "$new_release" ]]; then
-  if (( ! allow_pre_activation )); then die 'current no longer names this activation release'; fi
+  if (( ! recover_incomplete )); then die 'current no longer names this activation release'; fi
   if [[ -f $backup/current-target ]]; then [[ $current_target == "$(cat "$backup/current-target")" ]] || die 'current changed before activation rollback'; else [[ $current_target == ABSENT ]] || die 'current changed before activation rollback'; fi
 fi
 if [[ -f $backup/new-vhost-sha256 ]]; then
   if [[ ! -e $vhost ]]; then
-    (( allow_pre_activation )) || die 'activated vhost disappeared'
+    (( recover_incomplete )) || die 'activated vhost disappeared'
   else
     current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
     if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then
-      if (( ! allow_pre_activation )) || [[ ! -f $backup/previous-vhost-sha256 ]] || [[ $current_vhost != "$(cat "$backup/previous-vhost-sha256")" ]]; then die 'vhost no longer names this activation content'; fi
+      if (( ! recover_incomplete )) || [[ ! -f $backup/previous-vhost-sha256 ]] || [[ $current_vhost != "$(cat "$backup/previous-vhost-sha256")" ]]; then die 'vhost no longer names this activation content'; fi
     fi
   fi
 fi

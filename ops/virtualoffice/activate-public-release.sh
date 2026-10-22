@@ -86,7 +86,7 @@ fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.fsync(fd); os.close(fd
 dfd=os.open(d,os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
 PY
 }
-recover() { local code=$1; if ((changed)); then if ! "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then durable_marker RECOVERY_REQUIRED; fi; fi; exit "$code"; }
+recover() { local code=$1; if ((changed)); then if ! "$rollback" --lock-held --recover-incomplete --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then durable_marker RECOVERY_REQUIRED; fi; fi; exit "$code"; }
 trap 'recover 1' ERR
 trap 'recover 130' INT
 trap 'recover 143' TERM
@@ -108,7 +108,7 @@ for name in ('vhost-path','new-release','new-index-sha256','new-vhost-sha256'):
   if not stat.S_ISREG(os.fstat(fd).st_mode): raise SystemExit('non-regular snapshot entry')
   os.fsync(fd)
  finally: os.close(fd)
-for name in ('vhost','current-target','previous-manifest.json','VHOST_ABSENT','CURRENT_ABSENT'):
+for name in ('vhost','current-target','previous-manifest.json','previous-vhost-sha256','VHOST_ABSENT','CURRENT_ABSENT'):
  p=os.path.join(d,name)
  if os.path.exists(p):
   fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)
