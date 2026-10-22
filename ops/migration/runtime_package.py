@@ -163,7 +163,13 @@ def snapshot(paths: dict[str, Path], backup: Path) -> None:
     try:
         backup.mkdir(mode=0o700)
     except FileExistsError:
-        if not backup.is_dir() or any(backup.iterdir()):
+        try:
+            value = backup.lstat()
+        except OSError as exc:
+            raise PackageError("unsafe backup directory") from exc
+        if (not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode)
+                or value.st_uid != 0 or value.st_gid != 0 or value.st_mode & 0o077
+                or any(backup.iterdir())):
             raise PackageError("unsafe backup directory")
     records: dict[str, dict[str, object]] = {}
     for name, path in sorted(paths.items()):
@@ -284,7 +290,10 @@ def main(argv: list[str]) -> int:
     validator, validator_digest = Path(argv[9]), argv[11]
     try:
         validator = _trusted_program(validator, validator_digest)
-        if not package.is_absolute() or not backup.is_absolute() or not backup.is_dir():
+        if not package.is_absolute() or not backup.is_absolute():
+            raise PackageError("invalid runtime transaction path")
+        _safe_node(backup, directory=True)
+        if any(backup.iterdir()):
             raise PackageError("invalid runtime transaction path")
 
         def verify() -> None:
