@@ -267,8 +267,11 @@ async def issue_invitation_in_cursor(
         (normalized_email,))
     target = await cur.fetchone()
     target_user_id = None if target is None else int(target[0])
+    # Issuance is deliberately opaque about account existence and compatibility.
+    # A nonmatching account receives the same pending invitation/outbox as an
+    # unknown address; only acceptance can authenticate and bind it.
     if target is not None and (int(target[1]) != tenant_id or target[2] != target_account_class or target[3] != "active"):
-        raise InvitationError("office_invitation_target_denied", status_code=409)
+        target_user_id = None
     recipient_group_id = None
     if audience == "CLIENT_PUBLISHED":
         await cur.execute(
