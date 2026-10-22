@@ -760,7 +760,7 @@ _INVITATION_INDEXES = {
     },
 }
 _INVITATION_CHECK_DIGESTS = {
-    "chk_office_invitation_issuance_shape": "cbd015ae318628f48528aa6735118e7821e1c82337c37dff9d555d5519f299f4",
+    "chk_office_invitation_issuance_shape": "ce60d2af72bd71a12c905bdc1700eb602b4574e81de8bf523018e2a1e7bb9b71",
     "chk_office_invitation_shape": "c07efa419383b9f00f9bc5b0a8884aac877de5f6f5a5babd8e16cd347522abb6",
     "chk_office_invitation_event_shape": "64103b1ffd1a6e0adcdface79c7782f4b37b38a3428c4a40d0a004f7a478ed78",
     "chk_office_invitation_outbox_shape": "4eb25681d2ea2ab65fe509ea0ed988726a367edad5c214a71136c711192b40e3",
