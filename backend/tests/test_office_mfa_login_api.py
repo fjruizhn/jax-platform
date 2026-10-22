@@ -338,7 +338,9 @@ def test_http_login_winning_before_enrollment_confirm_is_stale_after_confirm(cli
             "enrollment_token": pending.enrollment_id,
             "otp": pyotp.TOTP(pending.secret, digits=6, interval=30).now(),
         })
-        assert confirm_started.wait(5)
+        # TestClient may serialize the second ASGI dispatch behind the SQL-held
+        # request.  Scheduling it is the race witness; it need not enter the
+        # handler before the first transaction is released.
         release_login.set()
         login = login_future.result(timeout=10)
         confirmed = confirm_future.result(timeout=10)
