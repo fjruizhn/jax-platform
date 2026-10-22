@@ -83,3 +83,11 @@ the replayed previously used OTP exhausting the third attempt, denied issuance u
 window expires, then reissuance. Focused service command: `cv-office-run-tests.py jxp -q
 --disable-warnings tests/test_office_mfa.py` → **32 passed**, 812 inherited disposable-fixture
 warnings, 2.38 seconds. No production or external action occurred.
+
+## Fix round3 — ventana anclada y base UTC
+
+2026-10-21, Codex. Se conserva la ventana y presupuesto del ancla de primer enrolamiento incluso tras INVALIDATED por corte de token_version; el reemplazo vencido expira el hash histórico exacto. Sol delivery_path confirmó defecto raíz: producción usa SYSTEM/CST, y NOW(6) no es UTC para DATETIME/TOTP. Servicio y eventos privados usan UTC_TIMESTAMP(6); receipts awareUTC; no cambio global de pool ni semántica Classic. Contrato específico office-mfa-utc-time-basis.md. Comprobación readonly3308 no halló tablas office_mfa_* ni columna mfa_version; no dominio desplegado a migrar.
+
+Parent ejecutó `cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_mfa.py tests/test_office_mfa_events.py tests/test_office_migrations.py tests/test_office_session_barrier.py`:84passed,2299fixturewarnings,6.04s antes de últimos límites/tripwire; misma matriz se repite después. Incluye sesiones -06:00/+05:30, código actual, replay, recencia y terminales. No endpoints/JWT nuevos habilitados. Pendiente scoped exactSHA spec+quality, no aprobación inferida por pruebas.
+
+Parent final tras límites UTC/tripwires:84passed,2299warnings,6.74s; git diff --check limpio.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import datetime as dt
 import secrets
 
@@ -55,6 +56,30 @@ async def _step_up_proof(user_id: int, secret: str, correlation: bytes):
         challenge = await issue_step_up_challenge_in_cursor(cur, actor_user_id=user_id, config=CONFIG)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         return await verify_and_consume_totp_in_cursor(cur, challenge_token=challenge.token, otp=_previous_otp(secret), server_correlation_id=correlation)
+
+
+@asynccontextmanager
+async def _session_timezone_transaction(zone: str):
+    """Run one MFA transaction under a hostile session zone and restore it."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT @@session.time_zone")
+            original = (await cur.fetchone())[0]
+            await cur.execute("SET time_zone=%s", (zone,))
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                yield cur
+        except BaseException:
+            await conn.rollback()
+            raise
+        else:
+            await conn.commit()
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute("SET time_zone=%s", (original,))
 
 def test_cursor_enrollment_confirms_with_durable_proof_and_no_authorization_event(client):
     async def scenario():
@@ -877,3 +902,252 @@ def test_replayed_otp_exhausts_exact_budget_until_its_original_window_expires(cl
             reissued = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
         assert not isinstance(reissued, MFADenied) and reissued.token != retry.token
     client.portal.call(scenario)
+
+
+def test_first_origin_version_invalidation_keeps_its_partial_attempt_window(client):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invalid = await confirm_enrollment_in_cursor(
+                cur, enrollment_capability_token=first.enrollment_id, otp="000000",
+                config=CONFIG, server_correlation_id=b"W" * 16,
+            )
+        assert isinstance(invalid, MFADenied) and invalid.code == "totp_invalid"
+        # This is the production session-cut shape: it changes token_version
+        # only.  The next genuine capability use must invalidate its own row.
+        await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            versioned = await confirm_enrollment_in_cursor(
+                cur, enrollment_capability_token=first.enrollment_id, otp=_otp(first.secret),
+                config=CONFIG, server_correlation_id=b"X" * 16,
+            )
+        assert isinstance(versioned, MFADenied) and versioned.code == "enrollment_version"
+        assert await sql(
+            "SELECT state,attempt_count FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))",
+            (first.enrollment_id,), True,
+        ) == (("INVALIDATED", 1),)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            restart = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert isinstance(restart, MFADenied)
+        assert restart.code == "challenge_live" and restart.attempts_remaining == 2
+    client.portal.call(scenario)
+
+
+def test_replacing_expired_historical_first_origin_expires_its_exact_hash(client):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        # Leave the old row ISSUED but naturally past its own window.  A
+        # session cut makes its versions historical, so current-version SQL
+        # cannot identify the row that must be marked EXPIRED.
+        await sql(
+            "UPDATE office_mfa_challenge SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (first.enrollment_id,),
+        )
+        await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            replacement = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert not isinstance(replacement, MFADenied)
+        assert replacement.enrollment_id != first.enrollment_id
+        assert await sql(
+            "SELECT state FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))",
+            (first.enrollment_id,), True,
+        ) == (("EXPIRED",),)
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("zone", ("-06:00", "+05:30"))
+def test_mfa_uses_utc_under_non_utc_session_timezones(client, zone):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        async with _session_timezone_transaction(zone) as cur:
+            await cur.execute("SELECT TIMESTAMPDIFF(SECOND,NOW(6),UTC_TIMESTAMP(6))")
+            assert (await cur.fetchone())[0] == {"-06:00": 21600, "+05:30": -19800}[zone]
+            await cur.execute("SELECT UTC_TIMESTAMP(6)")
+            utc_before = (await cur.fetchone())[0]
+            start = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        pending_start = await sql(
+            "SELECT pending_expires_at FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        )
+        assert pending_start == ((start.expires_at.replace(tzinfo=None),),)
+        async with _session_timezone_transaction(zone) as cur:
+            confirmed = await confirm_enrollment_in_cursor(
+                cur, enrollment_capability_token=start.enrollment_id, otp=pyotp.TOTP(start.secret).now(),
+                config=CONFIG, server_correlation_id=b"Y" * 16,
+            )
+        # Enrollment consumes the current counter at MFA version 1.  A separate
+        # active factor proves that a real *current* pyotp.now() is accepted
+        # under the hostile session zone, rather than relying on the grace slot.
+        login_user, login_start, _ = await _active_user()
+        await sql("DELETE FROM office_mfa_totp_use WHERE user_id=%s", (login_user,))
+        async with _session_timezone_transaction(zone) as cur:
+            login = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=login_user, config=CONFIG,
+            )
+        async with _session_timezone_transaction(zone) as cur:
+            proof = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=login.token, otp=pyotp.TOTP(login_start.secret).now(),
+                server_correlation_id=b"Z" * 16,
+            )
+        assert not isinstance(proof, MFADenied)
+        assert proof.occurred_at.tzinfo is dt.timezone.utc
+        stored_proof = await sql(
+            "SELECT occurred_at FROM office_mfa_security_event WHERE event_id=%s", (proof.event_id,), True,
+        )
+        assert stored_proof == ((proof.occurred_at.replace(tzinfo=None),),)
+        assert confirmed.mfa_version == 1
+        async with _session_timezone_transaction(zone) as cur:
+            current = await reload_current_self_mfa_proof_in_cursor(
+                cur, actor_user_id=login_user, proof_event_id=proof.event_id, config=CONFIG,
+            )
+        assert not isinstance(current, MFADenied) and current.occurred_at.tzinfo is dt.timezone.utc
+        before_replay = await sql(
+            "SELECT COUNT(*) FROM office_mfa_totp_use WHERE user_id=%s", (login_user,), True,
+        ), await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (login_user,), True,
+        )
+        async with _session_timezone_transaction(zone) as cur:
+            replay = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=login.token, otp=pyotp.TOTP(login_start.secret).now(),
+                server_correlation_id=b"0" * 16,
+            )
+        assert isinstance(replay, MFADenied) and replay.code == "challenge_unavailable"
+        assert before_replay == (
+            await sql("SELECT COUNT(*) FROM office_mfa_totp_use WHERE user_id=%s", (login_user,), True),
+            await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (login_user,), True),
+        )
+        async with _session_timezone_transaction(zone) as cur:
+            for stamp, cid in (("DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 301 SECOND)", b"1" * 16), ("DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 SECOND)", b"2" * 16)):
+                await cur.execute(
+                    "INSERT INTO office_mfa_security_event "
+                    "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+                    f"VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',1,1,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,{stamp})",
+                    (login_user, login_user, cid),
+                )
+            await cur.execute("SELECT event_id FROM office_mfa_security_event WHERE subject_user_id=%s AND server_correlation_id IN (%s,%s) ORDER BY event_id", (login_user, b"1" * 16, b"2" * 16))
+            stale_id, future_id = (int(row[0]) for row in await cur.fetchall())
+        async with _session_timezone_transaction(zone) as cur:
+            stale = await reload_current_self_mfa_proof_in_cursor(cur, actor_user_id=login_user, proof_event_id=stale_id, config=CONFIG)
+        async with _session_timezone_transaction(zone) as cur:
+            future = await reload_current_self_mfa_proof_in_cursor(cur, actor_user_id=login_user, proof_event_id=future_id, config=CONFIG)
+        assert isinstance(stale, MFADenied) and stale.code == "proof_stale"
+        assert isinstance(future, MFADenied) and future.code == "proof_stale"
+        async with _session_timezone_transaction(zone) as cur:
+            recovery = await consume_recovery_code_in_cursor(
+                cur, recovery_code=confirmed.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"8" * 16,
+            )
+        async with _session_timezone_transaction(zone) as cur:
+            replacement = await start_recovery_enrollment_in_cursor(
+                cur, recovery_capability_token=recovery.token, config=CONFIG,
+            )
+        async with _session_timezone_transaction(zone) as cur:
+            replacement_confirmed = await confirm_enrollment_in_cursor(
+                cur, enrollment_capability_token=replacement.enrollment_id,
+                otp=pyotp.TOTP(replacement.secret).now(), config=CONFIG,
+                server_correlation_id=b"9" * 16,
+            )
+            await cur.execute("SELECT UTC_TIMESTAMP(6)")
+            utc_after = (await cur.fetchone())[0]
+        assert replacement_confirmed.mfa_version == 3
+        rows = await sql(
+            "SELECT created_at,updated_at,pending_expires_at,confirmed_at FROM office_mfa_credential WHERE user_id=%s",
+            (user_id,), True,
+        )
+        challenge_times = await sql(
+            "SELECT purpose,created_at,expires_at,used_at FROM office_mfa_challenge WHERE user_id=%s", (user_id,), True,
+        )
+        event_times = await sql(
+            "SELECT occurred_at FROM office_mfa_security_event WHERE subject_user_id=%s", (user_id,), True,
+        )
+        counter_times = await sql(
+            "SELECT used_at FROM office_mfa_totp_use WHERE user_id=%s", (user_id,), True,
+        )
+        recovery_times = await sql(
+            "SELECT created_at,used_at FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,), True,
+        )
+        assert all(
+            abs(((row[2] - row[1]).total_seconds()) - (CONFIG.enrollment_lifetime_seconds if row[0] == "ENROLLMENT" else CONFIG.challenge_lifetime_seconds)) < 1
+            for row in challenge_times
+        )
+        values = [
+            *[value for row in rows for value in (row[0], row[1], row[3]) if value is not None],
+            *[value for row in challenge_times for value in (row[1], row[3]) if value is not None],
+            *[row[0] for row in event_times],
+            *[row[0] for row in counter_times if row[0] is not None],
+            *[value for row in recovery_times for value in row if value is not None],
+        ]
+        assert values and all(utc_before <= value <= utc_after for value in values)
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("zone", ("-06:00", "+05:30"))
+def test_mfa_terminal_timestamp_paths_are_utc_under_non_utc_sessions(client, zone):
+    async def scenario():
+        await _migrate()
+        exhausted_user, exhausted_start, _ = await _active_user()
+        async with _session_timezone_transaction(zone) as cur:
+            exhausted = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=exhausted_user, config=CONFIG,
+            )
+        for cid in (b"3" * 16, b"4" * 16, b"5" * 16):
+            async with _session_timezone_transaction(zone) as cur:
+                denial = await verify_and_consume_totp_in_cursor(
+                    cur, challenge_token=exhausted.token, otp="000000", server_correlation_id=cid,
+                )
+        assert isinstance(denial, MFADenied) and denial.code == "challenge_exhausted" and denial.terminal
+        expired_user, expired_start, _ = await _active_user()
+        async with _session_timezone_transaction(zone) as cur:
+            expiring = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=expired_user, config=CONFIG,
+            )
+            await cur.execute("UPDATE office_mfa_challenge SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) WHERE token_hash=UNHEX(SHA2(%s,256))", (expiring.token,))
+        async with _session_timezone_transaction(zone) as cur:
+            expired = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=expiring.token, otp=_previous_otp(expired_start.secret), server_correlation_id=b"6" * 16,
+            )
+        assert isinstance(expired, MFADenied) and expired.code == "challenge_expired"
+        versioned_user, versioned_start, _ = await _active_user()
+        async with _session_timezone_transaction(zone) as cur:
+            versioned = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=versioned_user, config=CONFIG,
+            )
+            await cur.execute("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (versioned_user,))
+        async with _session_timezone_transaction(zone) as cur:
+            mismatch = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=versioned.token, otp=_previous_otp(versioned_start.secret), server_correlation_id=b"7" * 16,
+            )
+            await cur.execute("SELECT UTC_TIMESTAMP(6)")
+            db_now = (await cur.fetchone())[0]
+        assert isinstance(mismatch, MFADenied) and mismatch.code == "challenge_version"
+        terminal_rows = await sql(
+            "SELECT state,used_at FROM office_mfa_challenge WHERE token_hash IN (UNHEX(SHA2(%s,256)),UNHEX(SHA2(%s,256)),UNHEX(SHA2(%s,256))) ORDER BY state",
+            (exhausted.token, expiring.token, versioned.token), True,
+        )
+        assert {row[0] for row in terminal_rows} == {"EXHAUSTED", "EXPIRED", "INVALIDATED"}
+        assert all(row[1] is not None and abs((db_now - row[1]).total_seconds()) < 5 for row in terminal_rows)
+    client.portal.call(scenario)
+
+
+def test_mfa_source_has_no_session_local_timestamp_expression():
+    from pathlib import Path
+    source = Path(__file__).parents[1] / "virtual_office" / "mfa.py"
+    migrations = Path(__file__).parents[1] / "virtual_office" / "migrations.py"
+    text = source.read_text(encoding="utf-8")
+    assert "NOW(" not in text
+    assert "CURRENT_TIMESTAMP" not in text
+    assert "'office-mfa-fence-v1',UTC_TIMESTAMP(6)" in migrations.read_text(encoding="utf-8")
+    proof = text.split("async def _append_proof", 1)[1].split("async def _append_state", 1)[0]
+    state = text.split("async def _append_state", 1)[1].split("async def _invalidate", 1)[0]
+    assert "occurred_at" in proof and "UTC_TIMESTAMP(6)" in proof
+    assert "occurred_at" in state and "UTC_TIMESTAMP(6)" in state
