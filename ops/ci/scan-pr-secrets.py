@@ -44,6 +44,11 @@ MAX_TOKENS = 50000
 MAX_WORK_UNITS = 100000
 MAX_UBICACIONES = 100000
 MAX_WORKERS = 2
+MAX_DIFF_LINE_BYTES = 1024 * 1024
+MAX_DIFF_BYTES = 128 * 1024 * 1024
+MAX_GIT_BYTES = 32 * 1024 * 1024
+MAX_LIST_BYTES = 1024 * 1024
+MAX_ENTRIES = 100
 SEPARADORES = re.compile(r"""[\s"'`,;()\[\]{}<>=:]+""")
 RUNS = re.compile(rb"[\x20-\x7e]{%d,}" % MIN_TOKEN)
 
@@ -56,17 +61,47 @@ def fallar(motivo, detalle=""):
 
 
 def git(args, binario=False):
-    out = subprocess.run(["git"] + args, capture_output=True, check=False,
-                         **({} if binario else {"text": True, "errors": "replace"}))
-    if out.returncode != 0:
-        err = out.stderr if not binario else out.stderr.decode("utf-8", "replace")
+    with subprocess.Popen(["git"] + args, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL) as proceso:
+        salida = proceso.stdout.read(MAX_GIT_BYTES + 1)
+        if len(salida) > MAX_GIT_BYTES:
+            proceso.kill()
+            proceso.wait()
+            fallar("salida git demasiado grande (FAIL-CLOSED).")
+        codigo = proceso.wait()
+    if codigo != 0:
         fallar("git fallo durante el escaneo (FAIL-CLOSED).",
-               f"  git {' '.join(args)}\n  {str(err).strip()[:300]}")
-    return out.stdout
+               f"  git {' '.join(args)}")
+    return salida if binario else salida.decode("utf-8", "replace")
+
+
+def lineas_diff(args):
+    """Consume el diff sin almacenar su salida completa ni líneas sin límite."""
+    with subprocess.Popen(["git"] + args, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL) as proceso:
+        acumulado = 0
+        while True:
+            linea = proceso.stdout.readline(MAX_DIFF_LINE_BYTES + 1)
+            if not linea:
+                break
+            acumulado += len(linea)
+            if acumulado > MAX_DIFF_BYTES:
+                proceso.kill()
+                proceso.wait()
+                fallar("diff demasiado grande (FAIL-CLOSED).")
+            if len(linea) > MAX_DIFF_LINE_BYTES and not linea.endswith(b"\n"):
+                proceso.kill()
+                proceso.communicate()
+                fallar("linea del diff demasiado grande (FAIL-CLOSED).")
+            yield linea.decode("utf-8", "replace").rstrip("\n")
+        if proceso.wait() != 0:
+            fallar("git fallo durante el diff (FAIL-CLOSED).")
 
 
 def cargar():
     try:
+        if os.path.getsize(LISTA) > MAX_LIST_BYTES:
+            fallar("la lista supera su límite de tamaño (FAIL-CLOSED).")
         crudo = open(LISTA, encoding="utf-8").read()
     except OSError as exc:
         fallar(f"no se pudo leer la lista (FAIL-CLOSED): {exc.strerror}", f"  {LISTA}")
@@ -80,6 +115,8 @@ def cargar():
             fallar("la lista no parsea (FAIL-CLOSED).",
                    f"  {LISTA}:{num} no tiene la forma '<salt-hex> <scrypt-hex> <etiqueta>'")
         entradas.append((bytes.fromhex(p[0]), p[1], p[2]))
+        if len(entradas) > MAX_ENTRIES:
+            fallar("la lista supera su límite de entradas (FAIL-CLOSED).")
     if not entradas:
         fallar("la lista esta vacia (FAIL-CLOSED).",
                "  Un comparador sin nada con que comparar no encontro cero: no comparo.")
@@ -120,11 +157,23 @@ def main():
 
     # Diff COMPLETO del PR (base...head), no el ultimo commit: asi cubre lo que
     # entro por merge, rebase o cherry-pick dentro de la rama.
-    archivos = [x for x in git(["diff", "--name-only", "--diff-filter=ACMRT",
-                                f"{base}...{head}"]).splitlines()
-                if x and x not in EXCLUIDOS]
-    diff = git(["diff", "--unified=0", "--no-color", "--diff-filter=ACMRT",
-                f"{base}...{head}"])
+    nombres = git(["diff", "--name-only", "-z", "--no-ext-diff",
+                   "--diff-filter=ACMRT", f"{base}...{head}"], binario=True)
+    archivos = [x.decode("utf-8", "surrogateescape") for x in nombres.split(b"\x00")
+                if x and x.decode("utf-8", "surrogateescape") not in EXCLUIDOS]
+
+    # La lista del HEAD nunca decide contra qué se compara. Tampoco puede
+    # quitar entradas para debilitar el escaneo de los PR siguientes.
+    try:
+        anterior = {linea.strip() for linea in open(LISTA, encoding="utf-8")
+                    if linea.strip() and not linea.lstrip().startswith("#")}
+        nueva = git(["show", f"{head}:ops/ci/known-secrets-ci.txt"])
+        actuales = {linea.strip() for linea in nueva.splitlines()
+                    if linea.strip() and not linea.lstrip().startswith("#")}
+    except (OSError, UnicodeError) as exc:
+        fallar(f"no se pudo verificar continuidad de la lista (FAIL-CLOSED): {exc}")
+    if not anterior.issubset(actuales):
+        fallar("el PR elimina o altera entradas conocidas de la lista (FAIL-CLOSED).")
 
     # token -> todos los archivos que lo introducen. El KDF se hace una vez
     # por token/entrada y el informe conserva cada ruta afectada.
@@ -132,7 +181,13 @@ def main():
 
     def agregar_candidato(token, ruta):
         nonlocal ubicaciones
+        if len(token) < MIN_TOKEN:
+            return
         rutas = cands.setdefault(token, set())
+        if len(cands) > MAX_TOKENS:
+            fallar(f"el diff supera el techo de {MAX_TOKENS} tokens unicos ({len(cands)}).")
+        if len(cands) * len(entradas) > MAX_WORK_UNITS:
+            fallar(f"el diff supera el techo de {MAX_WORK_UNITS} comparaciones scrypt ({len(cands) * len(entradas)}).")
         if ruta in rutas:
             return
         rutas.add(ruta)
@@ -141,7 +196,14 @@ def main():
             fallar(f"el diff supera el techo de {MAX_UBICACIONES} ubicaciones archivo-token ({ubicaciones}).",
                    "  Se falla en vez de truncar: el mapa que conserva todas las rutas tambien debe ser acotado.")
 
-    for linea in diff.splitlines():
+    for a in archivos:
+        agregar_candidato(a, a)
+        for componente in a.split("/"):
+            agregar_candidato(componente, a)
+
+    for linea in lineas_diff(["diff", "--unified=0", "--no-color",
+                             "--no-ext-diff", "--diff-filter=ACMRT",
+                             f"{base}...{head}"]):
         if linea.startswith("diff --git "):
             archivo, en_hunk = None, False
         elif linea.startswith("+++ ") and not en_hunk:
@@ -156,12 +218,13 @@ def main():
             for t in tokens_de(linea[1:]):
                 agregar_candidato(t, archivo)
 
-    # Binarios y rutas con el diff apagado por .gitattributes: sin lineas '+'.
-    # Se leen enteros desde head. Es la clase del .pyc que origino todo esto.
+    # Un blob con NUL puede recibir un hunk textual si .gitattributes fuerza
+    # diff; ese hunk no prueba que mostró el contenido entero del blob.
+    # También se leen enteros los archivos sin hunk (binarios o diff apagado).
     for a in archivos:
-        if a in con_texto:
-            continue
         crudo = git(["show", f"{head}:{a}"], binario=True)
+        if a in con_texto and b"\x00" not in crudo:
+            continue
         for run in RUNS.findall(crudo):
             for t in tokens_de(run.decode("ascii", "replace")):
                 agregar_candidato(t, a)
