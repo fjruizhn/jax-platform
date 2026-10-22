@@ -354,3 +354,33 @@ def test_builder_requires_explicit_bootstrap_or_both_predecessors() -> None:
     assert 'bootstrap requires an empty canonical pair root' in text
     assert "--expected-manifest-sha256" in text
     assert 'subprocess.run' in text and 'adopt-pair-root.py' in text
+
+
+def test_adopter_rejects_forged_supervisor_receipt_bindings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / 'output'; source.mkdir()
+    manifest = b'{"sealed":true}\n'
+    (source / 'pair-manifest.json').write_bytes(manifest)
+    request = {'schema':'axioma.pair-build-request/v1','nonce':'a'*64,'platform_commit':'b'*40,'jax_commit':'c'*40}
+    receipt = {'schema':'axioma.pair-build-receipt/v1','nonce':'a'*64,'platform_commit':'b'*40,'jax_commit':'c'*40,
+               'output_dev':source.stat().st_dev,'output_ino':source.stat().st_ino,
+               'manifest_sha256':hashlib.sha256(manifest).hexdigest()}
+    class Stat:
+        st_uid=0; st_gid=0; st_mode=0o100600
+    original = adoption._read_regular_once
+    def sealed(path: Path):
+        if path.name == 'request': return json.dumps(request).encode(), Stat()
+        if path.name == 'receipt': return json.dumps(receipt).encode(), Stat()
+        return original(path)
+    monkeypatch.setattr(adoption, '_read_regular_once', sealed)
+    adoption.validate_supervisor_binding(source, tmp_path/'request', tmp_path/'receipt')
+    receipt['output_ino'] += 1
+    with pytest.raises(SystemExit, match='output identity'):
+        adoption.validate_supervisor_binding(source, tmp_path/'request', tmp_path/'receipt')
+    receipt['output_ino'] = source.stat().st_ino
+    receipt['manifest_sha256'] = '0'*64
+    with pytest.raises(SystemExit, match='manifest mismatch'):
+        adoption.validate_supervisor_binding(source, tmp_path/'request', tmp_path/'receipt')
+    receipt['manifest_sha256'] = hashlib.sha256(manifest).hexdigest()
+    receipt['nonce'] = 'd'*64
+    with pytest.raises(SystemExit, match='receipt mismatch'):
+        adoption.validate_supervisor_binding(source, tmp_path/'request', tmp_path/'receipt')
