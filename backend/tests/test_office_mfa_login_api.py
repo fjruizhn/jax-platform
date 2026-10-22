@@ -1,6 +1,8 @@
 """Real HTTP/DB checks for the MFA login cut and its transport receipts."""
 from __future__ import annotations
 
+import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -66,6 +68,21 @@ def _login_challenge(client, email: str):
     assert "refresh_token" not in response.headers.get("set-cookie", "")
     assert response.headers["cache-control"] == "no-store"
     return response.json()["challenge_token"]
+
+
+async def _pending_first_enrollment_user():
+    """Durable precondition for an HTTP confirmation race witness."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await apply_office_migrations(cur)
+    user_id, email = await crear_usuario(password=PASSWORD)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        pending = await start_first_enrollment_after_password_in_cursor(
+            cur, preauthenticated_user_id=user_id, config=CONFIG,
+        )
+    return user_id, email, pending
 
 
 def test_mfa_login_http_emits_only_post_cut_durable_claims(client, monkeypatch):
@@ -252,6 +269,104 @@ def test_two_http_mfa_login_verifiers_have_exactly_one_winner(client, monkeypatc
         ))
     assert sorted(response.status_code for response in responses) == [200, 401]
     assert client.portal.call(sql, "SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((before + 1,),)
+
+
+def test_http_login_winning_before_enrollment_confirm_is_stale_after_confirm(client, monkeypatch):
+    """A real SQL-held login decision cannot survive later factor activation."""
+    _mfa_env(monkeypatch)
+    import api.auth as auth_api
+
+    user_id, email, pending = client.portal.call(_pending_first_enrollment_user)
+    entered = threading.Event()
+    confirm_started = threading.Event()
+    release_login = threading.Event()
+    real_classify = auth_api.pending_enrollment_is_recovery_origin_in_cursor
+    real_confirm = auth_api.confirm_enrollment_in_cursor
+
+    async def hold_locked_login(*args, **kwargs):
+        result = await real_classify(*args, **kwargs)
+        entered.set()  # user + credential are still FOR UPDATE locked here.
+        assert await asyncio.to_thread(release_login.wait, 5)
+        return result
+
+    async def record_confirm_attempt(*args, **kwargs):
+        confirm_started.set()
+        return await real_confirm(*args, **kwargs)
+
+    monkeypatch.setattr(auth_api, "pending_enrollment_is_recovery_origin_in_cursor", hold_locked_login)
+    monkeypatch.setattr(auth_api, "confirm_enrollment_in_cursor", record_confirm_attempt)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        login_future = workers.submit(client.post, "/api/auth/login", json={"email": email, "password": PASSWORD})
+        assert entered.wait(5)
+        confirm_future = workers.submit(client.post, "/api/auth/mfa/enrollment/confirm", json={
+            "enrollment_token": pending.enrollment_id,
+            "otp": pyotp.TOTP(pending.secret, digits=6, interval=30).now(),
+        })
+        assert confirm_started.wait(5)
+        release_login.set()
+        login = login_future.result(timeout=10)
+        confirmed = confirm_future.result(timeout=10)
+    assert login.status_code == 200 and "access_token" in login.json(), login.text
+    # The concurrent, pre-login enrollment capability is correctly cut by
+    # Classic single-session issuance. Reissue only after its durable owner is
+    # expired, then confirm through the actual HTTP endpoint; the first token
+    # must not survive the resulting ACTIVE factor.
+    assert confirmed.status_code == 401 and confirmed.json() == {"detail": "enrollment_version"}
+    assert "refresh_token" not in confirmed.headers.get("set-cookie", "")
+    assert client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((1, 0),)
+    client.portal.call(sql,
+        "UPDATE office_mfa_challenge SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND "
+        "WHERE token_hash=UNHEX(SHA2(%s,256))", (pending.enrollment_id,))
+    replacement = client.post("/api/auth/mfa/enrollment/start", headers={
+        "Authorization": f"Bearer {login.json()['access_token']}"}, json={"password": PASSWORD})
+    assert replacement.status_code == 200, replacement.text
+    activated = client.post("/api/auth/mfa/enrollment/confirm", json={
+        "enrollment_token": replacement.json()["enrollment_token"],
+        "otp": pyotp.TOTP(replacement.json()["secret"], digits=6, interval=30).now(),
+    })
+    assert activated.status_code == 200, activated.text
+    stale = client.get("/api/auth/me", headers={"Authorization": f"Bearer {login.json()['access_token']}"})
+    assert stale.status_code == 401
+    assert client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((2, 1),)
+    assert client.portal.call(sql, "SELECT state FROM office_mfa_credential WHERE user_id=%s", (user_id,), True) == (("ACTIVE",),)
+
+
+def test_http_enrollment_confirm_winning_before_login_forces_mfa_challenge(client, monkeypatch):
+    """A real confirm transaction holding the user lock makes login see ACTIVE."""
+    _mfa_env(monkeypatch)
+    import virtual_office.mfa as mfa
+
+    user_id, email, pending = client.portal.call(_pending_first_enrollment_user)
+    locked_by_confirm = threading.Event()
+    release_confirm = threading.Event()
+    real_user = mfa._user
+    held = False
+
+    async def hold_confirm_user_lock(cur, requested_user_id):
+        nonlocal held
+        versions = await real_user(cur, requested_user_id)
+        if int(requested_user_id) == user_id and not held:
+            held = True
+            locked_by_confirm.set()  # _user's SELECT ... FOR UPDATE is live.
+            assert await asyncio.to_thread(release_confirm.wait, 5)
+        return versions
+
+    monkeypatch.setattr(mfa, "_user", hold_confirm_user_lock)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        confirm_future = workers.submit(client.post, "/api/auth/mfa/enrollment/confirm", json={
+            "enrollment_token": pending.enrollment_id,
+            "otp": pyotp.TOTP(pending.secret, digits=6, interval=30).now(),
+        })
+        assert locked_by_confirm.wait(5)
+        login_future = workers.submit(client.post, "/api/auth/login", json={"email": email, "password": PASSWORD})
+        release_confirm.set()
+        confirmed = confirm_future.result(timeout=10)
+        login = login_future.result(timeout=10)
+    assert confirmed.status_code == 200, confirmed.text
+    assert login.status_code == 200 and login.json().get("mfa_required") is True, login.text
+    assert "access_token" not in login.json() and "refresh_token" not in login.headers.get("set-cookie", "")
+    assert client.portal.call(sql, "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((1, 1),)
+    assert client.portal.call(sql, "SELECT state FROM office_mfa_credential WHERE user_id=%s", (user_id,), True) == (("ACTIVE",),)
 
 
 @pytest.mark.parametrize("bad", [None, "", " 120", "0120", "true", "1.5", "901"])

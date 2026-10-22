@@ -175,19 +175,16 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     )
         raise _credenciales_invalidas()
 
-    # Contraseña correcta: quien ya probó ser el dueño sí ve el estado.
-    if user_status != "active":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
-
-    if bloqueada:
-        raise _cuenta_bloqueada(locked_until, now)
-
     # A factor changes the password-success contract: it creates only a
     # short-lived opaque capability.  In particular no cookie or JWT is set
-    # before the TOTP verifier atomically produces its durable receipt.
+    # before the TOTP verifier atomically produces its durable receipt.  The
+    # factor classification and ordinary Classic session cut deliberately
+    # share this one user/credential-locked transaction: confirmation cannot
+    # activate a factor between a no-factor decision and its token issuance.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         await cur.execute(
-            "SELECT password_hash,status,token_version,mfa_version FROM jax_users WHERE user_id=%s FOR UPDATE",
+            "SELECT password_hash,status,token_version,mfa_version,locked_until,tenant_id,email,role,"
+            "must_change_password,account_class FROM jax_users WHERE user_id=%s FOR UPDATE",
             (user_id,),
         )
         current = await cur.fetchone()
@@ -195,6 +192,11 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise _credenciales_invalidas()
         if current[1] != "active":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+        current_now = utc_ahora()
+        if current[4] is not None and current[4] > current_now:
+            raise _cuenta_bloqueada(current[4], current_now)
+        if current[9] not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+            raise _credenciales_invalidas()
         await cur.execute("SELECT state,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
         credential = await cur.fetchone()
         # Recovery is enrollment-only.  A first-enrollment PENDING (and a
@@ -220,28 +222,9 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 challenge_token=challenge.token,
                 expires_at=challenge.expires_at.isoformat(),
             )
-
-    # Sesión única (2026-09-15, Task 3b, Ruling F2): el login EXITOSO -- y
-    # sólo él; ningún camino de error de arriba escribe token_version -- sube
-    # la versión, así que toda sesión anterior de este usuario muere. Sube y
-    # RELEE en la misma transacción: la fila queda bloqueada hasta el commit,
-    # así que con dos logins simultáneos el segundo UPDATE espera, incrementa
-    # sobre el primero y cada uno emite la versión que él escribió (gana el
-    # último). Nunca "versión leída arriba + 1": esa lectura no bloquea, y dos
-    # logins emitirían la misma versión vieja -> ninguna sesión viva.
-    # `status = 'active'` en el WHERE: si en la ventana del bcrypt un admin lo
-    # desactivó o lo dio de baja, 0 filas -> la misma respuesta que un inactivo.
-    # Bloqueos: una sola fila de jax_users, por PK, sin nada tomado antes ni
-    # pedido después (el mismo argumento que Mi cuenta: sin ciclo con las
-    # escrituras de admin). READ COMMITTED (U33). bcrypt quedó arriba, fuera.
-    # Fix ronda 1 (2026-09-15, F1): `password_hash = %s` ata el bump al hash
-    # que verificó el bcrypt. Si en esa ventana confirmó un cambio de
-    # contraseña (fijar por admin, reset, Mi cuenta), la contraseña probada ya
-    # no es la vigente: 0 filas, sin tokens, sin cookie, sin corte -- si no, el
-    # bump se apilaba sobre la versión nueva y emitía tokens VÁLIDOS con la
-    # marca vieja. (Revocar sesiones y desbloquear no cambian el hash: un login
-    # que llega después de ellos sigue ganando, a propósito.)
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        # Sesión única (2026-09-15, Task 3b, Ruling F2): the no-factor
+        # classification above and this increment are one atomic decision.
+        # Never mint from a stale pre-bcrypt read.
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(), "
             "token_version = token_version + 1 "
@@ -257,6 +240,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise _credenciales_invalidas()
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
         (token_version,) = await cur.fetchone()
+        tenant_id, email, role, must_change_password, account_class = current[5:]
 
     # Ruling U9: después del commit, fail-soft. Cierra el WS/SSE de la sesión
     # vieja ya mismo (si no, seguirían abiertos hasta su próxima verificación).
