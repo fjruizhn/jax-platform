@@ -27,6 +27,14 @@ def main():
     if os.environ.get('JAX_PAIR_TEST_MODE') == '1' and os.geteuid() == 0 and os.environ.get('JAX_PAIR_TEST_ROOT','').startswith('/tmp/'):
         root = Path(os.environ['JAX_PAIR_TEST_ROOT']); selection = root/'platform-pair-selection.json'
     lock = os.open(root/'.runtime.lock', os.O_RDONLY); fcntl.flock(lock, fcntl.LOCK_SH); os.set_inheritable(lock, True)
+    try:
+        journal = json.loads((root / 'activation-journal.json').read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        journal = None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        die()
+    if journal is not None and journal.get('state') == 'PRE_DDL':
+        die()
     st = selection.stat()
     if stat.S_ISLNK(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o644: die()
     try: x=json.loads(selection.read_text(encoding='utf-8'))

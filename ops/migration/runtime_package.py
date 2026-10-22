@@ -31,6 +31,10 @@ _HELPERS = {
     "helpers/jax-platform-pair-exec": ("/usr/local/libexec/jax-platform-pair-exec", "0755"),
     "helpers/install-platform-pair-release.sh": ("/usr/local/libexec/install-platform-pair-release.sh", "0755"),
     "helpers/activate-platform-pair-release.sh": ("/usr/local/libexec/activate-platform-pair-release.sh", "0755"),
+    "helpers/adopt-pair-root.py": ("/usr/local/libexec/adopt-pair-root.py", "0755"),
+    "helpers/bootstrap-pair-predecessor.py": ("/usr/local/libexec/bootstrap-pair-predecessor.py", "0755"),
+    "helpers/build-pair-jaxbuild.py": ("/usr/local/libexec/build-pair-jaxbuild.py", "0755"),
+    "helpers/pair-build-supervisor.py": ("/usr/local/libexec/pair-build-supervisor.py", "0755"),
 }
 _UNITS = {
     "units/jax-platform.service": "/etc/systemd/system/jax-platform.service",

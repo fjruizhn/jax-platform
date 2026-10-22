@@ -222,3 +222,6 @@ def test_import_rechecks_units_immediately_before_mutation(tmp_path):
 
 def test_runtime_lock_is_the_launcher_pair_lock() -> None:
     assert rp.PAIR_RUNTIME_LOCK == Path("/opt/jax-platform-pair/.runtime.lock")
+
+def test_runtime_package_contains_all_root_pair_helpers() -> None:
+    assert {"helpers/adopt-pair-root.py", "helpers/bootstrap-pair-predecessor.py", "helpers/build-pair-jaxbuild.py", "helpers/pair-build-supervisor.py"}.issubset(rp._HELPERS)
