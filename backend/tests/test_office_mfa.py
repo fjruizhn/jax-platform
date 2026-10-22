@@ -29,6 +29,45 @@ from virtual_office.migrations import apply_office_migrations
 
 CONFIG = MFAConfig(120, 3, 300, 300, 3)
 
+
+@pytest.fixture(autouse=True)
+def _retire_legacy_recovery_ceremonies_after_each_test(client):
+    """Keep direct v6 compatibility probes from crossing test boundaries.
+
+    Production v7 never starts the two-hop helper.  A test which deliberately
+    calls it must leave its bearer unusable before another test invokes the
+    migration gate, exactly as a deployment operator must do before v6 -> v7.
+    """
+    yield
+
+    async def cleanup():
+        from db.connection import get_pool
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) "
+                    "WHERE purpose='RECOVERY' AND state IN ('ISSUED','EXHAUSTED')"
+                )
+                await cur.execute(
+                    "UPDATE office_mfa_challenge enrollment "
+                    "JOIN office_mfa_credential credential ON credential.pending_enrollment_id=enrollment.token_hash "
+                    "SET enrollment.state='INVALIDATED',enrollment.used_at=UTC_TIMESTAMP(6) "
+                    "WHERE enrollment.purpose='ENROLLMENT' AND enrollment.state='ISSUED' "
+                    "AND credential.state='PENDING' AND EXISTS ("
+                    "SELECT 1 FROM office_mfa_security_event event "
+                    "WHERE event.subject_user_id=credential.user_id "
+                    "AND event.event_kind='MFA_STATE_CHANGE' AND event.operation='RECOVERY_CONSUME' "
+                    "AND event.result='RECORDED') "
+                    "AND NOT EXISTS (SELECT 1 FROM office_mfa_recovery_receipt receipt "
+                    "WHERE receipt.user_id=credential.user_id "
+                    "AND receipt.output_challenge_hash=enrollment.token_hash)"
+                )
+
+    client.portal.call(cleanup)
+
+
 async def _migrate():
     from db.connection import get_pool
     pool = await get_pool()
@@ -406,14 +445,16 @@ def test_concurrent_otp_and_recovery_consumption_have_one_durable_winner(client)
 
         async def consume_code():
             async with transaccion(AISLAMIENTO_ADMIN) as cur:
-                return await consume_recovery_code_in_cursor(
+                return await recover_to_pending_enrollment_in_cursor(
                     cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
                     server_correlation_id=secrets.token_bytes(16),
                 )
 
         recovery_results = await asyncio.gather(consume_code(), consume_code())
-        assert sum(not isinstance(result, MFADenied) for result in recovery_results) == 1
+        assert not any(isinstance(result, MFADenied) for result in recovery_results)
+        assert recovery_results[0] == recovery_results[1]
         assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND purpose='RECOVERY' AND event_kind='MFA_STATE_CHANGE'", (user_id,), True) == ((1,),)
+        assert await sql("SELECT COUNT(*) FROM office_mfa_recovery_receipt WHERE user_id=%s AND state='REPLAYABLE'", (user_id,), True) == ((1,),)
     client.portal.call(scenario)
 
 
