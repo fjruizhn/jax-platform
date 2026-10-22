@@ -10,6 +10,7 @@ from db import migrations
 class _RecordingCursor:
     def __init__(self):
         self.statements = []
+        self.check_constraint_queries = []
         # The JAX-owned 005 hook inspects the schema after applying 003.  Model
         # the schema just upgraded from 003: only the old scope constraint is
         # present, and none of the 005 additions have been applied yet.
@@ -20,6 +21,8 @@ class _RecordingCursor:
         self.statements.append(statement)
         self._last_statement = statement
         self._last_parameters = parameters or ()
+        if "CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS" in statement:
+            self.check_constraint_queries.append((statement, self._last_parameters))
 
     async def fetchone(self):
         # Answer information-schema predicates from their query, rather than
@@ -27,8 +30,15 @@ class _RecordingCursor:
         # add another guarded preflight without invalidating the JXP harness.
         if "COLUMN_NAME='IGNORED'" in self._last_statement:
             return (0,)
-        if "CHECK_CONSTRAINTS" in self._last_statement:
-            return (1,) if self._last_parameters == ("chk_jax_project_scope_status",) else (0,)
+        if "CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS" in self._last_statement:
+            # JAX validates the expression of a managed constraint, not just
+            # its name.  Return the canonical legacy clause for the one
+            # constraint created by 003; every later 005 constraint is absent
+            # from this pre-upgrade snapshot.  A numeric existence sentinel
+            # would make the JAX fail-closed validation reject the harness.
+            if self._last_parameters == ("chk_jax_project_scope_status",):
+                return ("status IN ('ACTIVE','DISABLED')",)
+            return None
         if "information_schema.STATISTICS" in self._last_statement:
             return (0,)
         if "SELECT COLUMN_TYPE" in self._last_statement:
@@ -65,6 +75,11 @@ def test_jax_owned_003_hook_is_the_only_project_authority_ddl_source():
     assert "append-only" in cursor.statements[4]
     assert "CREATE TABLE IF NOT EXISTS project_documents" in cursor.statements[-1]
     assert any("idx_jax_project_scope_namespace_status_project" in sql for sql in cursor.statements)
+    assert any(
+        "SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS" in sql
+        and parameters == ("chk_jax_project_scope_status",)
+        for sql, parameters in cursor.check_constraint_queries
+    )
     assert "jax_project_scope" not in inspect.getsource(migrations.run_migrations)
 
 
