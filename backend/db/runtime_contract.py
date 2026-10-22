@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import aiomysql
+from crypto_secrets import decrypt_db_secret, encrypt_secret
 import secrets
 from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
 from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
@@ -22,6 +23,16 @@ BOOTSTRAP_APPEND_ONLY_MESSAGE = "office_bootstrap_state append-only"
 
 class RuntimeDbContractError(RuntimeError):
     pass
+
+
+def _mfa_crypto_readiness() -> None:
+    """Prove the configured Fernet key can protect MFA material before serving."""
+    try:
+        probe = "office-mfa-runtime-readiness"
+        if decrypt_db_secret(encrypt_secret(probe)) != probe:
+            raise RuntimeDbContractError("Office MFA encryption readiness failed")
+    except (RuntimeError, ValueError) as error:
+        raise RuntimeDbContractError("Office MFA encryption readiness failed") from error
 
 
 def _row(row, index: int):
@@ -407,6 +418,7 @@ async def _bootstrap_append_only_probe(pool) -> None:
 
 async def assert_runtime_db_contract(pool) -> None:
     """Verify revision, canonical fence, trigger metadata and DML behavior."""
+    _mfa_crypto_readiness()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await _effective_privilege_guard(cur)

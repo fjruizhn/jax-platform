@@ -12,6 +12,17 @@ from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractErr
 from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
 
 
+@pytest.mark.parametrize("key", (None, "not-a-fernet-key"))
+def test_runtime_contract_rejects_missing_or_invalid_mfa_fernet_key(monkeypatch, key):
+    from db.runtime_contract import _mfa_crypto_readiness
+    if key is None:
+        monkeypatch.delenv("FERNET_KEY")
+    else:
+        monkeypatch.setenv("FERNET_KEY", key)
+    with pytest.raises(RuntimeDbContractError, match="encryption readiness"):
+        _mfa_crypto_readiness()
+
+
 async def _runtime_pool(user: str, password: str, database: str | None = None):
     return await aiomysql.create_pool(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=user, password=password, db=database or os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True)
 
@@ -137,6 +148,13 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime.close(); await runtime.wait_closed(); runtime = None
             async with admin.acquire() as conn:
                 async with conn.cursor() as cur:
+                    # This test deliberately removes the readiness stamp.
+                    # Do not accidentally model a live legacy bearer from a
+                    # previous MFA fixture while exercising revision repair.
+                    await cur.execute(
+                        "UPDATE office_mfa_challenge SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND "
+                        "WHERE purpose='ENROLLMENT' AND state='ISSUED'"
+                    )
                     from db.migrations import run_migrations
                     await run_migrations()
             runtime = await _runtime_pool(user, password)

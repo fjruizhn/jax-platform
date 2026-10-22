@@ -580,14 +580,16 @@ def test_mfa_recovery_preflight_only_blocks_live_unreceipted_legacy_bearers(clie
                     )
                     await _preflight_legacy_recovery_in_flight(cur)
 
-                    # Expiry and revocation erase the replay package but leave
-                    # this exact receipt lineage as a v7, not legacy, record.
+                    # A terminal receipt has erased the replay package.  Its
+                    # still-live PENDING enrollment cannot prove v7 origin
+                    # across partial DDL, so it remains a migration blocker.
                     await cur.execute(
                         "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
                         "response_digest=NULL WHERE user_id=%s",
                         (user,),
                     )
-                    await _preflight_legacy_recovery_in_flight(cur)
+                    with pytest.raises(RuntimeError, match="legacy recovery enrollment"):
+                        await _preflight_legacy_recovery_in_flight(cur)
 
                     # The completed recovery event remains durable history,
                     # but a later version cut makes its old enrollment bearer

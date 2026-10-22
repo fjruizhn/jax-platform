@@ -525,7 +525,7 @@ async def mfa_recover(req: MFARecoveryRequest, request: Request, response: Respo
                 if row is None:
                     raise RuntimeError("recovery receipt missing after consume")
                 subject_user_id = int(row[0])
-    except MFAError:
+    except (MFAError, RuntimeError):
         raise _mfa_unavailable()
     if denial is not None: raise _mfa_denial(denial)
     await _cortar_conexiones(subject_user_id)

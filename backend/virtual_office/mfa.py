@@ -718,7 +718,7 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
                 )
             return MFADenied("recovery_invalid", terminal=True)
         await cur.execute(
-            "SELECT purpose,expected_token_version,expected_mfa_version,state,expires_at FROM office_mfa_challenge "
+            "SELECT user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at FROM office_mfa_challenge "
             "WHERE token_hash=%s FOR UPDATE", (output_hash,),
         )
         challenge = await cur.fetchone()
@@ -727,8 +727,8 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
             (user_id,),
         )
         credential = await cur.fetchone()
-        if (not challenge or challenge[0] != "ENROLLMENT" or challenge[3] != "ISSUED" or challenge[4] < now
-                or (int(challenge[1]), int(challenge[2])) != versions or not credential
+        if (not challenge or int(challenge[0]) != int(user_id) or challenge[1] != "ENROLLMENT" or challenge[4] != "ISSUED" or challenge[5] < now
+                or (int(challenge[2]), int(challenge[3])) != versions or not credential
                 or credential[0] != "PENDING" or not hmac.compare_digest(bytes(credential[2] or b""), bytes(output_hash))
                 or credential[3] is None or credential[3] < now):
             await cur.execute(
@@ -742,7 +742,7 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         pending_secret = _decrypted_secret_or_raise(credential[1])
         if (replay is None or not hmac.compare_digest(_hash(replay.enrollment_id), bytes(output_hash))
                 or not hmac.compare_digest(replay.secret, pending_secret)
-                or replay.expires_at != _utc(replay_until) or replay.expires_at != _utc(challenge[4])
+                or replay.expires_at != _utc(replay_until) or replay.expires_at != _utc(challenge[5])
                 or replay.expires_at != _utc(credential[3])):
             raise MFAError("recovery_receipt_unavailable")
         return replay
