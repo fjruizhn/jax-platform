@@ -23,7 +23,7 @@ const SESION_INVALIDA = 'sesion_invalida'
 const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
   '/auth/login', '/auth/refresh', '/auth/logout',
   '/auth/mfa/login/verify', '/auth/mfa/recover',
-  '/auth/mfa/recovery/enrollment/start', '/auth/mfa/enrollment/start',
+  '/auth/mfa/enrollment/start',
   '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up',
   // Mutaciones sensibles: una respuesta 401/no disponible no permite saber
   // si el servidor consumió OTP, contraseña o capacidad. Nunca se repiten.
