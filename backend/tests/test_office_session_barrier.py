@@ -59,6 +59,40 @@ def test_restricted_pending_password_upload_stops_before_limiter_body_kill_or_qu
     assert names.index("CORSMiddleware") < names.index("OfficeSurfaceBarrierMiddleware") < names.index("LimiteDeSubidas")
 
 
+def test_restricted_bearer_with_extra_spaces_stops_before_limiter_body_or_handler(client, usuarios, monkeypatch):
+    """The barrier must parse a bearer exactly as HTTPBearer does.
+
+    HTTPBearer strips credentials whitespace.  If the preflight keeps that
+    whitespace, the normal dependency accepts the same JWT after the barrier
+    incorrectly treated it as invalid and let the classic request through.
+    """
+    from adjuntos import limite_de_subidas
+    from api import upload
+
+    actor, _ = usuarios()
+    _set_class(client, actor, "OFFICE_INTERNAL")
+    reached = []
+    original_limiter = limite_de_subidas.LimiteDeSubidas.__call__
+
+    async def limiter_spy(self, scope, receive, send):
+        reached.append("limiter")
+        return await original_limiter(self, scope, receive, send)
+
+    async def forbidden_kill(*args, **kwargs):
+        reached.append("handler")
+        raise AssertionError("classic handler was reached")
+
+    monkeypatch.setattr(limite_de_subidas.LimiteDeSubidas, "__call__", limiter_spy)
+    monkeypatch.setattr(upload, "exigir_mesa_libre", forbidden_kill)
+    response = client.post(
+        "/api/chat/upload",
+        headers={"Authorization": f"Bearer  {token_para(actor)}"},
+        files={"file": ("blocked.txt", b"this body must remain unread", "text/plain")},
+    )
+    assert (response.status_code, response.json()) == (403, {"detail": "office_surface_required"})
+    assert reached == []
+
+
 def test_restricted_class_keeps_exact_auth_self_service_allowlist(client, usuarios):
     actor, _ = usuarios()
     _set_class(client, actor, "EXTERNAL_CLIENT")

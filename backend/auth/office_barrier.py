@@ -84,6 +84,11 @@ class OfficeSurfaceBarrierMiddleware:
             await self.app(scope, receive, send)
             return
         scheme, _, token = authorization.partition(" ")
+        # Keep the parser exactly aligned with FastAPI's HTTPBearer: it strips
+        # surrounding credentials whitespace after splitting the scheme.  If
+        # we kept it here, ``Bearer  <jwt>`` would reach the route with a
+        # valid principal after this preflight rejected the space-prefixed JWT.
+        token = token.strip()
         if scheme.lower() != "bearer" or not token:
             await self.app(scope, receive, send)
             return
