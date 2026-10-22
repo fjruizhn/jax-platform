@@ -10,11 +10,11 @@ Type=oneshot
 User=jaxinvite
 Group=jaxinvite
 EnvironmentFile=/etc/jax/invitation-worker.env
-WorkingDirectory=/srv/jax-prod/jax-platform/backend
+WorkingDirectory=/opt/axioma-office-invitation-worker/backend
 # The preflight runs as the dedicated principal; no code under the release
 # tree may run with root privileges.
-ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
-ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py
+ExecStartPre=/usr/local/libexec/axioma-office-invitation-worker-readiness
+ExecStart=/opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_delivery_worker
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -31,8 +31,9 @@ LimitCORE=0
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0077
-# Maximum configured batch is 1,000 and SMTP's verified per-attempt timeout is
-# 10 seconds; leave margin for bounded DB settlement and finalization.
+# SMTP limits each socket operation to 10 seconds.  A delivery uses at most
+# seven bounded protocol operations; the configuration caps a batch at 100,
+# leaving margin below this deadline for DB settlement and finalization.
 TimeoutStartSec=3h
 KillMode=control-group
 

@@ -42,12 +42,29 @@ for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_GRANTEE_HOST FERNET_KEY OF
 done
 host=${cfg[JAX_DB_GRANTEE_HOST]}; db=${cfg[JAX_DB_NAME]}
 [[ "$host" != *%* && "$host" != *_* ]] || { printf '%s\n' 'wildcard DB host is forbidden' >&2; exit 1; }
-if [[ "$PREPARE_OS" == 1 ]]; then getent passwd "$WORKER_OS_USER" >/dev/null || useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin "$WORKER_OS_USER"; fi
+[[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { printf '%s\n' 'unsafe database name' >&2; exit 1; }
+if [[ "$PREPARE_OS" == 1 ]]; then
+  validate_system_account() {
+    local account=$1 account_uid account_gid account_home account_shell account_group
+    getent passwd "$account" >/dev/null || useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin "$account"
+    IFS=: read -r _ _ account_uid account_gid _ account_home account_shell < <(getent passwd "$account")
+    account_group=$(getent group "$account_gid" | cut -d: -f1)
+    [[ $account_uid =~ ^[0-9]+$ && $account_uid -lt 1000 && $account_home == /nonexistent && $account_shell == /usr/sbin/nologin && $account_group == "$account" ]] || {
+      printf '%s\n' 'worker OS account is not a dedicated system identity' >&2; exit 1;
+    }
+    [[ $(id -nG "$account") == "$account" ]] || { printf '%s\n' 'worker OS account has supplementary groups' >&2; exit 1; }
+  }
+  validate_system_account "$WORKER_OS_USER"
+  validate_system_account jaxbuild
+fi
 # Never chown or chmod an existing shared /etc/jax: jaxsvc/jaxweb must retain
 # traversal.  We create only absent state roots in the explicit fixture path.
 if [[ ! -d "$STATE_ROOT" ]]; then install -d -m 0750 -o root -g root "$STATE_ROOT"; fi
+[[ ! -L $STATE_ROOT && $(stat -c '%U:%G' "$STATE_ROOT") == root:root ]] || { printf '%s\n' 'worker state root is unsafe' >&2; exit 1; }
+state_mode=$(stat -c '%a' "$STATE_ROOT"); (( (8#$state_mode & 0022) == 0 )) || { printf '%s\n' 'worker state root is writable' >&2; exit 1; }
 SECRET_DIR="$STATE_ROOT/secrets"
 if [[ ! -d "$SECRET_DIR" ]]; then install -d -m 0700 -o root -g root "$SECRET_DIR"; fi
+[[ ! -L $SECRET_DIR && $(stat -c '%U:%G:%a' "$SECRET_DIR") == root:root:700 ]] || { printf '%s\n' 'worker secrets root is unsafe' >&2; exit 1; }
 secret="$SECRET_DIR/$WORKER_DB_USER.password"
 [[ -f "$secret" ]] || { openssl rand -base64 48 | tr -d '\n' > "$secret"; chown root:root "$secret"; chmod 600 "$secret"; }
 [[ $(stat -c '%U:%G:%a' "$secret") == root:root:600 ]] || { printf '%s\n' 'worker DB secret is unsafe' >&2; exit 1; }

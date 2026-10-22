@@ -24,7 +24,10 @@ class InvitationConfig:
             raise ValueError("invitation stale claim batch limit is outside the supported range")
         if type(self.expiry_sweep_batch_limit) is not int or not 1 <= self.expiry_sweep_batch_limit <= 1_000:
             raise ValueError("invitation expiry sweep batch limit is outside the supported range")
-        if type(self.delivery_batch_limit) is not int or not 1 <= self.delivery_batch_limit <= 1_000:
+        # SMTP's socket timeout is per protocol operation, not per complete
+        # delivery.  100 keeps the seven bounded operations below the worker
+        # unit deadline with room for database finalization.
+        if type(self.delivery_batch_limit) is not int or not 1 <= self.delivery_batch_limit <= 100:
             raise ValueError("invitation delivery batch limit is outside the supported range")
         if not _is_public_https_origin(self.public_base_url):
             raise ValueError("invitation public base URL must be a canonical HTTPS origin")
