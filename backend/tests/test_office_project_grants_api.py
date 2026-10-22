@@ -36,6 +36,14 @@ def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, mon
         "JOIN office_project_grant g ON g.project_id=m.project_id AND g.user_id=m.user_id "
         "WHERE m.project_id=%s AND m.user_id=%s", (project, target), True,
     ) == (("ACTIVE", "ACTIVE", "COLLABORATOR", "INTERNAL"),)
+    plan = client.portal.call(
+        sql,
+        "EXPLAIN SELECT grant_role,audience,status,version FROM office_project_grant "
+        "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project, target), True,
+    )
+    assert plan and plan[0][5] == "uq_office_project_grant_subject"
+    assert "Using filesort" not in str(plan[0][-1] or "")
+    assert "Using temporary" not in str(plan[0][-1] or "")
 
     replay = client.put(
         f"/api/virtual-office/projects/{project}/members/{target}",
