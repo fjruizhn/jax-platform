@@ -9,7 +9,7 @@ import uuid
 import aiomysql
 import pytest
 
-from virtual_office.migrations import _preflight_legacy_recovery_in_flight, apply_office_migrations
+from virtual_office.migrations import _preflight_legacy_recovery_in_flight, apply_office_migrations, stamp_office_runtime_revision
 from virtual_office.migrations import (
     _CANONICAL_AUDIT_SHAPE,
     _CANONICAL_MFA_CHECK_DIGESTS,
@@ -495,12 +495,9 @@ def test_mfa_recovery_preflight_only_blocks_live_unreceipted_legacy_bearers(clie
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
-                    # A v7 stamp is written only after all DDL and readiness
-                    # checks.  Rewind it to model the prior runtime while the
-                    # receipt table already exists from an interrupted DDL.
-                    await cur.execute(
-                        "UPDATE office_schema_revision SET revision='office-runtime-v6' WHERE component='virtual-office'"
-                    )
+                    # A real completed v7 stamp must not waive a live v6
+                    # bearer discovered on a subsequent migration run.
+                    await stamp_office_runtime_revision(cur)
                     tag = uuid.uuid4().hex
                     await cur.execute(
                         "INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')",

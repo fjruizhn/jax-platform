@@ -218,6 +218,34 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
     client.portal.call(scenario)
 
 
+def test_office_readiness_is_removed_before_an_office_ddl_failure(client, monkeypatch):
+    async def scenario():
+        from db.connection import get_pool
+        from db import migrations
+        import virtual_office.migrations as office_migrations
+        original = office_migrations.apply_office_migrations
+
+        async def fail_inside_office(cur):
+            await cur.execute("CREATE TABLE IF NOT EXISTS office_ready_order_probe (id INT PRIMARY KEY)")
+            await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+            assert await cur.fetchone() is None
+            raise RuntimeError("forced office ddl failure")
+
+        monkeypatch.setattr(office_migrations, "apply_office_migrations", fail_inside_office)
+        try:
+            with pytest.raises(RuntimeError, match="forced office ddl failure"):
+                await migrations.run_migrations()
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+        finally:
+            monkeypatch.setattr(office_migrations, "apply_office_migrations", original)
+            await migrations.run_migrations()
+    client.portal.call(scenario)
+
+
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
     """A v1 marker cannot certify schema that predates the audit-shape CHECK."""
     async def scenario():
