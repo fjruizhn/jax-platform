@@ -15,12 +15,27 @@ DEFINER and SQL_MODE are environment-owned trigger metadata and intentionally
 stay outside this v13 digest: the four canonical bodies only SIGNAL, so neither
 widens their semantics. Future sensitive trigger behavior requires a versioned
 creation-policy contract before it can rely on either field.
+
+The separate v14 entry point below is intentionally not called by the generic
+Office migration runner.  It consumes a descriptor-bound root contract,
+invalidates the runtime marker before any DDL, then recreates and attests the
+trigger environment.  It remains schema work only: it neither makes the guard
+ready nor enables a receipt consumer.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
+import os
 import re
+import uuid
+from base64 import urlsafe_b64encode
+
+import aiomysql
+from db_connect_config import db_connect_timeout_seconds
+from virtual_office.critic_trust_activation import ActivationContract
 
 
 _KEY_DDL = (
@@ -212,8 +227,269 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
     )
 
 
+_V14_COMPONENT = "virtual-office-critic-trust"
+_V14_LOCK_PREFIX = "axioma.office.critic-trust.v14:"
+
+
+def _v14_descriptor(contract: ActivationContract, state: str) -> str:
+    """Return a bounded marker bound to the exact validated descriptor bytes."""
+    if state not in {"ready", "invalid"}:
+        raise ValueError("invalid critic-trust v14 marker state")
+    try:
+        fingerprint = bytes.fromhex(contract.fingerprint.sha256)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("critic-trust v14 contract fingerprint is invalid") from error
+    if len(fingerprint) != 32:
+        raise RuntimeError("critic-trust v14 contract fingerprint is invalid")
+    digest = urlsafe_b64encode(hashlib.sha256(
+        b"axioma.office.critic-trust.v14\x00" + fingerprint
+    ).digest()).rstrip(b"=").decode("ascii")
+    return f"critic-v14-{state}-{digest}"
+
+
+async def dedicated_migrator_connect():
+    """Open the standalone autocommit connection reserved for future v14 wiring."""
+    return await aiomysql.connect(
+        host=os.environ["JAX_CRITIC_TRUST_MIGRATOR_HOST"],
+        port=int(os.environ["JAX_CRITIC_TRUST_MIGRATOR_PORT"]),
+        user=os.environ["JAX_CRITIC_TRUST_MIGRATOR_USER"],
+        password=os.environ["JAX_CRITIC_TRUST_MIGRATOR_PASSWORD"],
+        db=os.environ["JAX_CRITIC_TRUST_MIGRATOR_DATABASE"], autocommit=True, charset="utf8mb4",
+        connect_timeout=db_connect_timeout_seconds(),
+    )
+
+
+async def migrate_critic_trust_v14(contract: ActivationContract, *, connect=dedicated_migrator_connect) -> None:
+    """Perform only the inert, contract-bound v14 migration on its own connection."""
+    if type(contract) is not ActivationContract:
+        raise TypeError("critic-trust v14 requires a validated ActivationContract")
+    contract.assert_unchanged()
+    conn = await connect()
+    primary_error: BaseException | None = None
+    lock_name: str | None = None
+    try:
+        if conn.get_autocommit() is not True:
+            raise RuntimeError("critic-trust v14 requires an autocommit connection")
+        async with conn.cursor() as cur:
+            await _set_v14_session(cur, contract)
+            lock_name = _V14_LOCK_PREFIX + hashlib.sha256(contract.database_schema.encode("ascii")).hexdigest()[:32]
+            await cur.execute("SELECT GET_LOCK(%s,%s)", (lock_name, contract.timeout_seconds))
+            if tuple(await cur.fetchone() or ()) != (1,):
+                raise RuntimeError("critic-trust v14 migration lock is unavailable")
+            prior = await _preflight_v14(cur, contract)
+            if prior == "ready":
+                # Preflight already performed the ready→invalid CAS before any
+                # environment attestation; interruption or drift stays invalid.
+                await _finalize_v14(cur, contract)
+                return
+            await _write_v14_marker(cur, contract, "invalid")
+            await _set_v14_table_defaults(cur, contract)
+            await _replace_v14_triggers(cur, contract)
+            await _finalize_v14(cur, contract)
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            if lock_name is not None:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    if tuple(await cur.fetchone() or ()) != (1,):
+                        raise RuntimeError("critic-trust v14 migration lock was not released")
+        except BaseException:
+            if primary_error is None:
+                raise
+        finally:
+            conn.close()
+
+
+async def _transition_ready_to_invalid(cur, contract: ActivationContract) -> None:
+    await cur.execute(
+        "UPDATE office_schema_revision SET revision=%s,applied_at=NOW(6) "
+        "WHERE component=%s AND revision=%s",
+        (_v14_descriptor(contract, "invalid"), _V14_COMPONENT, _v14_descriptor(contract, "ready")),
+    )
+    if cur.rowcount != 1:
+        raise RuntimeError("critic-trust v14 ready marker changed during migration")
+
+
+async def _set_v14_session(cur, contract: ActivationContract) -> None:
+    await cur.execute("SET SESSION sql_mode=%s", (contract.database_sql_mode,))
+    await cur.execute(f"SET NAMES `{contract.database_charset}` COLLATE `{contract.database_collation}`")
+    await cur.execute("SET SESSION lock_wait_timeout=%s", (contract.timeout_seconds,))
+
+
+async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
+    # Identity is the sole pre-CAS attestation: a connection to another schema
+    # must never mutate its marker.  A known ready marker becomes durable
+    # invalid before any mutable-environment or metadata attestation.
+    await cur.execute("SELECT DATABASE()")
+    if tuple(await cur.fetchone() or ()) != (contract.database_schema,):
+        raise RuntimeError("critic-trust v14 database identity is incompatible")
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (_V14_COMPONENT,))
+    marker = await cur.fetchone()
+    state = None if marker is None else marker[0]
+    known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
+    if state not in known:
+        raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
+    if state == _v14_descriptor(contract, "ready"):
+        await _transition_ready_to_invalid(cur, contract)
+        return "ready"
+    await _assert_v14_preconditions(cur, contract)
+    return "invalid" if state is not None else None
+
+
+async def _assert_v14_preconditions(cur, contract: ActivationContract) -> None:
+    await cur.execute("SELECT VERSION()")
+    if str((await cur.fetchone() or ("",))[0]).split("-", 1)[0] != contract.database_server_version:
+        raise RuntimeError("critic-trust v14 database identity is incompatible")
+    await cur.execute(
+        "SELECT DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=DATABASE()"
+    )
+    if tuple(await cur.fetchone() or ()) != (contract.database_charset, contract.database_collation):
+        raise RuntimeError("critic-trust v14 schema defaults are incompatible")
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
+    from virtual_office.migrations import RUNTIME_REVISION
+    if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
+        raise RuntimeError("critic-trust v14 requires the exact global Office v13 marker")
+    await _assert_v14_definer_privileges(cur, contract)
+    await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
+
+
+async def _assert_v14_definer_privileges(cur, contract: ActivationContract) -> None:
+    """Require the locked definer to have exactly one non-grantable TRIGGER right."""
+    user, host, schema = (
+        contract.trigger_definer.user, contract.trigger_definer.host, contract.database_schema,
+    )
+    await cur.execute(
+        "SELECT CAST(JSON_VALUE(Priv,'$.access') AS UNSIGNED),JSON_VALUE(Priv,'$.account_locked'),"
+        "COALESCE(JSON_VALUE(Priv,'$.default_role'),'') FROM mysql.global_priv WHERE User=%s AND Host=%s",
+        (user, host),
+    )
+    global_privileges = tuple(await cur.fetchone() or ())
+    if len(global_privileges) != 3 or global_privileges[1] != "1":
+        raise RuntimeError("critic-trust v14 trigger definer must be account-locked")
+    if (global_privileges[0], global_privileges[2]) != (0, ""):
+        raise RuntimeError("critic-trust v14 trigger definer global privileges are incompatible")
+    await cur.execute(
+        "SELECT Select_priv,Insert_priv,Update_priv,Delete_priv,Create_priv,Drop_priv,Grant_priv,References_priv,"
+        "Index_priv,Alter_priv,Create_tmp_table_priv,Lock_tables_priv,Create_view_priv,Show_view_priv,"
+        "Create_routine_priv,Alter_routine_priv,Execute_priv,Event_priv,Trigger_priv,Delete_history_priv,"
+        "Show_create_routine_priv,Db FROM mysql.db WHERE User=%s AND Host=%s ORDER BY Db",
+        (user, host),
+    )
+    expected = ("N",) * 18 + ("Y",) + ("N",) * 2 + (schema,)
+    if tuple(await cur.fetchall()) != (expected,):
+        raise RuntimeError("critic-trust v14 trigger definer schema privileges are incompatible")
+    for table in ("tables_priv", "columns_priv", "procs_priv", "roles_mapping"):
+        await cur.execute(f"SELECT 1 FROM mysql.{table} WHERE User=%s AND Host=%s LIMIT 1", (user, host))
+        if await cur.fetchone() is not None:
+            raise RuntimeError("critic-trust v14 trigger definer subordinate privileges are incompatible")
+    await cur.execute(
+        "SELECT 1 FROM mysql.proxies_priv WHERE (User=%s AND Host=%s) OR "
+        "(Proxied_user=%s AND Proxied_host=%s) LIMIT 1", (user, host, user, host),
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError("critic-trust v14 trigger definer proxy privileges are incompatible")
+    # PUBLIC is a role in MariaDB.  Any persisted mapping or privilege row for
+    # it would widen the effective identity independently of this account.
+    for table in ("global_priv", "db", "tables_priv", "columns_priv", "procs_priv", "roles_mapping"):
+        await cur.execute(f"SELECT 1 FROM mysql.{table} WHERE User='PUBLIC' LIMIT 1")
+        if await cur.fetchone() is not None:
+            raise RuntimeError("critic-trust v14 PUBLIC grants are incompatible")
+
+
+async def _write_v14_marker(cur, contract: ActivationContract, state: str) -> None:
+    await cur.execute(
+        "INSERT INTO office_schema_revision (component,revision,applied_at) VALUES (%s,%s,NOW(6)) "
+        "ON DUPLICATE KEY UPDATE revision=VALUES(revision),applied_at=VALUES(applied_at)",
+        (_V14_COMPONENT, _v14_descriptor(contract, state)),
+    )
+
+
+async def _set_v14_table_defaults(cur, contract: ActivationContract) -> None:
+    for table in _APPEND_ONLY:
+        await cur.execute("SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if tuple(await cur.fetchone() or ()) != (contract.database_collation,):
+            await cur.execute(f"ALTER TABLE `{table}` DEFAULT CHARACTER SET `{contract.database_charset}` COLLATE `{contract.database_collation}`")
+
+
+async def _replace_v14_triggers(cur, contract: ActivationContract) -> None:
+    definer = contract.trigger_definer
+    for name, table, operation, statement in _trigger_definitions():
+        await cur.execute(
+            f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+            f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+        )
+
+
+async def _finalize_v14(cur, contract: ActivationContract) -> None:
+    await cur.execute("START TRANSACTION")
+    try:
+        await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s FOR UPDATE", (_V14_COMPONENT,))
+        if tuple(await cur.fetchone() or ()) != (_v14_descriptor(contract, "invalid"),):
+            raise RuntimeError("critic-trust v14 marker changed during migration")
+        await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office' FOR UPDATE")
+        from virtual_office.migrations import RUNTIME_REVISION
+        if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
+            raise RuntimeError("critic-trust v14 global Office marker changed during migration")
+        await _assert_v14_definer_canary(cur, contract)
+        for table in _APPEND_ONLY:
+            await cur.execute(f"SELECT 1 FROM `{table}` WHERE 0 LOCK IN SHARE MODE")
+        await _preflight_v14(cur, contract)
+        await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES, v14_contract=contract)
+        contract.assert_unchanged()
+        await _write_v14_marker(cur, contract, "ready")
+    except BaseException:
+        await cur.execute("ROLLBACK")
+        raise
+    else:
+        await cur.execute("COMMIT")
+
+
+async def _assert_v14_definer_canary(cur, contract: ActivationContract) -> None:
+    """Exercise both append-only trigger pairs as the locked DEFINER."""
+    key_id = f"v14-canary-{uuid.uuid4().hex}"
+    await cur.execute("SAVEPOINT critic_trust_v14_canary")
+    try:
+        await cur.execute(
+            "INSERT INTO office_trusted_critic_key "
+            "(key_id,principal_ref,purpose,algorithm,public_key,not_before) "
+            "VALUES (%s,'v14:canary','rights.review','Ed25519',UNHEX(SHA2(%s,256)),UTC_TIMESTAMP(6))",
+            (key_id, key_id),
+        )
+        await cur.execute(
+            "INSERT INTO office_trusted_critic_key_revocation (key_id,revoked_at) VALUES (%s,UTC_TIMESTAMP(6))",
+            (key_id,),
+        )
+        for table, assignment in (
+            ("office_trusted_critic_key", "purpose=purpose"),
+            ("office_trusted_critic_key_revocation", "revoked_at=revoked_at"),
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                statement = (
+                    f"UPDATE `{table}` SET {assignment} WHERE key_id=%s"
+                    if operation == "UPDATE" else f"DELETE FROM `{table}` WHERE key_id=%s"
+                )
+                try:
+                    await cur.execute(statement, (key_id,))
+                except aiomysql.OperationalError as error:
+                    if not error.args or error.args[0] != 1644 or "append-only" not in str(error):
+                        raise RuntimeError("critic-trust v14 definer canary is incompatible") from error
+                else:
+                    raise RuntimeError("critic-trust v14 definer canary did not block DML")
+    finally:
+        await cur.execute("ROLLBACK TO SAVEPOINT critic_trust_v14_canary")
+        await cur.execute("RELEASE SAVEPOINT critic_trust_v14_canary")
+    for table in _APPEND_ONLY:
+        await cur.execute(f"SELECT COUNT(*) FROM `{table}` WHERE key_id=%s", (key_id,))
+        if tuple(await cur.fetchone() or ()) != (0,):
+            raise RuntimeError("critic-trust v14 definer canary did not roll back")
+
+
 async def _assert_critic_trust_anchor_metadata(
     cur, *, expected_columns, expected_clauses, tables=None, allow_trigger_prefix: bool = False,
+    include_triggers: bool = True, v14_contract=None,
 ) -> None:
     """Attest an exact schema generation; callers choose the known generation."""
     tables = tuple(expected_columns) if tables is None else tuple(tables)
@@ -276,11 +552,19 @@ async def _assert_critic_trust_anchor_metadata(
         ),)
     if foreign_keys != expected_foreign_keys:
         raise RuntimeError("Office critic trust foreign keys are invalid")
+    if not include_triggers:
+        return
     found = {}
+    trigger_fields = (
+        "TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,"
+        "ACTION_STATEMENT,ACTION_ORDER"
+    )
+    if v14_contract is not None:
+        trigger_fields += ",DEFINER,SQL_MODE,CHARACTER_SET_CLIENT,COLLATION_CONNECTION,DATABASE_COLLATION"
     for table in tables:
         await cur.execute(
-            "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,ACTION_ORDER "
-            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
+            f"SELECT {trigger_fields} FROM information_schema.TRIGGERS "
+            "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
         )
         found.update({row[0]: tuple(row[1:]) for row in await cur.fetchall()})
     definitions = _trigger_definitions(tables)
@@ -288,6 +572,24 @@ async def _assert_critic_trust_anchor_metadata(
         name: (table, "BEFORE", operation, "ROW", statement, 1)
         for name, table, operation, statement in definitions
     }
+    if v14_contract is not None:
+        await cur.execute("SELECT VERSION()")
+        version = str((await cur.fetchone() or ("",))[0]).split("-", 1)[0]
+        if version != v14_contract.database_server_version:
+            raise RuntimeError("Office critic trust database version is incompatible")
+        expected = {
+            name: (*definition, f"{v14_contract.trigger_definer.user}@{v14_contract.trigger_definer.host}",
+                   v14_contract.database_sql_mode, v14_contract.database_charset,
+                   v14_contract.database_collation, v14_contract.database_collation)
+            for name, definition in expected.items()
+        }
+        for table in tables:
+            await cur.execute(
+                "SELECT TABLE_COLLATION FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,)
+            )
+            if tuple(await cur.fetchone() or ()) != (v14_contract.database_collation,):
+                raise RuntimeError(f"Office critic trust table collation for {table} is invalid")
     if allow_trigger_prefix:
         expected = dict(list(expected.items())[:len(found)])
     if found != expected:

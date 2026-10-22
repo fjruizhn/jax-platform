@@ -1,7 +1,9 @@
 """The critic trust anchor is inert evidence plumbing, never release authority."""
 from __future__ import annotations
 
+import ast
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -11,12 +13,97 @@ from pymysql.err import OperationalError
 
 from db_connect_config import db_connect_timeout_seconds
 from virtual_office import module_critic_trust as trust
+from virtual_office import critic_trust_guard, module_critic_receipt, module_release_contract, module_release_ledger
+
+
+_TRUST_WRITER = re.compile(
+    r"\b(?:INSERT|UPDATE|DELETE|REPLACE)\b\s+(?:(?:INTO|FROM)\s+)?`?office_trusted_critic_",
+    re.IGNORECASE,
+)
+_SQL_WRITER_FRAGMENT = re.compile(r"^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b", re.IGNORECASE)
+_PRODUCTION_MODULES = {
+    "trust": trust,
+    "guard": critic_trust_guard,
+    "receipt": module_critic_receipt,
+    "release_contract": module_release_contract,
+    "release_ledger": module_release_ledger,
+}
+
+
+def _string_literals(node: ast.AST) -> str:
+    return "\n".join(
+        child.value for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    )
+
+
+def _has_dynamic_append_only_writer(node: ast.AST) -> bool:
+    """Catch f-strings such as DELETE FROM `{table}` over _APPEND_ONLY."""
+    return (
+        any(
+            _SQL_WRITER_FRAGMENT.search(part.value)
+            for joined in ast.walk(node) if isinstance(joined, ast.JoinedStr)
+            for part in joined.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+        and any(isinstance(child, ast.Name) and child.id == "_APPEND_ONLY" for child in ast.walk(node))
+        and any(isinstance(child, ast.JoinedStr) for child in ast.walk(node))
+    )
+
+
+def _trust_writer_scopes(source: str) -> set[str]:
+    """Find literal or _APPEND_ONLY-dynamic trust DML at module/function scope."""
+    tree = ast.parse(source)
+    found: set[str] = set()
+    functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for node in functions:
+        literals = _string_literals(node)
+        if _TRUST_WRITER.search(literals) or _has_dynamic_append_only_writer(node):
+            found.add(node.name)
+    module_body = ast.Module(body=[node for node in tree.body if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))], type_ignores=[])
+    if _TRUST_WRITER.search(_string_literals(module_body)) or _has_dynamic_append_only_writer(module_body):
+        found.add("<module>")
+    return found
 
 
 def test_trust_anchor_has_no_writer_or_release_surface() -> None:
-    source = Path(trust.__file__).read_text(encoding="utf-8")
-    for forbidden in ("INSERT INTO office_trusted", "UPDATE office_trusted", "release.publish", "PUBLISHED"):
-        assert forbidden not in source
+    sources = {name: Path(module.__file__).read_text(encoding="utf-8") for name, module in _PRODUCTION_MODULES.items()}
+    source = sources["trust"]
+    tree = ast.parse(source)
+    canaries = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "_assert_v14_definer_canary"]
+    assert len(canaries) == 1
+    canary = ast.get_source_segment(source, canaries[0]) or ""
+    assert canary.count("INSERT INTO office_trusted") == 2
+    for required in (
+        "SAVEPOINT critic_trust_v14_canary",
+        "ROLLBACK TO SAVEPOINT critic_trust_v14_canary",
+        "RELEASE SAVEPOINT critic_trust_v14_canary",
+    ):
+        assert required in canary
+    assert _trust_writer_scopes(source) == {"_assert_v14_definer_canary"}
+    for name, sibling in sources.items():
+        if name != "trust":
+            assert _trust_writer_scopes(sibling) == set()
+        for forbidden in ("release.publish", "PUBLISHED"):
+            assert forbidden not in sibling
+
+
+def test_trust_writer_scanner_rejects_module_and_dynamic_writers_outside_canary() -> None:
+    for verb in ("INSERT INTO", "update", "Delete From", "replace into"):
+        source = f"async def sibling():\n    sql = {(verb + ' office_trusted_critic_key VALUES (1)')!r}\n"
+        assert _trust_writer_scopes(source) == {"sibling"}
+    module_writer = "sql = 'delete from office_trusted_critic_key where key_id=1'\n"
+    assert _trust_writer_scopes(module_writer) == {"<module>"}
+    dynamic_writer = """_APPEND_ONLY = ('office_trusted_critic_key',)
+async def sibling():
+    for table in _APPEND_ONLY:
+        sql = f'DELETE FROM `{table}` WHERE key_id=1'
+"""
+    assert _trust_writer_scopes(dynamic_writer) == {"sibling"}
+    canary = """async def _assert_v14_definer_canary():
+    sql = 'INSERT INTO office_trusted_critic_key VALUES (1)'
+"""
+    assert _trust_writer_scopes(canary) == {"_assert_v14_definer_canary"}
 
 
 def test_mariadb_trust_anchor_is_append_only_and_attested(client) -> None:
