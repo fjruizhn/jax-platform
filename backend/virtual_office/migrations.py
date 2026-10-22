@@ -25,7 +25,33 @@ RUNTIME_COMPONENT = "virtual-office"
 # keyset index.  Keep the ACL manifest digest as part of the stamp too:
 # either the schema contract or the runtime privilege contract changing
 # requires the platform migrator to restamp before web readiness.
-RUNTIME_REVISION = f"office-runtime-v10-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v11-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+
+# Office engines are a product catalogue, deliberately separate from global
+# facets and motors.  It contains no URL, credential, or model-name text: the
+# central model/provider/credential catalogue remains the only such source.
+# It starts empty because choosing a real model is an administrative binding,
+# not a migration default.  It has no Office ingress or dispatch path while
+# the web principal retains schema-wide INSERT; treating a writable row as an
+# authority would let that principal forge an engine selection.
+OFFICE_ENGINE_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_engine ("
+    "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "display_name_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,"
+    "model_ref INT NOT NULL,"
+    "transport ENUM('http_openai_compat') NOT NULL,"
+    "allowed_data_classifications JSON NOT NULL,"
+    "enabled BOOLEAN NOT NULL DEFAULT FALSE,"
+    "version BIGINT NOT NULL DEFAULT 1,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),"
+    "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),"
+    "CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
+    "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
+    "CONSTRAINT chk_office_engine_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -1711,6 +1737,8 @@ async def apply_office_migrations(cursor) -> None:
     if not await _column_exists(cursor, "jax_users", "mfa_version"):
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
+        await cursor.execute(statement)
+    for statement in OFFICE_ENGINE_DDL:
         await cursor.execute(statement)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
