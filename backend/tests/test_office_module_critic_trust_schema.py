@@ -15,8 +15,19 @@ from virtual_office import module_critic_trust as trust
 
 def test_trust_anchor_has_no_writer_or_release_surface() -> None:
     source = Path(trust.__file__).read_text(encoding="utf-8")
+    canary_start = source.index("async def _assert_v14_definer_canary(")
+    canary_end = source.index("\n\nasync def _assert_critic_trust_anchor_metadata", canary_start)
+    canary = source[canary_start:canary_end]
+    outside_canary = source[:canary_start] + source[canary_end:]
+    # v14 alone may INSERT ephemeral canary rows inside a savepoint, then
+    # prove both append-only pairs reject UPDATE/DELETE and roll everything
+    # back.  No runtime, guard, signer, resolver, or release path can write.
+    assert "SAVEPOINT critic_trust_v14_canary" in canary
+    assert "ROLLBACK TO SAVEPOINT critic_trust_v14_canary" in canary
+    assert "RELEASE SAVEPOINT critic_trust_v14_canary" in canary
+    assert canary.count("INSERT INTO office_trusted") == 2
     for forbidden in ("INSERT INTO office_trusted", "UPDATE office_trusted", "release.publish", "PUBLISHED"):
-        assert forbidden not in source
+        assert forbidden not in outside_canary
 
 
 def test_mariadb_trust_anchor_is_append_only_and_attested(client) -> None:
