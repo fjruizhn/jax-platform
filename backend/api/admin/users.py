@@ -98,6 +98,12 @@ async def _bloquear_actor(cur, actor_id: int, tenant_id: int) -> None:
     )
     if await cur.fetchone() is None:
         raise HTTPException(status_code=403, detail="actor_no_autorizado")
+    # Keep the classic path under the same tenant -> actor user/profile ->
+    # target user/profile mutex used by Office identity-security mutations.
+    await cur.execute(
+        "SELECT user_id FROM office_account_profile WHERE user_id=%s FOR UPDATE",
+        (actor_id,),
+    )
 
 
 async def _superadmins_activos(cur, tenant_id: int) -> list[int]:
@@ -334,13 +340,16 @@ async def update_user(
             return {"ok": True}
         if cambia_email:
             await guard_office_identity_mutation_in_cursor(
-                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.EMAIL)
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.EMAIL,
+                mfa_proof_event_id=user.mfa_proof_event_id)
         if cambia_rol:
             await guard_office_identity_mutation_in_cursor(
-                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.CLASSIC_ROLE)
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.CLASSIC_ROLE,
+                mfa_proof_event_id=user.mfa_proof_event_id)
         if cambia_estado and nuevo_estado == "active":
             await guard_office_identity_mutation_in_cursor(
-                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.REACTIVATE)
+                cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.REACTIVATE,
+                mfa_proof_event_id=user.mfa_proof_event_id)
         # Rol o estado nuevos cortan TODAS las sesiones (spec §3.2): ahí es
         # donde aplican la guarda de auto-acción y el invariante de
         # superadmin. Un cambio de email solo (U11 de la Task 2 del
@@ -398,7 +407,8 @@ async def unlock_user(user_id: int, request: Request, user: AuthUser = Depends(r
         if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await guard_office_identity_mutation_in_cursor(
-            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.UNLOCK)
+            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.UNLOCK,
+            mfa_proof_event_id=user.mfa_proof_event_id)
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
             (user_id,),
@@ -455,7 +465,8 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await guard_office_identity_mutation_in_cursor(
-            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK)
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK,
+            mfa_proof_event_id=user.mfa_proof_event_id)
     try:
         settings = await smtp_config.cargar_settings()
     except smtp_config.SmtpNoDisponible as exc:
@@ -481,7 +492,8 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         if fila is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await guard_office_identity_mutation_in_cursor(
-            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK)
+            cur, actor_user_id=int(user.user_id), target_user_id=user_id, mutation=OfficeIdentityMutation.RESET_LINK,
+            mfa_proof_event_id=user.mfa_proof_event_id)
         email, estado = fila
         if estado != "active":
             raise HTTPException(status_code=409, detail="usuario_no_activo")
@@ -586,7 +598,8 @@ async def fijar_password(user_id: int, req: FijarPasswordRequest, request: Reque
         if await _leer_para_actualizar(cur, user_id, tenant_id) is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await guard_office_identity_mutation_in_cursor(
-            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.PASSWORD)
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.PASSWORD,
+            mfa_proof_event_id=user.mfa_proof_event_id)
         await cur.execute(
             "UPDATE jax_users SET password_hash = %s, token_version = token_version + 1, "
             "must_change_password = TRUE, failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
@@ -633,7 +646,8 @@ async def dar_de_baja(user_id: int, request: Request, user: AuthUser = Depends(r
         if actual is None:
             raise HTTPException(status_code=404, detail="usuario_no_encontrado")
         await guard_office_identity_mutation_in_cursor(
-            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.BAJA)
+            cur, actor_user_id=actor_id, target_user_id=user_id, mutation=OfficeIdentityMutation.BAJA,
+            mfa_proof_event_id=user.mfa_proof_event_id)
         rol_actual, estado_actual, email_actual = actual
         await exigir_invariante(cur, user_id, rol_actual, estado_actual, rol_actual, "deleted", tenant_id)
         await cur.execute(

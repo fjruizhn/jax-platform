@@ -6,9 +6,11 @@ name supplied by a caller were enough to enter OFFICE_CONFIDENTIAL data.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import uuid
 
 import aiomysql
+import pyotp
 import pytest
 
 from db.transaccion import transaccion
@@ -16,6 +18,62 @@ from virtual_office.audit import record_authorization_event
 from virtual_office import authority
 from virtual_office.authority import authorize_office, authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
+from virtual_office.mfa import (
+    MFAConfig, MFADenied, confirm_enrollment_in_cursor,
+    issue_step_up_challenge_in_cursor, start_first_enrollment_after_password_in_cursor,
+    verify_and_consume_totp_in_cursor,
+)
+
+
+_MFA_CONFIG = MFAConfig(120, 3, 300, 300, 3)
+
+
+def _otp(secret: str, offset: int = 0) -> str:
+    return pyotp.TOTP(secret, digits=6, interval=30).at(
+        (dt.datetime.now().timestamp() // 30 + offset) * 30,
+    )
+
+
+async def _real_mfa_proof(user_id: int, *, step_up: bool = False):
+    """Produce a DB-backed proof through the public cursor primitives."""
+    async with transaccion() as cur:
+        enrollment = await start_first_enrollment_after_password_in_cursor(
+            cur, preauthenticated_user_id=user_id, config=_MFA_CONFIG,
+        )
+    async with transaccion() as cur:
+        confirmed = await confirm_enrollment_in_cursor(
+            cur, enrollment_capability_token=enrollment.enrollment_id,
+            otp=_otp(enrollment.secret), config=_MFA_CONFIG, server_correlation_id=b"A" * 16,
+        )
+        assert not isinstance(confirmed, MFADenied)
+    if not step_up:
+        # A LOGIN-like durable proof must be produced by its own primitive;
+        # authority accepts either current verified LOGIN or STEP_UP for views.
+        async with transaccion() as cur:
+            challenge = await issue_step_up_challenge_in_cursor(
+                cur, actor_user_id=user_id, config=_MFA_CONFIG,
+            )
+        async with transaccion() as cur:
+            proof = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=challenge.token, otp=_otp(enrollment.secret, -1),
+                server_correlation_id=b"B" * 16,
+            )
+        assert not isinstance(proof, MFADenied)
+        return proof
+    async with transaccion() as cur:
+        challenge = await issue_step_up_challenge_in_cursor(cur, actor_user_id=user_id, config=_MFA_CONFIG)
+    async with transaccion() as cur:
+        proof = await verify_and_consume_totp_in_cursor(
+            cur, challenge_token=challenge.token, otp=_otp(enrollment.secret, -1),
+            server_correlation_id=b"C" * 16,
+        )
+    assert not isinstance(proof, MFADenied)
+    return proof
+
+
+def _with_proof(proof, *, recent: bool = False):
+    return {"mfa_proof_event_id": proof.event_id, "mfa_config": _MFA_CONFIG,
+            "require_recent_mfa": recent}
 
 
 async def _sql(statement, params=(), fetch=False):
@@ -84,7 +142,8 @@ def test_project_admin_can_manage_its_project_but_not_global_administration(clie
     async def scenario():
         fixture = await _seed_office_fixture()
         await _sql("UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
-        project_decision = await authorize_office(None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"])
+        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        project_decision = await authorize_office(None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"], **_with_proof(proof))
         global_decision = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_OFFICE)
         assert project_decision.allowed is True
         assert global_decision.allowed is False
@@ -92,14 +151,44 @@ def test_project_admin_can_manage_its_project_but_not_global_administration(clie
     client.portal.call(scenario)
 
 
+def test_derived_mfa_matrix_keeps_collaborator_view_open_and_mutations_recent(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        # Ordinary collaboration has no implicit MFA barrier.
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+        )).allowed is True
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        # A false compatibility flag cannot lower the role-derived requirement.
+        denied = await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            require_recent_mfa=False,
+        )
+        assert denied.code == "office_mfa_required"
+        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            **_with_proof(proof),
+        )).allowed is True
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"],
+            **_with_proof(proof),
+        )).allowed is True
+    client.portal.call(scenario)
+
+
 def test_project_membership_administration_is_separate_from_content_and_can_clean_archived_scope(client):
     async def scenario():
         fixture = await _seed_office_fixture()
         await _sql("UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
-        assert (await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])).allowed is True
+        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        assert (await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"], **_with_proof(proof))).allowed is True
         await _sql("UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", (fixture["project"],))
         assert (await authorize_office(None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"])).code == "office_namespace_denied"
-        archived_cleanup = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])
+        archived_cleanup = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"], **_with_proof(proof))
         assert archived_cleanup.allowed is True
         assert archived_cleanup.code == "office_project_admin_members"
     client.portal.call(scenario)
@@ -269,11 +358,13 @@ def test_root_cross_tenant_and_delegated_general_admin_without_implicit_content(
     async def scenario():
         fixture = await _seed_office_fixture()
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (fixture["outsider"],))
-        assert (await authorize_office(None, fixture["outsider"], OfficeOperation.VIEW_PROJECT, fixture["project"])).allowed is True
+        root_proof = await _real_mfa_proof(fixture["outsider"], step_up=True)
+        assert (await authorize_office(None, fixture["outsider"], OfficeOperation.VIEW_PROJECT, fixture["project"], **_with_proof(root_proof))).allowed is True
         manager = await _sql("INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) VALUES (%s,%s,'x','operator','active','INTERNAL')", (fixture["tenant_a"], f"office-manager-{uuid.uuid4().hex[:10]}@example.invalid"))
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (manager,))
         await _sql("INSERT INTO office_admin_delegation (user_id,capability,status,granted_by) VALUES (%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (manager, fixture["actor"]))
-        assert (await authorize_office(None, manager, OfficeOperation.ADMINISTER_OFFICE)).allowed is True
+        manager_proof = await _real_mfa_proof(manager, step_up=True)
+        assert (await authorize_office(None, manager, OfficeOperation.ADMINISTER_OFFICE, **_with_proof(manager_proof))).allowed is True
         assert (await authorize_office(None, manager, OfficeOperation.VIEW_PROJECT, fixture["project"])).code == "office_grant_missing"
     client.portal.call(scenario)
 
@@ -303,9 +394,10 @@ def test_office_internal_is_staff_only_inside_office_with_real_grants(client):
         await _sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)", (fixture["project"], staff, fixture["actor"]))
         assert (await authorize_office(None, staff, OfficeOperation.VIEW_PROJECT, fixture["project"])).allowed is True
         await _sql("UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s", (fixture["project"], staff))
-        assert (await authorize_office(None, staff, OfficeOperation.MANAGE_PROJECT, fixture["project"])).allowed is True
+        proof = await _real_mfa_proof(staff, step_up=True)
+        assert (await authorize_office(None, staff, OfficeOperation.MANAGE_PROJECT, fixture["project"], **_with_proof(proof))).allowed is True
         await _sql("UPDATE office_account_profile SET global_role='OFFICE_SUPERUSER' WHERE user_id=%s", (staff,))
-        assert (await authorize_office(None, staff, OfficeOperation.VIEW_PROJECT, fixture["project"])).allowed is True
+        assert (await authorize_office(None, staff, OfficeOperation.VIEW_PROJECT, fixture["project"], **_with_proof(proof))).allowed is True
         await _sql("UPDATE jax_project_scope SET authorization_namespace='CLASSIC' WHERE project_id=%s", (fixture["project"],))
         assert (await authorize_office(None, staff, OfficeOperation.VIEW_PROJECT, fixture["project"])).code == "office_namespace_denied"
     client.portal.call(scenario)
@@ -359,3 +451,226 @@ def test_unknown_account_class_fails_closed_before_global_role(monkeypatch):
     monkeypatch.setattr(authority.repository, "fetch_actor", actor_row)
     decision = asyncio.run(authority.authorize_office_in_cursor(object(), 7, OfficeOperation.ADMINISTER_OFFICE))
     assert decision.code == "office_account_class_denied"
+
+
+async def _insert_controlled_step_up_proof(
+    user_id: int, *, timestamp: str = "current", result: str = "VERIFIED",
+    token_version_delta: int = 0, mfa_version_delta: int = 0,
+) -> int:
+    """Append a schema-valid STEP_UP ledger fixture at a controlled DB time.
+
+    The security ledger is append-only, so stale and future-proof cases must be
+    represented by new truthful test events rather than rewriting occurred_at.
+    Every caller first creates a durable proof through the real MFA primitives;
+    this fixture only controls the event time/version needed to exercise the
+    resolver's re-read checks.
+    """
+    timestamp_sql = {
+        "current": "UTC_TIMESTAMP(6)",
+        "old": "DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 301 SECOND)",
+        "future": "DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 SECOND)",
+    }[timestamp]
+    rows = await _sql(
+        "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s",
+        (user_id,), True,
+    )
+    token_version, mfa_version = map(int, rows[0])
+    return await _sql(
+        "INSERT INTO office_mfa_security_event "
+        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,"
+        "operation,purpose,token_version,mfa_version,previous_token_version,"
+        "previous_mfa_version,proof_event_id,authorization_event_id,result,"
+        "server_correlation_id,fence_key,occurred_at) "
+        "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',"
+        "%s,%s,NULL,NULL,NULL,NULL,%s,%s,NULL," + timestamp_sql + ")",
+        (user_id, user_id, token_version + token_version_delta,
+         mfa_version + mfa_version_delta, result, uuid.uuid4().bytes),
+    )
+
+
+async def _add_internal_office_user(fixture, *, global_role: str = "COLLABORATOR") -> int:
+    user_id = await _sql(
+        "INSERT INTO jax_users "
+        "(tenant_id,email,password_hash,role,status,account_class) "
+        "VALUES (%s,%s,'x','operator','active','INTERNAL')",
+        (fixture["tenant_a"], f"office-matrix-{uuid.uuid4().hex[:10]}@example.invalid"),
+    )
+    await _sql(
+        "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,%s,'ACTIVE')",
+        (user_id, global_role),
+    )
+    await _sql(
+        "INSERT INTO jax_project_membership "
+        "(membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+        "VALUES (%s,%s,%s,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+        (str(uuid.uuid4()), fixture["project"], fixture["tenant_a"], user_id),
+    )
+    await _sql(
+        "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+        "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+        (fixture["project"], user_id, fixture["actor"]),
+    )
+    return user_id
+
+
+@pytest.mark.parametrize(
+    ("role_case", "global_role", "grant_role", "professional"),
+    (
+        ("office_root", "OFFICE_SUPERUSER", "COLLABORATOR", False),
+        ("general_admin", "GENERAL_ADMIN", "COLLABORATOR", False),
+        ("project_admin", "COLLABORATOR", "PROJECT_ADMIN", False),
+        ("professional_approver", "COLLABORATOR", "COLLABORATOR", True),
+    ),
+)
+def test_privileged_view_requires_current_verified_proof_but_not_recency(
+    client, role_case, global_role, grant_role, professional,
+):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        if role_case == "office_root":
+            actor = fixture["outsider"]
+            await _sql(
+                "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,%s,'ACTIVE')",
+                (actor, global_role),
+            )
+        else:
+            actor = fixture["actor"] if role_case == "project_admin" else await _add_internal_office_user(
+                fixture, global_role=global_role,
+            )
+            await _sql(
+                "UPDATE office_project_grant SET grant_role=%s WHERE project_id=%s AND user_id=%s",
+                (grant_role, fixture["project"], actor),
+            )
+        if professional:
+            await _sql(
+                "INSERT INTO office_professional_grant "
+                "(project_id,user_id,capability,basis,evidence_ref,status,granted_by) "
+                "VALUES (%s,%s,'PROFESSIONAL_ACTION','test-matrix','test-matrix','ACTIVE',%s)",
+                (fixture["project"], actor, fixture["actor"]),
+            )
+        # Real enrollment/STEP_UP establishes the user and versions; the old
+        # fixture has a durable, schema-valid event timestamped by MariaDB.
+        await _real_mfa_proof(actor, step_up=True)
+        old_proof_id = await _insert_controlled_step_up_proof(actor, timestamp="old")
+        denied = await authorize_office(
+            None, actor, OfficeOperation.VIEW_PROJECT, fixture["project"],
+        )
+        assert denied.code == "office_mfa_required", role_case
+        allowed = await authorize_office(
+            None, actor, OfficeOperation.VIEW_PROJECT, fixture["project"],
+            **_with_proof(type("Proof", (), {"event_id": old_proof_id})()),
+        )
+        assert allowed.allowed is True, role_case
+    client.portal.call(scenario)
+
+
+def test_old_current_proof_cannot_authorize_mutations_and_false_flag_cannot_downgrade(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        # Ordinary collaborator view remains open, but explicit recent MFA
+        # hardens that same view.
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+        )).allowed is True
+        hardened = await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            require_recent_mfa=True,
+        )
+        assert hardened.code == "office_mfa_required"
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        await _real_mfa_proof(fixture["actor"], step_up=True)
+        old_proof_id = await _insert_controlled_step_up_proof(fixture["actor"], timestamp="old")
+        old_proof = type("Proof", (), {"event_id": old_proof_id})()
+        # The compatibility flag never lowers the derived privileged-view bar.
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            require_recent_mfa=False,
+        )).code == "office_mfa_required"
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            **_with_proof(old_proof),
+        )).allowed is True
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"],
+            **_with_proof(old_proof),
+        )).code == "office_mfa_required"
+        root = fixture["outsider"]
+        await _sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')",
+            (root,),
+        )
+        await _real_mfa_proof(root, step_up=True)
+        root_old = type("Proof", (), {"event_id": await _insert_controlled_step_up_proof(root, timestamp="old")})()
+        assert (await authorize_office(
+            None, root, OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
+            **_with_proof(root_old),
+        )).code == "office_mfa_required"
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize(
+    "case", ("wrong_subject", "non_verified", "future", "old_token", "old_mfa"),
+)
+def test_privileged_view_rejects_untrusted_or_version_stale_durable_proofs(client, case):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        await _real_mfa_proof(fixture["actor"], step_up=True)
+        if case == "wrong_subject":
+            other = await _add_internal_office_user(fixture)
+            await _real_mfa_proof(other, step_up=True)
+            proof_id = await _insert_controlled_step_up_proof(other)
+        else:
+            proof_id = await _insert_controlled_step_up_proof(
+                fixture["actor"],
+                timestamp="future" if case == "future" else "current",
+                result="DENIED" if case == "non_verified" else "VERIFIED",
+                token_version_delta=-1 if case == "old_token" else 0,
+                mfa_version_delta=-1 if case == "old_mfa" else 0,
+            )
+        decision = await authorize_office(
+            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            **_with_proof(type("Proof", (), {"event_id": proof_id})()),
+        )
+        assert decision.code == "office_mfa_required", case
+    client.portal.call(scenario)
+
+
+def test_cursor_authority_re_reads_profile_and_grant_revocation_before_deciding(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        root = fixture["outsider"]
+        await _sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')",
+            (root,),
+        )
+        root_proof = await _real_mfa_proof(root, step_up=True)
+        async with transaccion() as cur:
+            await cur.execute("UPDATE office_account_profile SET status='REVOKED' WHERE user_id=%s", (root,))
+            decision = await authorize_office_in_cursor(
+                cur, root, OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
+                **_with_proof(root_proof),
+            )
+            assert decision.code == "office_profile_missing"
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN',status='ACTIVE' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        project_proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        async with transaccion() as cur:
+            await cur.execute(
+                "UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s",
+                (fixture["project"], fixture["actor"]),
+            )
+            decision = await authorize_office_in_cursor(
+                cur, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+                **_with_proof(project_proof),
+            )
+            assert decision.code == "office_grant_missing"
+    client.portal.call(scenario)

@@ -351,7 +351,11 @@ def test_office_root_reset_is_actor_bound_records_both_ledgers_and_cuts_only_tar
         await _migrate()
         root, root_start, _ = await _active_user()
         target, _, _ = await _active_user()
-        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,))
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')",
+            (root, target),
+        )
         proof = await _step_up_proof(root, root_start.secret, b"R" * 16)
         before_root = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (root,), True)
         before_target = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
@@ -388,6 +392,45 @@ def test_office_root_reset_is_actor_bound_records_both_ledgers_and_cuts_only_tar
         assert state == ((root, target, "MFA_RESET", "STEP_UP", "USER_SESSION", proof.event_id,
                           "ADMINISTER_OFFICE_IDENTITY_SECURITY", "ALLOWED"),)
     client.portal.call(assert_result)
+
+
+def test_root_reset_rejects_classic_only_target_before_any_state_change(client):
+    """An Office root has no authority to reset a classic/Faro identity."""
+    async def scenario():
+        await _migrate()
+        root, start, _ = await _active_user()
+        target, _, _ = await _active_user()
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) "
+            "VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,),
+        )
+        proof = await _step_up_proof(root, start.secret, b"C" * 16)
+        before = await sql(
+            "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True,
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await cur.execute(
+                "INSERT INTO office_authorization_event "
+                "(actor_user_id,event_kind,operation,result,reason_code,occurred_at) "
+                "VALUES (%s,'AUTHORIZATION','ADMINISTER_OFFICE_IDENTITY_SECURITY',"
+                "'ALLOWED','test',UTC_TIMESTAMP(6))", (root,),
+            )
+            from virtual_office.mfa import reset_mfa_by_office_root_in_cursor
+            result = await reset_mfa_by_office_root_in_cursor(
+                cur, actor_user_id=root, target_user_id=target,
+                proof_event_id=proof.event_id, authorization_event_id=cur.lastrowid,
+                config=CONFIG, server_correlation_id=b"D" * 16,
+            )
+            assert isinstance(result, MFADenied)
+            assert result.code == "mfa_reset_denied"
+        assert await sql(
+            "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True,
+        ) == before
+        assert await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event "
+            "WHERE subject_user_id=%s AND operation='MFA_RESET'", (target,), True,
+        ) == ((0,),)
+    client.portal.call(scenario)
 
 
 def test_office_root_reset_http_denials_do_not_mutate_target(client, monkeypatch):
@@ -445,6 +488,10 @@ def test_root_reset_reloads_authorization_and_append_failure_rolls_everything_ba
         await _migrate()
         root, root_start, _ = await _active_user()
         target, _, _ = await _active_user()
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'COLLABORATOR','ACTIVE')", (target,),
+        )
         proof = await _step_up_proof(root, root_start.secret, b"D" * 16)
         before = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
         # A real ALLOWED audit record with the wrong operation is not a reset authority.
@@ -1492,3 +1539,218 @@ def test_mfa_source_has_no_session_local_timestamp_expression():
     state = text.split("async def _append_state", 1)[1].split("async def _invalidate", 1)[0]
     assert "occurred_at" in proof and "UTC_TIMESTAMP(6)" in proof
     assert "occurred_at" in state and "UTC_TIMESTAMP(6)" in state
+
+
+async def _direct_root_reset(cur, root, target, proof_id, cid=b"X" * 16):
+    from virtual_office.mfa import reset_mfa_by_office_root_in_cursor
+    await cur.execute(
+        "INSERT INTO office_authorization_event "
+        "(actor_user_id,event_kind,operation,result,reason_code,occurred_at) "
+        "VALUES (%s,'AUTHORIZATION','ADMINISTER_OFFICE_IDENTITY_SECURITY','ALLOWED','test',UTC_TIMESTAMP(6))",
+        (root,),
+    )
+    return await reset_mfa_by_office_root_in_cursor(
+        cur, actor_user_id=root, target_user_id=target, proof_event_id=proof_id,
+        authorization_event_id=cur.lastrowid, config=CONFIG, server_correlation_id=cid,
+    )
+
+
+@pytest.mark.parametrize(
+    ("account_class", "profile_status", "cross_tenant"),
+    (
+        ("INTERNAL", "REVOKED", False),
+        ("OFFICE_INTERNAL", None, False),
+        ("EXTERNAL_CLIENT", None, True),
+    ),
+)
+def test_root_reset_target_scope_accepts_only_office_bound_classes(
+    client, account_class, profile_status, cross_tenant,
+):
+    async def scenario():
+        await _migrate()
+        root, start, _ = await _active_user()
+        target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,))
+        if profile_status:
+            await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR',%s)", (target, profile_status))
+        await sql("UPDATE jax_users SET account_class=%s WHERE user_id=%s", (account_class, target))
+        if cross_tenant:
+            tenant = await sql("INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (f"reset-cross-{secrets.token_hex(5)}",))
+            await sql("UPDATE jax_users SET tenant_id=%s WHERE user_id=%s", (tenant, target))
+        proof = await _step_up_proof(root, start.secret, b"T" * 16)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            receipt = await _direct_root_reset(cur, root, target, proof.event_id)
+        assert not isinstance(receipt, MFADenied)
+        assert receipt.subject_user_id == target
+    client.portal.call(scenario)
+
+
+def test_root_reset_rejects_login_proof_even_when_recent_without_effect(client):
+    async def scenario():
+        await _migrate()
+        root, start, _ = await _active_user(); target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (root, target))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            challenge = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=root, config=CONFIG)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            login = await verify_and_consume_totp_in_cursor(cur, challenge_token=challenge.token, otp=_previous_otp(start.secret), server_correlation_id=b"L" * 16)
+        before = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            denied = await _direct_root_reset(cur, root, target, login.event_id, b"M" * 16)
+            assert isinstance(denied, MFADenied) and denied.code == "mfa_reset_denied"
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == before
+        assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND operation='MFA_RESET'", (target,), True) == ((0,),)
+    client.portal.call(scenario)
+
+
+def test_pair_mutex_fails_closed_for_missing_side_and_explain_uses_pk_indexes(client):
+    async def scenario():
+        await _migrate()
+        root, _, _ = await _active_user(); target, _, _ = await _active_user()
+        from virtual_office.mfa import lock_office_identity_pair_in_cursor
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await lock_office_identity_pair_in_cursor(cur, root, 2_000_000_000) is False
+        plans = (
+            ("EXPLAIN SELECT user_id,tenant_id FROM jax_users WHERE user_id IN (%s,%s)", (root, target)),
+            ("EXPLAIN SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (1,)),
+            ("EXPLAIN SELECT user_id FROM office_account_profile WHERE user_id=%s FOR UPDATE", (root,)),
+        )
+        receipt = []
+        for statement, params in plans:
+            rows = await sql(statement, params, True)
+            assert rows and all(str(row[3]).upper() != "ALL" for row in rows)
+            extra = " ".join(str(row[-1] or "") for row in rows)
+            assert "Using filesort" not in extra and "Using temporary" not in extra
+            receipt.append(tuple(row[5] for row in rows))
+        assert receipt
+    client.portal.call(scenario)
+
+
+def test_cross_reset_pair_mutex_serializes_reversed_roots_without_deadlock(client):
+    async def scenario():
+        await _migrate()
+        root_a, start_a, _ = await _active_user(); root_b, start_b, _ = await _active_user()
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'OFFICE_SUPERUSER','ACTIVE')", (root_a, root_b),
+        )
+        # Put B in a larger tenant than A: the lock routine must still acquire
+        # tenants numerically, then actor/target in route order.
+        larger = await sql("INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (f"mutex-{secrets.token_hex(5)}",))
+        await sql("UPDATE jax_users SET tenant_id=%s WHERE user_id=%s", (larger, root_a))
+        proof_a = await _step_up_proof(root_a, start_a.secret, b"A" * 16)
+        proof_b = await _step_up_proof(root_b, start_b.secret, b"B" * 16)
+        from virtual_office.mfa import lock_office_identity_pair_in_cursor
+
+        async def reset(actor, target, proof, cid):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                assert await lock_office_identity_pair_in_cursor(cur, actor, target)
+                return await _direct_root_reset(cur, actor, target, proof.event_id, cid)
+
+        results = await asyncio.wait_for(
+            asyncio.gather(reset(root_a, root_b, proof_a, b"1" * 16),
+                           reset(root_b, root_a, proof_b, b"2" * 16)),
+            timeout=5,
+        )
+        assert sum(not isinstance(result, MFADenied) for result in results) == 1
+        assert sum(isinstance(result, MFADenied) and result.code == "mfa_reset_denied" for result in results) == 1
+        resets = await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE operation='MFA_RESET' "
+            "AND subject_user_id IN (%s,%s)", (root_a, root_b), True,
+        )
+        assert resets == ((1,),)
+    client.portal.call(scenario)
+
+
+def test_same_tenant_root_reset_and_classic_guarded_mutation_complete_without_deadlock(client):
+    async def scenario():
+        await _migrate()
+        root, start, _ = await _active_user(); target, _, _ = await _active_user()
+        classic, _ = await crear_usuario(role="superadmin")
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (root, target),
+        )
+        proof = await _step_up_proof(root, start.secret, b"Q" * 16)
+        from fastapi import HTTPException
+        from virtual_office.identity_security import OfficeIdentityMutation, guard_office_identity_mutation_in_cursor
+        from virtual_office.mfa import lock_office_identity_pair_in_cursor
+
+        async def root_reset():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                assert await lock_office_identity_pair_in_cursor(cur, root, target)
+                return await _direct_root_reset(cur, root, target, proof.event_id, b"R" * 16)
+
+        async def classic_mutation():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                # The same tenant -> actor -> target ordering as admin/users.
+                await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=1 FOR UPDATE")
+                await cur.execute("SELECT user_id FROM jax_users WHERE user_id=%s FOR UPDATE", (classic,))
+                await cur.execute("SELECT user_id FROM jax_users WHERE user_id=%s FOR UPDATE", (target,))
+                try:
+                    await guard_office_identity_mutation_in_cursor(
+                        cur, actor_user_id=classic, target_user_id=target,
+                        mutation=OfficeIdentityMutation.EMAIL,
+                    )
+                except HTTPException as exc:
+                    return exc.detail
+                raise AssertionError("classic mutation unexpectedly passed Office guard")
+
+        reset, denied = await asyncio.wait_for(
+            asyncio.gather(root_reset(), classic_mutation()), timeout=5,
+        )
+        assert not isinstance(reset, MFADenied)
+        assert denied == "office_identity_guard_required"
+        assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND operation='MFA_RESET'", (target,), True) == ((1,),)
+        assert await sql("SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND operation='ADMINISTER_OFFICE_IDENTITY_SECURITY'", (classic,), True) == ((0,),)
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("change", ("tenant_drift", "disappear"))
+def test_pair_mutex_rechecks_discovery_under_locks_before_authority_or_effect(client, change):
+    async def scenario():
+        await _migrate()
+        actor, _, _ = await _active_user()
+        target, _ = await crear_usuario()
+        # Actor begins in a numerically larger tenant to prove ascending tenant
+        # locks are independent of actor/target argument order.
+        large = await sql("INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (f"drift-large-{secrets.token_hex(4)}",))
+        replacement = await sql("INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (f"drift-new-{secrets.token_hex(4)}",))
+        await sql("UPDATE jax_users SET tenant_id=%s WHERE user_id=%s", (large, actor))
+        from virtual_office.mfa import lock_office_identity_pair_in_cursor
+
+        class InterleavingCursor:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.discovery_seen = False
+                self.tenant_locks = []
+            async def execute(self, statement, params=None):
+                await self._cursor.execute(statement, params)
+                if statement.startswith("SELECT user_id,tenant_id FROM jax_users WHERE user_id IN"):
+                    self.discovery_seen = True
+                elif statement.startswith("SELECT tenant_id FROM jax_tenants WHERE tenant_id="):
+                    self.tenant_locks.append(int(params[0]))
+            async def fetchall(self):
+                rows = await self._cursor.fetchall()
+                if self.discovery_seen:
+                    self.discovery_seen = False
+                    if change == "tenant_drift":
+                        await sql("UPDATE jax_users SET tenant_id=%s WHERE user_id=%s", (replacement, target))
+                    else:
+                        await sql("DELETE FROM jax_users WHERE user_id=%s", (target,))
+                return rows
+            async def fetchone(self):
+                return await self._cursor.fetchone()
+            @property
+            def lastrowid(self): return self._cursor.lastrowid
+            @property
+            def rowcount(self): return self._cursor.rowcount
+
+        async with transaccion(AISLAMIENTO_ADMIN) as raw:
+            cur = InterleavingCursor(raw)
+            assert await lock_office_identity_pair_in_cursor(cur, actor, target) is False
+            assert cur.tenant_locks == sorted(cur.tenant_locks)
+        assert await sql("SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s", (actor,), True) == ((0,),)
+        if change == "tenant_drift":
+            assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == ((0, 0),)
+    client.portal.call(scenario)

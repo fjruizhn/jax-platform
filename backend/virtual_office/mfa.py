@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import os
 import secrets
 from dataclasses import dataclass
 from typing import Literal
@@ -38,6 +39,34 @@ class MFAConfig:
     def __post_init__(self):
         if any(type(v) is not int or v <= 0 for v in self.__dict__.values()):
             raise ValueError("MFAConfig values must be positive integers")
+
+
+def load_mfa_config_from_environment() -> MFAConfig | None:
+    """Load the complete Office MFA policy or leave the feature disabled.
+
+    This boundary deliberately has no cache or API dependency: every caller
+    obtains the same canonical parsing and range checks from server settings.
+    """
+    names = {
+        "challenge_lifetime_seconds": ("OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", 1, 900),
+        "challenge_max_attempts": ("OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS", 1, 5),
+        "enrollment_lifetime_seconds": ("OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", 1, 3600),
+        "recency_seconds": ("OFFICE_MFA_RECENCY_SECONDS", 1, 900),
+        "recovery_code_count": ("OFFICE_MFA_RECOVERY_CODE_COUNT", 1, 64),
+    }
+    values: dict[str, int] = {}
+    for field, (name, low, high) in names.items():
+        raw = os.getenv(name)
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if str(value) != raw or not low <= value <= high:
+            return None
+        values[field] = value
+    return MFAConfig(**values)
 
 
 @dataclass(frozen=True)
@@ -688,6 +717,47 @@ async def disable_mfa_after_password_in_cursor(cur, *, actor_user_id: int, proof
     return MFAStateReceipt(event, actor_user_id, *current)
 
 
+async def lock_office_identity_pair_in_cursor(cur, actor_user_id: int, target_user_id: int) -> bool:
+    """Acquire the shared Office/classic identity mutex without authorizing.
+
+    Discovery is only a key hint.  Every discovered tenant and user is
+    re-read under its lock so deletion or tenant movement fails closed before
+    the root resolver can append an authorization event.
+    """
+    if (type(actor_user_id) is not int or type(target_user_id) is not int
+            or actor_user_id < 1 or target_user_id < 1 or actor_user_id == target_user_id):
+        return False
+    await cur.execute(
+        "SELECT user_id,tenant_id FROM jax_users WHERE user_id IN (%s,%s)",
+        (actor_user_id, target_user_id),
+    )
+    discovered = {int(user_id): int(tenant_id) for user_id, tenant_id in await cur.fetchall()}
+    if set(discovered) != {actor_user_id, target_user_id}:
+        return False
+    for tenant_id in sorted(set(discovered.values())):
+        await cur.execute(
+            "SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,),
+        )
+        if await cur.fetchone() is None:
+            return False
+
+    async def lock_user_and_profile(user_id: int, expected_tenant_id: int) -> bool:
+        await cur.execute(
+            "SELECT tenant_id FROM jax_users WHERE user_id=%s FOR UPDATE", (user_id,),
+        )
+        row = await cur.fetchone()
+        if row is None or int(row[0]) != expected_tenant_id:
+            return False
+        await cur.execute(
+            "SELECT user_id FROM office_account_profile WHERE user_id=%s FOR UPDATE", (user_id,),
+        )
+        await cur.fetchone()
+        return True
+
+    return (await lock_user_and_profile(actor_user_id, discovered[actor_user_id])
+            and await lock_user_and_profile(target_user_id, discovered[target_user_id]))
+
+
 async def reset_mfa_by_office_root_in_cursor(cur, *, actor_user_id: int,
                                               target_user_id: int,
                                               proof_event_id: int,
@@ -721,6 +791,21 @@ async def reset_mfa_by_office_root_in_cursor(cur, *, actor_user_id: int,
         return MFADenied("mfa_reset_denied", terminal=True)
     target_versions = await _user(cur, target_user_id)
     if target_versions is None:
+        return MFADenied("mfa_reset_denied", terminal=True)
+    # A root can cross Office tenants, never into an unbound Classic identity.
+    # The profile row remains part of the permanent binding even when revoked.
+    await cur.execute(
+        "SELECT u.account_class,p.user_id FROM jax_users u "
+        "LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+        "WHERE u.user_id=%s FOR UPDATE",
+        (target_user_id,),
+    )
+    target_identity = await cur.fetchone()
+    if target_identity is None:
+        return MFADenied("mfa_reset_denied", terminal=True)
+    account_class, profile_user_id = target_identity
+    if account_class not in {"OFFICE_INTERNAL", "EXTERNAL_CLIENT"} and not (
+            account_class == "INTERNAL" and profile_user_id is not None):
         return MFADenied("mfa_reset_denied", terminal=True)
     current = (target_versions[0] + 1, target_versions[1] + 1)
     await cur.execute(

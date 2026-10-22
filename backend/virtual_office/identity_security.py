@@ -12,6 +12,10 @@ from enum import StrEnum
 
 from fastapi import HTTPException, status
 
+from .authority import authorize_office_in_cursor
+from .capabilities import OfficeOperation
+from .mfa import load_mfa_config_from_environment
+
 
 class OfficeIdentityMutation(StrEnum):
     PASSWORD = "PASSWORD"
@@ -28,7 +32,8 @@ _OFFICE_ACCOUNT_CLASSES = frozenset({"OFFICE_INTERNAL", "EXTERNAL_CLIENT"})
 
 async def guard_office_identity_mutation_in_cursor(cur, *, actor_user_id: int,
                                                     target_user_id: int,
-                                                    mutation: OfficeIdentityMutation) -> None:
+                                                    mutation: OfficeIdentityMutation,
+                                                    mfa_proof_event_id: int | None = None) -> None:
     """Fail closed for a target permanently bound to Office.
 
     Caller already holds tenant -> actor -> target locks.  The profile lookup
@@ -54,6 +59,14 @@ async def guard_office_identity_mutation_in_cursor(cur, *, actor_user_id: int,
         # mutation.  The session path uses the same known-enum boundary.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="office_identity_guard_required")
     if account_class in _OFFICE_ACCOUNT_CLASSES or profile_user_id is not None:
-        # No usable recent-MFA proof exists before Task 3.  Do not substitute
-        # generic Office administration or a classic role for that proof.
+        config = load_mfa_config_from_environment()
+        if config is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="office_identity_guard_required")
+        decision = await authorize_office_in_cursor(
+            cur, actor_user_id, OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
+            require_recent_mfa=True, mfa_proof_event_id=mfa_proof_event_id,
+            mfa_config=config,
+        )
+        if decision.allowed:
+            return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="office_identity_guard_required")

@@ -1,10 +1,10 @@
 import asyncio
 import html as html_lib
+import os
 import uuid
 import logging
 import math
 import secrets
-import os
 import time
 from datetime import timedelta, timezone
 from tiempo import utc_ahora
@@ -33,6 +33,8 @@ from virtual_office.mfa import (
     consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
     regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
     reset_mfa_by_office_root_in_cursor,
+    load_mfa_config_from_environment,
+    lock_office_identity_pair_in_cursor,
 )
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.audit import record_authorization_event
@@ -113,28 +115,7 @@ def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, 
                                mfa_version=mfa_version, mfa_at=mfa_at)
 
 
-def _mfa_config() -> MFAConfig | None:
-    """Load the Office MFA policy without silently enabling it in production."""
-    names = {
-        "challenge_lifetime_seconds": ("OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", 1, 900),
-        "challenge_max_attempts": ("OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS", 1, 5),
-        "enrollment_lifetime_seconds": ("OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", 1, 3600),
-        "recency_seconds": ("OFFICE_MFA_RECENCY_SECONDS", 1, 900),
-        "recovery_code_count": ("OFFICE_MFA_RECOVERY_CODE_COUNT", 1, 64),
-    }
-    values: dict[str, int] = {}
-    for field, (name, low, high) in names.items():
-        raw = os.getenv(name)
-        if raw is None:
-            return None
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return None
-        if str(value) != raw or not low <= value <= high:
-            return None
-        values[field] = value
-    return MFAConfig(**values)
+_mfa_config = load_mfa_config_from_environment
 
 
 def _mfa_unavailable() -> HTTPException:
@@ -607,6 +588,9 @@ async def mfa_root_reset(req: MFARootResetRequest, response: Response, user: Aut
     if user.mfa_proof_event_id is None:
         raise HTTPException(status_code=403, detail="office_mfa_required")
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await lock_office_identity_pair_in_cursor(
+                cur, int(user.user_id), req.target_user_id):
+            raise HTTPException(status_code=403, detail="mfa_reset_denied")
         decision = await authorize_office_in_cursor(
             cur, int(user.user_id), OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
             require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,

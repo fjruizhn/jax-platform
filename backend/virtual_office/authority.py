@@ -82,7 +82,10 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
         )
         professional_view = professional is not None and professional["status"] == "ACTIVE"
     derived_recent = decision.operation != OfficeOperation.VIEW_PROJECT.value
-    need_verified = privileged_view or professional_view or derived_recent
+    # An explicit caller requirement hardens even an otherwise ordinary
+    # collaborator view.  It is additive, like the role-derived conditions;
+    # callers can never use ``False`` to lower either rule.
+    need_verified = privileged_view or professional_view or derived_recent or require_recent_mfa
     need_recent = derived_recent or require_recent_mfa
     if not need_verified:
         return decision
