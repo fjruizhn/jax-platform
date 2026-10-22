@@ -3755,12 +3755,8 @@ async def run_migrations():
                 invalidate_office_runtime_revision,
                 stamp_office_runtime_revision,
             )
-            await apply_office_migrations(cur)
-            # The Office preflight needs a committed matching stamp to tell a
-            # finished v7 ceremony from partial DDL.  Once its idempotent
-            # schema check has run, remove readiness before any later platform
-            # migration can fail; the final stamp remains below.
             await invalidate_office_runtime_revision(cur)
+            await apply_office_migrations(cur)
 
             for table_name, column_name, ddl in _COLUMNS:
                 if not await _column_exists(cur, table_name, column_name):

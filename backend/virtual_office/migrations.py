@@ -479,19 +479,6 @@ async def _preflight_legacy_recovery_in_flight(cur) -> None:
     for table in required:
         if not await _table_exists(cur, table):
             return
-    # The gate protects the v6 -> v7 deployment boundary.  Once v7 has
-    # durably stamped readiness, rerunning its idempotent migration cannot
-    # make an old binary's test-only/internal helper a migration blocker.  A
-    # partial DDL rollout has no v7 stamp (the stamp is written last), so it
-    # still reaches the fail-closed lineage checks below.
-    if await _table_exists(cur, "office_schema_revision"):
-        await cur.execute(
-            "SELECT revision FROM office_schema_revision WHERE component=%s",
-            (RUNTIME_COMPONENT,),
-        )
-        revision = await cur.fetchone()
-        if revision is not None and revision[0] == RUNTIME_REVISION:
-            return
     await cur.execute("SELECT UTC_TIMESTAMP(6)")
     now = (await cur.fetchone())[0]
     await cur.execute(
