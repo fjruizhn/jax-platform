@@ -313,8 +313,8 @@ async def issue_invitation_in_cursor(
         "INSERT INTO office_invitation (invitation_id,issuance_id,project_id,email_normalized,target_user_id) "
         "VALUES (%s,%s,%s,%s,%s)", (invitation_id, issuance_id, project_id, normalized_email, target_user_id))
     await cur.execute(
-        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
-        "VALUES (%s,'ISSUED',NULL,%s,NULL,NULL,%s,UTC_TIMESTAMP(6))", (invitation_id, actor_user_id, correlation_id))
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,authorization_event_id,invocation_digest,occurred_at) "
+        "VALUES (%s,'ISSUED',NULL,%s,NULL,NULL,%s,%s,%s,UTC_TIMESTAMP(6))", (invitation_id, actor_user_id, correlation_id, authorization_event_id, mutation_digest))
     issued_event_id = int(cur.lastrowid)
     await cur.execute(
         "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_id,attempt_count,cancel_requested,payload_ciphertext,message_id,result_code,claimed_at,finished_at,created_at,updated_at) "
@@ -370,10 +370,11 @@ async def revoke_invitation_in_cursor(
     issued = await cur.fetchone()
     if issued is None:
         raise InvitationError("office_invitation_integrity", status_code=503)
+    authorization_event_id = await record_authorization_event(cur, decision)
     await cur.execute(
-        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
-        "VALUES (%s,'REVOKED',%s,%s,NULL,NULL,%s,UTC_TIMESTAMP(6))",
-        (invitation_id, int(issued[0]), actor_user_id, invitation[3]))
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,authorization_event_id,invocation_digest,occurred_at) "
+        "VALUES (%s,'REVOKED',%s,%s,NULL,NULL,%s,%s,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, int(issued[0]), actor_user_id, invitation[3], authorization_event_id, mutation_digest))
     revoked_event_id = int(cur.lastrowid)
     await cur.execute(
         "UPDATE office_invitation SET status='REVOKED',version=version+1,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) "
@@ -382,7 +383,6 @@ async def revoke_invitation_in_cursor(
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     response_version = expected_version + 1
-    authorization_event_id = await record_authorization_event(cur, decision)
     await _write_mutation_receipt(
         cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
         actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
