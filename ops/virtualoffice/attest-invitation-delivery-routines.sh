@@ -31,3 +31,12 @@ for routine in "${!expected_create[@]}"; do
  actual=$(q "USE \`$DB\`; SHOW CREATE PROCEDURE \`$routine\`;" | sha256sum | awk '{print $1}')
  [[ $actual == "${expected_create[$routine]}" ]] || { echo 'delivery routine body drift' >&2; exit 1; }
 done
+# The delivery user has configuration/outbox observation plus exactly these
+# procedures; any lifecycle/event DML is an authority escalation.
+worker=${JAX_INVITATION_WORKER_DB_USER:-jaxinvite}
+[[ $worker =~ ^[a-z][a-z0-9_]{0,31}$ ]] || { echo 'unsafe delivery worker principal' >&2; exit 1; }
+grants=$(q "SHOW GRANTS FOR '$worker'@'localhost';")
+printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_claim_next_v1\`" >/dev/null || { echo 'delivery claim execute absent' >&2; exit 1; }
+printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_expire_due_v1\`" >/dev/null || { echo 'delivery expire execute absent' >&2; exit 1; }
+printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_settle_delivery_v1\`" >/dev/null || { echo 'delivery settle execute absent' >&2; exit 1; }
+printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
