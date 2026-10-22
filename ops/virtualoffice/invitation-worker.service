@@ -35,4 +35,3 @@ UMask=0077
 # challenges.  A 25-row cap leaves conservative room under this deadline.
 TimeoutStartSec=3h
 KillMode=control-group
-

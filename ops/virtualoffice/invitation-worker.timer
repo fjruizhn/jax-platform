@@ -10,4 +10,3 @@ Unit=axioma-office-invitation-worker.service
 
 [Install]
 WantedBy=timers.target
-
