@@ -12,7 +12,7 @@ from pathlib import Path
 
 SERVICE_PROPERTIES = {
     "WorkingDirectory": "s", "User": "s", "Group": "s", "SupplementaryGroups": "as",
-    "Environment": "as", "EnvironmentFiles": "a(sb)", "LoadCredential": "as", "UnsetEnvironment": "as", "ExecStartEx": "a(sasasttttuii)",
+    "Environment": "as", "EnvironmentFiles": "a(sb)", "LoadCredential": "a(ss)", "UnsetEnvironment": "as", "ExecStartEx": "a(sasasttttuii)",
     "ExecStartPreEx": "a(sasasttttuii)", "ExecStartPostEx": "a(sasasttttuii)",
     "ExecConditionEx": "a(sasasttttuii)", "Type": "s", "RemainAfterExit": "b",
 }
@@ -71,11 +71,12 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
         credential = "runtime.env" if mode == "web" else "migrate.env"
         if cwd[0] != "/" or argv != ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", mode, f"%d/{credential}"]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
+        effective_argv = [argument.replace("%d", f"/run/credentials/{unit}") for argument in argv]
         contract[unit] = {
             "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
-            "EnvironmentFiles": [], "LoadCredential": creds, "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
-            "ExecStart": argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
+            "EnvironmentFiles": [], "LoadCredential": [credential.split(":", 1) for credential in creds], "UnsetEnvironment": [item for value in unset for item in shlex.split(value)],
+            "ExecStart": effective_argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
         }
