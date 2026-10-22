@@ -6,9 +6,10 @@ endpoint cannot accidentally become reachable by an Office-only identity.
 """
 from __future__ import annotations
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .jwt import decode_token
 from .middleware import verificar_sesion
@@ -53,27 +54,48 @@ def require_classic_stream_user(user: AuthUser) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="office_surface_required")
 
 
-class OfficeSurfaceBarrierMiddleware(BaseHTTPMiddleware):
+class OfficeSurfaceBarrierMiddleware:
     """Reject an authenticated Office-only principal before any classic route.
 
     An absent or invalid bearer is left to the route's normal authentication
     dependency, preserving existing 401 semantics.  A valid restricted bearer
     is resolved directly from MariaDB and denied before route/body/provider
     code can run.
+
+    The barrier is pure ASGI deliberately.  ``BaseHTTPMiddleware`` runs the
+    downstream application in a task group and only records ``Exception``.
+    A downstream ``asyncio.CancelledError`` therefore becomes its synthetic
+    ``RuntimeError('No response returned.')`` rather than remaining the
+    cancellation observed by the caller.  Password-reset delivery relies on
+    that cancellation to run its cleanup and propagate unchanged.
     """
-    async def dispatch(self, request: Request, call_next):
-        authorization = request.headers.get("authorization")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        authorization = headers.get("authorization")
         if not authorization:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
+        method = scope["method"]
+        path = scope["path"]
         # These endpoints authenticate themselves (and are the finite
         # subject-proof/session surface explicitly granted to restricted
         # accounts).  Skipping the preflight here preserves the one canonical
         # account lookup performed by their dependency/handler.
-        if restricted_route_allowed(request.method, request.url.path):
-            return await call_next(request)
+        if restricted_route_allowed(method, path):
+            await self.app(scope, receive, send)
+            return
         try:
             # Resolve the canonical class even for a password-change-pending
             # restricted user.  The barrier must run before body, limiter,
@@ -81,11 +103,16 @@ class OfficeSurfaceBarrierMiddleware(BaseHTTPMiddleware):
             # still occur in the endpoint dependency below.
             user = await verificar_sesion(decode_token(token), "access", admite_cambio_pendiente=True)
         except HTTPException:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         except Exception:
             # An unexpected classification failure must never turn into a
             # classic access grant for a bearer that reached this boundary.
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "sesion_invalida"})
-        if user.account_class in _RESTRICTED and not restricted_route_allowed(request.method, request.url.path):
-            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "office_surface_required"})
-        return await call_next(request)
+            response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "sesion_invalida"})
+            await response(scope, receive, send)
+            return
+        if user.account_class in _RESTRICTED:
+            response = JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "office_surface_required"})
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
