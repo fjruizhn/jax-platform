@@ -579,6 +579,27 @@ def test_project_detail_hides_internal_metadata_from_external_client(client, mon
     assert root_response.json()["description"] == "internal-only metadata"
 
 
+def test_root_updates_office_metadata_through_typed_jax_hook(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project = await sql("INSERT INTO projects (project_uuid,name,description,status) VALUES (UUID(),%s,%s,'active')",
+                            ("metadata-before-" + uuid.uuid4().hex, "before"))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project,))
+        return project
+
+    project = client.portal.call(scenario)
+    updated = client.put(
+        f"/api/virtual-office/projects/{project}",
+        json={"name": "  metadata after  ", "description": "after"},
+        headers=_proof_headers(root, tv, mv, proof, str(uuid.uuid4())),
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"id": project, "name": "metadata after", "description": "after", "changed": True}
+    assert client.portal.call(sql, "SELECT name,description FROM projects WHERE id=%s", (project,), True) == (("metadata after", "after"),)
+
+
 def test_create_project_rejects_whitespace_name_and_invalid_idempotency_before_write(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)

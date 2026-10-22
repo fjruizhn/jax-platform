@@ -23,6 +23,31 @@ class ProjectCreate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
 
 
+class ProjectMetadataUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=255, pattern=r".*\S.*")
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class _OfficeProjectMetadataAuthorizer:
+    def __init__(self, *, proof_event_id: int | None, mfa_config):
+        self._proof_event_id = proof_event_id
+        self._mfa_config = mfa_config
+
+    async def authorize_in_transaction(self, cursor, *, actor_user_id: int,
+                                       target_tenant_id: int, project_id: int,
+                                       namespace, operation: str) -> None:
+        from jax.memory.project_authority import AuthorizationDenied, ProjectNamespace
+        if namespace is not ProjectNamespace.OFFICE_CONFIDENTIAL or operation != "UPDATE_OFFICE_PROJECT_METADATA":
+            raise AuthorizationDenied("Office metadata authority context is invalid")
+        decision = await authorize_office_in_cursor(
+            cursor, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
+            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
+            mfa_config=self._mfa_config,
+        )
+        if not decision.allowed or decision.tenant_id != target_tenant_id:
+            raise AuthorizationDenied("Office project metadata authority is required")
+
+
 class _PhaseBRetryable(RuntimeError):
     """The JAX project exists but its Office recipient group is not ready."""
 
@@ -303,6 +328,50 @@ async def get_project(project_id: int, user: AuthUser = Depends(get_current_user
             proof_event_id=user.mfa_proof_event_id,
             mfa_config=load_mfa_config_from_environment(),
         )
+
+
+@router.put("/{project_id}")
+async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdate,
+                                  user: AuthUser = Depends(get_current_user)):
+    """Use JAX's canonical Office metadata hook; JXP never updates projects directly."""
+    try:
+        actor_user_id = int(user.user_id)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=403, detail="office_project_update_denied") from error
+    if project_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_update_not_found")
+    config = load_mfa_config_from_environment()
+    from jax.memory.b9_mariadb import MariaDBB9Store
+    from jax.memory.project_authority import (
+        AuthorizationDenied, ProjectAuthorityAdmin, ProjectAuthorityError,
+        ProjectAuthorityRetryable, ProjectNamespace, ProjectNotVisible,
+    )
+    try:
+        # JAX owns the transaction and canonical locks for project metadata.
+        # Fetching tenant is an untrusted hint only; the hook rereads and locks
+        # the scope before it writes and the callback reauthorizes in cursor.
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+            row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="office_project_update_not_found")
+        result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).update_namespaced_project_metadata(
+            actor_user_id=actor_user_id, target_tenant_id=int(row[0]), project_id=project_id,
+            namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name=payload.name,
+            description=payload.description,
+            authorizer=_OfficeProjectMetadataAuthorizer(
+                proof_event_id=user.mfa_proof_event_id, mfa_config=config),
+        )
+    except HTTPException:
+        raise
+    except (AuthorizationDenied, ProjectNotVisible) as error:
+        raise HTTPException(status_code=403, detail="office_project_update_denied") from error
+    except ProjectAuthorityRetryable as error:
+        raise HTTPException(status_code=503, detail="office_project_update_retryable") from error
+    except ProjectAuthorityError as error:
+        raise HTTPException(status_code=503, detail="office_project_update_retryable") from error
+    return {"id": result.project_id, "name": result.name,
+            "description": result.description, "changed": result.changed}
 
 
 @router.post("")
