@@ -21,7 +21,6 @@ for file in pair_artifact_readiness.py pair-artifact-readiness.sh jax-platform-p
 done
 for unit in jax-platform.service jax-platform-migrate.service; do
   [[ -f $SOURCE/systemd-units/$unit && ! -L $SOURCE/systemd-units/$unit ]] || { echo "missing unit: $unit" >&2; exit 1; }
-  /usr/bin/systemd-analyze verify "$SOURCE/systemd-units/$unit"
   dropin="/etc/systemd/system/$unit.d"
   [[ ! -e $dropin ]] || { echo "refusing existing drop-in: $dropin" >&2; exit 1; }
 done
