@@ -769,12 +769,16 @@ async def finalize_invitation_delivery_in_cursor(
 async def settle_stale_invitation_claims_in_cursor(cur, *, config: InvitationConfig) -> int:
     """Turn abandoned fenced attempts into durable UNKNOWN, never QUEUED."""
     await cur.execute(
-        "SELECT outbox_id,attempt_id FROM office_invitation_outbox WHERE state='CLAIMED' "
+        "SELECT outbox_id,attempt_id,invitation_id FROM office_invitation_outbox WHERE state='CLAIMED' "
         "AND claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL %s SECOND) "
-        "ORDER BY claimed_at,outbox_id FOR UPDATE SKIP LOCKED", (config.claim_timeout_seconds,))
+        "ORDER BY claimed_at,outbox_id", (config.claim_timeout_seconds,))
     stale = await cur.fetchall()
     settled = 0
-    for outbox_id, attempt_id in stale:
+    for outbox_id, attempt_id, invitation_id in stale:
+        # Match acceptance/revocation's lock order: invitation before outbox.
+        await cur.execute("SELECT invitation_id FROM office_invitation WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
+        if await cur.fetchone() is None:
+            continue
         if await finalize_invitation_delivery_in_cursor(
             cur, outbox_id=str(outbox_id), attempt_id=str(attempt_id),
             relay_accepted=False, result_code="SMTP_STALE"):
