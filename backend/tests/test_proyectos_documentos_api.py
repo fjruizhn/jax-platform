@@ -1417,7 +1417,10 @@ def _escenario(client, guion):
     cuerpos = []
 
     async def corre():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://t") as http:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app),
+            base_url=os.environ.get("FRONTEND_ORIGIN", "http://testserver"),
+        ) as http:
             async def subir(p, headers, cuerpo):
                 cuerpo.soltar = cuerpo.soltar or asyncio.Event()
                 cuerpos.append(cuerpo)

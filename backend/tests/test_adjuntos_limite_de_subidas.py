@@ -7,6 +7,8 @@ de leer el cuerpo: FastAPI lee el multipart entero antes de resolver las
 dependencias (lo fija el primer test), así que un Depends llegaría tarde."""
 import asyncio
 import json
+import os
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi import Depends, FastAPI, File, UploadFile
@@ -46,7 +48,8 @@ class _Canal:
 
 def _llamar(app, token=None, path=RUTA, method="POST", autorizacion=None):
     tipo, partes = _multipart()
-    headers = [(b"content-type", tipo.encode())]
+    host = urlsplit(os.environ.get("FRONTEND_ORIGIN", "http://testserver")).hostname
+    headers = [(b"host", host.encode()), (b"content-type", tipo.encode())]
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode()))
     elif autorizacion is not None:

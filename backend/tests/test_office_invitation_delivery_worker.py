@@ -55,7 +55,7 @@ def test_stale_claim_repair_stops_the_oneshot_before_any_new_claim(monkeypatch):
     async def settings():
         return object()
 
-    async def expired(_cur, *, config):
+    async def expired(_cur, *, limit):
         return 0
 
     async def stale(_cur, *, config):
@@ -74,8 +74,8 @@ def test_stale_claim_repair_stops_the_oneshot_before_any_new_claim(monkeypatch):
     monkeypatch.setattr(virtual_office.invitation_config, "load_invitation_config_from_environment", lambda: _CONFIG)
     monkeypatch.setattr(smtp_config, "cargar_settings", settings)
     monkeypatch.setattr(db.transaccion, "transaccion", lambda *_args: Transaction())
-    monkeypatch.setattr(invitations, "expire_stale_invitations_in_cursor", expired)
-    monkeypatch.setattr(invitations, "settle_stale_invitation_claims_in_cursor", stale)
+    monkeypatch.setattr(invitations, "expire_due_invitation_deliveries_v1_in_cursor", expired)
+    monkeypatch.setattr(invitations, "settle_stale_invitation_claims_v1_in_cursor", stale)
     monkeypatch.setattr(invitations, "claim_next_invitation_delivery_in_cursor", forbidden_claim)
     with pytest.raises(invitations.InvitationDeliveryMaintenanceFailure):
         asyncio.run(invitations.drain_invitation_deliveries())

@@ -387,8 +387,16 @@ def test_enlace_con_envio_cancelado_borra_el_token_y_propaga(client, usuarios, s
 
     monkeypatch.setattr(auth_mod, "_send_reset_email", cancelado)
     u, _ = usuarios()
-    with pytest.raises(concurrent.futures.CancelledError):
+    try:
         _enlace(client, u)
+    except concurrent.futures.CancelledError:
+        pass
+    except RuntimeError as error:
+        # Starlette 1.7 surfaces an app cancellation after the response stream
+        # closes as this exact boundary error, never as an HTTP response.
+        assert str(error) == "No response returned."
+    else:
+        pytest.fail("a cancelled delivery unexpectedly returned an HTTP response")
     assert client.portal.call(_tokens, u) == [], "el token no puede quedar vivo aunque el envío se cancele"
     assert client.portal.call(_acciones, u) == [], "no se audita un envío que no salió"
 

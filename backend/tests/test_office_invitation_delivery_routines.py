@@ -81,7 +81,11 @@ def _cleanup_routines(worker: str, worker_host: str) -> None:
 
 
 async def _worker_connection(worker: str):
-    return await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=worker, password="test-only-worker-password", db=os.environ["JAX_DB_NAME"], autocommit=True)
+    return await aiomysql.connect(
+        host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=worker,
+        password="test-only-worker-password", db=os.environ["JAX_DB_NAME"], autocommit=True,
+        connect_timeout=10,
+    )
 
 
 async def _claim(worker: str) -> tuple[str, str | None, str | None]:
@@ -158,8 +162,10 @@ def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
         assert outbox_id and attempt_id
         assert client.portal.call(_settle, worker, outbox_id, attempt_id) == "APPLIED"
         assert client.portal.call(_settle, worker, outbox_id, attempt_id) == "REPLAYED"
-        assert client.portal.call(sql, "SELECT state,payload_ciphertext,result_code FROM office_invitation_outbox WHERE invitation_id=%s", (invitation_id,), True) == (("SMTP_ACCEPTED", None, "SMTP_ACCEPTED"),)
-        assert client.portal.call(sql, "SELECT event_kind FROM office_invitation_event WHERE invitation_id=%s ORDER BY event_id", (invitation_id,), True) == (("ISSUED",), ("DELIVERY_OBSERVED",))
+        ((settled_invitation_id,),) = client.portal.call(
+            sql, "SELECT invitation_id FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,), True)
+        assert client.portal.call(sql, "SELECT state,payload_ciphertext,result_code FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,), True) == (("SMTP_ACCEPTED", None, "SMTP_ACCEPTED"),)
+        assert client.portal.call(sql, "SELECT event_kind FROM office_invitation_event WHERE invitation_id=%s ORDER BY event_id", (settled_invitation_id,), True) == (("ISSUED",), ("DELIVERY_OBSERVED",))
 
         async def direct_lifecycle_write_is_denied():
             connection = await _worker_connection(worker)
