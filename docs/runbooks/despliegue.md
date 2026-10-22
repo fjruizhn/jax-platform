@@ -130,16 +130,22 @@ sudo /usr/local/libexec/activate-platform-pair-release.sh \
   --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256"
 ```
 
-El launcher lee una selección JSON root-owned, toma un candado compartido durante
-todo el proceso y fija `JAX_REPO_PATH` después de limpiar el entorno importado;
+El launcher lee una selección JSON root-owned, toma el candado compartido de
+runtime durante todo el proceso y exige que coincida con `current`; fija
+`JAX_REPO_PATH` después de limpiar el entorno importado;
 `runtime.env` no puede sustituir el núcleo del par. La activación toma candados
-con timeout, detiene ambos servicios y verifica `ActiveState=inactive` y
-`MainPID=0`. Su journal fsync permite restaurar selección y `current` si la caída
-fue antes de DDL; desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige
-recuperación humana con backup probado. Sólo inicia web: su dependencia systemd
+con timeout en el orden `activation` y después `runtime`, detiene ambos servicios
+y verifica `ActiveState=inactive`, `SubState=dead`, `MainPID=0` y `Result=success`.
+El journal fsync ata el release, digest del manifiesto y digest de selección: sólo
+se restaura un `PRE_DDL` que coincida exactamente con la activación solicitada y
+la restauración ocurre ya con ambos servicios detenidos y el candado runtime
+exclusivo. Desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige recuperación
+humana con backup probado. Sólo inicia web: su dependencia systemd
 ejecuta el migrador una vez. Una modificación, byte extra, enlace, permisos
 inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
-arranque antes de importar Python.
+arranque antes de importar Python. Antes de borrar el journal, la activación
+comprueba el estado efectivo del unit, el PID principal y que su entorno apunta
+al release seleccionado; un `200` de otro proceso no completa la transacción.
 
 Verificar **por comportamiento**, no por `is-active`:
 

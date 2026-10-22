@@ -25,29 +25,55 @@ JOURNAL="$ROOT/activation-journal.json"
 # be restored after a crash; once DDL_STARTED is durable no automatic rollback
 # is possible, because a migration may have committed.
 transaction() { /usr/bin/python3 -Es - "$@" <<'PY'
-import base64, json, os, sys
+import base64, hashlib, json, os, sys, tempfile
 from pathlib import Path
 
 action, root_s, selection_s, journal_s = sys.argv[1:5]
 root, selection, journal = Path(root_s), Path(selection_s), Path(journal_s)
 def atomic(path, value):
-    temp = path.with_name('.'+path.name+'.tmp')
-    fd=os.open(temp, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o644)
+    fd, temp_s = tempfile.mkstemp(prefix='.'+path.name+'.', dir=path.parent)
+    temp=Path(temp_s)
     try:
       os.write(fd,value); os.fsync(fd)
-    finally: os.close(fd)
-    os.chown(temp,0,0); os.chmod(temp,0o644); os.replace(temp,path)
+      os.close(fd); fd=-1
+      os.chown(temp,0,0); os.chmod(temp,0o644); os.replace(temp,path)
+    finally:
+      if fd >= 0: os.close(fd)
+      try: temp.unlink()
+      except FileNotFoundError: pass
     d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(d); os.close(d)
 def link(name, target):
-    path=root/name; temp=root/('.'+name+'.tmp')
-    try: temp.unlink()
-    except FileNotFoundError: pass
-    os.symlink(target,temp); os.replace(temp,path)
+    path=root/name; slot=Path(tempfile.mkdtemp(prefix='.'+name+'.',dir=root)); temp=slot/'value'
+    try:
+      os.symlink(target,temp); os.replace(temp,path)
+    finally:
+      try: temp.unlink()
+      except FileNotFoundError: pass
+      try: slot.rmdir()
+      except OSError: pass
     d=os.open(root,os.O_RDONLY|os.O_DIRECTORY); os.fsync(d); os.close(d)
-if action == 'recover':
-    if not journal.exists(): raise SystemExit(0)
+def pair():
+    x=json.loads(selection.read_text())
+    if set(x) != {'release','jax_platform_revision','jax_revision','manifest_sha256'}: raise SystemExit('invalid selection')
+    release=Path(x['release']).resolve(strict=True); releases=(root/'releases').resolve(strict=True)
+    current=(root/'current').resolve(strict=True)
+    if release.parent != releases or current != release: raise SystemExit('selection/current mismatch')
+    if hashlib.sha256((release/'pair-manifest.json').read_bytes()).hexdigest()!=x['manifest_sha256']: raise SystemExit('selection digest mismatch')
+    return x, release
+def checked_journal(release, digest):
     data=json.loads(journal.read_text())
-    if data.get('schema')!='axioma.pair-activation/v1': raise SystemExit('invalid activation journal')
+    required={'schema','state','previous_selection_b64','previous_current','target_release','target_manifest_sha256','target_selection_sha256'}
+    if set(data)!=required or data.get('schema')!='axioma.pair-activation/v1': raise SystemExit('invalid activation journal')
+    if data['target_release'] != release or data['target_manifest_sha256'] != digest: raise SystemExit('journal target mismatch')
+    return data
+if action == 'inspect':
+    if journal.exists():
+      data=checked_journal(sys.argv[5],sys.argv[6])
+      if data['state'] not in ('PRE_DDL','DDL_STARTED'): raise SystemExit('invalid activation journal state')
+      print(data['state'])
+elif action == 'recover':
+    if not journal.exists(): raise SystemExit(0)
+    data=checked_journal(sys.argv[5],sys.argv[6])
     if data.get('state') == 'DDL_STARTED': raise SystemExit('RECOVERY_REQUIRED: migration may have modified the database')
     if data.get('state') != 'PRE_DDL': raise SystemExit('invalid activation journal state')
     previous_selection=base64.b64decode(data['previous_selection_b64'])
@@ -57,22 +83,31 @@ if action == 'recover':
     prior=json.loads(previous_selection)
     release=Path(prior['release']).resolve(strict=True)
     releases=(root/'releases').resolve(strict=True)
-    if release.parent != releases: raise SystemExit('invalid prior selection in activation journal')
+    if release.parent != releases or data['previous_current'] != 'releases/'+release.name: raise SystemExit('invalid prior selection in activation journal')
     link('current','releases/'+release.name)
+    pair()
     journal.unlink(); d=os.open(root,os.O_RDONLY|os.O_DIRECTORY); os.fsync(d); os.close(d)
 elif action == 'prepare':
-    previous = selection.read_bytes()
+    previous = selection.read_bytes(); x, current = pair()
     current = os.readlink(root/'current')
+    target=sys.argv[5]; digest=sys.argv[6]
+    manifest=json.loads((Path(target)/'pair-manifest.json').read_text())
+    target_selection=json.dumps({'release':target,'jax_platform_revision':manifest['jax_platform_revision'],'jax_revision':manifest['jax_revision'],'manifest_sha256':digest},separators=(',',':')).encode()+b'\n'
     data={'schema':'axioma.pair-activation/v1','state':'PRE_DDL','previous_selection_b64':base64.b64encode(previous).decode(),
-          'previous_current':current,'target_release':sys.argv[5],'target_manifest_sha256':sys.argv[6]}
+          'previous_current':current,'target_release':target,'target_manifest_sha256':digest,'target_selection_sha256':hashlib.sha256(target_selection).hexdigest()}
     atomic(journal,(json.dumps(data,sort_keys=True,separators=(',',':'))+'\n').encode())
 elif action == 'publish':
     release, digest=sys.argv[5:7]
     manifest=json.loads((Path(release)/'pair-manifest.json').read_text())
     atomic(selection,(json.dumps({'release':release,'jax_platform_revision':manifest['jax_platform_revision'],'jax_revision':manifest['jax_revision'],'manifest_sha256':digest},separators=(',',':'))+'\n').encode())
+    if os.environ.get('JAX_PAIR_TEST_KILL_AT') == 'after_selection': os.kill(os.getpid(),9)
     link('current','releases/'+Path(release).name)
+    pair()
+    if os.environ.get('JAX_PAIR_TEST_KILL_AT') == 'after_current': os.kill(os.getpid(),9)
 elif action == 'ddl':
-    data=json.loads(journal.read_text()); data['state']='DDL_STARTED'
+    data=checked_journal(sys.argv[5],sys.argv[6]); x, current=pair()
+    if hashlib.sha256(selection.read_bytes()).hexdigest()!=data['target_selection_sha256']: raise SystemExit('target selection binding mismatch')
+    data['state']='DDL_STARTED'
     atomic(journal,(json.dumps(data,sort_keys=True,separators=(',',':'))+'\n').encode())
 elif action == 'complete':
     journal.unlink(); d=os.open(root,os.O_RDONLY|os.O_DIRECTORY); os.fsync(d); os.close(d)
@@ -81,7 +116,6 @@ PY
 }
 
 exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -w "$LOCK_WAIT" 9 || { echo 'activation lock timeout' >&2; exit 1; }
-transaction recover "$ROOT" "$SELECTION" "$JOURNAL"
 [[ ! -e $ROOT/.runtime.lock ]] && /usr/bin/install -o root -g root -m 0644 /dev/null "$ROOT/.runtime.lock"
 [[ ! -L $ROOT/.runtime.lock && $(/usr/bin/stat -c '%U:%G:%a' "$ROOT/.runtime.lock") == root:root:644 ]] || { echo 'unsafe runtime lock' >&2; exit 1; }
 releases_real=$(/usr/bin/realpath -e -- "$ROOT/releases") || { echo 'release root unavailable' >&2; exit 1; }
@@ -90,9 +124,26 @@ release_real=$(/usr/bin/realpath -e -- "$RELEASE") || { echo 'unsafe release' >&
 RELEASE=$release_real
 actual=$(/usr/bin/sha256sum "$RELEASE/pair-manifest.json" | /usr/bin/cut -d' ' -f1); [[ $actual == "$EXPECTED" ]] || { echo 'unexpected manifest digest' >&2; exit 1; }
 /usr/bin/python3 -Es "$HELPER" "$RELEASE" || exit 1
+pending=$(transaction inspect "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED")
+[[ $pending != DDL_STARTED ]] || { echo 'RECOVERY_REQUIRED: migration may have modified the database' >&2; exit 1; }
+$SYSTEMCTL stop jax-platform.service
+$SYSTEMCTL stop jax-platform-migrate.service
+for unit in jax-platform.service jax-platform-migrate.service; do
+  state=$($SYSTEMCTL show --value --property=ActiveState "$unit")
+  substate=$($SYSTEMCTL show --value --property=SubState "$unit")
+  pid=$($SYSTEMCTL show --value --property=MainPID "$unit")
+  result=$($SYSTEMCTL show --value --property=Result "$unit")
+  [[ $state == inactive && $substate == dead && $pid == 0 && $result == success ]] || { echo "service did not stop cleanly: $unit" >&2; exit 1; }
+done
+exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x -w "$LOCK_WAIT" 8 || { echo 'runtime lock timeout' >&2; exit 1; }
+if [[ $pending == PRE_DDL ]]; then
+  transaction recover "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
+  current=$(/usr/bin/realpath -e "$ROOT/current")
+  [[ $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'recovered predecessor digest mismatch' >&2; exit 1; }
+fi
 current=$(/usr/bin/realpath -e "$ROOT/current" 2>/dev/null || true)
 [[ -n $current && $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'predecessor digest mismatch' >&2; exit 1; }
-[[ $current != "$RELEASE" ]] || exit 0
+[[ $current != "$RELEASE" ]] || { /usr/bin/flock -u 8; exit 0; }
 /usr/bin/python3 -Es - "$RELEASE/release-lineage.json" "$current/pair-manifest.json" <<'PY'
 import json,sys
 lineage=json.load(open(sys.argv[1])); previous=json.load(open(sys.argv[2]))
@@ -100,21 +151,27 @@ if (lineage.get('schema')!='axioma.pair-lineage/v1' or set(lineage)!={'schema','
     or lineage['platform_predecessor']!=previous.get('jax_platform_revision') or lineage['jax_predecessor']!=previous.get('jax_revision')): raise SystemExit(1)
 PY
 [[ $? == 0 ]] || { echo 'release lineage does not descend from current pair' >&2; exit 1; }
-
-$SYSTEMCTL stop jax-platform.service
-$SYSTEMCTL stop jax-platform-migrate.service
-for unit in jax-platform.service jax-platform-migrate.service; do
-  state=$($SYSTEMCTL show --value --property=ActiveState "$unit")
-  pid=$($SYSTEMCTL show --value --property=MainPID "$unit")
-  [[ $state == inactive && $pid == 0 ]] || { echo "service did not stop: $unit" >&2; exit 1; }
-done
-exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x -w "$LOCK_WAIT" 8 || { echo 'runtime lock timeout' >&2; exit 1; }
 transaction prepare "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 transaction publish "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 if [[ ${JAX_PAIR_TEST_KILL_AT:-} == after_publish ]]; then kill -KILL $$; fi
-transaction ddl "$ROOT" "$SELECTION" "$JOURNAL"
+transaction ddl "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 /usr/bin/flock -u 8; exec 8>&-
 # Starting web triggers its Requires=jax-platform-migrate.service exactly once.
 $SYSTEMCTL start jax-platform.service
 $HEALTH --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/api/health >/dev/null
+state=$($SYSTEMCTL show --value --property=ActiveState jax-platform.service)
+substate=$($SYSTEMCTL show --value --property=SubState jax-platform.service)
+pid=$($SYSTEMCTL show --value --property=MainPID jax-platform.service)
+result=$($SYSTEMCTL show --value --property=Result jax-platform.service)
+[[ $state == active && $substate == running && $pid =~ ^[1-9][0-9]*$ && $result == success ]] || { echo 'web service did not become healthy' >&2; exit 1; }
+/usr/bin/python3 -Es - "$ROOT" "$SELECTION" "$RELEASE" "$EXPECTED" "$pid" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+root, selection, release, expected, pid=map(Path,sys.argv[1:])
+x=json.loads(selection.read_text())
+if (root/'current').resolve(strict=True) != release or Path(x['release']).resolve(strict=True) != release: raise SystemExit('selection/current mismatch after start')
+if hashlib.sha256((release/'pair-manifest.json').read_bytes()).hexdigest()!=expected.name or x.get('manifest_sha256')!=expected.name: raise SystemExit('unexpected post-start manifest')
+env=(Path('/proc')/pid.name/'environ').read_bytes().split(b'\0')
+if ('JAX_REPO_PATH='+str(release/'jax')).encode() not in env: raise SystemExit('web process does not belong to selected release')
+PY
 transaction complete "$ROOT" "$SELECTION" "$JOURNAL"

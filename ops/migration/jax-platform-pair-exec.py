@@ -33,7 +33,9 @@ def main():
     except (OSError, UnicodeDecodeError, json.JSONDecodeError): die()
     if set(x) != {'release','jax_platform_revision','jax_revision','manifest_sha256'}: die()
     release=Path(x['release']).resolve(strict=True); releases=(root/'releases').resolve(strict=True)
-    if release.parent != releases or not all(isinstance(x[k],str) for k in x): die()
+    try: current=(root/'current').resolve(strict=True)
+    except OSError: die()
+    if release.parent != releases or current != release or not all(isinstance(x[k],str) for k in x): die()
     if __import__('hashlib').sha256((release/'pair-manifest.json').read_bytes()).hexdigest()!=x['manifest_sha256']: die()
     import importlib.util
     helper = root/'libexec/pair_artifact_readiness.py' if root != Path('/opt/jax-platform-pair') else Path('/usr/local/libexec/pair_artifact_readiness.py')

@@ -86,6 +86,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     (root / "libexec").mkdir()
     shutil.copy2(MIGRATION / "pair_artifact_readiness.py", root / "libexec" / "pair_artifact_readiness.py")
     calls = tmp_path / "systemctl.calls"
+    service_pid = tmp_path / "service.pid"
     fake_systemctl = tmp_path / "systemctl"
     test_launcher = tmp_path / "launcher"
     test_launcher.write_text(
@@ -95,9 +96,9 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     test_launcher.chmod(0o755)
     fake_systemctl.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
-        "if [ \"$1\" = show ] && [ \"$2\" = --value ] && [ \"$3\" = --property=ActiveState ]; then printf 'inactive\\n'; exit 0; fi\n"
-        "if [ \"$1\" = show ] && [ \"$2\" = --value ] && [ \"$3\" = --property=MainPID ]; then printf '0\\n'; exit 0; fi\n"
-        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; exec \"$JAX_PAIR_TEST_LAUNCHER\" web; fi\n"
+        "if [ \"$1 $2\" = 'stop jax-platform.service' ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ]; then kill \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null || :; rm -f \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
+        "if [ \"$1\" = show ] && [ \"$2\" = --value ]; then p=$3; pid=0; active=inactive; sub=dead; result=success; if [ \"$4\" = jax-platform.service ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ] && kill -0 \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null; then pid=$(cat \"$JAX_PAIR_TEST_SERVICE_PID\"); active=active; sub=running; fi; case $p in --property=ActiveState) echo $active;; --property=SubState) echo $sub;; --property=MainPID) echo $pid;; --property=Result) echo $result;; esac; exit 0; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; \"$JAX_PAIR_TEST_LAUNCHER\" web; env JAX_REPO_PATH=\"$JAX_PAIR_TEST_RELEASE/jax\" sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
         "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
         encoding="utf-8",
     )
@@ -122,6 +123,8 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_SYSTEMCTL_BIN": str(fake_systemctl),
         "JAX_PAIR_TEST_CALLS": str(calls),
         "JAX_PAIR_TEST_LAUNCHER": str(test_launcher),
+        "JAX_PAIR_TEST_SERVICE_PID": str(service_pid),
+        "JAX_PAIR_TEST_RELEASE": str(release),
         "JAX_PAIR_HEALTH_BIN": str(health),
     }
     command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest]
@@ -154,11 +157,12 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
-    assert calls.read_text(encoding="utf-8").splitlines()[-7:] == [
+    assert calls.read_text(encoding="utf-8").splitlines()[-15:] == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
-        "show --value --property=ActiveState jax-platform.service", "show --value --property=MainPID jax-platform.service",
-        "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
+        "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
         "start jax-platform.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
     ]
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
     lock_inode = (root / ".runtime.lock").stat().st_ino
