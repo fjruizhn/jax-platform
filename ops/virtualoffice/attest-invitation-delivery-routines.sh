@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Root-admin attestation for the immutable delivery-v1 SQL authority.
 set -euo pipefail
-DB= ADMIN_TRANSPORT= WORKER_HOST=localhost
-while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; --worker-host) WORKER_HOST=${2:?}; shift;; *) exit 2;; esac; shift; done
+DB= ADMIN_TRANSPORT= WORKER_HOST=localhost STRUCTURAL=0
+while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; --worker-host) WORKER_HOST=${2:?}; shift;; --structural) STRUCTURAL=1;; *) exit 2;; esac; shift; done
 [[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && $WORKER_HOST =~ ^[A-Za-z0-9._-]{1,255}$ && -x ${ADMIN_TRANSPORT:-/missing} ]] || exit 2
 q() { printf '%s\n' "$1" | "$ADMIN_TRANSPORT"; }
 read -r count <<<"$(q "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='$DB' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');")"
@@ -31,6 +31,7 @@ for routine in "${!expected_create[@]}"; do
  actual=$(q "USE \`$DB\`; SHOW CREATE PROCEDURE \`$routine\`;" | sha256sum | awk '{print $1}')
  [[ $actual == "${expected_create[$routine]}" ]] || { echo 'delivery routine body drift' >&2; exit 1; }
 done
+[[ $STRUCTURAL == 0 ]] || exit 0
 # Both principals have closed grant sets. The locked definer needs table
 # authority plus its own three procedures; the worker can only observe the
 # queue and invoke those procedures.

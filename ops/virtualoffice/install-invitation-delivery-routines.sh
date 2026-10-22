@@ -21,6 +21,10 @@ case "$count" in
   3) : ;;
   *) printf '%s\n' 'ambiguous invitation delivery component is denied' >&2; exit 1 ;;
 esac
+# Body, metadata, definer and parameter authority must be established before
+# either durable principal receives EXECUTE.  The full attestation below then
+# verifies the exact closed grant sets after the two grants are applied.
+JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ATTESTOR" --structural --db "$DB" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$WORKER_HOST"
 # MariaDB requires the locked SQL SECURITY DEFINER account to hold EXECUTE on
 # every procedure it defines. Install the routines first, then grant exactly
 # those procedures; repeated installation cannot widen that authority.
