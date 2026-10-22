@@ -442,14 +442,18 @@ def test_create_project_jax_first_then_exact_replay_and_one_client_group(client,
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT' AND status='ACTIVE'", (project_id,), True) == ((1,),)
 
 
-def test_create_project_denies_nonroot_and_expired_proof_before_jax_write(client, monkeypatch):
+def test_create_project_denies_nonroot_but_allows_office_root_without_mfa(client, monkeypatch):
     _configure_mfa(monkeypatch)
     ordinary, tv, mv, proof = client.portal.call(lambda: _office_root_with_current_proof(role="COLLABORATOR"))
     assert client.post("/api/virtual-office/projects", json=_project_payload(), headers=_proof_headers(ordinary, tv, mv, proof, str(uuid.uuid4()))).status_code == 403
-    root, tv, mv, old_proof = client.portal.call(
+    root, _tv, _mv, _old_proof = client.portal.call(
         lambda: _office_root_with_current_proof(proof_time_sql="DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 301 SECOND)")
     )
-    assert client.post("/api/virtual-office/projects", json=_project_payload(), headers=_proof_headers(root, tv, mv, old_proof, str(uuid.uuid4()))).status_code == 403
+    response = client.post("/api/virtual-office/projects", json=_project_payload(), headers={
+        "Authorization": "Bearer " + create_access_token(str(root), "1", "operator"),
+        "Idempotency-Key": str(uuid.uuid4()),
+    })
+    assert response.status_code == 200
 
 
 def test_create_project_group_fault_is_partial_and_same_key_repairs(client, monkeypatch):

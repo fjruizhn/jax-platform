@@ -71,8 +71,9 @@ async def office_session(user: AuthUser = Depends(get_current_user)):
     """Return a deliberately small, database-derived Office entry contract.
 
     Project grants are intentionally absent: project discovery stays behind its
-    own bounded resolver endpoint.  Every privileged bit is independently
-    re-authorized with a current MFA proof in this transaction.
+    own bounded resolver endpoint.  Office-wide administrative bits are
+    independently re-authorized with a current MFA proof; project creation
+    uses the authenticated Office-root role without making MFA mandatory.
     """
     try:
         actor_user_id = int(user.user_id)
@@ -133,10 +134,13 @@ async def office_session(user: AuthUser = Depends(get_current_user)):
                     "administer_identity_security": OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
                 }
                 for name, operation in operations.items():
-                    decision = await authorize_office_in_cursor(
-                        cur, actor_user_id, operation, require_recent_mfa=True,
-                        mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config,
-                    )
+                    if operation is OfficeOperation.CREATE_OFFICE_PROJECT:
+                        decision = await authorize_office_in_cursor(cur, actor_user_id, operation)
+                    else:
+                        decision = await authorize_office_in_cursor(
+                            cur, actor_user_id, operation, require_recent_mfa=True,
+                            mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config,
+                        )
                     capabilities[name] = bool(decision.allowed)
             return {
                 "state": "ACTIVE",

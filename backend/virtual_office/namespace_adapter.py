@@ -33,8 +33,7 @@ class OfficeNamespaceAuthorizer:
             raise OfficeNamespaceAuthorizationDenied("Office namespace operation denied")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config)
+        )
         if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
             raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
         target = await repository.fetch_tenant(cursor, target_tenant_id, for_update=True)

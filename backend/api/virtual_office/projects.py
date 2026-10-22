@@ -56,8 +56,7 @@ class _PhaseBRetryable(RuntimeError):
 
 
 async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
-                                   project_id: int, idempotency_key: str,
-                                   proof_event_id: int, mfa_config) -> None:
+                                   project_id: int, idempotency_key: str) -> None:
     """Finish the Office-owned phase after JAX committed the canonical project.
 
     This intentionally has its own transaction.  A failed recipient-group
@@ -86,8 +85,6 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
 
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
-                require_recent_mfa=True, mfa_proof_event_id=proof_event_id,
-                mfa_config=mfa_config,
             )
             if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
                 raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
@@ -399,9 +396,6 @@ async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdat
 @router.post("")
 async def create_project(payload: ProjectCreate, idempotency_key: str = Header(alias="Idempotency-Key"),
                          user: AuthUser = Depends(get_current_user)):
-    config = load_mfa_config_from_environment()
-    if config is None or user.mfa_proof_event_id is None:
-        raise HTTPException(status_code=403, detail="office_mfa_required")
     from jax.memory.b9_mariadb import MariaDBB9Store
     from jax.memory.project_authority import (
         AuthorizationDenied,
@@ -420,7 +414,7 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
             namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name=payload.name,
             description=payload.description, idempotency_key=idempotency_key,
-            authorizer=OfficeNamespaceAuthorizer(mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config),
+            authorizer=OfficeNamespaceAuthorizer(),
         )
     except ProjectAuthorityRetryable as error:
         raise HTTPException(status_code=503, detail="office_project_create_retryable") from error
@@ -439,7 +433,6 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
         await _initialize_client_group(
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
             project_id=result.project_id, idempotency_key=idempotency_key,
-            proof_event_id=user.mfa_proof_event_id, mfa_config=config,
         )
     except _PhaseBRetryable as error:
         raise HTTPException(status_code=503, detail="office_project_initialization_retryable") from error

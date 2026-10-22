@@ -132,6 +132,19 @@ def test_classic_superadmin_can_bootstrap_office_with_current_password_without_m
     assert client.get("/api/virtual-office/session", headers=fresh).json()["state"] == "ACTIVE"
 
 
+def test_office_session_allows_root_project_creation_without_mfa(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    user_id, token_version, _mfa_version, _proof = client.portal.call(_office_user)
+    response = client.get("/api/virtual-office/session", headers=_headers(user_id, token_version, 0, None))
+    assert response.status_code == 200
+    assert response.json()["mfa"] == {"verified": False, "recent": False}
+    assert response.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
+    }
+
+
 def test_office_session_keeps_project_admin_and_external_client_out_of_global_capabilities(client, monkeypatch):
     _configure_mfa(monkeypatch)
     project_admin, tv, mv, proof = client.portal.call(partial(_office_user, global_role="COLLABORATOR"))
@@ -166,7 +179,11 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     expired_response = client.get("/api/virtual-office/session", headers=_headers(expired, tv, mv, expired_proof))
     assert expired_response.status_code == 200
     assert expired_response.json()["mfa"] == {"verified": True, "recent": False}
-    assert all(value is False for value in expired_response.json()["capabilities"].values())
+    assert expired_response.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
+    }
 
     revoked, old_tv, mv, revoked_proof = client.portal.call(_office_user)
     client.portal.call(sql, "UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (revoked,))

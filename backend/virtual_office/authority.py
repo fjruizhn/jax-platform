@@ -145,7 +145,6 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
         OfficeOperation.PROFESSIONAL_ACTION.value,
         OfficeOperation.ADMINISTER_OFFICE.value,
         OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY.value,
-        OfficeOperation.CREATE_OFFICE_PROJECT.value,
     }
     # An explicit caller requirement hardens even an otherwise ordinary
     # collaborator view.  It is additive, like the role-derived conditions;
