@@ -26,7 +26,11 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $(id -u) == 0 ]] || { printf '%s\n' 'must run as root' >&2; exit 1; }
 [[ "$WORKER_DB_USER" =~ ^[a-z][a-z0-9_]{0,31}$ && "$WORKER_OS_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { printf '%s\n' 'unsafe worker user name' >&2; exit 1; }
-[[ -r "$ENV_FILE" ]] || { printf '%s\n' 'runtime environment is unreadable' >&2; exit 1; }
+[[ -f $ENV_FILE && ! -L $ENV_FILE && -r $ENV_FILE && $(stat -c '%U:%G' "$ENV_FILE") == root:root ]] || {
+  printf '%s\n' 'runtime environment is not a regular root-owned file' >&2; exit 1;
+}
+env_mode=$(stat -c '%a' "$ENV_FILE")
+(( (8#$env_mode & 0022) == 0 )) || { printf '%s\n' 'runtime environment is writable by group or others' >&2; exit 1; }
 declare -A cfg=()
 while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -z "$line" || "$line" == \#* ]] && continue
@@ -67,7 +71,9 @@ if [[ ! -d "$SECRET_DIR" ]]; then install -d -m 0700 -o root -g root "$SECRET_DI
 [[ ! -L $SECRET_DIR && $(stat -c '%U:%G:%a' "$SECRET_DIR") == root:root:700 ]] || { printf '%s\n' 'worker secrets root is unsafe' >&2; exit 1; }
 secret="$SECRET_DIR/$WORKER_DB_USER.password"
 [[ -f "$secret" ]] || { openssl rand -base64 48 | tr -d '\n' > "$secret"; chown root:root "$secret"; chmod 600 "$secret"; }
-[[ $(stat -c '%U:%G:%a' "$secret") == root:root:600 ]] || { printf '%s\n' 'worker DB secret is unsafe' >&2; exit 1; }
+[[ -f $secret && ! -L $secret && $(stat -c '%U:%G:%a' "$secret") == root:root:600 ]] || {
+  printf '%s\n' 'worker DB secret is unsafe' >&2; exit 1;
+}
 password=$(<"$secret")
 [[ -n "$password" ]] || { printf '%s\n' 'worker DB secret is empty' >&2; exit 1; }
 admin_sql() {

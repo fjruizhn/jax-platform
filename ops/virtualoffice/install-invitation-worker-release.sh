@@ -33,6 +33,12 @@ for path in "$WHEELHOUSE" "$LOCK"; do
   [[ ! -L $path && $(stat -c '%U:%G' "$path") == root:root ]] || { echo 'wheelhouse or lock ownership is unsafe' >&2; exit 1; }
   mode=$(stat -c '%a' "$path"); (( (8#$mode & 0022) == 0 )) || { echo 'wheelhouse or lock is writable' >&2; exit 1; }
 done
+[[ -d $WHEELHOUSE && -f $LOCK ]] || { echo 'wheelhouse or lock type is unsafe' >&2; exit 1; }
+while IFS= read -r -d '' path; do
+  [[ ! -L $path && $(stat -c '%U:%G' "$path") == root:root ]] || { echo 'wheelhouse contains unsafe owner or symlink' >&2; exit 1; }
+  mode=$(stat -c '%a' "$path"); (( (8#$mode & 0022) == 0 )) || { echo 'wheelhouse contains writable content' >&2; exit 1; }
+  [[ -f $path || -d $path ]] || { echo 'wheelhouse contains special file' >&2; exit 1; }
+done < <(find "$WHEELHOUSE" -xdev -mindepth 1 -print0)
 grep -q -- '--hash=sha256:' "$LOCK" || { echo 'wheelhouse lock lacks SHA-256 hashes' >&2; exit 1; }
 parent=$(dirname "$RELEASE")
 install -d -o root -g root -m 0755 "$parent"

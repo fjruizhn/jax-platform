@@ -58,10 +58,21 @@ printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIA
 chmod 700 "$TRANSPORT"
 
 run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME"; }
+ln -s "$ENV_FILE" "$TEMP/runtime-link.env"
+if "$HELPER" --env "$TEMP/runtime-link.env" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" >/dev/null 2>&1; then
+  echo 'symlinked runtime env was accepted' >&2; exit 1
+fi
+chmod 666 "$ENV_FILE"
+if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2; exit 1; fi
+chmod 600 "$ENV_FILE"
 run_helper
 run_helper
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
+ln -s "$TEMP/state/invitation-worker.env" "$TEMP/invitation-worker-link.env"
+if "$ROOT_DIR/ops/virtualoffice/invitation-worker-readiness.sh" "$TEMP/invitation-worker-link.env" >/dev/null 2>&1; then
+  echo 'symlinked worker env was accepted' >&2; exit 1
+fi
 test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$USER_NAME.password")" = root:root:600
 grep -qx "JAX_DB_USER=$USER_NAME" "$TEMP/state/invitation-worker.env"
 
@@ -122,6 +133,17 @@ fi
 exit 0
 EOF
 chmod 755 "$FAKE_PYTHON"
+ln -s "$LOCK" "$WHEELHOUSE/unsafe-link"
+if "$RELEASE_INSTALLER" --origin "$REPO" --revision "$REVISION" --release "$RELEASE" --python "$FAKE_PYTHON" --wheelhouse "$WHEELHOUSE" --lock "$LOCK" --build-user nobody >/dev/null 2>&1; then
+  echo 'symlinked wheelhouse content was accepted' >&2; exit 1
+fi
+rm "$WHEELHOUSE/unsafe-link"
+printf 'unsafe\n' > "$WHEELHOUSE/writable.whl"
+chmod 666 "$WHEELHOUSE/writable.whl"
+if "$RELEASE_INSTALLER" --origin "$REPO" --revision "$REVISION" --release "$RELEASE" --python "$FAKE_PYTHON" --wheelhouse "$WHEELHOUSE" --lock "$LOCK" --build-user nobody >/dev/null 2>&1; then
+  echo 'writable wheelhouse content was accepted' >&2; exit 1
+fi
+rm "$WHEELHOUSE/writable.whl"
 "$RELEASE_INSTALLER" --origin "$REPO" --revision "$REVISION" --release "$RELEASE" --python "$FAKE_PYTHON" --wheelhouse "$WHEELHOUSE" --lock "$LOCK" --build-user nobody
 test "$(stat -c '%U:%G:%a' "$RELEASE")" = root:root:755
 grep -Eq "^\{\"schema\":\"axioma-office-invitation-worker-release/v1\",\"source_revision\":\"$REVISION\",\"lock_sha256\":\"[0-9a-f]{64}\",\"wheelhouse_manifest_sha256\":\"[0-9a-f]{64}\"\}$" "$RELEASE/release-manifest.json"

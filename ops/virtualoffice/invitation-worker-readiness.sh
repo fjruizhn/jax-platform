@@ -3,7 +3,7 @@
 set -euo pipefail
 
 env_file=${1:-/etc/jax/invitation-worker.env}
-[[ $(stat -c '%U:%G:%a' "$env_file") == root:root:600 ]] || {
+[[ -f $env_file && ! -L $env_file && $(stat -c '%U:%G:%a' "$env_file") == root:root:600 ]] || {
   printf '%s\n' 'invitation worker env ownership or mode is unsafe' >&2; exit 1;
 }
 required=(JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_USER JAX_DB_PASSWORD FERNET_KEY OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL)
