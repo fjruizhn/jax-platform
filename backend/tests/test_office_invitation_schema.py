@@ -549,10 +549,12 @@ async def _seed_pending_invitation(
         + issued_at_sql + "," + expires_at_sql + ")",
         (issuance_id, issuance_id, serial, project_id, target_user_id, issuer, proof_event_id, authorization_event_id),
     )
+    await cur.execute("SELECT expires_at FROM office_invitation_issuance WHERE issuance_id=%s", (issuance_id,))
+    expires_at = (await cur.fetchone())[0]
     await cur.execute(
-        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized,target_user_id) "
-        "VALUES (%s,%s,'ISSUED',1,%s,CONCAT(%s,'@example.invalid'),%s)",
-        (invitation_id, issuance_id, project_id, serial, target_user_id),
+        "INSERT INTO office_invitation (invitation_id,issuance_id,expires_at,status,version,project_id,email_normalized,target_user_id) "
+        "VALUES (%s,%s,%s,'ISSUED',1,%s,CONCAT(%s,'@example.invalid'),%s)",
+        (invitation_id, issuance_id, expires_at, project_id, serial, target_user_id),
     )
     await cur.execute(
         "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_count,cancel_requested,payload_ciphertext,created_at,updated_at) "
@@ -633,8 +635,8 @@ def test_revocation_and_expiry_stop_queued_or_claimed_outbox_and_erase_ciphertex
                     )
                 with pytest.raises(aiomysql.OperationalError, match='issuance binding denied'):
                     await cur.execute(
-                        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized,target_user_id) "
-                        "SELECT %s,issuance_id,'ISSUED',1,project_id,email_normalized,NULL FROM office_invitation WHERE invitation_id=%s",
+                        "INSERT INTO office_invitation (invitation_id,issuance_id,expires_at,status,version,project_id,email_normalized,target_user_id) "
+                        "SELECT %s,issuance_id,expires_at,'ISSUED',1,project_id,email_normalized,NULL FROM office_invitation WHERE invitation_id=%s",
                         (str(uuid.uuid4()), expired_id),
                     )
                 await cur.execute(
@@ -851,8 +853,8 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                         (issuance, issuance, issuance, project, issuer, proof.event_id, authorization_event),
                     )
                     await cur.execute(
-                        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized,target_user_id) VALUES (%s,%s,'ISSUED',1,%s,CONCAT(%s,'@example.invalid'),NULL)",
-                        (invitation, issuance, project, issuance),
+                        "INSERT INTO office_invitation (invitation_id,issuance_id,expires_at,status,version,project_id,email_normalized,target_user_id) SELECT %s,issuance_id,expires_at,'ISSUED',1,%s,CONCAT(%s,'@example.invalid'),NULL FROM office_invitation_issuance WHERE issuance_id=%s",
+                        (invitation, project, issuance, issuance),
                     )
                     await cur.execute(
                         "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_count,cancel_requested,payload_ciphertext,created_at,updated_at) VALUES (%s,%s,'QUEUED',0,FALSE,X'01',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
