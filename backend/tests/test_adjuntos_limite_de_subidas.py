@@ -499,6 +499,17 @@ def _ruta_frenable_sola():
     return app
 
 
+def _usuario_interno_sin_db(monkeypatch):
+    """Keep this middleware test independent of the Office account lookup."""
+    from auth.models import AuthUser
+    from auth import office_barrier
+
+    async def verificar(*args, **kwargs):
+        return AuthUser(user_id="5", tenant_id="1", role="operator")
+
+    monkeypatch.setattr(office_barrier, "verificar_sesion", verificar)
+
+
 def test_frenado_sin_token_es_el_401_con_espera(limite):
     import main
     _poner_freno()
@@ -507,8 +518,9 @@ def test_frenado_sin_token_es_el_401_con_espera(limite):
     assert limite == [1.0]
 
 
-def test_frenado_con_token_valido_el_middleware_da_el_mismo_423_que_la_ruta_sin_leer_el_cuerpo(limite):
+def test_frenado_con_token_valido_el_middleware_da_el_mismo_423_que_la_ruta_sin_leer_el_cuerpo(limite, monkeypatch):
     import main
+    _usuario_interno_sin_db(monkeypatch)
     _poner_freno()
     ref_status, ref_headers, ref_cuerpo, ref_canal = _llamar(_ruta_frenable_sola(), token_para(5))
     assert ref_status == 423 and json.loads(ref_cuerpo) == {"detail": "kill_switch_activo"}
@@ -550,6 +562,7 @@ def test_freno_ilegible_es_423_como_la_ruta(limite, monkeypatch):
     existe" (permiso, E/S) cuenta como freno PUESTO."""
     import interruptor
     import main
+    _usuario_interno_sin_db(monkeypatch)
     stat_real = interruptor.os.stat
     freno = str(interruptor.ruta_del_interruptor())
 
