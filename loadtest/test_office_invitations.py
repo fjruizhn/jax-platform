@@ -14,6 +14,11 @@ def test_percentile_and_empty_summary_are_honest():
     assert oi.summarize([], {}, 0)["p95_ms"] is None
 
 
+def test_summary_uses_the_clock_when_its_operation_finishes(monkeypatch):
+    monkeypatch.setattr(oi.time, "perf_counter", lambda: 104.0)
+    assert oi.summarize([2.0] * 4, {200: 4}, 100.0)["rps"] == 1.0
+
+
 def test_semantic_list_error_is_counted_even_when_http_status_is_200():
     result = oi.summarize([3.0], {200: 1}, 0, ["list did not return the seeded 100 invitations"], 1)
     assert result["ok"] == 0
@@ -72,9 +77,19 @@ def test_container_binding_accepts_docker_ipv6_loopback_serialization():
         {"3306/tcp": [{"HostIp": "[::1]", "HostPort": "33991"}]}, "::1", "33991")
 
 
-def test_source_revision_requires_a_full_git_sha(monkeypatch):
-    monkeypatch.setattr(oi.subprocess, "check_output", lambda *args, **kwargs: "a" * 40 + "\n")
-    assert oi.source_revision() == "a" * 40
+def test_clean_git_revision_requires_a_full_sha_and_no_changes(monkeypatch, tmp_path):
+    def clean(command, **kwargs):
+        return "a" * 40 + "\n" if command[1] == "rev-parse" else ""
+    monkeypatch.setattr(oi.subprocess, "check_output", clean)
+    assert oi.clean_git_revision(tmp_path, "fixture") == "a" * 40
+
+
+def test_clean_git_revision_rejects_untracked_or_modified_sources(monkeypatch, tmp_path):
+    def dirty(command, **kwargs):
+        return "a" * 40 + "\n" if command[1] == "rev-parse" else "?? generated.json\n"
+    monkeypatch.setattr(oi.subprocess, "check_output", dirty)
+    with pytest.raises(RuntimeError, match="clean fixture git tree"):
+        oi.clean_git_revision(tmp_path, "fixture")
 
 
 def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_path):

@@ -117,16 +117,30 @@ def has_exact_loopback_port_binding(bindings: dict, host: str, port: str) -> boo
                for values in bindings.values() if values for binding in values)
 
 
-def source_revision() -> str:
-    """Record the exact combined tree that produced a measurement."""
+def clean_git_revision(repository: Path, label: str) -> str:
+    """Resolve one source tree only if no uncommitted input can affect it."""
     try:
         revision = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+            ["git", "rev-parse", "HEAD"], cwd=repository, text=True, stderr=subprocess.DEVNULL).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repository, text=True, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError("Office load evidence requires a resolvable git revision") from error
+        raise RuntimeError(f"Office load evidence requires a readable {label} git tree") from error
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        raise RuntimeError("Office load evidence received an invalid git revision")
+        raise RuntimeError(f"Office load evidence received an invalid {label} revision")
+    if status:
+        raise RuntimeError(f"Office load evidence requires a clean {label} git tree")
     return revision
+
+
+def source_revisions(cfg: dict[str, str]) -> dict[str, str]:
+    """Bind evidence to clean Platform and paired-JAX source trees."""
+    jax_repository = Path(cfg["JAX_REPO_PATH"]).resolve()
+    return {
+        "jax_platform": clean_git_revision(ROOT, "JAX Platform"),
+        "jax": clean_git_revision(jax_repository, "paired JAX"),
+    }
 
 
 async def sequential_workers(concurrency: int, operations: int, action):
@@ -366,6 +380,9 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
                 list_semantic_errors += 1
         else:
             list_errors.append(response.text[:200])
+    # Finish this operation before beginning issue/accept/revoke.  Delaying
+    # this call would divide list work by later legs' elapsed time.
+    list_result = summarize(list_lat, list_status, list_started, list_errors, list_semantic_errors)
     issue_result = await batch("accept")
     accept_ids = [iid for iid, _ in issued]
     tokens = await asyncio.to_thread(outbox_tokens, cfg, fernet_key, accept_ids)
@@ -390,7 +407,7 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
         if response.status_code == 200: revoke_lat.append(latency)
         else: revoke_errors.append(response.text[:200])
     return {"concurrency": concurrency,
-            "list": summarize(list_lat, list_status, list_started, list_errors, list_semantic_errors), "issue_accept": issue_result,
+            "list": list_result, "issue_accept": issue_result,
             "accept": summarize(accept_lat, accept_stats, accept_started, accept_errors), "issue_revoke": revoke_issue,
             "revoke": summarize(revoke_lat, revoke_stats, revoke_started, revoke_errors)}
 
@@ -411,6 +428,7 @@ async def seed_active_invitations(client, headers: dict, project_id: int, run_id
 
 
 async def measure(cfg: dict[str, str]) -> dict:
+    revisions_before = source_revisions(cfg)
     await asyncio.to_thread(assert_disposable_container, cfg)
     await asyncio.to_thread(assert_disposable_runtime, cfg)
     run_id, password = uuid.uuid4().hex[:8], secrets.token_urlsafe(24)
@@ -428,12 +446,15 @@ async def measure(cfg: dict[str, str]) -> dict:
         # Each stateful leg reports separately; the overall degradation is the
         # first operation whose p95/HTTP errors cross the declared criterion.
         gates = {name: degradation([{"concurrency": r["concurrency"], "result": r[name]} for r in rows]) for name in ("list", "issue_accept", "accept", "issue_revoke", "revoke")}
-        return {"schema": "office-invitation-load/v1", "source_revision": source_revision(),
+        revisions_after = source_revisions(cfg)
+        if revisions_after != revisions_before:
+            raise RuntimeError("Office load source trees changed during measurement")
+        return {"schema": "office-invitation-load/v1", "source_revisions": revisions_before,
                 "database": cfg["JAX_OFFICE_LOAD_DB"], "run_id": run_id,
                 "workers_per_level": {"concurrent_users": "c", "operations_per_user": OPERATIONS_PER_WORKER},
                 "seed": {"active_invitations": 100, "method": "real issue endpoint"},
                 "benchmark_rate_policy": {**BENCHMARK_RATE_POLICY, "scope": "isolated local benchmark process only"},
-                "levels": rows, "degradation": gates, "notes": ["real loopback ASGI HTTP", "real auth and MFA", "outbox bearer decrypted only from the isolated disposable database", "guardrail 429 is reported separately from capacity"]}
+                "levels": rows, "degradation": gates, "notes": ["real loopback ASGI HTTP", "real auth and MFA", "outbox bearer decrypted only from the isolated disposable database"]}
     finally:
         if proc: await asyncio.to_thread(stop_backend, proc)
         if log: log.close()
