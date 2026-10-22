@@ -343,3 +343,14 @@ def test_internal_link_rejects_chain_cycle_and_cross_tree(tmp_path: Path, links:
     _git(source, "add", "."); _git(source, "commit", "-qm", "unsafe links")
     with pytest.raises(SystemExit, match="unsafe symlink target"):
         builder.extract(source, _git(source, "rev-parse", "HEAD"), tmp_path / "out")
+
+
+def test_builder_requires_explicit_bootstrap_or_both_predecessors() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert '--bootstrap-predecessor' in source
+    assert 'both Git predecessors are required' in source
+    bootstrap = REPO / 'ops/migration/bootstrap-pair-predecessor.py'
+    text = bootstrap.read_text(encoding='utf-8')
+    assert 'bootstrap requires an empty canonical pair root' in text
+    assert "--expected-manifest-sha256" in text
+    assert 'subprocess.run' in text and 'adopt-pair-root.py' in text
