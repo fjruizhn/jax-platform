@@ -333,8 +333,8 @@ async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: in
 
 
 async def accept_invitation_in_cursor(
-    cur, *, accepting_user_id: int, accepting_email: str | None, bearer_token: str,
-    idempotency_key: str,
+    cur, *, accepting_user_id: int | None, accepting_email: str | None,
+    new_password_hash: str | None, bearer_token: str,
 ) -> bool:
     """Consume one bearer through JAX and the Office companion atomically."""
     token_hash = _token_hash(bearer_token)
@@ -352,10 +352,16 @@ async def accept_invitation_in_cursor(
      account_class, grant_role, audience, group_id, proof_event_id,
      issuer_profile_version, issuer_grant_version, issuer_mfa_version, issuer_mfa_at,
      issuance_auth_id, stored_proof_digest, stored_hash, issued_at, expires_at, correlation_id) = row
-    if stored_hash != token_hash or target_user_id is None or int(target_user_id) != accepting_user_id:
+    if stored_hash != token_hash:
         raise InvitationError("office_invitation_invalid", status_code=403)
+    # A completed invitation can only be observed by its authenticated owner.
+    # A bearer alone must never become a password-reset capability after use.
     if status == "ACCEPTED":
-        return True
+        await cur.execute("SELECT accepted_user_id FROM office_invitation WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
+        accepted = await cur.fetchone()
+        if accepting_user_id is not None and accepted is not None and accepted[0] == accepting_user_id:
+            return True
+        raise InvitationError("office_invitation_existing_session_required", status_code=409)
     if status != "ISSUED":
         raise InvitationError("office_invitation_invalid", status_code=403)
     await cur.execute("SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
@@ -364,18 +370,43 @@ async def accept_invitation_in_cursor(
         raise InvitationError("office_invitation_integrity", status_code=503)
     await _expire_if_needed(cur, invitation_id=invitation_id, status=status, version=int(version),
                             issued_event_id=int(issued[0]), correlation_id=correlation_id, expires_at=expires_at)
-    normalized = _normalize_email(accepting_email or "")
-    await cur.execute(
-        "SELECT email,tenant_id,account_class,status FROM jax_users WHERE user_id=%s FOR UPDATE", (accepting_user_id,))
-    accepting = await cur.fetchone()
-    if (accepting is None or accepting[0] != normalized or int(accepting[1]) != int(tenant_id)
-            or accepting[2] != account_class or accepting[3] != "active"):
-        raise InvitationError("office_invitation_invalid", status_code=403)
+    if accepting_user_id is None:
+        if target_user_id is not None or new_password_hash is None:
+            raise InvitationError("office_invitation_existing_session_required", status_code=409)
+        accepting_user_id = await _create_invited_identity_in_cursor(
+            cur, tenant_id=int(tenant_id), email=issued_email,
+            account_class=account_class, password_hash=new_password_hash)
+    else:
+        if new_password_hash is not None:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+        if target_user_id is not None and int(target_user_id) != accepting_user_id:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+        normalized = _normalize_email(accepting_email or "")
+        await cur.execute(
+            "SELECT email,tenant_id,account_class,status FROM jax_users WHERE user_id=%s FOR UPDATE", (accepting_user_id,))
+        accepting = await cur.fetchone()
+        if (accepting is None or accepting[0] != normalized or int(accepting[1]) != int(tenant_id)
+                or accepting[2] != account_class or accepting[3] != "active"):
+            raise InvitationError("office_invitation_invalid", status_code=403)
+        from .bootstrap import credential_self_control_in_cursor
+        credential_audit_id = await credential_self_control_in_cursor(cur, user_id=accepting_user_id)
+        if credential_audit_id is None:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+        await cur.execute("SELECT status FROM office_account_profile WHERE user_id=%s FOR UPDATE", (accepting_user_id,))
+        profile = await cur.fetchone()
+        if profile is None:
+            await cur.execute(
+                "INSERT INTO office_account_profile "
+                "(user_id,global_role,status,version,bound_by_user_id,credential_audit_id,created_at,updated_at) "
+                "VALUES (%s,'COLLABORATOR','ACTIVE',1,%s,%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                (accepting_user_id, accepting_user_id, credential_audit_id))
+        elif profile[0] != "ACTIVE":
+            raise InvitationError("office_invitation_invalid", status_code=403)
     issued_at_utc = issued_at.replace(tzinfo=dt.timezone.utc) if issued_at.tzinfo is None else issued_at.astimezone(dt.timezone.utc)
     expires_at_utc = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
     if not hmac.compare_digest(
         _proof_digest(token_hash=token_hash, email=issued_email, tenant_id=int(tenant_id), project_id=int(project_id),
-                      recipient_group_id=group_id, target_user_id=accepting_user_id, account_class=account_class,
+                      recipient_group_id=group_id, target_user_id=(None if target_user_id is None else int(target_user_id)), account_class=account_class,
                       actor_user_id=int(issuer_user_id), profile_version=int(issuer_profile_version),
                       grant_version=int(issuer_grant_version), proof_event_id=int(proof_event_id),
                       mfa_version=int(issuer_mfa_version), issued_at=issued_at_utc,
@@ -416,7 +447,7 @@ async def accept_invitation_in_cursor(
         cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
         target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
         member_kind=(NamespacedMemberKind.INTERNAL if account_class == "OFFICE_INTERNAL" else NamespacedMemberKind.EXTERNAL_CLIENT),
-        idempotency_key=idempotency_key, authorizer=authorizer,
+        idempotency_key=str(uuid.uuid5(uuid.NAMESPACE_URL, f"office-invitation-acceptance/v1/{invitation_id}")), authorizer=authorizer,
         execution=NamespaceMembershipExecution(NamespaceMembershipExecutionKind.INVITATION_ACCEPTANCE, invitation_id),
     )
     if result.replayed or authorizer.authorization_event_id is None:
@@ -438,7 +469,7 @@ async def accept_invitation_in_cursor(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id),
         project_id=int(project_id), target_user_id=accepting_user_id, grant_role=grant_role, audience=audience)
     await write_invitation_acceptance_receipt(
-        cur, idempotency_key=idempotency_key, digest=digest, invitation_id=invitation_id,
+        cur, idempotency_key=str(uuid.uuid5(uuid.NAMESPACE_URL, f"office-invitation-acceptance/v1/{invitation_id}")), digest=digest, invitation_id=invitation_id,
         issuer_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
         target_user_id=accepting_user_id, grant_role=grant_role, audience=audience, result=result,
         office_grant_version=1, authorization_event_id=authorizer.authorization_event_id,
@@ -494,18 +525,31 @@ async def claim_next_invitation_delivery_in_cursor(cur) -> ClaimedInvitationDeli
         return None
     outbox_id, invitation_id, ciphertext = row
     await cur.execute(
-        "SELECT i.status,s.expires_at FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "SELECT i.status,i.version,s.expires_at,s.correlation_id FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
         "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
     invitation = await cur.fetchone()
     if invitation is None or invitation[0] != "ISSUED":
         raise InvitationError("office_invitation_integrity", status_code=503)
     now = await _db_now(cur)
-    expiry = invitation[1].replace(tzinfo=dt.timezone.utc) if invitation[1].tzinfo is None else invitation[1].astimezone(dt.timezone.utc)
+    expiry = invitation[2].replace(tzinfo=dt.timezone.utc) if invitation[2].tzinfo is None else invitation[2].astimezone(dt.timezone.utc)
     if now > expiry:
-        # The acceptance path owns the causal EXPIRED transition.  A sender
-        # which discovers it first reports terminal ambiguity for an operator
-        # instead of fabricating evidence from a delivery loop.
-        raise InvitationError("office_invitation_expired", status_code=410)
+        await cur.execute(
+            "SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE",
+            (invitation_id,))
+        issued = await cur.fetchone()
+        if issued is None:
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        await cur.execute(
+            "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+            "VALUES (%s,'EXPIRED',%s,NULL,NULL,NULL,%s,UTC_TIMESTAMP(6))",
+            (invitation_id, int(issued[0]), invitation[3]))
+        await cur.execute(
+            "UPDATE office_invitation SET status='EXPIRED',version=version+1 "
+            "WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
+            (invitation_id, int(invitation[1])))
+        if cur.rowcount != 1:
+            raise InvitationError("office_invitation_retryable", status_code=503)
+        return None
     recipient, token, expires_at = _decode_outbox_payload(ciphertext)
     attempt_id = str(uuid.uuid4())
     await cur.execute(

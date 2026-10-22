@@ -5,11 +5,17 @@ parameter, query parameter, response field, or logging value.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+import asyncio
 
-from auth.middleware import get_current_user
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from auth.jwt import decode_token
+from auth.middleware import get_current_user, verificar_sesion
 from auth.models import AuthUser
+from auth.password_rules import problema_de_password
+from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.invitation_config import load_invitation_config_from_environment
 from virtual_office.invitations import (
@@ -20,6 +26,7 @@ from virtual_office.mfa import load_mfa_config_from_environment
 
 
 router = APIRouter(prefix="/api/virtual-office")
+optional_bearer = HTTPBearer(auto_error=False)
 
 
 class InvitationIssueRequest(BaseModel):
@@ -28,7 +35,8 @@ class InvitationIssueRequest(BaseModel):
 
 
 class InvitationAcceptRequest(BaseModel):
-    bearer_token: str = Field(min_length=43, max_length=256)
+    token: str = Field(min_length=43, max_length=256)
+    password: str | None = Field(default=None, max_length=256)
 
 
 def _actor_id(user: AuthUser) -> int:
@@ -43,6 +51,14 @@ def _actor_id(user: AuthUser) -> int:
 
 def _raise(error: InvitationError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.code) from error
+
+
+async def _optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer),
+) -> AuthUser | None:
+    if credentials is None:
+        return None
+    return await verificar_sesion(decode_token(credentials.credentials), "access")
 
 
 @router.post("/projects/{project_id}/invitations")
@@ -84,14 +100,24 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
 
 @router.post("/invitations/accept")
 async def accept_invitation(payload: InvitationAcceptRequest,
-                            idempotency_key: str = Header(alias="Idempotency-Key"),
-                            user: AuthUser = Depends(get_current_user)):
-    actor = _actor_id(user)
+                            user: AuthUser | None = Depends(_optional_current_user)):
+    password_hash: str | None = None
+    if user is None:
+        if payload.password is None:
+            raise HTTPException(status_code=422, detail="office_invitation_password_required")
+        problem = problema_de_password(payload.password)
+        if problem is not None:
+            raise HTTPException(status_code=422, detail=f"office_invitation_password_{problem}")
+        # bcrypt is deliberately outside the transaction and event loop.
+        password_hash = await asyncio.to_thread(_hash, payload.password)
+    elif payload.password is not None:
+        raise HTTPException(status_code=409, detail="office_invitation_existing_session_required")
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             replayed = await accept_invitation_in_cursor(
-                cur, accepting_user_id=actor, accepting_email=user.email,
-                bearer_token=payload.bearer_token, idempotency_key=idempotency_key,
+                cur, accepting_user_id=None if user is None else _actor_id(user),
+                accepting_email=None if user is None else user.email,
+                new_password_hash=password_hash, bearer_token=payload.token,
             )
     except InvitationError as error:
         _raise(error)
