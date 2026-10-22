@@ -215,23 +215,34 @@ async def _reload(stamp: _Stamp):
     return value
 
 
+def _log_cancelled_reload_failure(task: asyncio.Future) -> None:
+    """Emite, como máximo una vez, la falla de una recarga con espera cancelada.
+
+    Se registra también como callback añadido *después* de completar la tarea:
+    `add_done_callback` lo agenda igual. Eso cierra la carrera en la que la
+    recarga falla y `_done` corre justo antes de que el turno procese su propia
+    cancelación.
+    """
+    if task not in _cancelled_waiters:
+        return
+    _cancelled_waiters.discard(task)
+    if task.cancelled():
+        return
+    exception = task.exception()
+    if exception is not None:
+        _asyncio_logger.error("exception in shielded future", exc_info=exception)
+
+
 def _done(inflight: tuple[_Stamp, asyncio.Future]):
     def callback(task: asyncio.Future) -> None:
         global _inflight
         if _inflight is inflight:  # otra recarga más nueva pudo reemplazarla
             _inflight = None
         # Marca la excepción como recuperada: evita el aviso "Task exception
-        # was never retrieved" si nadie la esperaba. El ERROR operativo para
-        # una tarea cuyos turnos fueron cancelados se emite abajo, una vez.
+        # was never retrieved" si nadie la esperaba.
         if not task.cancelled():
-            exception = task.exception()
-            if exception is not None and task in _cancelled_waiters:
-                # Este texto mantiene la señal que antes producía un callback
-                # interno de shield. Hacerlo aquí evita depender de detalles
-                # distintos entre versiones de asyncio y la deja exactamente
-                # una vez, aunque se cancelen varios turnos.
-                _asyncio_logger.error("exception in shielded future", exc_info=exception)
-        _cancelled_waiters.discard(task)
+            task.exception()
+        _log_cancelled_reload_failure(task)
     return callback
 
 
@@ -261,6 +272,9 @@ async def _wait_for_inflight(task: asyncio.Future):
         return await waiter
     except asyncio.CancelledError:
         _cancelled_waiters.add(task)
+        # Si `_done` ya corrió, este callback queda programado y observa el
+        # marcador recién añadido. Si aún no corrió, ambos son idempotentes.
+        task.add_done_callback(_log_cancelled_reload_failure)
         raise
 
 

@@ -358,3 +358,90 @@ def test_turnos_cancelados_sobre_una_recarga_que_falla_dejan_UN_error_y_los_dema
     assert fake.await_count == 1
     lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
     assert len(lineas) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_cancelacion_en_el_mismo_tick_que_el_fallo_se_loguea_una_vez_y_no_deja_marcador(caplog):
+    """Regresión de la carrera: `_done` puede consumir la excepción antes de
+    que el turno cancelado entre a su `except CancelledError`. El callback que
+    se instala al marcar la cancelación debe cubrir también ese orden."""
+    async def correr():
+        loop = asyncio.get_running_loop()
+        recarga = loop.create_future()
+        inflight = (((), None), recarga)
+        governance_context._inflight = inflight
+        recarga.add_done_callback(governance_context._done(inflight))
+        turno = asyncio.create_task(governance_context._wait_for_inflight(recarga))
+        await asyncio.sleep(0)  # el relevo ya quedó esperando la recarga
+        recarga.set_exception(ConnectionRefusedError("DB caída, simulada"))
+        turno.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turno
+        await asyncio.sleep(0)  # _done, relevo y callback tardío
+        return recarga in governance_context._cancelled_waiters
+
+    governance_context.validation_context.cache_clear()
+    try:
+        with caplog.at_level("ERROR", logger="asyncio"):
+            marcador_vivo = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
+    assert len(lineas) == 1, [r.getMessage() for r in caplog.records]
+    assert not marcador_vivo
+
+
+def test_fallo_que_primero_entrega_al_relevo_y_luego_cancela_tambien_se_loguea_una_vez(caplog):
+    """Segundo orden de la misma carrera: `_done`, relevo y cancelación quedan
+    en esa cola. El relevo ya recibió la excepción, pero el turno aún puede
+    ser cancelado antes de reanudar su `await`."""
+    async def correr():
+        loop = asyncio.get_running_loop()
+        recarga = loop.create_future()
+        inflight = (((), None), recarga)
+        governance_context._inflight = inflight
+        recarga.add_done_callback(governance_context._done(inflight))
+        turno = asyncio.create_task(governance_context._wait_for_inflight(recarga))
+        await asyncio.sleep(0)
+        recarga.add_done_callback(lambda _: turno.cancel())
+        recarga.set_exception(ConnectionRefusedError("DB caída, simulada"))
+        with pytest.raises(asyncio.CancelledError):
+            await turno
+        await asyncio.sleep(0)
+        return recarga in governance_context._cancelled_waiters
+
+    governance_context.validation_context.cache_clear()
+    try:
+        with caplog.at_level("ERROR", logger="asyncio"):
+            marcador_vivo = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
+    assert len(lineas) == 1, [r.getMessage() for r in caplog.records]
+    assert not marcador_vivo
+
+
+def test_cancelacion_sobre_recarga_exitosa_no_loguea_ni_deja_marcador(caplog):
+    async def correr():
+        loop = asyncio.get_running_loop()
+        recarga = loop.create_future()
+        inflight = (((), None), recarga)
+        governance_context._inflight = inflight
+        recarga.add_done_callback(governance_context._done(inflight))
+        turno = asyncio.create_task(governance_context._wait_for_inflight(recarga))
+        await asyncio.sleep(0)
+        turno.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turno
+        recarga.set_result(("contexto", "predicados", "categorias"))
+        await asyncio.sleep(0)
+        return recarga in governance_context._cancelled_waiters
+
+    governance_context.validation_context.cache_clear()
+    try:
+        with caplog.at_level("ERROR", logger="asyncio"):
+            marcador_vivo = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
+    assert not lineas, [r.getMessage() for r in caplog.records]
+    assert not marcador_vivo
