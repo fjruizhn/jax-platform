@@ -8,7 +8,7 @@ OFFICE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_admin_delegation (delegation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, tenant_id INT NOT NULL, user_id INT NOT NULL, capability VARCHAR(40) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', granted_by INT NOT NULL, version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_admin_delegation (tenant_id,user_id,capability), KEY idx_office_admin_delegation_scope (tenant_id,user_id,capability,status), KEY idx_office_admin_delegation_user (user_id), CONSTRAINT fk_office_admin_delegation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id), CONSTRAINT fk_office_admin_delegation_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_admin_delegation_capability CHECK (capability IN ('ADMINISTER_OFFICE')), CONSTRAINT chk_office_admin_delegation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_project_grant (grant_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, grant_role VARCHAR(24) NOT NULL, audience VARCHAR(24) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, granted_by INT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_project_grant_subject (project_id,user_id), KEY idx_office_project_grant_scope (project_id,user_id,status,audience), KEY idx_office_project_grant_list (user_id,status,audience,project_id,grant_role), CONSTRAINT fk_office_project_grant_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_project_grant_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_project_grant_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_project_grant_role CHECK (grant_role IN ('PROJECT_ADMIN','COLLABORATOR')), CONSTRAINT chk_office_project_grant_audience CHECK (audience IN ('INTERNAL','CLIENT_PUBLISHED')), CONSTRAINT chk_office_project_grant_status CHECK (status IN ('ACTIVE','REVOKED')), CONSTRAINT chk_office_project_grant_published_role CHECK (audience='INTERNAL' OR grant_role='COLLABORATOR')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_recipient_group (recipient_group_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, tenant_id INT NOT NULL, group_kind VARCHAR(16) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', created_by INT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_recipient_group_project_kind (project_id,group_kind), UNIQUE KEY uq_office_recipient_group_id_project (recipient_group_id,project_id), KEY idx_office_recipient_group_scope (project_id,status), CONSTRAINT fk_office_recipient_group_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id), CONSTRAINT fk_office_recipient_group_created_by FOREIGN KEY (created_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_recipient_group_kind CHECK (group_kind='CLIENT'), CONSTRAINT chk_office_recipient_group_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS office_external_relation (relation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, recipient_group_id BIGINT UNSIGNED NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_external_relation_subject (project_id,user_id), KEY idx_office_external_relation_scope (project_id,user_id,status,recipient_group_id), KEY idx_office_external_relation_list (user_id,status,project_id,recipient_group_id), CONSTRAINT fk_office_external_relation_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_external_relation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_external_relation_group FOREIGN KEY (recipient_group_id) REFERENCES office_recipient_group(recipient_group_id), CONSTRAINT fk_office_external_relation_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id), CONSTRAINT chk_office_external_relation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_external_relation (relation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, recipient_group_id BIGINT UNSIGNED NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_external_relation_subject (project_id,user_id), UNIQUE KEY uq_office_external_relation_receipt (relation_id,project_id,user_id,recipient_group_id), KEY idx_office_external_relation_scope (project_id,user_id,status,recipient_group_id), KEY idx_office_external_relation_list (user_id,status,project_id,recipient_group_id), CONSTRAINT fk_office_external_relation_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_external_relation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_external_relation_group FOREIGN KEY (recipient_group_id) REFERENCES office_recipient_group(recipient_group_id), CONSTRAINT fk_office_external_relation_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id), CONSTRAINT chk_office_external_relation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_professional_grant (professional_grant_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, capability VARCHAR(64) NOT NULL, basis VARCHAR(128) NOT NULL, evidence_ref VARCHAR(255) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', granted_by INT NOT NULL, version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_professional_grant (project_id,user_id,capability), KEY idx_office_professional_grant_scope (project_id,user_id,capability,status), CONSTRAINT fk_office_professional_grant_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_professional_grant_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_professional_grant_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_professional_grant_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_authorization_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, actor_user_id INT NOT NULL, operation VARCHAR(40) NOT NULL, requested_project_id INT NULL, project_id INT NULL, tenant_id INT NULL, result VARCHAR(16) NOT NULL, reason_code VARCHAR(64) NOT NULL, correlation_id VARCHAR(128) NULL, occurred_at DATETIME(6) NOT NULL, KEY idx_office_authorization_event_scope (project_id,tenant_id,occurred_at), KEY idx_office_authorization_event_actor (actor_user_id,occurred_at), CONSTRAINT fk_office_authorization_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_authorization_event_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_authorization_event_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id), CONSTRAINT fk_office_authorization_event_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id), CONSTRAINT chk_office_authorization_event_result CHECK (result IN ('ALLOWED','DENIED','RECORDED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_authorization_event BEFORE UPDATE ON office_authorization_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_authorization_event append-only'",
@@ -49,32 +49,34 @@ OFFICE_BOOTSTRAP_DDL = (
 # "Office says done" record structurally impossible.
 OFFICE_MEMBERSHIP_RECEIPT_DDL = (
     "CREATE TABLE IF NOT EXISTS office_membership_mutation_receipt ("
-    "namespace VARCHAR(32) NOT NULL,idempotency_key CHAR(36) NOT NULL,request_digest CHAR(64) NOT NULL,"
+    "namespace VARCHAR(32) NOT NULL,idempotency_key CHAR(36) NOT NULL,request_digest BINARY(32) NOT NULL,"
     "operation VARCHAR(32) NOT NULL,actor_user_id INT NOT NULL,target_tenant_id INT NOT NULL,project_id INT NOT NULL,target_user_id INT NOT NULL,"
     "expected_version BIGINT NOT NULL,grant_role VARCHAR(24) NULL,audience VARCHAR(24) NULL,execution_kind VARCHAR(32) NOT NULL,"
     "jax_membership_id CHAR(36) NOT NULL,jax_event_id CHAR(36) NOT NULL,office_grant_version BIGINT NOT NULL,office_grant_status VARCHAR(16) NOT NULL,"
     "external_relation_id BIGINT UNSIGNED NULL,external_relation_version BIGINT NULL,recipient_group_id BIGINT UNSIGNED NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,"
-    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "created_at DATETIME(6) NOT NULL,"
     "PRIMARY KEY(namespace,idempotency_key),UNIQUE KEY uq_office_membership_receipt_jax_event(jax_event_id),"
     "KEY idx_office_membership_receipt_jax_request(namespace,idempotency_key),"
     "CONSTRAINT fk_office_membership_receipt_jax_request FOREIGN KEY(namespace,idempotency_key) REFERENCES jax_namespace_membership_mutation_request(namespace,idempotency_key),"
+    "CONSTRAINT fk_office_membership_receipt_jax_membership FOREIGN KEY(jax_membership_id) REFERENCES jax_project_membership(membership_id),"
+    "CONSTRAINT fk_office_membership_receipt_jax_event FOREIGN KEY(jax_event_id) REFERENCES jax_project_membership_event(event_id),"
     "CONSTRAINT fk_office_membership_receipt_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_membership_receipt_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_membership_receipt_scope FOREIGN KEY(project_id,target_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
     "CONSTRAINT fk_office_membership_receipt_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),"
-    "CONSTRAINT fk_office_membership_receipt_relation FOREIGN KEY(external_relation_id) REFERENCES office_external_relation(relation_id),"
-    "CONSTRAINT fk_office_membership_receipt_group FOREIGN KEY(recipient_group_id) REFERENCES office_recipient_group(recipient_group_id),"
+    "CONSTRAINT fk_office_membership_receipt_relation FOREIGN KEY(external_relation_id,project_id,target_user_id,recipient_group_id) REFERENCES office_external_relation(relation_id,project_id,user_id,recipient_group_id),"
     "CONSTRAINT chk_office_membership_receipt_operation CHECK(operation IN ('GRANT_OFFICE_MEMBER','REVOKE_OFFICE_MEMBER')),"
     "CONSTRAINT chk_office_membership_receipt_expected_version CHECK(expected_version >= 0),"
     "CONSTRAINT chk_office_membership_receipt_grant CHECK(grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND audience IN ('INTERNAL','CLIENT_PUBLISHED') AND ((operation='GRANT_OFFICE_MEMBER' AND office_grant_status='ACTIVE') OR (operation='REVOKE_OFFICE_MEMBER' AND office_grant_status='REVOKED'))),"
-    "CONSTRAINT chk_office_membership_receipt_external CHECK((external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) OR (external_relation_id IS NOT NULL AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL))"
+    "CONSTRAINT chk_office_membership_receipt_external CHECK((audience='INTERNAL' AND external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) OR (audience='CLIENT_PUBLISHED' AND grant_role='COLLABORATOR' AND external_relation_id IS NOT NULL AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL)),"
+    "CONSTRAINT chk_office_membership_receipt_execution CHECK(execution_kind IN ('INTERACTIVE_USER','INVITATION_ACCEPTANCE'))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_membership_mutation_receipt BEFORE UPDATE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_membership_mutation_receipt BEFORE DELETE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
 )
 
 OFFICE_PROFILE_REVOCATION_DDL = (
-    "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL,KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_profile_revocation_event BEFORE UPDATE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_profile_revocation_event BEFORE DELETE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
 )
@@ -88,15 +90,137 @@ _PROFILE_REVOCATION_TRIGGERS = {
     "no_delete_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
 }
 
+# These ledgers are release authority, not diagnostics.  The migration
+# principal therefore attests the complete physical contract before it can
+# stamp readiness; checking only a homonymous trigger and one index would let
+# a same-named, weaker table pass.
+_MEMBERSHIP_RECEIPT_COLUMNS = (
+    ("namespace", "varchar", "varchar(32)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("idempotency_key", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("request_digest", "binary", "binary(32)", "NO", None, None, "", None),
+    ("operation", "varchar", "varchar(32)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("actor_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_tenant_id", "int", "int(11)", "NO", None, None, "", None),
+    ("project_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("expected_version", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("grant_role", "varchar", "varchar(24)", "YES", "utf8mb4", "utf8mb4_unicode_ci", "", "NULL"),
+    ("audience", "varchar", "varchar(24)", "YES", "utf8mb4", "utf8mb4_unicode_ci", "", "NULL"),
+    ("execution_kind", "varchar", "varchar(32)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("jax_membership_id", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("jax_event_id", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("office_grant_version", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("office_grant_status", "varchar", "varchar(16)", "NO", "utf8mb4", "utf8mb4_unicode_ci", "", None),
+    ("external_relation_id", "bigint", "bigint(20) unsigned", "YES", None, None, "", "NULL"),
+    ("external_relation_version", "bigint", "bigint(20)", "YES", None, None, "", "NULL"),
+    ("recipient_group_id", "bigint", "bigint(20) unsigned", "YES", None, None, "", "NULL"),
+    ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
+    ("created_at", "datetime", "datetime(6)", "NO", None, None, "", None),
+)
 
-async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]]) -> None:
+_PROFILE_REVOCATION_COLUMNS = (
+    ("event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "auto_increment", None),
+    ("actor_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("action", "varchar", "varchar(32)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("version_before", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("version_after", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("reason_code", "varchar", "varchar(64)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
+    ("occurred_at", "datetime", "datetime(6)", "NO", None, None, "", None),
+)
+
+_MEMBERSHIP_RECEIPT_FOREIGN_KEYS = {
+    "fk_office_membership_receipt_jax_request": (("namespace", "idempotency_key"), "jax_namespace_membership_mutation_request", ("namespace", "idempotency_key"), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_jax_membership": (("jax_membership_id",), "jax_project_membership", ("membership_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_jax_event": (("jax_event_id",), "jax_project_membership_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_scope": (("project_id", "target_tenant_id"), "jax_project_scope", ("project_id", "tenant_id"), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_relation": (("external_relation_id", "project_id", "target_user_id", "recipient_group_id"), "office_external_relation", ("relation_id", "project_id", "user_id", "recipient_group_id"), "RESTRICT", "RESTRICT"),
+}
+
+_PROFILE_REVOCATION_FOREIGN_KEYS = {
+    "fk_office_profile_revocation_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_profile_revocation_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_profile_revocation_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
+}
+
+_MEMBERSHIP_RECEIPT_INDEXES = {
+    "PRIMARY": (("namespace", "idempotency_key"), True),
+    "uq_office_membership_receipt_jax_event": (("jax_event_id",), True),
+    "idx_office_membership_receipt_jax_request": (("namespace", "idempotency_key"), False),
+}
+_PROFILE_REVOCATION_INDEXES = {
+    "PRIMARY": (("event_id",), True),
+    "idx_office_profile_revocation_target": (("target_user_id", "occurred_at", "event_id"), False),
+}
+_MEMBERSHIP_RECEIPT_CHECK_DIGESTS = {
+    "chk_office_membership_receipt_execution": "196669adfa506ecad362d17e6d3e9253b86588f0fd91d3487159d3f43ff503fc",
+    "chk_office_membership_receipt_expected_version": "422f5efc35ffd50753f031031a0d082292983c677e76c19c5ab2577d992df14a",
+    "chk_office_membership_receipt_external": "7e6d7f900144fafa7507c4e620ea43e6c794174228d418957f11f65028994915",
+    "chk_office_membership_receipt_grant": "8fc194e5784772aef4087925fbe267d7e700e04fb4796502374bcf9b0c144785",
+    "chk_office_membership_receipt_operation": "6e851cd6199ee07d619df09ac08f88ef3ce76e93ee414298fd5595bc5222f993",
+}
+_PROFILE_REVOCATION_CHECK_DIGESTS = {
+    "chk_office_profile_revocation_shape": "f769f02954fa70ced3504de2e004fc64e0908b2286a053962efa99bc2859777a",
+}
+
+
+async def _assert_columns(cur, *, table: str, expected: tuple[tuple[object, ...], ...]) -> None:
+    await cur.execute(
+        "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,CHARACTER_SET_NAME,COLLATION_NAME,EXTRA,COLUMN_DEFAULT "
+        "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
+        (table,),
+    )
+    if tuple(await cur.fetchall()) != expected:
+        raise RuntimeError(f"Office {table} column metadata is invalid")
+
+
+async def _assert_foreign_keys(cur, *, table: str, expected: dict[str, tuple[object, ...]]) -> None:
+    await cur.execute("SELECT DATABASE()")
+    row = await cur.fetchone()
+    schema = None if row is None else str(row[0])
+    if not schema:
+        raise RuntimeError(f"Office {table} schema is unavailable")
+    for name, shape in expected.items():
+        await cur.execute(
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
+            "r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k "
+            "JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA "
+            "AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME "
+            "WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME=%s AND k.CONSTRAINT_NAME=%s "
+            "ORDER BY k.ORDINAL_POSITION", (table, name),
+        )
+        rows = await cur.fetchall()
+        actual = (tuple(item[0] for item in rows), rows[0][2], tuple(item[3] for item in rows), rows[0][4], rows[0][5]) if rows and rows[0][1] == schema else None
+        if actual != shape:
+            raise RuntimeError(f"Office {table} foreign key {name} is invalid")
+
+
+async def _assert_indexes(cur, *, table: str, expected: dict[str, tuple[tuple[str, ...], bool]]) -> None:
+    for name, (columns, unique) in expected.items():
+        if not await _index_has_exact_shape(cur, table, name, columns, unique=unique):
+            raise RuntimeError(f"Office {table} index {name} is invalid")
+
+
+async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]],
+                                             allow_redacted_trigger_body: bool = False) -> None:
     """Reject homonymous/no-op append-only guards before readiness is stamped."""
     await cur.execute(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,"
         "ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS "
         "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
     found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
-    if found != triggers:
+    if allow_redacted_trigger_body:
+        expected = {
+            name: (*metadata[:-1], None if found.get(name, (None,))[-1] is None else metadata[-1])
+            for name, metadata in triggers.items()
+        }
+    else:
+        expected = triggers
+    if found != expected:
         raise RuntimeError(f"Office {table} triggers are missing or invalid")
     await cur.execute(
         "SELECT COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS "
@@ -106,18 +230,30 @@ async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[
         raise RuntimeError(f"Office {table} primary key is invalid")
 
 
-async def assert_membership_receipt_runtime_metadata(cur) -> None:
-    if await _table_exists(cur, "office_membership_mutation_receipt"):
-        await _assert_append_only_table_metadata(
-            cur, table="office_membership_mutation_receipt", triggers=_MEMBERSHIP_RECEIPT_TRIGGERS)
-        if not await _index_has_exact_shape(
-            cur, "office_membership_mutation_receipt", "uq_office_membership_receipt_jax_event", ("jax_event_id",), unique=True):
-            raise RuntimeError("Office membership receipt JAX-event index is invalid")
-
-
-async def assert_profile_revocation_runtime_metadata(cur) -> None:
+async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+    if not await _table_exists(cur, "office_membership_mutation_receipt"):
+        return
+    await _assert_columns(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_COLUMNS)
+    await _assert_indexes(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_INDEXES)
+    await _assert_foreign_keys(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_FOREIGN_KEYS)
     await _assert_append_only_table_metadata(
-        cur, table="office_profile_revocation_event", triggers=_PROFILE_REVOCATION_TRIGGERS)
+        cur, table="office_membership_mutation_receipt", triggers=_MEMBERSHIP_RECEIPT_TRIGGERS,
+        allow_redacted_trigger_body=allow_redacted_trigger_body)
+    for name, digest in _MEMBERSHIP_RECEIPT_CHECK_DIGESTS.items():
+        if _check_digest(await _check_clause(cur, name)) != digest:
+            raise RuntimeError(f"Office membership receipt CHECK {name} is invalid")
+
+
+async def assert_profile_revocation_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+    await _assert_columns(cur, table="office_profile_revocation_event", expected=_PROFILE_REVOCATION_COLUMNS)
+    await _assert_indexes(cur, table="office_profile_revocation_event", expected=_PROFILE_REVOCATION_INDEXES)
+    await _assert_foreign_keys(cur, table="office_profile_revocation_event", expected=_PROFILE_REVOCATION_FOREIGN_KEYS)
+    await _assert_append_only_table_metadata(
+        cur, table="office_profile_revocation_event", triggers=_PROFILE_REVOCATION_TRIGGERS,
+        allow_redacted_trigger_body=allow_redacted_trigger_body)
+    for name, digest in _PROFILE_REVOCATION_CHECK_DIGESTS.items():
+        if _check_digest(await _check_clause(cur, name)) != digest:
+            raise RuntimeError(f"Office profile revocation CHECK {name} is invalid")
 
 # Exact MariaDB 12.3.3 CHECK_CLAUSE renderings, measured from the constraint
 # created below.  Normalization deliberately preserves boolean operators and
@@ -392,8 +528,10 @@ async def _ensure_tenant_bound_delegation(cur) -> None:
         raise RuntimeError("Office admin delegation scope index is incompatible")
     if not await _index_has_exact_shape(cur, "office_admin_delegation", "idx_office_admin_delegation_user", _DELEGATION_USER_INDEX):
         raise RuntimeError("Office admin delegation user index is incompatible")
-    if not await _constraint_exists(cur, "fk_office_admin_delegation_tenant"):
-        raise RuntimeError("Office admin delegation tenant foreign key is missing")
+    await _assert_foreign_keys(
+        cur, table="office_admin_delegation", expected={
+            "fk_office_admin_delegation_tenant": (("tenant_id",), "jax_tenants", ("tenant_id",), "RESTRICT", "RESTRICT"),
+        })
 
 
 async def _assert_professional_grant_version(cur) -> None:
@@ -849,6 +987,17 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE office_schema_revision MODIFY component VARCHAR(64) NOT NULL, DROP PRIMARY KEY, ADD PRIMARY KEY (component)")
     if not await _index_exists(cursor, "office_recipient_group", "uq_office_recipient_group_id_project"):
         await cursor.execute("ALTER TABLE office_recipient_group ADD UNIQUE KEY uq_office_recipient_group_id_project (recipient_group_id,project_id)")
+    relation_receipt_index = "uq_office_external_relation_receipt"
+    relation_receipt_columns = ("relation_id", "project_id", "user_id", "recipient_group_id")
+    if not await _index_exists(cursor, "office_external_relation", relation_receipt_index):
+        await cursor.execute(
+            "ALTER TABLE office_external_relation ADD UNIQUE KEY " + relation_receipt_index
+            + " (relation_id,project_id,user_id,recipient_group_id)"
+        )
+    if not await _index_has_exact_shape(
+        cursor, "office_external_relation", relation_receipt_index, relation_receipt_columns, unique=True,
+    ):
+        raise RuntimeError("Office external relation receipt index is incompatible")
     await _ensure_tenant_bound_delegation(cursor)
     # Professional capability is mutable/revocable.  Existing pre-3C rows
     # receive the deterministic first version; later API mutations use a CAS

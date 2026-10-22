@@ -82,6 +82,56 @@ def test_office_schema_is_idempotent_and_has_append_only_audit_and_scope_index(c
     assert constraints == {'fk_office_authorization_event_scope', 'fk_office_authorization_event_project', 'fk_office_authorization_event_tenant', 'fk_office_external_relation_group_project'}
 
 
+def test_membership_receipt_attestation_rejects_weakened_matrix_and_wrong_digest_shape(client):
+    """A same-named receipt table/check cannot silently authorize replay."""
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
+                await cur.execute("ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK (audience IN ('INTERNAL','CLIENT_PUBLISHED'))")
+                with pytest.raises(RuntimeError, match="receipt CHECK .* invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
+                await cur.execute(
+                    "ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK ("
+                    "(audience='INTERNAL' AND external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) "
+                    "OR (audience='CLIENT_PUBLISHED' AND grant_role='COLLABORATOR' AND external_relation_id IS NOT NULL "
+                    "AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL))"
+                )
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_membership_mutation_receipt MODIFY request_digest CHAR(64) NOT NULL")
+                with pytest.raises(RuntimeError, match="receipt column metadata is invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("ALTER TABLE office_membership_mutation_receipt MODIFY request_digest BINARY(32) NOT NULL")
+                await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
+def test_delegation_tenant_fk_attestation_rejects_homonymous_wrong_target(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("ALTER TABLE office_admin_delegation DROP FOREIGN KEY fk_office_admin_delegation_tenant")
+                await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_users(user_id)")
+                with pytest.raises(RuntimeError, match="delegation.*foreign key.*invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("ALTER TABLE office_admin_delegation DROP FOREIGN KEY fk_office_admin_delegation_tenant")
+                await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id)")
+                await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
 def test_nonempty_global_delegation_fails_before_tenant_ddl_and_recovers_cleanly(client):
     """No legacy authority row may acquire a fabricated tenant during upgrade."""
     async def scenario():
