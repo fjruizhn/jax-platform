@@ -131,6 +131,32 @@ describe('client.js -- aviso de por qué se cerró la sesión', () => {
   })
 })
 
+describe('client.js -- refresh no cruza épocas de identidad', () => {
+  afterEach(() => getStateMock.mockImplementation(() => ({ token: 'viejo' })))
+  it('does not install A refresh token or retry after B establishes a session', async () => {
+    let resolve
+    const estado = { token: 'a', _sessionEpoch: 1 }
+    getStateMock.mockImplementation(() => estado)
+    axiosPostMock.mockReturnValue(new Promise((r) => { resolve = r }))
+    const pending = onRejected({ ...err401(), config: { url: '/pipelines', headers: {}, _epoch: 1 } })
+    estado.token = 'b'; estado._sessionEpoch = 2
+    resolve({ data: { access_token: 'refreshed-a' } })
+    await expect(pending).rejects.toBeTruthy()
+    expect(setStateMock).not.toHaveBeenCalledWith({ token: 'refreshed-a' })
+  })
+  it('does not clear B after an A refresh failure', async () => {
+    let reject
+    const estado = { token: 'a', _sessionEpoch: 1 }
+    getStateMock.mockImplementation(() => estado)
+    axiosPostMock.mockReturnValue(new Promise((_, r) => { reject = r }))
+    const pending = onRejected({ ...err401(), config: { url: '/pipelines', headers: {}, _epoch: 1 } })
+    estado.token = 'b'; estado._sessionEpoch = 2
+    reject({ response: { status: 401, data: {} } })
+    await expect(pending).rejects.toBeTruthy()
+    expect(setStateMock).not.toHaveBeenCalledWith(expect.objectContaining({ token: null }))
+  })
+})
+
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): tras el
 // commit de POST /auth/me/password el token_version sube; un poll que salió
 // con el access viejo vuelve con 401. Si el interceptor llamaba a
