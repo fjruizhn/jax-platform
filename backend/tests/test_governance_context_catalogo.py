@@ -420,6 +420,41 @@ def test_fallo_que_primero_entrega_al_relevo_y_luego_cancela_tambien_se_loguea_u
     assert not marcador_vivo
 
 
+def test_cancelaciones_temprana_y_tardia_sobre_la_misma_recarga_dejan_un_solo_error(caplog):
+    """La cancelación temprana puede registrar el error antes de que otra
+    tardía procese su `CancelledError`. Esa segunda espera no puede contar de
+    nuevo la misma falla compartida."""
+    async def correr():
+        loop = asyncio.get_running_loop()
+        recarga = loop.create_future()
+        inflight = (((), None), recarga)
+        governance_context._inflight = inflight
+        recarga.add_done_callback(governance_context._done(inflight))
+        temprana = asyncio.create_task(governance_context._wait_for_inflight(recarga))
+        tardia = asyncio.create_task(governance_context._wait_for_inflight(recarga))
+        await asyncio.sleep(0)
+        temprana.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await temprana
+        recarga.add_done_callback(lambda _: tardia.cancel())
+        recarga.set_exception(ConnectionRefusedError("DB caída, simulada"))
+        with pytest.raises(asyncio.CancelledError):
+            await tardia
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return recarga in governance_context._cancelled_waiters
+
+    governance_context.validation_context.cache_clear()
+    try:
+        with caplog.at_level("ERROR", logger="asyncio"):
+            marcador_vivo = asyncio.run(correr())
+    finally:
+        governance_context.validation_context.cache_clear()
+    lineas = [r for r in caplog.records if "exception in shielded future" in r.getMessage()]
+    assert len(lineas) == 1, [r.getMessage() for r in caplog.records]
+    assert not marcador_vivo
+
+
 def test_cancelacion_sobre_recarga_exitosa_no_loguea_ni_deja_marcador(caplog):
     async def correr():
         loop = asyncio.get_running_loop()

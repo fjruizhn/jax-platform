@@ -121,6 +121,7 @@ import logging
 import math
 import os
 import sys
+import weakref
 
 from config_entorno import ruta_absoluta_requerida
 
@@ -170,6 +171,10 @@ _inflight: tuple[_Stamp, asyncio.Future] | None = None
 # versiones de Python. Conservamos la señal operativa de una recarga fallida
 # que sobrevivió a turnos cancelados de forma explícita y una vez por tarea.
 _cancelled_waiters: set[asyncio.Future] = set()
+# Una segunda cancelación puede llegar después de que `_done` registró la
+# falla de la misma tarea. El sello débil conserva el "ya emitido" sin retener
+# tareas terminadas y evita que esa carrera duplique el ERROR.
+_logged_cancelled_reload_failures: weakref.WeakSet[asyncio.Future] = weakref.WeakSet()
 _asyncio_logger = logging.getLogger("asyncio")
 
 
@@ -223,6 +228,9 @@ def _log_cancelled_reload_failure(task: asyncio.Future) -> None:
     recarga falla y `_done` corre justo antes de que el turno procese su propia
     cancelación.
     """
+    if task in _logged_cancelled_reload_failures:
+        _cancelled_waiters.discard(task)
+        return
     if task not in _cancelled_waiters:
         return
     _cancelled_waiters.discard(task)
@@ -230,6 +238,7 @@ def _log_cancelled_reload_failure(task: asyncio.Future) -> None:
         return
     exception = task.exception()
     if exception is not None:
+        _logged_cancelled_reload_failures.add(task)
         _asyncio_logger.error("exception in shielded future", exc_info=exception)
 
 
@@ -271,10 +280,12 @@ async def _wait_for_inflight(task: asyncio.Future):
     try:
         return await waiter
     except asyncio.CancelledError:
-        _cancelled_waiters.add(task)
-        # Si `_done` ya corrió, este callback queda programado y observa el
-        # marcador recién añadido. Si aún no corrió, ambos son idempotentes.
-        task.add_done_callback(_log_cancelled_reload_failure)
+        if task not in _logged_cancelled_reload_failures:
+            _cancelled_waiters.add(task)
+            # Si `_done` ya corrió, este callback queda programado y observa
+            # el marcador recién añadido. Si aún no corrió, ambos son
+            # idempotentes.
+            task.add_done_callback(_log_cancelled_reload_failure)
         raise
 
 
@@ -309,6 +320,7 @@ def _cache_clear() -> None:
     _cache = None
     _inflight = None
     _cancelled_waiters.clear()
+    _logged_cancelled_reload_failures.clear()
 
 
 # Compatibilidad: quien tenía `validation_context.cache_clear()` lo sigue
