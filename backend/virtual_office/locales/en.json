@@ -1,0 +1,7 @@
+{
+  "invitation_email": {
+    "subject": "Axioma — Virtual Office invitation",
+    "text": "Open this secure link to accept the Virtual Office invitation:\n\n{url}\n\nExpires: {expires_at}",
+    "html": "<p>Open this secure link to accept the Virtual Office invitation:</p><p><a href=\"{url}\">Accept invitation</a></p><p>Expires: {expires_at}</p>"
+  }
+}

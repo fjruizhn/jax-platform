@@ -5,7 +5,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn() }))
-vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects }))
+const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
+vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations }))
 import VirtualOffice from './VirtualOffice'
 
 function show() {
@@ -14,6 +15,7 @@ function show() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  invitations.list.mockResolvedValue({ data: { invitations: [], next_cursor: null } })
   useJaxStore.setState({ token: 'office-token', user: {
     user_id: 7, email: 'persona@example.test', account_class: 'OFFICE_INTERNAL',
   } })
@@ -101,5 +103,14 @@ describe('Virtual Office', () => {
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Información de acceso' }))
     expect(screen.getByRole('dialog', { name: 'Acceso de Oficina virtual' })).toBeInTheDocument()
+  })
+
+  it('mounts invitation controls only for the boolean capability computed by the detail endpoint', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 24, name: 'Administrable', description: '', tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 24, name: 'Administrable', description: '', tenant_id: 4, scope_version: 7, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
+    show()
+    fireEvent.click(await screen.findByRole('button', { name: 'Administrable' }))
+    expect(await screen.findByRole('button', { name: 'Gestionar invitaciones' })).toBeInTheDocument()
+    expect(invitations.list).toHaveBeenCalledWith(24, { limit: 25, cursor: null })
   })
 })

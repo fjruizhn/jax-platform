@@ -34,6 +34,7 @@ vi.mock('axios', () => {
 })
 
 let onRejected
+let onRequest
 let useJaxStore
 
 beforeEach(async () => {
@@ -47,6 +48,7 @@ beforeEach(async () => {
   ;({ useJaxStore } = await import('../store/useJaxStore'))
   useJaxStore.setState({ token: 'viejo', user: { user_id: 1 }, avisoSesion: null })
   onRejected = responseUse.mock.calls[0][1]
+  onRequest = requestUse.mock.calls[0][0]
 })
 
 const err401 = (url, detail) => ({
@@ -85,6 +87,19 @@ describe('client.js -- el interceptor no toca los endpoints de auth (integració
       expect(useJaxStore.getState().token).toBe('viejo')
     },
   )
+
+  it('a 401 from invitation acceptance never refreshes or retries a bearer that may be consumed', async () => {
+    await expect(onRejected(err401('/virtual-office/invitations/accept'))).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(useJaxStore.getState().token).toBe('viejo')
+  })
+
+  it('preserves an acceptance Authorization snapshot and suppresses B authentication for new accounts', () => {
+    useJaxStore.setState({ token: 'token-b', user: { user_id: 2 } })
+    expect(onRequest({ url: '/virtual-office/invitations/accept', headers: { Authorization: 'Bearer token-a' } }).headers.Authorization).toBe('Bearer token-a')
+    const fresh = onRequest({ url: '/virtual-office/invitations/accept', headers: {}, _officeInvitationNoAuth: true })
+    expect(fresh.headers.Authorization).toBeUndefined()
+  })
 
   it('(c) CONTROL: 401 de otra ruta con refresh fallido sigue poniendo el aviso', async () => {
     axiosPostMock.mockRejectedValue({ response: { status: 401, data: {} } })

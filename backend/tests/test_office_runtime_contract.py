@@ -439,26 +439,28 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v1 marker cannot certify schema that predates the audit-shape CHECK."""
+    """A v8 marker cannot certify the later invitation lifecycle contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
+        assert SCHEMA_REVISION.startswith("office-runtime-v10-")
+        predecessor = SCHEMA_REVISION.replace("office-runtime-v10-", "office-runtime-v9-", 1)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
                 await cur.execute(
-                    "UPDATE office_schema_revision SET revision='office-runtime-v1' "
-                    "WHERE component='virtual-office'"
+                    "UPDATE office_schema_revision SET revision=%s "
+                    "WHERE component='virtual-office'", (predecessor,)
                 )
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 with pytest.raises(RuntimeDbContractError, match="revision is absent"):
                     await _revision(cur)
         await run_migrations()
-        assert SCHEMA_REVISION != 'office-runtime-v1'
+        assert SCHEMA_REVISION != predecessor
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await _revision(cur)

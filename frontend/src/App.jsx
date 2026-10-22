@@ -11,6 +11,7 @@ import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import AccountSecurity from './pages/AccountSecurity'
 import VirtualOffice from './pages/VirtualOffice'
+import OfficeInvitation from './pages/OfficeInvitation'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 import { officeSessionApi } from './api/virtualOffice'
@@ -84,6 +85,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/office/invitation" element={<OfficeInvitation />} />
         <Route path="/account/security" element={<RequireAuth allowOfficeAccount><AccountSecurity /></RequireAuth>} />
         <Route
           path="/virtual-office"

@@ -603,6 +603,10 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     # schema represents the pre-invitation predecessor,
                     # rather than attempting an invalid parent-table drop.
                     await cur.execute("DROP TABLE office_invitation_outbox")
+                    # The mutation receipt is a child of the invitation-event
+                    # ledger.  Keep FK checks enabled: this teardown is itself
+                    # evidence that the predecessor graph is complete.
+                    await cur.execute("DROP TABLE office_invitation_mutation_receipt")
                     await cur.execute("DROP TABLE office_invitation_event")
                     await cur.execute("DROP TABLE office_invitation")
                     await cur.execute("DROP TABLE office_invitation_issuance")
