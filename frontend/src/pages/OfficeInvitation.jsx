@@ -16,13 +16,25 @@ function tokenFromFragment(hash) {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-function invitationToken() {
+function invitationContext() {
   const fragmentToken = tokenFromFragment(window.location.hash)
   if (fragmentToken) {
-    window.sessionStorage.setItem(INVITATION_TOKEN_KEY, fragmentToken)
-    return fragmentToken
+    try {
+      window.sessionStorage.setItem(INVITATION_TOKEN_KEY, fragmentToken)
+      return { token: fragmentToken, storageAvailable: true }
+    } catch {
+      return { token: fragmentToken, storageAvailable: false }
+    }
   }
-  return window.sessionStorage.getItem(INVITATION_TOKEN_KEY)
+  try {
+    return { token: window.sessionStorage.getItem(INVITATION_TOKEN_KEY), storageAvailable: true }
+  } catch {
+    return { token: null, storageAvailable: false }
+  }
+}
+
+function clearInvitationToken() {
+  try { window.sessionStorage.removeItem(INVITATION_TOKEN_KEY) } catch {}
 }
 
 export default function OfficeInvitation() {
@@ -32,7 +44,7 @@ export default function OfficeInvitation() {
   const sessionEpoch = useJaxStore((s) => s._sessionEpoch)
   const sessionToken = useJaxStore((s) => s.token)
   const navigate = useNavigate()
-  const [token] = useState(invitationToken)
+  const [{ token, storageAvailable }] = useState(invitationContext)
   const [newAccount, setNewAccount] = useState(false)
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -42,8 +54,8 @@ export default function OfficeInvitation() {
   const requestRef = useRef(null)
 
   // La URL de correo usa fragmento para que el bearer no llegue al servidor.
-  // Tras leerlo lo quitamos además del historial visible y lo mantenemos sólo
-  // en memoria hasta el POST de aceptación.
+  // Tras leerlo lo quitamos del historial visible. Sólo queda en la memoria
+  // de esta pantalla, o temporalmente en sessionStorage durante el login.
   useEffect(() => {
     if (token && window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname)
   }, [token])
@@ -85,12 +97,19 @@ export default function OfficeInvitation() {
       if (!sameSession() || requestRef.current !== controller) return
       setPassword('')
       setConfirm('')
-      window.sessionStorage.removeItem(INVITATION_TOKEN_KEY)
+      clearInvitationToken()
       setResult('accepted')
     } catch (err) {
       if (!sameSession() || requestRef.current !== controller) return
-      if (err?.response?.status === 409 && codigoDe(err) === 'office_invitation_existing_session_required') setResult('login')
-      else if (!err?.response || err?.response?.status >= 500) setResult('ambiguous')
+      const status = err?.response?.status
+      if (status === 409 && codigoDe(err) === 'office_invitation_existing_session_required') setResult(storageAvailable ? 'login' : 'reopen')
+      else if (!err?.response || status >= 500) {
+        clearInvitationToken()
+        setResult('ambiguous')
+      } else if (status === 403 || status === 410) {
+        clearInvitationToken()
+        setResult('terminal')
+      }
       else setResult('error')
     } finally {
       if (requestRef.current === controller) {
@@ -101,16 +120,18 @@ export default function OfficeInvitation() {
   }
 
   function continueWithLogin(recovery) {
-    navigate('/login', { state: { officeInvitationFlow: recovery ? 'recovery' : 'accept' } })
+    navigate('/login', { state: storageAvailable ? { officeInvitationFlow: recovery ? 'recovery' : 'accept' } : undefined })
   }
 
   return (
     <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
       <section className="mx-auto max-w-md rounded-xl border border-borde bg-superficie p-5 sm:p-6">
         <h1 className="text-xl font-bold">{t.officeInvitation.title}</h1>
-        {!token && <p role="alert" className="mt-3 text-sm text-peligro">{t.officeInvitation.invalidLink}</p>}
+        {!token && storageAvailable && <p role="alert" className="mt-3 text-sm text-peligro">{t.officeInvitation.invalidLink}</p>}
+        {!token && !storageAvailable && <div className="mt-3 space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.reopenLink}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
         {token && sessionRestoring && <p role="status" className="mt-3 text-sm text-texto-suave">{t.officeInvitation.checkingSession}</p>}
         {token && !sessionRestoring && <form onSubmit={submit} className="mt-4 space-y-4">
+          {!storageAvailable && <p role="status" className="text-sm text-texto-suave">{t.officeInvitation.reopenLink}</p>}
           {useExisting ? <p className="text-sm text-texto-suave">{t.officeInvitation.signedInAs(user.email)}</p> : <>
             {!newAccount ? <>
               <p className="text-sm text-texto-suave">{t.officeInvitation.newAccountIntro}</p>
@@ -129,10 +150,12 @@ export default function OfficeInvitation() {
           </>}
           {result === 'accepted' && <p role="status" className="text-sm text-exito">{t.officeInvitation.accepted}</p>}
           {result === 'error' && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.error}</p>}
+          {result === 'terminal' && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.error}</p>}
           {result === 'login' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.loginRequired}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
+          {result === 'reopen' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.reopenLink}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
           {result === 'ambiguous' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.ambiguous}</p><button type="button" onClick={() => continueWithLogin(true)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
           {!useExisting && !newAccount && !result && <button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded border border-borde text-texto hover:bg-hundido`}>{t.officeInvitation.login}</button>}
-          {!['login', 'ambiguous'].includes(result) && (useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
+          {!['login', 'reopen', 'ambiguous', 'terminal'].includes(result) && (useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
         </form>}
       </section>
     </main>
