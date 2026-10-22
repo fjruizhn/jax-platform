@@ -46,6 +46,36 @@ async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
         )
 
 
+async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) -> None:
+    """Exercise every manifest grant with a zero-row statement.
+
+    The restricted principal performs the actual parse/privilege check for
+    each production-mutated table.  ``WHERE 1=0`` keeps the disposable schema
+    unchanged while catching a manifest entry that names a stale table or
+    misses an operation needed by runtime SQL.
+    """
+    columns: dict[str, str] = {}
+    async with admin_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table in runtime_table_privilege_map():
+                await cur.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION LIMIT 1",
+                    (database, table),
+                )
+                row = await cur.fetchone()
+                assert row is not None, table
+                columns[table] = str(row[0])
+    async with runtime_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table, privileges in runtime_table_privilege_map().items():
+                if "UPDATE" in privileges:
+                    column = columns[table]
+                    await cur.execute(f"UPDATE `{table}` SET `{column}`=`{column}` WHERE 1=0")
+                if "DELETE" in privileges:
+                    await cur.execute(f"DELETE FROM `{table}` WHERE 1=0")
+
+
 def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evidence():
     rows = load_runtime_table_privileges()
     assert MANIFEST_VERSION == "runtime-table-privileges-v1"
@@ -81,6 +111,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime = await _runtime_pool(user, password)
             before = await _fence(admin)
             await assert_runtime_db_contract(runtime)
+            await _assert_manifest_dml_smoke(admin, runtime, database)
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(unusual_user, password)
             with pytest.raises(RuntimeDbContractError, match="identity is unsupported"):
