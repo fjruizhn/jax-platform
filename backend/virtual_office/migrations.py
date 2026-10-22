@@ -24,11 +24,6 @@ RUNTIME_COMPONENT = "virtual-office"
 # v13 adds the inert critic trust-anchor schema; its digest still binds the
 # unchanged per-table web write contract and forces a migrator restamp.
 RUNTIME_REVISION = f"office-runtime-v13-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
-# v14 is deliberately not used by the normal web migration runner.  An
-# explicit, root-contract-bound migration owns it while the guard remains
-# inert; keeping the two stamps distinct prevents an old web process from
-# mistaking v14 DDL for the v13 runtime contract.
-CRITIC_TRUST_V14_RUNTIME_REVISION = f"office-runtime-v14-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 
 # Global module governance is deliberately distinct from client artefacts.
@@ -1880,15 +1875,6 @@ async def stamp_office_runtime_revision(cur) -> None:
         "INSERT INTO office_schema_revision (component,revision,applied_at) VALUES (%s,%s,NOW(6)) "
         "ON DUPLICATE KEY UPDATE revision=VALUES(revision), applied_at=VALUES(applied_at)",
         (RUNTIME_COMPONENT, RUNTIME_REVISION),
-    )
-
-
-async def stamp_critic_trust_v14_runtime_revision(cur) -> None:
-    """Persist the inert v14 completion marker after its dedicated attestation."""
-    await cur.execute(
-        "INSERT INTO office_schema_revision (component,revision,applied_at) VALUES (%s,%s,NOW(6)) "
-        "ON DUPLICATE KEY UPDATE revision=VALUES(revision), applied_at=VALUES(applied_at)",
-        (RUNTIME_COMPONENT, CRITIC_TRUST_V14_RUNTIME_REVISION),
     )
 
 

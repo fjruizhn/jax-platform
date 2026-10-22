@@ -5,6 +5,8 @@ import os
 import uuid
 import json
 import stat
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import aiomysql
@@ -13,7 +15,7 @@ import pytest
 from db_connect_config import db_connect_timeout_seconds
 from virtual_office import module_critic_trust as trust
 from virtual_office import critic_trust_activation as activation
-from virtual_office.migrations import CRITIC_TRUST_V14_RUNTIME_REVISION, INVALIDATED_RUNTIME_REVISION
+from virtual_office.migrations import RUNTIME_REVISION
 
 
 def _root_owned_contract_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -40,9 +42,14 @@ def _root_owned_contract_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> No
 async def _contract(cur, schema: str, path: Path):
     await cur.execute("SELECT VERSION(),@@SESSION.sql_mode")
     version, sql_mode = await cur.fetchone()
+    await cur.execute(
+        "SELECT DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+        (schema,),
+    )
+    charset, collation = await cur.fetchone()
     value = {
         "database": {
-            "charset": "utf8mb4", "collation": "utf8mb4_uca1400_ai_ci",
+            "charset": charset, "collation": collation,
             "guard_account": {"host": "localhost", "user": "critic_v14_guard"},
             "schema": schema, "server_version": str(version).split("-", 1)[0], "sql_mode": sql_mode,
             "trigger_definer": {"host": "localhost", "user": "critic_v14_owner"},
@@ -58,8 +65,8 @@ async def _contract(cur, schema: str, path: Path):
     return activation.load_activation_contract(path)
 
 
-async def _revision(cur) -> str | None:
-    await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
+async def _revision(cur, component: str) -> str | None:
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (component,))
     row = await cur.fetchone()
     return None if row is None else row[0]
 
@@ -91,9 +98,7 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     "CREATE TABLE office_schema_revision (component VARCHAR(64) NOT NULL PRIMARY KEY,"
                     "revision VARCHAR(64) NOT NULL,applied_at DATETIME(6) NOT NULL) ENGINE=InnoDB"
                 )
-                await cur.execute(
-                    "INSERT INTO office_schema_revision VALUES ('virtual-office','office-runtime-v13-test',NOW(6))"
-                )
+                await cur.execute("INSERT INTO office_schema_revision VALUES ('virtual-office',%s,NOW(6))", (RUNTIME_REVISION,))
                 await cur.execute(
                     "INSERT INTO office_trusted_critic_key "
                     "(key_id,principal_ref,purpose,algorithm,public_key,not_before) "
@@ -101,30 +106,109 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     (bytes.fromhex("42" * 32),),
                 )
                 await cur.execute("CREATE USER IF NOT EXISTS `critic_v14_owner`@'localhost' IDENTIFIED BY 'unused-test-only'")
+                await cur.execute(f"GRANT TRIGGER ON `{schema}`.* TO `critic_v14_owner`@'localhost'")
                 owner_created = True
                 contract = await _contract(cur, schema, contract_path)
-                # Simulate a crash after invalidation and trigger loss.  The
-                # retry is required to repair the exact four-trigger set.
-                await cur.execute("UPDATE office_schema_revision SET revision=%s", (INVALIDATED_RUNTIME_REVISION,))
-                await cur.execute("DROP TRIGGER no_update_office_trusted_critic_key")
-                await trust.apply_critic_trust_v14(cur, contract)
-                assert await _revision(cur) == CRITIC_TRUST_V14_RUNTIME_REVISION
+                async def dedicated():
+                    return await aiomysql.connect(
+                        host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
+                        user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=schema,
+                        autocommit=True, charset=contract.database_charset, connect_timeout=db_connect_timeout_seconds(),
+                    )
+                # The dedicated connection must reject an authorized profile
+                # whose target identity/version does not match its actual DB,
+                # before it can create a critic marker or execute DDL.
+                with pytest.raises(RuntimeError, match="database identity"):
+                    await trust.migrate_critic_trust_v14(
+                        replace(contract, database_schema="other_schema"), connect=dedicated,
+                    )
+                with pytest.raises(RuntimeError, match="database identity"):
+                    await trust.migrate_critic_trust_v14(
+                        replace(contract, database_server_version="0.0.0"), connect=dedicated,
+                    )
+                assert await _revision(cur, "virtual-office-critic-trust") is None
+                await cur.execute(
+                    "INSERT INTO office_schema_revision VALUES (%s,%s,NOW(6))",
+                    ("virtual-office-critic-trust", "critic-v14-ready-future-marker"),
+                )
+                with pytest.raises(RuntimeError, match="unknown"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == "critic-v14-ready-future-marker"
+                await cur.execute("DELETE FROM office_schema_revision WHERE component=%s", ("virtual-office-critic-trust",))
+                # Resume from a durable invalid marker without touching the
+                # global v13 readiness state.
+                await cur.execute(
+                    "INSERT INTO office_schema_revision VALUES (%s,%s,NOW(6))",
+                    ("virtual-office-critic-trust", trust._v14_descriptor(contract, "invalid")),
+                )
+                await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office") == RUNTIME_REVISION
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "ready")
                 await cur.execute("SELECT key_id,public_key FROM office_trusted_critic_key")
                 assert await cur.fetchone() == ("key-preserved", bytes.fromhex("42" * 32))
                 await trust._assert_critic_trust_anchor_metadata(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
+                # Two independent dedicated connections serialize on the
+                # schema-derived advisory lock; neither can publish a partial
+                # trigger set or alter the global v13 marker.
+                await cur.execute(
+                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
+                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
+                )
+                await asyncio.gather(
+                    trust.migrate_critic_trust_v14(contract, connect=dedicated),
+                    trust.migrate_critic_trust_v14(contract, connect=dedicated),
+                )
+                assert await _revision(cur, "virtual-office") == RUNTIME_REVISION
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "ready")
+                # A post-invalidation fault is durable under the dedicated
+                # autocommit connection; old append-only triggers still
+                # protect stored keys until the exact same profile retries.
+                original_replace = trust._replace_v14_triggers
+
+                async def inject_failure(_cursor, _contract):
+                    raise RuntimeError("injected-v14-ddl-fault")
+
+                await cur.execute(
+                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
+                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
+                )
+                monkeypatch.setattr(trust, "_replace_v14_triggers", inject_failure)
+                with pytest.raises(RuntimeError, match="injected-v14-ddl-fault"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "invalid")
+                with pytest.raises(aiomysql.OperationalError, match="append-only"):
+                    await cur.execute("UPDATE office_trusted_critic_key SET purpose='rights.review' WHERE key_id='key-preserved'")
+                monkeypatch.setattr(trust, "_replace_v14_triggers", original_replace)
+                await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 # Corrupt the environment-owned values.  A retry recreates,
                 # rather than accepting, wrong DEFINER and SQL_MODE metadata.
-                await cur.execute("DROP TRIGGER no_delete_office_trusted_critic_key")
                 await cur.execute("SET SESSION sql_mode='ANSI'")
-                await cur.execute(
-                    "CREATE TRIGGER no_delete_office_trusted_critic_key BEFORE DELETE "
-                    "ON office_trusted_critic_key FOR EACH ROW SIGNAL SQLSTATE '45000' "
-                    "SET MESSAGE_TEXT='office_trusted_critic_key append-only'"
+                statement = next(
+                    body for name, _table, _operation, body in trust._trigger_definitions()
+                    if name == "no_delete_office_trusted_critic_key"
                 )
-                await trust.apply_critic_trust_v14(cur, contract)
+                await cur.execute(
+                    "CREATE OR REPLACE DEFINER=`critic_v14_owner`@`localhost` "
+                    "TRIGGER no_delete_office_trusted_critic_key BEFORE DELETE "
+                    "ON office_trusted_critic_key FOR EACH ROW " + statement
+                )
+                # CHECK_CLAUSE serialization follows the *reader's* session
+                # SQL mode in MariaDB.  Restore the contract mode before the
+                # v14 predecessor attestation, while the trigger retains its
+                # deliberately wrong creation SQL_MODE for this regression.
+                await cur.execute("SET SESSION sql_mode=%s", (contract.database_sql_mode,))
+                # A ready marker with an environment drift must fail closed;
+                # it never silently repairs a schema already called ready.
+                with pytest.raises(RuntimeError, match="triggers are invalid"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                await cur.execute(
+                    "UPDATE office_schema_revision SET revision=%s WHERE component=%s",
+                    (trust._v14_descriptor(contract, "invalid"), "virtual-office-critic-trust"),
+                )
+                await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 await trust._assert_critic_trust_anchor_metadata(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,

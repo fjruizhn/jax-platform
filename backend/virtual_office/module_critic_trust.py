@@ -26,8 +26,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
+import os
 import re
+from base64 import urlsafe_b64encode
 
+import aiomysql
+from db_connect_config import db_connect_timeout_seconds
 from virtual_office.critic_trust_activation import ActivationContract
 
 
@@ -220,86 +226,147 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
     )
 
 
-async def apply_critic_trust_v14(cur, contract: ActivationContract) -> None:
-    """Apply the explicit, contract-bound v14 trigger migration.
+_V14_COMPONENT = "virtual-office-critic-trust"
+_V14_LOCK_PREFIX = "axioma.office.critic-trust.v14:"
 
-    This is deliberately a separate operator entry point.  Its caller must
-    have obtained ``contract`` via ``load_activation_contract``; it is
-    revalidated before DDL and before the v14 marker is written.  MariaDB DDL
-    commits implicitly, so a failure at any point leaves the ordinary Office
-    marker invalidated and a later retry recreates all four triggers.
-    """
+
+def _v14_descriptor(contract: ActivationContract, state: str) -> str:
+    """A 64-byte marker binds the exact contract profile and lifecycle state."""
+    value = {
+        "allowed_client_uids": contract.allowed_client_uids, "charset": contract.database_charset, "collation": contract.database_collation,
+        "critic_principal": contract.critic_principal,
+        "definer": [contract.trigger_definer.user, contract.trigger_definer.host],
+        "generation": 14, "guard_account": [contract.guard_account.user, contract.guard_account.host],
+        "guard_gid": contract.guard_gid, "guard_uid": contract.guard_uid, "limits": [contract.timeout_seconds, contract.max_inflight],
+        "schema": contract.database_schema, "server_version": contract.database_server_version, "socket_path": contract.socket_path,
+        "sql_mode": contract.database_sql_mode,
+        "state": state,
+    }
+    digest = urlsafe_b64encode(hashlib.sha256(
+        b"axioma.office.critic-trust.v14\x00" + json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).digest()).rstrip(b"=").decode("ascii")
+    return f"critic-v14-{state}-{digest}"
+
+
+async def dedicated_migrator_connect():
+    """Open the standalone autocommit connection reserved for future v14 wiring."""
+    return await aiomysql.connect(
+        host=os.environ["JAX_CRITIC_TRUST_MIGRATOR_HOST"],
+        port=int(os.environ["JAX_CRITIC_TRUST_MIGRATOR_PORT"]),
+        user=os.environ["JAX_CRITIC_TRUST_MIGRATOR_USER"],
+        password=os.environ["JAX_CRITIC_TRUST_MIGRATOR_PASSWORD"],
+        db=os.environ["JAX_CRITIC_TRUST_MIGRATOR_DATABASE"], autocommit=True, charset="utf8mb4",
+        connect_timeout=db_connect_timeout_seconds(),
+    )
+
+
+async def migrate_critic_trust_v14(contract: ActivationContract, *, connect=dedicated_migrator_connect) -> None:
+    """Perform only the inert, contract-bound v14 migration on its own connection."""
     if type(contract) is not ActivationContract:
         raise TypeError("critic-trust v14 requires a validated ActivationContract")
-    from virtual_office.migrations import (
-        invalidate_office_runtime_revision,
-    )
-
     contract.assert_unchanged()
-    # The invalidation is deliberately first.  No v13-ready marker survives a
-    # failed ALTER/DROP/CREATE sequence.
-    await invalidate_office_runtime_revision(cur)
-    await _assert_v14_predecessor_tables(cur)
-    await _set_contract_table_defaults(cur, contract)
-    await _recreate_v14_triggers(cur, contract)
-    await _attest_v14_under_mdl(cur, contract)
+    conn = await connect()
+    try:
+        if conn.get_autocommit() is not True:
+            raise RuntimeError("critic-trust v14 requires an autocommit connection")
+        async with conn.cursor() as cur:
+            await _set_v14_session(cur, contract)
+            lock_name = _V14_LOCK_PREFIX + hashlib.sha256(contract.database_schema.encode("ascii")).hexdigest()[:32]
+            await cur.execute("SELECT GET_LOCK(%s,%s)", (lock_name, contract.timeout_seconds))
+            if tuple(await cur.fetchone() or ()) != (1,):
+                raise RuntimeError("critic-trust v14 migration lock is unavailable")
+            try:
+                prior = await _preflight_v14(cur, contract)
+                if prior == "ready":
+                    await _assert_critic_trust_anchor_metadata(
+                        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES, v14_contract=contract,
+                    )
+                    return
+                await _write_v14_marker(cur, contract, "invalid")
+                await _set_v14_table_defaults(cur, contract)
+                await _replace_v14_triggers(cur, contract)
+                await _finalize_v14(cur, contract)
+            finally:
+                await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                if tuple(await cur.fetchone() or ()) != (1,):
+                    raise RuntimeError("critic-trust v14 migration lock was not released")
+    finally:
+        conn.close()
 
 
-async def _assert_v14_predecessor_tables(cur) -> None:
-    """Accept only the known v13 tables; trigger state is repaired by v14."""
-    await _assert_critic_trust_anchor_metadata(
-        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
-        include_triggers=False,
+async def _set_v14_session(cur, contract: ActivationContract) -> None:
+    await cur.execute("SET SESSION sql_mode=%s", (contract.database_sql_mode,))
+    await cur.execute(f"SET NAMES `{contract.database_charset}` COLLATE `{contract.database_collation}`")
+    await cur.execute("SET SESSION lock_wait_timeout=%s", (contract.timeout_seconds,))
+
+
+async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
+    await cur.execute("SELECT DATABASE(),VERSION()")
+    database, version = await cur.fetchone()
+    if database != contract.database_schema or str(version).split("-", 1)[0] != contract.database_server_version:
+        raise RuntimeError("critic-trust v14 database identity is incompatible")
+    await cur.execute(
+        "SELECT DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=DATABASE()"
+    )
+    if tuple(await cur.fetchone() or ()) != (contract.database_charset, contract.database_collation):
+        raise RuntimeError("critic-trust v14 schema defaults are incompatible")
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
+    from virtual_office.migrations import RUNTIME_REVISION
+    if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
+        raise RuntimeError("critic-trust v14 requires the exact global Office v13 marker")
+    await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (_V14_COMPONENT,))
+    marker = await cur.fetchone()
+    state = None if marker is None else marker[0]
+    known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
+    if state not in known:
+        raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
+    await cur.execute("SELECT 1 FROM mysql.user WHERE User=%s AND Host=%s", (contract.trigger_definer.user, contract.trigger_definer.host))
+    if await cur.fetchone() is None:
+        raise RuntimeError("critic-trust v14 trigger definer is absent")
+    await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
+    return "ready" if state == _v14_descriptor(contract, "ready") else "invalid" if state is not None else None
+
+
+async def _write_v14_marker(cur, contract: ActivationContract, state: str) -> None:
+    await cur.execute(
+        "INSERT INTO office_schema_revision (component,revision,applied_at) VALUES (%s,%s,NOW(6)) "
+        "ON DUPLICATE KEY UPDATE revision=VALUES(revision),applied_at=VALUES(applied_at)",
+        (_V14_COMPONENT, _v14_descriptor(contract, state)),
     )
 
 
-async def _set_contract_table_defaults(cur, contract) -> None:
+async def _set_v14_table_defaults(cur, contract: ActivationContract) -> None:
     for table in _APPEND_ONLY:
+        await cur.execute("SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if tuple(await cur.fetchone() or ()) != (contract.database_collation,):
+            await cur.execute(f"ALTER TABLE `{table}` DEFAULT CHARACTER SET `{contract.database_charset}` COLLATE `{contract.database_collation}`")
+
+
+async def _replace_v14_triggers(cur, contract: ActivationContract) -> None:
+    definer = contract.trigger_definer
+    for name, table, operation, statement in _trigger_definitions():
         await cur.execute(
-            f"ALTER TABLE `{table}` DEFAULT CHARACTER SET `{contract.database_charset}` "
-            f"COLLATE `{contract.database_collation}`"
+            f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+            f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
         )
 
 
-async def _recreate_v14_triggers(cur, contract) -> None:
-    """Replace the complete trigger set with the contract's creation context."""
-    await cur.execute("SELECT @@SESSION.sql_mode,@@character_set_client,@@collation_connection")
-    original_mode, original_charset, original_collation = await cur.fetchone()
-    try:
-        await cur.execute("SET SESSION sql_mode=%s", (contract.database_sql_mode,))
-        await cur.execute(
-            f"SET NAMES `{contract.database_charset}` COLLATE `{contract.database_collation}`"
-        )
-        for name, _table, _operation, _statement in _trigger_definitions():
-            await cur.execute(f"DROP TRIGGER IF EXISTS `{name}`")
-        definer = contract.trigger_definer
-        for name, table, operation, statement in _trigger_definitions():
-            await cur.execute(
-                f"CREATE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
-                f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
-            )
-    finally:
-        # Session restoration cannot make a failed DDL sequence ready; the
-        # marker remains invalid until a future complete invocation succeeds.
-        await cur.execute("SET SESSION sql_mode=%s", (original_mode,))
-        await cur.execute(f"SET NAMES `{original_charset}` COLLATE `{original_collation}`")
-
-
-async def _attest_v14_under_mdl(cur, contract) -> None:
-    """Hold table MDL while checking every v14 environment-owned field."""
+async def _finalize_v14(cur, contract: ActivationContract) -> None:
     await cur.execute("START TRANSACTION")
     try:
+        await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s FOR UPDATE", (_V14_COMPONENT,))
+        if tuple(await cur.fetchone() or ()) != (_v14_descriptor(contract, "invalid"),):
+            raise RuntimeError("critic-trust v14 marker changed during migration")
+        await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office' FOR UPDATE")
+        from virtual_office.migrations import RUNTIME_REVISION
+        if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
+            raise RuntimeError("critic-trust v14 global Office marker changed during migration")
         for table in _APPEND_ONLY:
             await cur.execute(f"SELECT 1 FROM `{table}` WHERE 0 LOCK IN SHARE MODE")
-        await _assert_critic_trust_anchor_metadata(
-            cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
-            v14_contract=contract,
-        )
-        # The completion stamp is deliberately part of the same MDL-held
-        # transaction, so no un-attested schema can be stamped ready.
+        await _preflight_v14(cur, contract)
+        await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES, v14_contract=contract)
         contract.assert_unchanged()
-        from virtual_office.migrations import stamp_critic_trust_v14_runtime_revision
-        await stamp_critic_trust_v14_runtime_revision(cur)
+        await _write_v14_marker(cur, contract, "ready")
     except BaseException:
         await cur.execute("ROLLBACK")
         raise
