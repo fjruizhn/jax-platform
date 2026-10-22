@@ -87,24 +87,48 @@ export default function OfficeProjectMembershipManager({ projectId, canAssignPro
     } finally { setBusy(false) }
   }
 
+  async function refreshMembers() {
+    try {
+      const { data } = await officeMembersApi.list(projectId, { limit: 50, cursor: 0 })
+      if (!validMembers(data, projectId)) throw new Error('invalid office members response')
+      setMembers(data.members)
+      setNextCursor(data.next_cursor)
+    } catch (err) {
+      if (err?.response?.status === 403) {
+        setError(t.virtualOffice.members.forbidden)
+        await onForbidden?.()
+      } else setError(t.virtualOffice.members.error)
+    }
+  }
+
   async function mutateMember(member, operation, nextRole = member.grant_role) {
     if (busy) return
-    const payload = { grant_role: nextRole, audience: member.audience, expected_version: member.version }
+    const payload = operation === 'role'
+      ? { grant_role: nextRole, expected_version: member.version }
+      : { grant_role: nextRole, audience: member.audience, expected_version: member.version }
     const signature = JSON.stringify({ operation, userId: member.user_id, payload })
     if (intent.current?.signature !== signature) intent.current = { signature, key: crypto.randomUUID() }
     setBusy(true); setError(null)
     try {
-      if (operation === 'revoke') await officeMembersApi.revoke(projectId, member.user_id, member.version, intent.current.key)
-      else await officeMembersApi.grant(projectId, member.user_id, payload, intent.current.key)
+      const response = operation === 'revoke'
+        ? await officeMembersApi.revoke(projectId, member.user_id, member.version, intent.current.key)
+        : operation === 'role'
+          ? await officeMembersApi.changeRole(projectId, member.user_id, payload, intent.current.key)
+          : await officeMembersApi.grant(projectId, member.user_id, payload, intent.current.key)
+      const nextVersion = response?.data?.version
+      if (!Number.isInteger(nextVersion) || nextVersion < member.version) throw new Error('invalid office member mutation response')
       intent.current = null
       setMembers((current) => current && current.map((entry) => entry.user_id === member.user_id
-        ? (operation === 'revoke' ? { ...entry, status: 'REVOKED', version: entry.version + 1 } : { ...entry, grant_role: nextRole, status: 'ACTIVE', version: entry.version + (entry.status === 'ACTIVE' && entry.grant_role === nextRole ? 0 : 1) })
+        ? (operation === 'revoke' ? { ...entry, status: 'REVOKED', version: nextVersion } : { ...entry, grant_role: nextRole, status: 'ACTIVE', version: nextVersion })
         : entry))
     } catch (err) {
       if (err?.response?.status === 403) {
         setError(t.virtualOffice.members.forbidden)
         await onForbidden?.()
-      } else setError(err?.response?.status === 409 ? t.virtualOffice.members.conflict : t.virtualOffice.members.error)
+      } else if (err?.response?.status === 409) {
+        setError(t.virtualOffice.members.conflict)
+        await refreshMembers()
+      } else setError(t.virtualOffice.members.error)
     } finally { setBusy(false) }
   }
 
@@ -144,7 +168,7 @@ export default function OfficeProjectMembershipManager({ projectId, canAssignPro
         <h3 className="text-sm font-semibold text-texto">{t.virtualOffice.members.currentTitle}</h3>
         {members === null && !error && <p role="status" className="mt-2 text-sm text-texto-suave">{t.virtualOffice.members.loading}</p>}
         {members?.length === 0 && <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.members.empty}</p>}
-        {members?.length > 0 && <ul className="mt-2 divide-y divide-borde border-y border-borde">{members.map((member) => <li key={member.user_id} className="py-3 text-sm"><p className="break-all text-texto">{personLabel(member.user_id)}</p><p className="text-texto-suave">{t.virtualOffice.members.audiences[member.audience]} · {t.virtualOffice.members.states[member.status]}</p><div className="mt-2 flex flex-wrap items-center gap-2">{canAssignProjectAdmin && member.audience === 'INTERNAL' ? <select aria-label={t.virtualOffice.members.roleFor(personLabel(member.user_id))} disabled={busy} defaultValue={member.grant_role} onChange={(event) => mutateMember(member, 'grant', event.target.value)} className={`${INPUT} w-auto`}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select> : <span className="text-texto-suave">{t.virtualOffice.members.roles[member.grant_role]}</span>}{member.status === 'ACTIVE' ? <button type="button" disabled={busy} onClick={() => mutateMember(member, 'revoke')} className={BUTTON}>{t.virtualOffice.members.revoke}</button> : <button type="button" disabled={busy} onClick={() => mutateMember(member, 'grant')} className={BUTTON}>{t.virtualOffice.members.restore}</button>}</div></li>)}</ul>}
+        {members?.length > 0 && <ul className="mt-2 divide-y divide-borde border-y border-borde">{members.map((member) => <li key={member.user_id} className="py-3 text-sm"><p className="break-all text-texto">{personLabel(member.user_id)}</p><p className="text-texto-suave">{t.virtualOffice.members.audiences[member.audience]} · {t.virtualOffice.members.states[member.status]}</p><div className="mt-2 flex flex-wrap items-center gap-2">{canAssignProjectAdmin && member.status === 'ACTIVE' && member.audience === 'INTERNAL' ? <select aria-label={t.virtualOffice.members.roleFor(personLabel(member.user_id))} disabled={busy} value={member.grant_role} onChange={(event) => mutateMember(member, 'role', event.target.value)} className={`${INPUT} w-auto`}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select> : <span className="text-texto-suave">{t.virtualOffice.members.roles[member.grant_role]}</span>}{member.status === 'ACTIVE' ? <button type="button" disabled={busy} onClick={() => mutateMember(member, 'revoke')} className={BUTTON}>{t.virtualOffice.members.revoke}</button> : <button type="button" disabled={busy} onClick={() => mutateMember(member, 'restore')} className={BUTTON}>{t.virtualOffice.members.restore}</button>}</div></li>)}</ul>}
         {nextCursor !== null && <button type="button" disabled={busy || membersLoading.current} onClick={loadMoreMembers} className={`${BUTTON} mt-3`}>{t.virtualOffice.members.more}</button>}
       </section>
     </Dialogo>}
