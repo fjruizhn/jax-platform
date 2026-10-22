@@ -318,10 +318,10 @@ class _InvitationAcceptanceAuthorizer:
 
 
 async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: int,
-                            issued_event_id: int, correlation_id: bytes, expires_at: dt.datetime) -> None:
+                            issued_event_id: int, correlation_id: bytes, expires_at: dt.datetime) -> bool:
     now = await _db_now(cur)
     if status != "ISSUED" or now <= (expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at):
-        return
+        return False
     await cur.execute(
         "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
         "VALUES (%s,'EXPIRED',%s,NULL,NULL,NULL,%s,UTC_TIMESTAMP(6))",
@@ -329,13 +329,15 @@ async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: in
     await cur.execute(
         "UPDATE office_invitation SET status='EXPIRED',version=version+1 WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
         (invitation_id, version))
-    raise InvitationError("office_invitation_expired", status_code=410)
+    if cur.rowcount != 1:
+        raise InvitationError("office_invitation_retryable", status_code=503)
+    return True
 
 
 async def accept_invitation_in_cursor(
     cur, *, accepting_user_id: int | None, accepting_email: str | None,
     new_password_hash: str | None, bearer_token: str,
-) -> bool:
+) -> bool | None:
     """Consume one bearer through JAX and the Office companion atomically."""
     token_hash = _token_hash(bearer_token)
     await cur.execute(
@@ -368,8 +370,9 @@ async def accept_invitation_in_cursor(
     issued = await cur.fetchone()
     if issued is None:
         raise InvitationError("office_invitation_integrity", status_code=503)
-    await _expire_if_needed(cur, invitation_id=invitation_id, status=status, version=int(version),
-                            issued_event_id=int(issued[0]), correlation_id=correlation_id, expires_at=expires_at)
+    if await _expire_if_needed(cur, invitation_id=invitation_id, status=status, version=int(version),
+                               issued_event_id=int(issued[0]), correlation_id=correlation_id, expires_at=expires_at):
+        return None
     if accepting_user_id is None:
         if target_user_id is not None or new_password_hash is None:
             raise InvitationError("office_invitation_existing_session_required", status_code=409)

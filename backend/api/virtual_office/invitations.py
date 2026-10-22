@@ -121,4 +121,6 @@ async def accept_invitation(payload: InvitationAcceptRequest,
             )
     except InvitationError as error:
         _raise(error)
+    if replayed is None:
+        raise HTTPException(status_code=410, detail="office_invitation_expired")
     return {"status": "ACCEPTED", "replayed": replayed}
