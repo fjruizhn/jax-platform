@@ -70,6 +70,11 @@ TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
 
+# Start the installation proof at the actual fresh boundary: no delivery
+# routines and no procedure grants survive the DROP. The fixture database is
+# a disposable allowlisted container and the component is rebuilt below.
+printf "USE \`%s\`; DROP PROCEDURE IF EXISTS office_invitation_claim_next_v1; DROP PROCEDURE IF EXISTS office_invitation_expire_due_v1; DROP PROCEDURE IF EXISTS office_invitation_settle_delivery_v1;\n" "$DB" | admin
+
 run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME"; }
 ln -s "$ENV_FILE" "$TEMP/runtime-link.env"
 if "$HELPER" --env "$TEMP/runtime-link.env" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" >/dev/null 2>&1; then
@@ -80,6 +85,7 @@ if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2
 chmod 600 "$ENV_FILE"
 run_helper
 ROUTINE_COUNT_BEFORE=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin)
+[[ $ROUTINE_COUNT_BEFORE == 0 ]] || { echo 'fresh routine component proof did not start empty' >&2; exit 1; }
 BAD_SQL="$TEMP/office-invitation-delivery-v1-tampered.sql"
 cp "$SQL_FILE" "$BAD_SQL"
 printf '\n' >> "$BAD_SQL"

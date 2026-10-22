@@ -25,8 +25,10 @@ esac
 # every procedure it defines. Install the routines first, then grant exactly
 # those procedures; repeated installation cannot widen that authority.
 owner_principal="'jaxoffice_invitation_owner'@'localhost'"
+worker_principal="'$WORKER_DB_USER'@'$WORKER_HOST'"
 for routine in office_invitation_claim_next_v1 office_invitation_expire_due_v1 office_invitation_settle_delivery_v1; do
   printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$DB" "$routine" "$owner_principal" | "$ADMIN_TRANSPORT"
+  printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$DB" "$routine" "$worker_principal" | "$ADMIN_TRANSPORT"
 done
 # Every successful path, including a fresh component, must attest its complete
 # body, metadata, and the two closed privilege sets before reporting success.
