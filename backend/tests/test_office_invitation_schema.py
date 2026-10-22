@@ -460,68 +460,78 @@ def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(c
     client.portal.call(scenario)
 
 
-def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_rows(client):
-    """The exact reviewed b44 bodies upgrade in MariaDB, preserving evidence."""
+def test_b44_invitation_guards_resume_expiry_index_repair_in_isolated_schema():
+    """The exact reviewed b44 bodies resume the measured MariaDB partial schema."""
     assert SOURCE_COMMIT == "b44dd06cc9fe7cc88f8f83566be7c565f76e6675"
     b44_guards = GUARD_STATEMENTS
 
     async def scenario():
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await apply_office_migrations(cur)
-                issuer, enrollment, _ = await _active_user()
-                proof = await _step_up_proof(issuer, enrollment.secret, b"V" * 16)
-                await cur.execute(
-                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
-                    (issuer,),
-                )
-                invitation_id, outbox_id, issued_event, _ = await _seed_pending_invitation(
-                    cur, issuer=issuer, proof_event_id=proof.event_id,
-                    serial=f"b44-{uuid.uuid4().hex}", target_user_id=issuer,
-                )
-                for name in (
-                    "guard_office_invitation_insert", "guard_office_invitation_update",
-                    "guard_office_invitation_event_insert", "guard_office_invitation_outbox_insert",
-                    "guard_office_invitation_outbox_update",
-                ):
-                    await cur.execute(f"DROP TRIGGER {name}")
-                # Reproduce the predecessor row shape: the old update guard
-                # rejects arbitrary UPDATE, so the migration must remove only
-                # this attested guard before its one-time expiry backfill.
-                await cur.execute("ALTER TABLE office_invitation DROP INDEX idx_office_invitation_status_expiry")
-                await cur.execute("ALTER TABLE office_invitation DROP COLUMN expires_at")
-                for statement in b44_guards:
-                    await cur.execute(statement)
-                await cur.execute(
-                    "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-                    "AND TRIGGER_NAME LIKE 'guard_office_invitation%'"
-                )
-                # The immutable request-receipt guard remains intact while
-                # the historical lifecycle guards are replaced.
-                assert (await cur.fetchone())[0] == 5
-                await apply_office_migrations(cur)
-                await cur.execute(
-                    "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
-                assert await cur.fetchone() == (invitation_id, 'ISSUED')
-                await cur.execute(
-                    "SELECT i.expires_at=s.expires_at FROM office_invitation i JOIN office_invitation_issuance s "
-                    "ON s.issuance_id=i.issuance_id WHERE i.invitation_id=%s", (invitation_id,))
-                assert await cur.fetchone() == (1,)
-                await cur.execute(
-                    "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
-                row = await cur.fetchone()
-                assert row[:2] == (outbox_id, 'QUEUED') and row[2] is not None
-                await cur.execute(
-                    "SELECT event_kind FROM office_invitation_event WHERE event_id=%s", (issued_event,))
-                assert await cur.fetchone() == ('ISSUED',)
-                await cur.execute(
-                    "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-                    "AND TRIGGER_NAME IN ('guard_office_invitation_insert','guard_office_invitation_update',"
-                    "'guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
-                )
-                assert (await cur.fetchone())[0] == 5
-    client.portal.call(scenario)
+        source = os.environ['JAX_DB_NAME']
+        schema = f"office_invitation_b44_{uuid.uuid4().hex[:16]}"
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    try:
+                        await cur.execute(f"CREATE DATABASE `{schema}`")
+                        for table in (
+                            'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                            'jax_project_membership', 'jax_project_membership_event',
+                            'jax_namespace_membership_mutation_request',
+                        ):
+                            await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                        await cur.execute(f"USE `{schema}`")
+                        await apply_office_migrations(cur)
+                        for name in (
+                            "guard_office_invitation_insert", "guard_office_invitation_update",
+                            "guard_office_invitation_event_insert", "guard_office_invitation_outbox_insert",
+                            "guard_office_invitation_outbox_update",
+                        ):
+                            await cur.execute(f"DROP TRIGGER {name}")
+                        await cur.execute("ALTER TABLE office_invitation DROP INDEX idx_office_invitation_status_expiry")
+                        await cur.execute("ALTER TABLE office_invitation DROP COLUMN expires_at")
+                        await cur.execute(
+                            "SELECT SEQ_IN_INDEX,COLUMN_NAME FROM information_schema.STATISTICS "
+                            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_invitation' "
+                            "AND INDEX_NAME='idx_office_invitation_project_live' ORDER BY SEQ_IN_INDEX"
+                        )
+                        # MariaDB retains the key name while silently shortening
+                        # it when the predecessor column disappears.
+                        assert await cur.fetchall() == ((1, 'project_id'), (2, 'status'), (3, 'invitation_id'))
+                        for statement in b44_guards:
+                            await cur.execute(statement)
+                        await apply_office_migrations(cur)
+                        await cur.execute(
+                            "SELECT INDEX_NAME,SEQ_IN_INDEX,COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS "
+                            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_invitation' "
+                            "AND INDEX_NAME IN ('idx_office_invitation_status_expiry','idx_office_invitation_project_live') "
+                            "ORDER BY INDEX_NAME,SEQ_IN_INDEX"
+                        )
+                        assert await cur.fetchall() == (
+                            ('idx_office_invitation_project_live', 1, 'project_id', 1),
+                            ('idx_office_invitation_project_live', 2, 'status', 1),
+                            ('idx_office_invitation_project_live', 3, 'expires_at', 1),
+                            ('idx_office_invitation_project_live', 4, 'invitation_id', 1),
+                            ('idx_office_invitation_status_expiry', 1, 'status', 1),
+                            ('idx_office_invitation_status_expiry', 2, 'expires_at', 1),
+                            ('idx_office_invitation_status_expiry', 3, 'invitation_id', 1),
+                        )
+                        await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                        await cur.execute("ALTER TABLE office_invitation DROP INDEX idx_office_invitation_project_live")
+                        await cur.execute(
+                            "ALTER TABLE office_invitation ADD UNIQUE KEY idx_office_invitation_project_live "
+                            "(project_id,status,expires_at,invitation_id)"
+                        )
+                        with pytest.raises(RuntimeError, match='project-live index is incompatible'):
+                            await apply_office_migrations(cur)
+                    finally:
+                        await cur.execute(f"USE `{source}`")
+                        await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+        finally:
+            pool.close()
+            await pool.wait_closed()
+    asyncio.run(scenario())
 
 
 async def _seed_pending_invitation(
