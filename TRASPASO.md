@@ -1,5 +1,7 @@
 # Traspaso · Virtual Office
 
+2026-10-22 · Codex · CUARTO FOLLOW-UP Sol (sin despliegue): `--site-root` y todos los ancestros administrados de `current`/`releases` se validan root-owned, no group/world writable y transitables por nginx; el release completo rechaza enlaces, incluso `manifest.json`. El smoke exige asset 200 y SHA-256 esperado. Se añadió fixture versionado root-backed para SHA errado, tamper, escape, permisos inseguros, symlink y proxy IP. Falta auditoría Sol del SHA.
+
 2026-10-22 · Codex · TERCER FOLLOW-UP Sol (sin despliegue): la validación exige `--releases-root` y rechaza cualquier `current` que resuelva fuera, incluido un `/tmp/<sha>` con manifiesto auto-consistente. Exige release root y árbol de release root-owned, sin escritura de grupo/otros, y lectura/travesía efectiva por el usuario nginx. La lista cerrada ahora rechaza todo `proxy_pass` adicional, incluso IP directa o upstream alterno. Fixtures negativos verifican escape, modo escribible y proxy directo. Falta auditoría Sol del SHA.
 
 2026-10-22 · Codex · SEGUNDO FOLLOW-UP Sol (sin despliegue): el vhost ahora sirve `current/dist`, coherente con el release `<SHA>/manifest.json` + `<SHA>/dist`. La verificación offline requiere `--expected-source-sha` independiente y falla si no coincide con el manifiesto, aun cuando el directorio tenga el mismo nombre. El smoke de Host/SNI ya no calcula hashes de respuestas ajenas: captura el estado y sólo admite cierre (000) o 400/403/404; cualquier 2xx/3xx/5xx falla. Falta auditoría nueva del SHA.

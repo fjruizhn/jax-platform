@@ -43,6 +43,7 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 ```bash
 ops/virtualoffice/validate-public-ingress.sh offline \
   --config /ruta/al/virtualoffice.axioma-ia.io.conf \
+  --site-root /www/wwwroot/virtualoffice.axioma-ia.io \
   --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
   --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
   --expected-source-sha SHA_DE_FUENTE_AUDITADO \
@@ -66,6 +67,14 @@ inmediato el mismo comando sobre `current`. El comando fija el destino al inicio
 y vuelve a resolverlo al terminar, por lo que falla si el enlace cambia durante
 la verificación.
 
+Antes de copiar un release, preparar el contenedor una vez como root y conservar
+estos modos: `install -d -o root -g root -m 0755 SITE_ROOT`,
+`install -d -o root -g root -m 0755 SITE_ROOT/releases`; cada release y su
+`dist` quedan `root:root`, directorios 0755 y archivos 0644. `current` es un
+enlace creado por root dentro de `SITE_ROOT`; sus directorios padre también son
+0755 root:root. No se acepta un `manifest.json` enlazado ni ningún enlace dentro
+del release.
+
 4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
 no sobre el fragmento aislado. Luego recargar sólo después de los gates de
 producción y de tener una reversión lista.
@@ -84,7 +93,8 @@ sin depender de DNS público:
 ops/virtualoffice/validate-public-ingress.sh smoke \
   --public-ip INGRESS_PUBLIC_IP \
   --expected-index-sha SHA256_DE_INDEX_HTML \
-  --asset-path /assets/ARCHIVO_DEL_MANIFIESTO
+  --asset-path /assets/ARCHIVO_DEL_MANIFIESTO \
+  --expected-asset-sha SHA256_DEL_MISMO_ARCHIVO_EN_MANIFEST
 ```
 
 La comprobación exige el mismo HTML y confirma que la sesión Office existe

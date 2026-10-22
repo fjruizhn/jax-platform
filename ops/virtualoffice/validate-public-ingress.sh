@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  validate-public-ingress.sh offline --config FILE --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA [--nginx-user USER]
+  validate-public-ingress.sh offline --config FILE --site-root DIR --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA [--nginx-user USER]
   validate-public-ingress.sh syntax --nginx NGINX --config COMPLETE_NGINX_CONF
   validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE
 USAGE
@@ -15,17 +15,19 @@ need() { [[ $# -eq 2 && -n $2 ]] || die "missing value for $1"; }
 has_header() { grep -Eiq "^$2: *$3\\r?$" <<<"$1"; }
 
 cmd=${1:-}; shift || true
-config= release= releases_root= nginx= nginx_user=www public_ip= expected_index_sha= expected_source_sha= asset_path=
+config= release= site_root= releases_root= nginx= nginx_user=www public_ip= expected_index_sha= expected_source_sha= expected_asset_sha= asset_path=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config) need "$1" "${2:-}"; config=$2; shift 2 ;;
     --release) need "$1" "${2:-}"; release=$2; shift 2 ;;
+    --site-root) need "$1" "${2:-}"; site_root=$2; shift 2 ;;
     --releases-root) need "$1" "${2:-}"; releases_root=$2; shift 2 ;;
     --nginx) need "$1" "${2:-}"; nginx=$2; shift 2 ;;
     --nginx-user) need "$1" "${2:-}"; nginx_user=$2; shift 2 ;;
     --public-ip) need "$1" "${2:-}"; public_ip=$2; shift 2 ;;
     --expected-index-sha) need "$1" "${2:-}"; expected_index_sha=$2; shift 2 ;;
     --expected-source-sha) need "$1" "${2:-}"; expected_source_sha=$2; shift 2 ;;
+    --expected-asset-sha) need "$1" "${2:-}"; expected_asset_sha=$2; shift 2 ;;
     --asset-path) need "$1" "${2:-}"; asset_path=$2; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -37,7 +39,7 @@ headers=('X-Content-Type-Options: nosniff' 'Referrer-Policy: same-origin' 'X-Fra
 verify_manifest() {
   local target=$1
   [[ -d $target/dist && -f $target/manifest.json ]] || die "release needs dist/ and manifest.json: $target"
-  find "$target/dist" -type l -print -quit | grep -q . && die 'release dist contains an inner symlink'
+  find -P "$target" -type l -print -quit | grep -q . && die 'release contains an unexpected symlink'
   python3 - "$target" "$2" <<'PY'
 import hashlib,json,re,sys
 from pathlib import Path
@@ -74,6 +76,25 @@ verify_release_permissions() {
     if [[ -d $path ]]; then runuser -u "$nginx_user" -- test -x "$path" || die "nginx cannot traverse: $path"
     else runuser -u "$nginx_user" -- test -r "$path" || die "nginx cannot read: $path"; fi
   done < <(find -P "$target" -xdev -print0)
+}
+
+verify_safe_directory() {
+  local path=$1 label=$2 uid mode
+  [[ -d $path ]] || die "$label is not a directory: $path"
+  uid=$(stat -c %u "$path"); mode=$(stat -c %a "$path")
+  [[ $uid == 0 ]] || die "$label is not owned by root: $path"
+  (( (8#$mode & 8#022) == 0 )) || die "$label is group/other writable: $path"
+  runuser -u "$nginx_user" -- test -x "$path" || die "nginx cannot traverse $label: $path"
+}
+
+verify_managed_chain() {
+  local child=$1 stop=$2 label=$3
+  while :; do
+    verify_safe_directory "$child" "$label"
+    [[ $child == "$stop" ]] && return
+    child=$(dirname "$child")
+    [[ $child == / ]] && die "$label escapes site root"
+  done
 }
 
 check_proxy_allowlist() {
@@ -113,8 +134,15 @@ ROUTES
 
 case $cmd in
  offline)
-  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release && -n $releases_root ]] || die '--release and --releases-root are required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
+  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release && -n $releases_root && -n $site_root ]] || die '--site-root, --release and --releases-root are required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
+  site=$(readlink -f -- "$site_root") || die "site root cannot be resolved: $site_root"; [[ -d $site ]] || die "resolved site root is not a directory: $site"
   root=$(readlink -f -- "$releases_root") || die "releases root cannot be resolved: $releases_root"; [[ -d $root ]] || die "resolved releases root is not a directory: $root"
+  case "$root" in "$site"/*) ;; *) die "releases root escapes site root: $root" ;; esac
+  verify_managed_chain "$root" "$site" 'managed release ancestor'
+  release_parent=$(readlink -f -- "$(dirname "$release")") || die 'release parent cannot be resolved'
+  case "$release_parent" in "$site"|"$site"/*) ;; *) die "release parent escapes site root: $release_parent" ;; esac
+  verify_managed_chain "$release_parent" "$site" 'current container ancestor'
+  if [[ -L $release ]]; then [[ $(stat -c %u "$release") == 0 ]] || die "current link is not owned by root: $release"; fi
   resolved=$(readlink -f -- "$release") || die "release cannot be resolved: $release"; [[ -d $resolved ]] || die "resolved release is not a directory: $resolved"
   case "$resolved" in "$root"/*) ;; *) die "release escapes releases root: $resolved" ;; esac
   verify_manifest "$resolved" "$expected_source_sha"
@@ -132,7 +160,7 @@ case $cmd in
   ;;
  syntax) [[ -n $nginx && -x $nginx && -f $config ]] || die 'syntax needs executable --nginx and file --config'; "$nginx" -t -c "$config" ;;
  smoke)
-  [[ -n $public_ip && $expected_index_sha =~ ^[0-9a-f]{64}$ ]] || die 'smoke needs public IP and lowercase index SHA-256'
+  [[ -n $public_ip && $expected_index_sha =~ ^[0-9a-f]{64}$ && $expected_asset_sha =~ ^[0-9a-f]{64}$ ]] || die 'smoke needs public IP plus lowercase index and asset SHA-256'
   [[ $asset_path =~ ^/assets/[A-Za-z0-9._/-]+$ && $asset_path != *..* ]] || die '--asset-path must be a safe /assets/ path'
   resolve=(--resolve "$host:443:$public_ip"); base="https://$host"
   actual=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 "${resolve[@]}" "$base/" | sha256sum | awk '{print $1}'); [[ $actual == "$expected_index_sha" ]] || die 'index hash mismatch'
@@ -145,6 +173,9 @@ case $cmd in
   [[ $(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -X POST "${resolve[@]}" "$base/api/apariencia") == 404 ]] || die 'public appearance route accepts a write method'
   [[ $(status /api/auth/login) != 404 ]] || die 'login route is unavailable'
   ih=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base/"); ah=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base$asset_path")
+  grep -Eiq '^HTTP/[^ ]+ 200' <<<"$ah" || die 'asset path did not return HTTP 200'
+  asset=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 "${resolve[@]}" "$base$asset_path" | sha256sum | awk '{print $1}')
+  [[ $asset == "$expected_asset_sha" ]] || die 'asset hash mismatch'
   for h in "${headers[@]}"; do n=${h%%:*}; v=${h#*: }; has_header "$ih" "$n" "$v" || die "index missing $n"; has_header "$ah" "$n" "$v" || die "asset missing $n"; done
   foreign_closed() { [[ $1 == 000 || $1 == 400 || $1 == 403 || $1 == 404 ]] || die "$2 was not closed (HTTP $1)"; }
   mismatch=invalid-sni.axioma-ia.io
