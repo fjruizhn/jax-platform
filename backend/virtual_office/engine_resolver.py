@@ -52,12 +52,14 @@ def _classifications(raw: object) -> frozenset[str]:
 
 
 def engine_binding_fingerprint(*, engine_key: str, model_ref: int, transport: str,
+                               allowed_data_classifications: frozenset[str],
                                provider_fingerprint: str, model_fingerprint: str,
                                credential_fingerprint: str, version: int) -> str:
-    """Canonical digest of non-secret dynamic dependencies for one binding."""
+    """Canonical digest of every authority, route, and egress dependency."""
     fields = {
         "credential_fingerprint": credential_fingerprint,
         "engine_key": engine_key,
+        "allowed_data_classifications": sorted(allowed_data_classifications),
         "model_fingerprint": model_fingerprint,
         "model_ref": model_ref,
         "provider_fingerprint": provider_fingerprint,
@@ -66,6 +68,10 @@ def engine_binding_fingerprint(*, engine_key: str, model_ref: int, transport: st
     }
     if (not isinstance(model_ref, int) or isinstance(model_ref, bool) or model_ref < 1
             or not isinstance(version, int) or isinstance(version, bool) or version < 1
+            or not isinstance(allowed_data_classifications, frozenset)
+            or not allowed_data_classifications
+            or any(not isinstance(value, str) or not _CLASSIFICATION.fullmatch(value)
+                   for value in allowed_data_classifications)
             or any(not isinstance(value, str) or not _HEX.fullmatch(value)
                    for key, value in fields.items() if key.endswith("fingerprint"))):
         raise OfficeEngineUnavailable("engine binding fingerprint is malformed")
@@ -86,6 +92,7 @@ def resolve_office_engine_row(row: dict[str, object] | None, *, data_classificat
                      and row["active_credential_count"] == 1)
         calculated = engine_binding_fingerprint(
             engine_key=engine_key, model_ref=model_ref, transport=transport,
+            allowed_data_classifications=classifications,
             provider_fingerprint=row["provider_fingerprint"], model_fingerprint=row["model_fingerprint"],
             credential_fingerprint=row["credential_fingerprint"], version=version,
         )
@@ -111,9 +118,10 @@ async def resolve_office_engine_in_cursor(cur, *, engine_key: str,
         "e.binding_fingerprint,e.version,e.enabled AS engine_enabled,p.id AS provider_id,"
         "p.status AS provider_status,p.auth_type AS provider_auth_type,m.model_id,m.status AS model_status,"
         "(SELECT COUNT(*) FROM credential c WHERE c.provider_id=p.id AND c.state='active') AS active_credential_count,"
-        "SHA2(CONCAT_WS(CHAR(31),p.id,COALESCE(p.base_url,''),p.auth_type,p.status,p.is_local),256) AS provider_fingerprint,"
+        "SHA2(CONCAT_WS(CHAR(31),p.id,COALESCE(p.base_url,''),p.auth_type,p.api_key_transport,p.status,p.is_local),256) AS provider_fingerprint,"
         "SHA2(CONCAT_WS(CHAR(31),m.id,m.provider_id,m.model_id,m.status,m.is_alias,COALESCE(m.context_window,''),"
-        "m.supports_tool_use,m.supports_structured_output),256) AS model_fingerprint,"
+        "m.supports_tool_use,m.supports_structured_output,COALESCE(m.max_tokens_param,''),"
+        "COALESCE(m.max_output_tokens,''),m.input_modalities),256) AS model_fingerprint,"
         "(SELECT SHA2(CONCAT_WS(CHAR(31),c.id,c.provider_id,c.state,COALESCE(c.activated_at,''),"
         "COALESCE(c.revoked_at,''),SHA2(c.encrypted_value,256)),256) FROM credential c "
         "WHERE c.provider_id=p.id AND c.state='active' ORDER BY c.id LIMIT 1) AS credential_fingerprint "
