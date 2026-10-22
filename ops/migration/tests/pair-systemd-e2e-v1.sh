@@ -9,9 +9,11 @@ command -v docker >/dev/null || { echo 'SKIP: docker is unavailable' >&2; exit 7
 docker info >/dev/null 2>&1 || { echo 'SKIP: docker daemon/privileged access is unavailable' >&2; exit 77; }
 
 image=$(docker build -q -f - /tmp <<'DOCKERFILE'
-FROM debian:bookworm
+FROM ubuntu:26.04
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     systemd systemd-sysv dbus python3 python3-fastapi python3-uvicorn curl util-linux >/dev/null \
+    && useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxweb \
+    && useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxmigrate \
     && rm -rf /var/lib/apt/lists/*
 CMD ["/sbin/init"]
 DOCKERFILE
@@ -23,9 +25,11 @@ trap cleanup EXIT
 
 if ! docker exec -i "$container" /bin/bash -se <<'CONTAINER'
 set -euo pipefail
-for n in {1..40}; do systemctl show --property=Version >/dev/null 2>&1 && break; sleep .25; done
-systemctl show --property=Version >/dev/null
+for n in {1..40}; do systemctl show-environment >/dev/null 2>&1 && break; sleep .25; done
+systemctl show-environment >/dev/null
+sleep 2
 test "$(cat /proc/1/comm)" = systemd
+test "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 259
 
 root=/opt/jax-platform-pair
 install -d -o root -g root -m 0755 "$root/releases" /etc/jax /usr/local/libexec
@@ -39,28 +43,18 @@ cat >/etc/systemd/system/docker.service <<'EOF'
 Type=simple
 ExecStart=/bin/sleep infinity
 EOF
-useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxweb
-useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxmigrate
 printf 'JAX_TRUSTED_PROXIES=127.0.0.1\n' >/etc/jax/runtime.env
 printf 'JAX_DB_HOST=127.0.0.1\n' >/etc/jax/migrate.env
-chown jaxweb:jaxweb /etc/jax/runtime.env
-chown jaxmigrate:jaxmigrate /etc/jax/migrate.env
-chmod 0400 /etc/jax/runtime.env /etc/jax/migrate.env
-install -d -o root -g root -m 0755 /etc/systemd/system/jax-platform.service.d /etc/systemd/system/jax-platform-migrate.service.d
-# Debian's container manager does not materialize %d credentials for this
-# transient fixture.  Keep the production users and launcher, but pass the
-# same root-owned credential files directly so this test isolates PID1
-# recovery rather than systemd's credential-directory implementation.
+chown root:root /etc/jax/runtime.env /etc/jax/migrate.env
+chmod 0600 /etc/jax/runtime.env /etc/jax/migrate.env
+install -d -o jaxmigrate -g jaxmigrate -m 0700 /var/lib/jax-pair-e2e
+install -d -o root -g root -m 0755 /etc/systemd/system/jax-platform.service.d
+# Keep the production ExecStart and LoadCredential=%d wiring intact.  The
+# post-start probe only makes Type=simple wait for uvicorn to bind before the
+# activation program performs its own canonical health request.
 cat >/etc/systemd/system/jax-platform.service.d/e2e.conf <<'EOF'
 [Service]
-ExecStart=
-ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web /etc/jax/runtime.env
 ExecStartPost=/bin/sh -c 'for n in $$(seq 1 40); do /usr/bin/curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null && exit 0; sleep .25; done; exit 1'
-EOF
-cat >/etc/systemd/system/jax-platform-migrate.service.d/e2e.conf <<'EOF'
-[Service]
-ExecStart=
-ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate /etc/jax/migrate.env
 EOF
 
 build_release() {
@@ -83,6 +77,9 @@ PY
 if __name__ == '__main__':
     import os, pwd
     if os.geteuid() != pwd.getpwnam('jaxmigrate').pw_uid: raise SystemExit(1)
+    marker='/var/lib/jax-pair-e2e/migrate-count'
+    fd=os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as out: out.write('1\n')
 PY
   : >"$release/jax/jax/__init__.py"
   python3 - "$release" "$platform" "$jax" "$previous_platform" "$previous_jax" <<'PY'
@@ -132,6 +129,7 @@ if JAX_PAIR_TEST_KILL_AT=after_publish /usr/local/libexec/activate-platform-pair
   echo 'activation cutpoint was not reached' >&2; exit 1
 fi
 test "$(python3 -c "import json; print(json.load(open('$root/activation-journal.json'))['state'])")" = PRE_DDL
+test ! -e /var/lib/jax-pair-e2e/migrate-count
 # A stale PRE_DDL selector must never become a bootable web process.  This is
 # intentionally checked against PID1 before recovery; if it starts, the test
 # fails with evidence that the runtime gate is missing.
@@ -147,6 +145,7 @@ systemctl reset-failed jax-platform.service jax-platform-migrate.service
 /usr/local/libexec/activate-platform-pair-release.sh \
   --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"
 test ! -e "$root/activation-journal.json"
+test "$(cat /var/lib/jax-pair-e2e/migrate-count)" = 1
 test "$(readlink "$root/current")" = releases/successor
 test "$(systemctl show --value --property=ActiveState jax-platform.service)" = active
 pid=$(systemctl show --value --property=MainPID jax-platform.service)
