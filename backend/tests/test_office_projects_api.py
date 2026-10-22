@@ -402,9 +402,10 @@ def test_list_queries_use_measured_user_leading_indexes_under_skew(client):
                         predicate = ""
                         if proof == "missing":
                             predicate = "AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' AND pg.status='ACTIVE') "
-                        for cursor_name, after in (("first", 0), ("after", owned[0])):
-                            statement = base + predicate + "AND p.id>%s ORDER BY p.id LIMIT %s"
-                            query_params = (*params, *((proof_actor,) if proof == "missing" else ()), after, 51)
+                        for cursor_name, after in (("first", None), ("after", owned[0])):
+                            cursor_predicate = "" if after is None else "AND p.id>%s "
+                            statement = base + predicate + cursor_predicate + "ORDER BY p.id LIMIT %s"
+                            query_params = (*params, *((proof_actor,) if proof == "missing" else ()), *((after,) if after is not None else ()), 51)
                             measurements[(branch, proof, cursor_name)] = await measure(
                                 branch + ":" + proof + ":" + cursor_name, statement, query_params, index
                             )
