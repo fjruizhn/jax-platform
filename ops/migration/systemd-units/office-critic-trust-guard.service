@@ -31,6 +31,3 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 LimitCORE=0
-
-[Install]
-WantedBy=multi-user.target

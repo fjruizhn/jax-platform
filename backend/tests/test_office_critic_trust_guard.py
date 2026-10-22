@@ -16,6 +16,7 @@ from virtual_office.critic_trust_guard import (
     GuardConfigurationError,
     GuardRejected,
     GuardServer,
+    GUARD_READY,
     MAX_FRAME_BYTES,
     PROTOCOL,
     allowed_peer_uids,
@@ -71,6 +72,13 @@ def test_guard_deadline_is_explicit_and_bounded() -> None:
             configured_timeout_seconds({} if raw is None else {"OFFICE_CRITIC_TRUST_GUARD_TIMEOUT_SECONDS": raw})
 
 
+def test_guard_is_explicitly_inert_pending_the_activation_contract() -> None:
+    assert GUARD_READY is False
+    assert guard.guard_readiness() == {"status": "INERT_CONTRACT_PENDING"}
+    with pytest.raises(GuardConfigurationError, match="inert"):
+        asyncio.run(guard.run_guard())
+
+
 def test_private_socket_uses_peer_credentials_and_never_exposes_keys(tmp_path) -> None:
     async def scenario() -> None:
         path = str(tmp_path / "guard.sock")
@@ -120,6 +128,28 @@ def test_rejected_receipt_has_no_error_or_evidence(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_internal_verifier_failure_is_unavailable(tmp_path) -> None:
+    async def scenario() -> None:
+        path = str(tmp_path / "guard.sock")
+
+        async def verifier(receipt):
+            raise ConnectionError("database gone")
+
+        guard = GuardServer(principal="agent:critic", allowed_uids=frozenset({os.getuid()}), timeout_seconds=1, verifier=verifier)
+        listener = await asyncio.start_unix_server(guard.handle, path=path)
+        try:
+            reader, writer = await asyncio.open_unix_connection(path)
+            request = _request()
+            writer.write(struct.pack("!I", len(request)) + request); await writer.drain()
+            length = struct.unpack("!I", await reader.readexactly(4))[0]
+            assert json.loads(await reader.readexactly(length)) == {"nonce": _nonce(), "protocol": PROTOCOL, "status": "UNAVAILABLE"}
+            writer.close(); await writer.wait_closed()
+        finally:
+            listener.close(); await listener.wait_closed()
+
+    asyncio.run(scenario())
+
+
 def test_db_guard_holds_transaction_attests_then_rechecks_tombstone(monkeypatch) -> None:
     now = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
     private = Ed25519PrivateKey.generate()
@@ -152,7 +182,7 @@ def test_db_guard_holds_transaction_attests_then_rechecks_tombstone(monkeypatch)
     async def resolve(cur, key_id): events.append("RESOLVE"); return key if key_id == "kid" else None
     async def connect(): return Conn()
     monkeypatch.setattr(guard, "assert_critic_trust_anchor_metadata", attest)
-    monkeypatch.setattr(guard, "resolve_trusted_critic_key", resolve)
+    monkeypatch.setattr(guard, "_load_trusted_key_for_guard", resolve)
     evidence = asyncio.run(guard.verify_evidence_in_transaction(receipt, principal="agent:critic", connect=connect))
     assert evidence["candidate_id"] == 7
     assert events.index("ATTEST") > 3

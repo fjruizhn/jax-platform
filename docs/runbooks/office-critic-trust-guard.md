@@ -5,6 +5,13 @@ writes an Office table nor exposes HTTP, a public key, a release decision, or
 an approval authority. The Unix socket is fixed at
 `/run/jax/office-critic-trust-guard/guard.sock`.
 
+**Activation is deliberately disabled.** This revision returns
+`INERT_CONTRACT_PENDING` from its readiness function and refuses `run_guard`;
+the systemd unit has no install target. A later contract must define a
+root-owned independent expected trigger `DEFINER` and canonical `SQL_MODE`,
+then attest both under MDL. This revision must not infer either value from the
+database or `CURRENT_USER`.
+
 ## Boundary and protocol
 
 Only callers whose Linux UID appears in
@@ -55,13 +62,13 @@ back to a web principal or a file key.
 
 ## Deployment remains closed
 
-Install the unit only with a reviewed `/etc/jax/office-critic-trust-guard.env`
-owned by root and mode `0600`, containing the dedicated database credentials,
-the expected `OFFICE_CRITIC_TRUST_GUARD_PRINCIPAL`, and numeric UID allowlist.
-It must also set a positive, at-most-30-second
-`OFFICE_CRITIC_TRUST_GUARD_TIMEOUT_SECONDS`; the guard has no silent deadline
-default.
-Validate its effective unit, ownership/modes, peer rejection, malformed frame,
-signature rejection, revoked-key race, and database-unavailable result before
-any future receipt consumer is enabled. This runbook does not authorize that
+Do not install, enable, or manually start the unit in this revision. The
+future activation review must specify a root-owned `/etc/jax/office-critic-
+trust-guard.env` with the dedicated database credentials, expected
+`OFFICE_CRITIC_TRUST_GUARD_PRINCIPAL`, numeric UID allowlist, and a positive,
+at-most-30-second `OFFICE_CRITIC_TRUST_GUARD_TIMEOUT_SECONDS`; the guard has no
+silent deadline default. It must validate effective unit ownership/modes, peer
+rejection, malformed frame, signature rejection, revoked-key race,
+database-unavailable result, and the new DEFINER/SQL_MODE contract before any
+future receipt consumer is enabled. This runbook does not authorize that
 future activation, publication, or release.

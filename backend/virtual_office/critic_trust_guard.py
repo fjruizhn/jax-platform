@@ -21,12 +21,13 @@ import aiomysql
 
 from db_connect_config import db_connect_timeout_seconds
 from .module_critic_receipt import CriticReceiptRejected, VerifiedCriticReceipt, verify_critic_receipt
-from .module_critic_trust import assert_critic_trust_anchor_metadata, resolve_trusted_critic_key
+from .module_critic_trust import TrustedCriticKey, assert_critic_trust_anchor_metadata
 
 
 PROTOCOL = "office-critic-trust-guard/v1"
 MAX_FRAME_BYTES = 20 * 1024
 SOCKET_PATH = "/run/jax/office-critic-trust-guard/guard.sock"
+GUARD_READY = False
 _NONCE_BYTES = 32
 _REQUEST_KEYS = frozenset({"protocol", "operation", "nonce", "receipt"})
 _SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -39,6 +40,11 @@ class GuardConfigurationError(RuntimeError):
 
 class GuardRejected(ValueError):
     """An untrusted request or evidence was rejected without details."""
+
+
+def guard_readiness() -> dict[str, str]:
+    """This v1 artifact is intentionally not activatable as a service."""
+    return {"status": "INERT_CONTRACT_PENDING"}
 
 
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -146,6 +152,43 @@ def _utc_database(value: object) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
+async def _load_trusted_key_for_guard(cur: Any, key_id: object) -> TrustedCriticKey | None:
+    """Resolve a key without hiding a database failure as an untrusted key."""
+    if not isinstance(key_id, str) or not 1 <= len(key_id) <= 128:
+        return None
+    await cur.execute(
+        "SELECT k.key_id,k.principal_ref,k.purpose,k.algorithm,k.public_key,"
+        "k.not_before,k.not_after,r.revoked_at "
+        "FROM office_trusted_critic_key k "
+        "LEFT JOIN office_trusted_critic_key_revocation r ON r.key_id=k.key_id "
+        "WHERE k.key_id=%s",
+        (key_id,),
+    )
+    rows = await cur.fetchall()
+    if len(rows) != 1:
+        return None
+    values = tuple(rows[0].values()) if isinstance(rows[0], dict) else tuple(rows[0])
+    if len(values) != 8:
+        return None
+    try:
+        key = TrustedCriticKey(
+            values[0], values[1], values[2], values[3], values[4],
+            _utc_database(values[5]), None if values[6] is None else _utc_database(values[6]),
+            None if values[7] is None else _utc_database(values[7]),
+        )
+    except (TypeError, ValueError, GuardRejected):
+        return None
+    if (
+        not isinstance(key.key_id, str) or not 1 <= len(key.key_id) <= 128
+        or not isinstance(key.principal_ref, str) or not 1 <= len(key.principal_ref) <= 128
+        or key.purpose != "rights.review" or key.algorithm != "Ed25519"
+        or not isinstance(key.public_key, bytes) or len(key.public_key) != 32
+        or key.not_after is not None and key.not_before >= key.not_after
+    ):
+        return None
+    return key
+
+
 async def _connect_readonly() -> aiomysql.Connection:
     required = ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_USER", "JAX_DB_PASSWORD", "JAX_DB_NAME")
     if any(not os.environ.get(name) for name in required):
@@ -192,7 +235,7 @@ async def verify_evidence_in_transaction(
                 row = await cur.fetchone()
                 now = _utc_database((tuple(row.values()) if isinstance(row, dict) else tuple(row))[0])
                 requested_key_id = receipt.get("key_id") if isinstance(receipt, dict) else ""
-                trusted_key = await resolve_trusted_critic_key(cur, requested_key_id)
+                trusted_key = await _load_trusted_key_for_guard(cur, requested_key_id)
                 verified = verify_critic_receipt(
                     receipt,
                     lambda key_id: trusted_key if trusted_key is not None and key_id == trusted_key.key_id else None,
@@ -247,6 +290,10 @@ class GuardServer:
             response = {"protocol": PROTOCOL, "nonce": nonce, "status": "REJECTED"}
         except (asyncio.TimeoutError, GuardConfigurationError, OSError, RuntimeError, ValueError):
             response = {"protocol": PROTOCOL, "nonce": nonce, "status": "UNAVAILABLE"}
+        except Exception:
+            # The wire contract deliberately does not differentiate internal
+            # database, crypto, or transport faults for an untrusted caller.
+            response = {"protocol": PROTOCOL, "nonce": nonce, "status": "UNAVAILABLE"}
         try:
             writer.write(encode_frame(response))
             await asyncio.wait_for(writer.drain(), timeout=self._timeout_seconds)
@@ -262,6 +309,8 @@ class GuardServer:
 
 async def run_guard(*, path: str = SOCKET_PATH, server: GuardServer | None = None) -> None:
     """Bind the fixed private socket. Deployment owns the RuntimeDirectory."""
+    if not GUARD_READY:
+        raise GuardConfigurationError("office critic trust guard is inert pending its activation contract")
     if path != SOCKET_PATH:
         raise GuardConfigurationError("guard socket path is fixed")
     guard = server or GuardServer()
