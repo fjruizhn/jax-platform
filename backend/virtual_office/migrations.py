@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from db.runtime_privileges import MANIFEST_VERSION, runtime_table_privilege_digest
 
 OFFICE_DDL = (
@@ -71,7 +72,7 @@ OFFICE_MEMBERSHIP_RECEIPT_DDL = (
     "CONSTRAINT chk_office_membership_receipt_grant CHECK(grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND audience IN ('INTERNAL','CLIENT_PUBLISHED') AND ((operation='GRANT_OFFICE_MEMBER' AND office_grant_status='ACTIVE') OR (operation='REVOKE_OFFICE_MEMBER' AND office_grant_status='REVOKED'))),"
     "CONSTRAINT chk_office_membership_receipt_external CHECK((audience='INTERNAL' AND external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) OR (audience='CLIENT_PUBLISHED' AND grant_role='COLLABORATOR' AND external_relation_id IS NOT NULL AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL)),"
     "CONSTRAINT chk_office_membership_receipt_execution CHECK(execution_kind IN ('INTERACTIVE_USER','INVITATION_ACCEPTANCE'))"
-    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE={membership_receipt_collation}",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_membership_mutation_receipt BEFORE UPDATE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_membership_mutation_receipt BEFORE DELETE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
 )
@@ -118,6 +119,48 @@ _MEMBERSHIP_RECEIPT_COLUMNS = (
     ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
     ("created_at", "datetime", "datetime(6)", "NO", None, None, "", None),
 )
+
+
+async def _membership_receipt_collation(cur) -> str:
+    """Use the actual JAX request collation for every receipt FK string.
+
+    JAX owns the parent tables and a fresh schema inherits the database's
+    collation.  An older installed parent can legitimately use a different
+    collation, so spelling one Office default here would make the receipt DDL
+    fail before it can attest its foreign keys.
+    """
+    await cur.execute(
+        "SELECT CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='jax_namespace_membership_mutation_request' "
+        "AND COLUMN_NAME='namespace'"
+    )
+    row = await cur.fetchone()
+    if row is None or len(row) != 2 or row[0] != "utf8mb4" or not isinstance(row[1], str):
+        raise RuntimeError("JAX membership request namespace collation is unavailable")
+    collation = row[1]
+    if re.fullmatch(r"[a-z0-9_]+", collation) is None:
+        raise RuntimeError("JAX membership request namespace collation is invalid")
+    for table, column in (
+        ("jax_namespace_membership_mutation_request", "idempotency_key"),
+        ("jax_project_membership", "membership_id"),
+        ("jax_project_membership_event", "event_id"),
+    ):
+        await cur.execute(
+            "SELECT CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s",
+            (table, column),
+        )
+        if tuple(await cur.fetchone() or ()) != ("utf8mb4", collation):
+            raise RuntimeError("JAX membership receipt string foreign-key collations are incompatible")
+    return collation
+
+
+async def _membership_receipt_columns(cur) -> tuple[tuple[object, ...], ...]:
+    collation = await _membership_receipt_collation(cur)
+    return tuple(
+        tuple(collation if value == "utf8mb4_unicode_ci" else value for value in column)
+        for column in _MEMBERSHIP_RECEIPT_COLUMNS
+    )
 
 _PROFILE_REVOCATION_COLUMNS = (
     ("event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "auto_increment", None),
@@ -238,7 +281,11 @@ async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trig
         if require_table:
             raise RuntimeError("Office membership receipt table is missing")
         return
-    await _assert_columns(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_COLUMNS)
+    await _assert_columns(
+        cur,
+        table="office_membership_mutation_receipt",
+        expected=await _membership_receipt_columns(cur),
+    )
     await _assert_indexes(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_INDEXES)
     await _assert_foreign_keys(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_FOREIGN_KEYS)
     await _assert_append_only_table_metadata(
@@ -1116,8 +1163,9 @@ async def apply_office_migrations(cursor) -> None:
     # predecessor schema.  A real platform migration has already installed
     # this JAX core table; without it no member route can run or be ready.
     if await _table_exists(cursor, "jax_namespace_membership_mutation_request"):
+        membership_receipt_collation = await _membership_receipt_collation(cursor)
         for statement in OFFICE_MEMBERSHIP_RECEIPT_DDL:
-            await cursor.execute(statement)
+            await cursor.execute(statement.format(membership_receipt_collation=membership_receipt_collation))
     for statement in OFFICE_PROFILE_REVOCATION_DDL:
         await cursor.execute(statement)
     await _ensure_terminal_ledger_foreign_keys(cursor)
