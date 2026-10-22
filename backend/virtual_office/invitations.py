@@ -519,6 +519,22 @@ async def finalize_invitation_delivery_in_cursor(
     return True
 
 
+async def settle_stale_invitation_claims_in_cursor(cur, *, config: InvitationConfig) -> int:
+    """Turn abandoned fenced attempts into durable UNKNOWN, never QUEUED."""
+    await cur.execute(
+        "SELECT outbox_id,attempt_id FROM office_invitation_outbox WHERE state='CLAIMED' "
+        "AND claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL %s SECOND) "
+        "ORDER BY claimed_at,outbox_id FOR UPDATE SKIP LOCKED", (config.claim_timeout_seconds,))
+    stale = await cur.fetchall()
+    settled = 0
+    for outbox_id, attempt_id in stale:
+        if await finalize_invitation_delivery_in_cursor(
+            cur, outbox_id=str(outbox_id), attempt_id=str(attempt_id),
+            relay_accepted=False, result_code="SMTP_STALE"):
+            settled += 1
+    return settled
+
+
 async def deliver_one_invitation() -> bool:
     """Run one delivery outside database locks and settle its fenced result.
 
@@ -529,7 +545,12 @@ async def deliver_one_invitation() -> bool:
     from db.transaccion import AISLAMIENTO_ADMIN, transaccion
     import smtp_config
 
+    from .invitation_config import load_invitation_config_from_environment
+    config = load_invitation_config_from_environment()
+    if config is None:
+        raise InvitationError("office_invitation_transport_unavailable", status_code=503)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await settle_stale_invitation_claims_in_cursor(cur, config=config)
         delivery = await claim_next_invitation_delivery_in_cursor(cur)
     if delivery is None:
         return False
