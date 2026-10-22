@@ -29,6 +29,9 @@ _FORBIDDEN_TABLES = frozenset((
     "office_module_release",
     "office_trusted_critic_key",
     "office_trusted_critic_key_revocation",
+    # Catalogue bindings are approved by the privileged migrator.  The web
+    # principal may resolve one later, but cannot create or mutate it.
+    "office_engine",
 ))
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 

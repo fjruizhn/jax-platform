@@ -160,6 +160,7 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
         "office_module_rights_review_event", "office_module_rights_review_head",
         "office_module_release_event", "office_module_release",
         "office_trusted_critic_key", "office_trusted_critic_key_revocation",
+        "office_engine",
     ):
         assert protected not in grants
     assert "INSERT" in grants["office_authorization_event"]
@@ -203,6 +204,9 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
             assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_engine () VALUES ()") == 1142
+            assert await _errno(runtime, "UPDATE office_engine SET enabled=enabled WHERE 1=0") == 1142
+            assert await _errno(runtime, "DELETE FROM office_engine WHERE 1=0") == 1142
             assert await _errno(runtime, "INSERT INTO office_trusted_critic_key () VALUES ()") == 1142
             assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
@@ -524,15 +528,15 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v12 marker cannot certify the v15 origin-bound candidate contract."""
+    """A v15 marker cannot certify the v16 engine-catalogue contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v15-")
-        predecessor = "office-runtime-v12-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
+        assert SCHEMA_REVISION.startswith("office-runtime-v16-")
+        predecessor = "office-runtime-v15-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
