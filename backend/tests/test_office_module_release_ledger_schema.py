@@ -41,8 +41,8 @@ def test_candidate_identity_manifest_claim_and_generic_evidence_are_bound() -> N
     assert "FOREIGN KEY (candidate_revision_id,candidate_id)" in evidence
     assert "manifest_bytes MEDIUMBLOB" in revision
     assert "evidence_bytes MEDIUMBLOB" in evidence
-    assert "OCTET_LENGTH(manifest_bytes)<=16777216" in revision
-    assert "OCTET_LENGTH(evidence_bytes)<=16777216" in evidence
+    assert "OCTET_LENGTH(manifest_bytes)<=16777215" in revision
+    assert "OCTET_LENGTH(evidence_bytes)<=16777215" in evidence
 
 
 def test_predecessor_is_only_removed_when_empty() -> None:
@@ -63,14 +63,18 @@ def test_runtime_acl_cannot_gain_candidate_update_or_delete() -> None:
 
 async def _create_empty_predecessor_787_shape(cur) -> None:
     """The old 787 table graph, including its release/revision cycle."""
-    await cur.execute("CREATE TABLE office_module_release (release_id BIGINT UNSIGNED PRIMARY KEY,current_revision_id BIGINT UNSIGNED NULL,effective_published_event_id BIGINT UNSIGNED NULL) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_release_revision (revision_id BIGINT UNSIGNED PRIMARY KEY,release_id BIGINT UNSIGNED NOT NULL, CONSTRAINT old_revision_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_license_evidence (license_evidence_id BIGINT UNSIGNED PRIMARY KEY,revision_id BIGINT UNSIGNED NOT NULL, CONSTRAINT old_license_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_creative_approval (creative_approval_id BIGINT UNSIGNED PRIMARY KEY,revision_id BIGINT UNSIGNED NOT NULL, CONSTRAINT old_creative_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_rights_verdict (rights_verdict_id BIGINT UNSIGNED PRIMARY KEY,revision_id BIGINT UNSIGNED NOT NULL, CONSTRAINT old_rights_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_creative_approval_head (revision_id BIGINT UNSIGNED PRIMARY KEY, CONSTRAINT old_creative_head_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_rights_verdict_head (revision_id BIGINT UNSIGNED PRIMARY KEY, CONSTRAINT old_rights_head_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
-    await cur.execute("CREATE TABLE office_module_published_event (published_event_id BIGINT UNSIGNED PRIMARY KEY,release_id BIGINT UNSIGNED NOT NULL,revision_id BIGINT UNSIGNED NOT NULL, CONSTRAINT old_published_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id), CONSTRAINT old_published_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)) ENGINE=InnoDB")
+    for table, columns in candidate._LEGACY_787_COLUMNS.items():
+        definition = ",".join(
+            f"`{column}` BIGINT UNSIGNED {'NOT NULL PRIMARY KEY' if index == 0 else 'NULL'}"
+            for index, column in enumerate(columns)
+        )
+        await cur.execute(f"CREATE TABLE `{table}` ({definition}) ENGINE=InnoDB")
+    await cur.execute("ALTER TABLE office_module_release_revision ADD CONSTRAINT old_revision_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id)")
+    await cur.execute("ALTER TABLE office_module_license_evidence ADD CONSTRAINT old_license_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
+    await cur.execute("ALTER TABLE office_module_creative_approval ADD CONSTRAINT old_creative_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
+    await cur.execute("ALTER TABLE office_module_rights_verdict ADD CONSTRAINT old_rights_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
+    await cur.execute("ALTER TABLE office_module_published_event ADD CONSTRAINT old_published_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id)")
+    await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_revision FOREIGN KEY (current_revision_id) REFERENCES office_module_release_revision(revision_id)")
     await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_revision FOREIGN KEY (current_revision_id) REFERENCES office_module_release_revision(revision_id)")
     await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_published FOREIGN KEY (effective_published_event_id) REFERENCES office_module_published_event(published_event_id)")
 
@@ -108,7 +112,7 @@ def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None
     client.portal.call(scenario)
 
 
-def test_mariadb_empty_predecessor_is_removed_and_nonempty_predecessor_fails(client) -> None:
+def test_mariadb_homonymous_legacy_table_fails_before_destructive_ddl(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_legacy_{uuid.uuid4().hex[:16]}"
@@ -118,12 +122,7 @@ def test_mariadb_empty_predecessor_is_removed_and_nonempty_predecessor_fails(cli
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
                 await cur.execute("CREATE TABLE office_module_release (release_id BIGINT PRIMARY KEY) ENGINE=InnoDB")
-                await candidate.apply_module_candidate_storage_migrations(cur)
-                await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_module_release'")
-                assert await cur.fetchone() is None
-                await cur.execute("CREATE TABLE office_module_release (release_id BIGINT PRIMARY KEY) ENGINE=InnoDB")
-                await cur.execute("INSERT INTO office_module_release VALUES (1)")
-                with pytest.raises(RuntimeError, match="predecessor contains rows"):
+                with pytest.raises(RuntimeError, match="recognized 787 shape"):
                     await candidate.apply_module_candidate_storage_migrations(cur)
         finally:
             async with conn.cursor() as cur:
@@ -191,6 +190,27 @@ def test_mariadb_metadata_rejects_weakened_hash_check(client) -> None:
                 await cur.execute("ALTER TABLE office_module_candidate_revision DROP CONSTRAINT chk_office_module_candidate_revision_payload")
                 await cur.execute("ALTER TABLE office_module_candidate_revision ADD CONSTRAINT chk_office_module_candidate_revision_payload CHECK (revision_no>=0)")
                 with pytest.raises(RuntimeError, match="CHECK expressions are invalid"):
+                    await candidate.assert_module_candidate_storage_metadata(cur)
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
+
+
+def test_mariadb_metadata_rejects_check_clause_on_decoy_table(client) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_candidate_decoy_{uuid.uuid4().hex[:16]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("ALTER TABLE office_module_candidate DROP CONSTRAINT chk_office_module_candidate_identity")
+                await cur.execute("CREATE TABLE office_module_candidate_decoy (value INT NOT NULL, CONSTRAINT chk_office_module_candidate_identity CHECK (value>0)) ENGINE=InnoDB")
+                with pytest.raises(RuntimeError, match="checks are invalid"):
                     await candidate.assert_module_candidate_storage_metadata(cur)
         finally:
             async with conn.cursor() as cur:

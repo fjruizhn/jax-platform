@@ -14,6 +14,16 @@ _LEGACY_TABLES = (
     "office_module_creative_approval", "office_module_license_evidence",
     "office_module_release_revision", "office_module_release",
 )
+_LEGACY_787_COLUMNS = {
+    "office_module_release": ("release_id", "module_id", "module_version", "created_by_user_id", "created_authorization_event_id", "created_mfa_proof_event_id", "state", "current_revision_id", "effective_published_event_id", "row_version", "created_at", "updated_at"),
+    "office_module_release_revision": ("revision_id", "release_id", "revision_no", "artifact_set_digest", "manifest_schema", "manifest_digest", "manifest_bytes", "signing_key_id", "manifest_signature", "created_by_user_id", "created_at"),
+    "office_module_license_evidence": ("license_evidence_id", "revision_id", "release_id", "artifact_set_digest", "evidence_type", "evidence_digest", "evidence_bytes", "recorded_by_user_id", "recorded_at"),
+    "office_module_creative_approval": ("creative_approval_id", "revision_id", "release_id", "artifact_set_digest", "outcome", "actor_user_id", "authorization_event_id", "mfa_proof_event_id", "recorded_at"),
+    "office_module_rights_verdict": ("rights_verdict_id", "revision_id", "release_id", "artifact_set_digest", "outcome", "license_evidence_id", "license_revision_id", "license_artifact_set_digest", "license_evidence_type", "jacobs_agent_id", "jacobs_receipt_digest", "jacobs_receipt_bytes", "jacobs_signing_key_id", "jacobs_receipt_signature", "recorded_at"),
+    "office_module_creative_approval_head": ("revision_id", "approved_approval_id", "outcome", "row_version", "updated_at"),
+    "office_module_rights_verdict_head": ("revision_id", "pass_verdict_id", "outcome", "row_version", "updated_at"),
+    "office_module_published_event": ("published_event_id", "release_id", "revision_id", "artifact_set_digest", "creative_approval_id", "creative_head_revision_id", "creative_head_outcome", "rights_verdict_id", "rights_head_revision_id", "rights_head_outcome", "actor_user_id", "authorization_event_id", "mfa_proof_event_id", "recorded_at"),
+}
 _APPEND_ONLY = (
     "office_module_candidate", "office_module_candidate_revision",
     "office_module_candidate_evidence",
@@ -42,7 +52,7 @@ MODULE_CANDIDATE_DDL = (
     "UNIQUE KEY uq_office_module_candidate_revision_identity (candidate_revision_id,candidate_id),"
     "KEY idx_office_module_candidate_revision_artifact (candidate_id,claimed_artifact_set_digest),"
     "CONSTRAINT fk_office_module_candidate_revision_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),"
-    "CONSTRAINT chk_office_module_candidate_revision_payload CHECK (revision_no>0 AND OCTET_LENGTH(manifest_sha256)=32 AND manifest_sha256=UNHEX(SHA2(manifest_bytes,256)) AND OCTET_LENGTH(manifest_bytes)>0 AND OCTET_LENGTH(manifest_bytes)<=16777216 AND OCTET_LENGTH(claimed_artifact_set_digest)=32 AND claimed_signing_key_id<>'')"
+    "CONSTRAINT chk_office_module_candidate_revision_payload CHECK (revision_no>0 AND OCTET_LENGTH(manifest_sha256)=32 AND manifest_sha256=UNHEX(SHA2(manifest_bytes,256)) AND OCTET_LENGTH(manifest_bytes)>0 AND OCTET_LENGTH(manifest_bytes)<=16777215 AND OCTET_LENGTH(claimed_artifact_set_digest)=32 AND claimed_signing_key_id<>'')"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_module_candidate_evidence ("
     "candidate_evidence_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
@@ -53,7 +63,7 @@ MODULE_CANDIDATE_DDL = (
     "UNIQUE KEY uq_office_module_candidate_evidence_entry (candidate_revision_id,evidence_kind,evidence_sha256),"
     "KEY idx_office_module_candidate_evidence_revision (candidate_revision_id,evidence_kind,candidate_evidence_id),"
     "CONSTRAINT fk_office_module_candidate_evidence_revision FOREIGN KEY (candidate_revision_id,candidate_id) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id),"
-    "CONSTRAINT chk_office_module_candidate_evidence_payload CHECK (evidence_kind<>'' AND OCTET_LENGTH(evidence_sha256)=32 AND evidence_sha256=UNHEX(SHA2(evidence_bytes,256)) AND OCTET_LENGTH(evidence_bytes)>0 AND OCTET_LENGTH(evidence_bytes)<=16777216)"
+    "CONSTRAINT chk_office_module_candidate_evidence_payload CHECK (evidence_kind<>'' AND OCTET_LENGTH(evidence_sha256)=32 AND evidence_sha256=UNHEX(SHA2(evidence_bytes,256)) AND OCTET_LENGTH(evidence_bytes)>0 AND OCTET_LENGTH(evidence_bytes)<=16777215)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 )
 
@@ -110,8 +120,8 @@ _CHECKS = {
 }
 _CHECK_CLAUSES = {
     "chk_office_module_candidate_identity": "`module_id` <> '' and `module_version` <> ''",
-    "chk_office_module_candidate_revision_payload": "`revision_no` > 0 and octet_length(`manifest_sha256`) = 32 and `manifest_sha256` = unhex(sha2(`manifest_bytes`,256)) and octet_length(`manifest_bytes`) > 0 and octet_length(`manifest_bytes`) <= 16777216 and octet_length(`claimed_artifact_set_digest`) = 32 and `claimed_signing_key_id` <> ''",
-    "chk_office_module_candidate_evidence_payload": "`evidence_kind` <> '' and octet_length(`evidence_sha256`) = 32 and `evidence_sha256` = unhex(sha2(`evidence_bytes`,256)) and octet_length(`evidence_bytes`) > 0 and octet_length(`evidence_bytes`) <= 16777216",
+    "chk_office_module_candidate_revision_payload": "`revision_no` > 0 and octet_length(`manifest_sha256`) = 32 and `manifest_sha256` = unhex(sha2(`manifest_bytes`,256)) and octet_length(`manifest_bytes`) > 0 and octet_length(`manifest_bytes`) <= 16777215 and octet_length(`claimed_artifact_set_digest`) = 32 and `claimed_signing_key_id` <> ''",
+    "chk_office_module_candidate_evidence_payload": "`evidence_kind` <> '' and octet_length(`evidence_sha256`) = 32 and `evidence_sha256` = unhex(sha2(`evidence_bytes`,256)) and octet_length(`evidence_bytes`) > 0 and octet_length(`evidence_bytes`) <= 16777215",
 }
 
 
@@ -124,6 +134,9 @@ async def _remove_empty_legacy_schema(cur) -> None:
     """Remove the never-published predecessor only when it contains no rows."""
     for table in _LEGACY_TABLES:
         if await _table_exists(cur, table):
+            await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+            if tuple(row[0] for row in await cur.fetchall()) != _LEGACY_787_COLUMNS[table]:
+                raise RuntimeError("Office module predecessor is not the recognized 787 shape")
             await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
             if await cur.fetchone() is not None:
                 raise RuntimeError("Office module predecessor contains rows; refusing destructive candidate-storage migration")
@@ -178,11 +191,16 @@ async def assert_module_candidate_storage_metadata(cur, *, allow_redacted_trigge
         rows = await cur.fetchall()
         if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
             raise RuntimeError(f"Office module candidate index {table}.{index} is invalid")
-    await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME LIKE 'chk_office_module_candidate_%'")
-    if {str(row[0]) for row in await cur.fetchall()} != _CHECKS:
+    await cur.execute("SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME LIKE 'office_module_candidate%' AND tc.CONSTRAINT_TYPE='CHECK'")
+    rows = await cur.fetchall()
+    expected_check_tables = {
+        "chk_office_module_candidate_identity": "office_module_candidate",
+        "chk_office_module_candidate_revision_payload": "office_module_candidate_revision",
+        "chk_office_module_candidate_evidence_payload": "office_module_candidate_evidence",
+    }
+    if {str(row[1]) for row in rows} != _CHECKS or {str(row[1]): str(row[0]) for row in rows} != expected_check_tables:
         raise RuntimeError("Office module candidate checks are invalid")
-    await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME LIKE 'chk_office_module_candidate_%'")
-    found_checks = {str(row[0]): str(row[1]).lower() for row in await cur.fetchall()}
+    found_checks = {str(row[1]): str(row[2]).lower() for row in rows}
     if found_checks != _CHECK_CLAUSES:
         raise RuntimeError("Office module candidate CHECK expressions are invalid")
     await cur.execute("SELECT DATABASE()")
