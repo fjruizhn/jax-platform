@@ -6,6 +6,7 @@ asociación token->rutas, sin hacer que la suite ordinaria pague su KDF.
 import importlib.util
 import hashlib
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,19 @@ def test_excepcion_del_worker_no_se_convierte_en_aprobacion(monkeypatch, escaner
     with pytest.raises(RuntimeError, match="fallo del KDF"):
         _ejecutar(monkeypatch, escaner, ["a.txt"], _diff(("a.txt", "token-unico")),
                   [(b"a" * 16, "nunca", "entrada")])
+
+
+def test_lotes_cubren_cada_par_token_entrada_una_vez(escaner, monkeypatch):
+    monkeypatch.setattr(escaner, "TOKENS_POR_TAREA", 2)
+    entradas = [(b"a" * 16, "uno", "primera"), (b"b" * 16, "dos", "segunda")]
+    tokens = ("uno", "dos", "tres", "cuatro", "cinco")
+
+    pares = [(entrada[2], token)
+             for entrada, lote in escaner.tareas_de_comparacion(entradas, tokens)
+             for token in lote]
+
+    esperado = Counter((entrada[2], token) for entrada in entradas for token in tokens)
+    assert Counter(pares) == esperado
 
 
 def test_nombre_de_archivo_vacio_tambien_se_escanea(monkeypatch, capsys, escaner):
