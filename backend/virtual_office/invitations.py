@@ -198,6 +198,19 @@ async def _db_now(cur) -> dt.datetime:
 
 async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
                            proof_event_id: int, mfa_config: MFAConfig):
+    # Establish the same tenant-first lock order used by invitation
+    # acceptance and JAX membership.  These are discovery hints only: the
+    # canonical resolver below re-reads actor, tenant, scope and grants under
+    # lock before it permits issuance or revocation.
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
+    actor_tenant = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+    scope_tenant = await cur.fetchone()
+    if actor_tenant is not None and scope_tenant is not None:
+        for tenant_id in sorted({int(actor_tenant[0]), int(scope_tenant[0])}):
+            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+            if await cur.fetchone() is None:
+                raise InvitationError("office_invitation_issuer_denied", status_code=403)
     decision = await authorize_office_in_cursor(
         cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
         require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,
