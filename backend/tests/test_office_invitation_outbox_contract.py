@@ -15,6 +15,7 @@ from virtual_office.invitation_config import InvitationConfig as _InvitationConf
 from virtual_office import invitations as invitation_service
 from virtual_office.invitations import (
     ClaimedInvitationDelivery,
+    _decode_outbox_payload,
     _invitation_email,
     finalize_invitation_delivery_in_cursor,
     deliver_one_invitation,
@@ -69,13 +70,31 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
         await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
         await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            return await issue_invitation_in_cursor(
+            invitation = await issue_invitation_in_cursor(
                 cur, actor_user_id=issuer, project_id=project_id,
                 email="mail-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
                 invitation_config=config, idempotency_key=str(uuid.uuid4()))
+            await cur.execute(
+                "SELECT outbox_id,payload_ciphertext FROM office_invitation_outbox "
+                "WHERE invitation_id=%s FOR UPDATE", (invitation.invitation_id,))
+            outbox_id, ciphertext = await cur.fetchone()
+            recipient, bearer_token, expires_at = _decode_outbox_payload(ciphertext)
+            attempt_id = str(uuid.uuid4())
+            await cur.execute(
+                "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,"
+                "claimed_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) "
+                "WHERE outbox_id=%s AND state='QUEUED'", (attempt_id, outbox_id))
+            assert cur.rowcount == 1
+            return invitation, ClaimedInvitationDelivery(
+                str(outbox_id), attempt_id, invitation.invitation_id, recipient, bearer_token, expires_at)
 
-    invitation = client.portal.call(scenario)
+    invitation, delivery = client.portal.call(scenario)
+
+    async def claim_only_test_delivery(_cur):
+        return delivery
+
+    monkeypatch.setattr(invitation_service, "claim_next_invitation_delivery_in_cursor", claim_only_test_delivery)
     assert client.portal.call(deliver_one_invitation) is True
     assert captured["sent"] == "<office-invitation@example.test>"
     expected_prefix = "https://virtualoffice.example.test/office/invitation#token="
@@ -84,6 +103,9 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
     assert "<code>" not in captured["html"]
     assert captured["recipient"].startswith("mail-")
     assert invitation.invitation_id not in captured["text"]
+    assert client.portal.call(
+        sql, "SELECT state FROM office_invitation_outbox WHERE invitation_id=%s",
+        (invitation.invitation_id,), True) == (("SMTP_ACCEPTED",),)
 
 
 def test_email_templates_cover_english_and_percent_encode_fragment_tokens():
