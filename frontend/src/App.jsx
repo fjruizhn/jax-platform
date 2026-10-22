@@ -10,12 +10,21 @@ import ProyectoDetalle from './pages/ProyectoDetalle'
 import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import AccountSecurity from './pages/AccountSecurity'
+import VirtualOffice from './pages/VirtualOffice'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 
 function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)
   if (!user || user.role !== 'superadmin') return <Navigate to="/" replace />
+  return children
+}
+
+function RequireOfficeAccount({ children }) {
+  const user = useJaxStore((s) => s.user)
+  const isOfficeAccount = ['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'].includes(user?.account_class)
+    || ['OFFICE_SUPERUSER', 'GENERAL_ADMIN', 'PROJECT_ADMIN', 'COLLABORATOR'].includes(user?.office_role)
+  if (!isOfficeAccount) return <Navigate to="/" replace />
   return children
 }
 export default function App() {
@@ -39,6 +48,14 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/account/security" element={<RequireAuth allowOfficeAccount><AccountSecurity /></RequireAuth>} />
+        <Route
+          path="/virtual-office"
+          element={
+            <RequireAuth allowOfficeAccount>
+              <RequireOfficeAccount><VirtualOffice /></RequireOfficeAccount>
+            </RequireAuth>
+          }
+        />
         <Route
           path="/"
           element={
