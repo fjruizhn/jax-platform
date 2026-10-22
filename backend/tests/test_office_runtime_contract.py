@@ -374,7 +374,7 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
         )
         assert role_replay.status_code == 200 and role_replay.json()["replayed"] is True, role_replay.text
         revoked = client.delete(
-            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=2",
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert revoked.status_code == 200, revoked.text
@@ -402,7 +402,7 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             os.environ[name] = value
         client.portal.call(
             sql,
-            f"REVOKE INSERT ON `{database}`.`office_project_role_mutation_receipt` FROM `{runtime_user}`@'%'",
+            f"REVOKE INSERT ON `{database}`.`office_project_role_mutation_receipt` FROM `{runtime_user}`@'%%'",
         )
         role_audits_before = client.portal.call(
             sql,
