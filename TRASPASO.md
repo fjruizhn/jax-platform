@@ -27,6 +27,15 @@
   `@fjruizhn` está declarado en CODEOWNERS, pero el ruleset todavía no exige
   su revisión: Fernando debe activar `require_code_owner_review` (y el piso de
   aprobación que GitHub exija) para cambios de esta barrera antes de tratarla
-  como control autónomo contra colaboradores con escritura.
+  como control autónomo contra colaboradores con escritura. El ruleset vigente
+  también tiene `strict_required_status_checks_policy=false`: se debe activar
+  `true` al integrar para que un `scan` verde de una base vieja no apruebe un
+  HEAD contra `master` nuevo. Antes de sumar writers, hará falta un emisor de
+  status dedicado que GitHub distinga de los workflows que ellos puedan crear.
+- **Carreras y logs:** el workflow cancela la corrida vieja por PR, compara
+  HEAD/base actuales antes de publicar success y mantiene `scan` pendiente o
+  en failure si cambia algo. Checkout está fijado al commit 11bd719… de v4.2.2.
+  El escáner anota un digest de ruta en vez de imprimir nombres que puedan
+  contener el secreto o caracteres de control.
 - **Alternativa descartada:** declarar válido el scan del HEAD de #229; el
   contenido que se revisa podría cambiar el revisor y la referencia.

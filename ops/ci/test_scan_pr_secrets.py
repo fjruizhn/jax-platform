@@ -4,6 +4,7 @@ No usan el repositorio ni scrypt real: ejercitan el mismo límite y la misma
 asociación token->rutas, sin hacer que la suite ordinaria pague su KDF.
 """
 import importlib.util
+import hashlib
 import sys
 from pathlib import Path
 
@@ -38,6 +39,10 @@ def _diff(*rutas_y_tokens):
     for ruta, token in rutas_y_tokens:
         partes.extend((f"diff --git a/{ruta} b/{ruta}", f"+++ b/{ruta}", "@@ -0,0 +1 @@", f"+{token}"))
     return "\n".join(partes)
+
+
+def _ruta_digest(ruta):
+    return hashlib.sha256(ruta.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def _ejecutar(monkeypatch, escaner, archivos, diff, entradas):
@@ -75,8 +80,8 @@ def test_duplica_token_una_vez_por_entrada_y_reporta_todas_las_rutas(monkeypatch
     assert salida.value.code == 1
     assert llamadas.count("token-seguro") == len(entradas)
     texto = capsys.readouterr().out
-    assert "file=uno.txt" in texto
-    assert "file=dos.txt" in texto
+    assert _ruta_digest("uno.txt") in texto
+    assert _ruta_digest("dos.txt") in texto
 
 
 def test_rechaza_techo_de_tokens_antes_de_hacer_kdf(monkeypatch, capsys, escaner):
@@ -136,7 +141,7 @@ def test_binario_sin_hunk_tambien_se_compara(monkeypatch, capsys, escaner):
         "coincide" if token == b"token-binario" else "no"))
     with pytest.raises(SystemExit):
         escaner.main()
-    assert "file=imagen.bin" in capsys.readouterr().out
+    assert _ruta_digest("imagen.bin") in capsys.readouterr().out
 
 
 def test_lista_malformada_falla_cerrado(monkeypatch, tmp_path, capsys, escaner):
@@ -180,7 +185,9 @@ def test_nombre_de_archivo_vacio_tambien_se_escanea(monkeypatch, capsys, escaner
     with pytest.raises(SystemExit):
         _ejecutar(monkeypatch, escaner, ["directorio/token-conocido"], "",
                   [(b"a" * 16, "coincide", "nombre")])
-    assert "file=directorio/token-conocido" in capsys.readouterr().out
+    salida = capsys.readouterr().out
+    assert _ruta_digest("directorio/token-conocido") in salida
+    assert "token-conocido" not in salida
 
 
 def test_nombre_de_archivo_con_extension_extrae_token(monkeypatch, capsys, escaner):
@@ -189,7 +196,9 @@ def test_nombre_de_archivo_con_extension_extrae_token(monkeypatch, capsys, escan
     with pytest.raises(SystemExit):
         _ejecutar(monkeypatch, escaner, ["directorio/token-conocido.txt"], "",
                   [(b"a" * 16, "coincide", "nombre")])
-    assert "file=directorio/token-conocido.txt" in capsys.readouterr().out
+    salida = capsys.readouterr().out
+    assert _ruta_digest("directorio/token-conocido.txt") in salida
+    assert "token-conocido" not in salida
 
 
 def test_nombre_con_salto_de_linea_se_parsea_completo(monkeypatch, capsys, escaner):
@@ -198,7 +207,46 @@ def test_nombre_con_salto_de_linea_se_parsea_completo(monkeypatch, capsys, escan
     with pytest.raises(SystemExit):
         _ejecutar(monkeypatch, escaner, ["directorio\nextra/token-conocido"], "",
                   [(b"a" * 16, "coincide", "nombre")])
-    assert "token-conocido" in capsys.readouterr().out
+    salida = capsys.readouterr().out
+    assert _ruta_digest("directorio\nextra/token-conocido") in salida
+    assert "token-conocido" not in salida
+    assert "directorio\nextra" not in salida
+
+
+def test_nombre_con_emoji_delimita_secreto_ascii_sin_exponerlo(monkeypatch, capsys, escaner):
+    ruta = "directorio/🔒token-conocido🔒.txt"
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        _ejecutar(monkeypatch, escaner, [ruta], "", [(b"a" * 16, "coincide", "nombre")])
+    salida = capsys.readouterr().out
+    assert _ruta_digest(ruta) in salida
+    assert "token-conocido" not in salida
+
+
+def test_nombre_no_utf8_delimita_secreto_ascii_sin_exponerlo(monkeypatch, capsys, escaner):
+    ruta_cruda = b"directorio/\xfftoken-conocido\xff.txt"
+    entradas = [(b"a" * 16, "coincide", "nombre")]
+
+    def git_falso(args, binario=False):
+        if args[:2] == ["diff", "--name-only"]:
+            return ruta_cruda + b"\0"
+        if args[0] == "show":
+            return b"lista" if args[1].endswith(":ops/ci/known-secrets-ci.txt") else b""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(escaner, "git", git_falso)
+    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(()))
+    monkeypatch.setattr(escaner, "cargar", lambda: entradas)
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _raw: entradas)
+    monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        escaner.main()
+    salida = capsys.readouterr().out
+    assert _ruta_digest(ruta_cruda.decode("utf-8", "surrogateescape")) in salida
+    assert "token-conocido" not in salida
 
 
 def test_nul_forzado_textual_escanea_blob_completo(monkeypatch, capsys, escaner):
@@ -221,7 +269,7 @@ def test_nul_forzado_textual_escanea_blob_completo(monkeypatch, capsys, escaner)
         "coincide" if token == b"token-conocido" else "no"))
     with pytest.raises(SystemExit):
         escaner.main()
-    assert "file=archivo.bin" in capsys.readouterr().out
+    assert _ruta_digest("archivo.bin") in capsys.readouterr().out
 
 
 def test_blob_no_utf8_forzado_textual_escanea_bytes_crudos(monkeypatch, capsys, escaner):
@@ -245,7 +293,7 @@ def test_blob_no_utf8_forzado_textual_escanea_bytes_crudos(monkeypatch, capsys, 
         "coincide" if token == b"token-conocido" else "no"))
     with pytest.raises(SystemExit):
         escaner.main()
-    assert "file=archivo.bin" in capsys.readouterr().out
+    assert _ruta_digest("archivo.bin") in capsys.readouterr().out
 
 
 def test_atributo_diff_forzado_escanea_blob_completo(monkeypatch, capsys, escaner):
@@ -269,7 +317,7 @@ def test_atributo_diff_forzado_escanea_blob_completo(monkeypatch, capsys, escane
         "coincide" if token == b"token-conocido" else "no"))
     with pytest.raises(SystemExit):
         escaner.main()
-    assert "file=archivo.txt" in capsys.readouterr().out
+    assert _ruta_digest("archivo.txt") in capsys.readouterr().out
 
 
 def test_ascii_delimitado_por_emoji_en_hunk_se_detecta(monkeypatch, capsys, escaner):
@@ -279,7 +327,7 @@ def test_ascii_delimitado_por_emoji_en_hunk_se_detecta(monkeypatch, capsys, esca
         _ejecutar(monkeypatch, escaner, ["archivo.txt"],
                   _diff(("archivo.txt", "🔒token-conocido🔒")),
                   [(b"a" * 16, "coincide", "unicode")])
-    assert "file=archivo.txt" in capsys.readouterr().out
+    assert _ruta_digest("archivo.txt") in capsys.readouterr().out
 
 
 def test_secreto_historico_no_modificado_no_falla(monkeypatch, escaner):

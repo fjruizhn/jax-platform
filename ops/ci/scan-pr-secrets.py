@@ -70,8 +70,7 @@ def git(args, binario=False):
             fallar("salida git demasiado grande (FAIL-CLOSED).")
         codigo = proceso.wait()
     if codigo != 0:
-        fallar("git fallo durante el escaneo (FAIL-CLOSED).",
-               f"  git {' '.join(args)}")
+        fallar("git fallo durante el escaneo (FAIL-CLOSED).")
     return salida if binario else salida.decode("utf-8", "replace")
 
 
@@ -118,7 +117,9 @@ def parsear_lista(crudo):
         if not linea or linea.startswith("#"):
             continue
         p = linea.split(None, 2)
-        if len(p) != 3 or not re.fullmatch(r"[0-9a-f]{32}", p[0]) or not re.fullmatch(r"[0-9a-f]{64}", p[1]):
+        if (len(p) != 3 or not re.fullmatch(r"[0-9a-f]{32}", p[0])
+                or not re.fullmatch(r"[0-9a-f]{64}", p[1])
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", p[2])):
             fallar("la lista no parsea (FAIL-CLOSED).",
                    f"  {LISTA}:{num} no tiene la forma '<salt-hex> <scrypt-hex> <etiqueta>'")
         entrada = (bytes.fromhex(p[0]), p[1], p[2])
@@ -179,8 +180,9 @@ def main():
     # entro por merge, rebase o cherry-pick dentro de la rama.
     nombres = git(["diff", "--name-only", "-z", "--no-ext-diff",
                    "--diff-filter=ACMRT", f"{base}...{head}"], binario=True)
-    archivos = [x.decode("utf-8", "surrogateescape") for x in nombres.split(b"\x00")
-                if x and x.decode("utf-8", "surrogateescape") not in EXCLUIDOS]
+    rutas = [(x.decode("utf-8", "surrogateescape"), x)
+             for x in nombres.split(b"\x00") if x]
+    archivos = [ruta for ruta, _ in rutas if ruta not in EXCLUIDOS]
 
     # La lista del HEAD nunca decide contra qué se compara. Tampoco puede
     # quitar entradas para debilitar el escaneo de los PR siguientes.
@@ -213,11 +215,16 @@ def main():
             fallar(f"el diff supera el techo de {MAX_UBICACIONES} ubicaciones archivo-token ({ubicaciones}).",
                    "  Se falla en vez de truncar: el mapa que conserva todas las rutas tambien debe ser acotado.")
 
-    for a in archivos:
+    for a, ruta_cruda in rutas:
+        if a in EXCLUIDOS:
+            continue
         for token in tokens_de(a):
             agregar_candidato(token, a)
         for componente in re.split(r"[./\\]", a):
             for token in tokens_de(componente):
+                agregar_candidato(token, a)
+        for run in RUNS.findall(ruta_cruda):
+            for token in tokens_de(run.decode("ascii")):
                 agregar_candidato(token, a)
 
     for cruda in lineas_diff(["diff", "--unified=0", "--no-color",
@@ -279,7 +286,8 @@ def main():
                 for archivo in cands[token]]
     if hallados:
         for a, e in sorted(set(hallados)):
-            print(f"::error file={a}::secreto conocido '{e}' introducido por este PR")
+            ruta_digest = hashlib.sha256(a.encode("utf-8", "surrogateescape")).hexdigest()
+            print(f"::error::secreto conocido '{e}' en ruta_sha256={ruta_digest}")
         fallar(f"{len(set(hallados))} ocurrencia(s) de secreto conocido en el diff del PR.",
                "  Esta barrera corre server-side: no la saltea --no-verify ni un\n"
                "  .gitattributes local. El valor debe salir del diff.")
