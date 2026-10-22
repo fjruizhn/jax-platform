@@ -126,7 +126,18 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
     # Its names may also belong to another incomplete deployment, so this
     # migrator never deletes or reshapes them.  An operator must provide a
     # separately reviewed, data-preserving migration if any are present.
-    if any([await _table_exists(cur, table) for table in _LEGACY_TABLES]):
+    for table in _LEGACY_TABLES:
+        if not await _table_exists(cur, table):
+            continue
+        # The dormant v1 staging head deliberately reuses this one historic
+        # name.  Shape-check just enough here to retain the candidate
+        # migrator's legacy fail-closed property; its full attestation lives
+        # with the staging schema after this function returns.
+        if table == "office_module_release":
+            await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+            columns = {row[0] for row in await cur.fetchall()}
+            if {"candidate_id", "head_version", "release_event_id", "status"} <= columns:
+                continue
         raise RuntimeError("Office module legacy tables require an explicit data-preserving migration")
     for statement in MODULE_CANDIDATE_DDL:
         await cur.execute(statement)

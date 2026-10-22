@@ -21,7 +21,71 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-RUNTIME_REVISION = f"office-runtime-v8-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v9-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+
+# Global module governance is deliberately distinct from client artefacts.
+# This first schema cut records only pending-contract authority: the canonical
+# critic receipt and signer do not exist yet, therefore no effective release
+# or publication can be represented.
+OFFICE_MODULE_PUBLICATION_STAGING_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_module_creative_review_event ("
+    "creative_review_event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,human_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NOT NULL,decision VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_creative_review_identity (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),KEY idx_office_module_creative_review_candidate (candidate_id,candidate_revision_id,occurred_at),"
+    "CONSTRAINT fk_office_module_creative_review_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_creative_review_human FOREIGN KEY (human_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_creative_review_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_creative_review_decision CHECK (decision IN ('APPROVED','REJECTED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_creative_review_head ("
+    "candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,creative_review_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,"
+    "UNIQUE KEY uq_office_module_creative_head_event (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_creative_head_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),CONSTRAINT fk_office_module_creative_head_event FOREIGN KEY (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_creative_review_event(creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_creative_head_version CHECK (head_version>=1)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_rights_review_event ("
+    "rights_review_event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,critic_invocation_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,verification_state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,decision VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_rights_review_identity (rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),KEY idx_office_module_rights_review_candidate (candidate_id,candidate_revision_id,occurred_at),CONSTRAINT fk_office_module_rights_review_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT chk_office_module_rights_review_staging CHECK (critic_invocation_ref<>'' AND verification_state='PENDING_CONTRACT' AND decision='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_rights_review_head ("
+    "candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,rights_review_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,"
+    "UNIQUE KEY uq_office_module_rights_head_event (rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_rights_head_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),CONSTRAINT fk_office_module_rights_head_event FOREIGN KEY (rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_rights_review_event(rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_rights_head_version CHECK (head_version>=1)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_release_event ("
+    "release_event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,creative_review_event_id BIGINT UNSIGNED NOT NULL,rights_review_event_id BIGINT UNSIGNED NOT NULL,decision_state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,canonical_receipt_sha256 BINARY(32) NULL,canonical_receipt_signature MEDIUMBLOB NULL,canonical_receipt_key_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_release_event_identity (release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),KEY idx_office_module_release_event_candidate (candidate_id,candidate_revision_id,occurred_at),CONSTRAINT fk_office_module_release_event_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_release_event_creative FOREIGN KEY (creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_creative_review_event(creative_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_release_event_rights FOREIGN KEY (rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_rights_review_event(rights_review_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_release_event_staging CHECK (decision_state='PENDING_CONTRACT' AND canonical_receipt_sha256 IS NULL AND canonical_receipt_signature IS NULL AND canonical_receipt_key_id IS NULL)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_release ("
+    "candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,release_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,status VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "UNIQUE KEY uq_office_module_release_event (release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT fk_office_module_release_candidate FOREIGN KEY (candidate_id) REFERENCES office_module_candidate(candidate_id),CONSTRAINT fk_office_module_release_event FOREIGN KEY (release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest) REFERENCES office_module_release_event(release_event_id,candidate_revision_id,candidate_id,manifest_sha256,artifact_set_digest),CONSTRAINT chk_office_module_release_head CHECK (head_version>=1 AND status='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+_MODULE_PUBLICATION_STAGING_EVENT_TABLES = ("office_module_creative_review_event", "office_module_rights_review_event", "office_module_release_event")
+
+
+async def apply_module_publication_staging_migrations(cursor) -> None:
+    """Install durable pending-contract records, never a publication path."""
+    if not await _index_exists(cursor, "office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity"):
+        await cursor.execute("ALTER TABLE office_module_candidate_revision ADD UNIQUE KEY uq_office_module_candidate_revision_release_identity (candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest)")
+    for statement in OFFICE_MODULE_PUBLICATION_STAGING_DDL:
+        await cursor.execute(statement)
+    for table in _MODULE_PUBLICATION_STAGING_EVENT_TABLES:
+        for operation in ("UPDATE", "DELETE"):
+            await cursor.execute(f"CREATE TRIGGER IF NOT EXISTS `no_{operation.lower()}_{table}` BEFORE {operation} ON `{table}` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
+    await assert_module_publication_staging_metadata(cursor)
+
+
+async def assert_module_publication_staging_metadata(cursor, *, allow_redacted_trigger_body: bool = False) -> None:
+    """Attest authority separation and append-only event ledgers."""
+    tables = ("office_module_creative_review_event", "office_module_creative_review_head", "office_module_rights_review_event", "office_module_rights_review_head", "office_module_release_event", "office_module_release")
+    for table in tables:
+        if not await _table_exists(cursor, table):
+            raise RuntimeError(f"Office module publication staging table {table} is absent")
+        await cursor.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if tuple(await cursor.fetchone() or ()) != ("InnoDB",):
+            raise RuntimeError(f"Office module publication staging engine {table} is invalid")
+    if not await _index_exists(cursor, "office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity"):
+        raise RuntimeError("Office module publication revision identity index is absent")
+    for table in _MODULE_PUBLICATION_STAGING_EVENT_TABLES:
+        await cursor.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
+        rows = {row[0]: tuple(row[1:]) for row in await cursor.fetchall()}
+        expected = {f"no_update_{table}": ("BEFORE", "UPDATE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"), f"no_delete_{table}": ("BEFORE", "DELETE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")}
+        if allow_redacted_trigger_body:
+            expected = {name: (body[0], body[1], None if rows.get(name, (None, None, None))[2] is None else body[2]) for name, body in expected.items()}
+        if rows != expected:
+            raise RuntimeError(f"Office module publication staging triggers for {table} are invalid")
+    await cursor.execute("SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME='chk_office_module_release_head'")
+    row = await cursor.fetchone()
+    if row is None or "PENDING_CONTRACT" not in str(row[0]):
+        raise RuntimeError("Office module release head is not pending-contract only")
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -1614,3 +1678,4 @@ async def apply_office_migrations(cursor) -> None:
     # attested here, before db.migrations stamps the Office runtime revision.
     from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
     await apply_module_candidate_storage_migrations(cursor)
+    await apply_module_publication_staging_migrations(cursor)
