@@ -59,6 +59,14 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
 
             restricted = await _connection(database=schema, user=principal, password=password)
             async with restricted.cursor() as cur:
+                await cur.execute("SELECT CURRENT_USER()")
+                assert (await cur.fetchone())[0] == f"{principal}@%"
+                await cur.execute("SHOW GRANTS")
+                grants = tuple(row[0] for row in await cur.fetchall())
+                table_grants = tuple(grant for grant in grants if f"`{schema}`." in grant)
+                assert len(table_grants) == 2
+                assert all("SELECT, TRIGGER" in grant for grant in table_grants)
+                assert all("ON *.*" in grant or f"`{schema}`." in grant for grant in grants)
                 await cur.execute(
                     "SELECT TRIGGER_NAME,ACTION_STATEMENT,DEFINER,SQL_MODE "
                     "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME"
