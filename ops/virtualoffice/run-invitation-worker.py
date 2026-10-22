@@ -19,6 +19,14 @@ def main(argv: list[str]) -> int:
 
     if argv == ["--check-import"]:
         return 0
+    if argv == ["--smtp-preflight"]:
+        from virtual_office.invitation_smtp_preflight import main as preflight_main
+
+        return preflight_main()
+    if argv == ["--health"]:
+        from virtual_office.invitation_worker_health import main as health_main
+
+        return health_main()
     if argv:
         return 2
     from virtual_office.invitation_delivery_worker import main as worker_main

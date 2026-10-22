@@ -16,8 +16,16 @@ logger = logging.getLogger(__name__)
 
 
 async def run_once() -> int:
-    await drain_invitation_deliveries()
-    return 0
+    # A timer invocation is a complete process boundary.  Close the shared
+    # pool even on the failure path so repeated invocations cannot retain
+    # sockets until systemd reaps the process.
+    from db.connection import close_pool
+
+    try:
+        await drain_invitation_deliveries()
+        return 0
+    finally:
+        await close_pool()
 
 
 def main() -> int:

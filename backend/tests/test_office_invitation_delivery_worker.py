@@ -88,3 +88,22 @@ def test_worker_cli_returns_nonzero_without_serializing_exception(monkeypatch, c
     assert invitation_delivery_worker.main() == 1
     assert "recipient@example.test" not in caplog.text
     assert "token-value" not in caplog.text
+
+
+def test_oneshot_closes_the_database_pool_after_a_delivery_failure(monkeypatch):
+    from virtual_office import invitation_delivery_worker
+    import db.connection
+
+    closed = []
+
+    async def broken():
+        raise RuntimeError("delivery failure")
+
+    async def close_pool():
+        closed.append(True)
+
+    monkeypatch.setattr(invitation_delivery_worker, "drain_invitation_deliveries", broken)
+    monkeypatch.setattr(db.connection, "close_pool", close_pool)
+    with pytest.raises(RuntimeError, match="delivery failure"):
+        asyncio.run(invitation_delivery_worker.run_once())
+    assert closed == [True]

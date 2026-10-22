@@ -21,7 +21,11 @@ def test_isolated_launcher_imports_from_a_trusted_sibling_backend():
 def test_systemd_unit_uses_the_real_host_venv_and_release_tree():
     unit = (ROOT / "ops" / "virtualoffice" / "invitation-worker.service").read_text(encoding="utf-8")
     assert "WorkingDirectory=/srv/jax-prod/jax-platform/backend" in unit
-    assert "ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh" in unit
+    assert "ExecStartPre=+/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh" in unit
     assert "ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py" in unit
     assert "/srv/jax-prod/current" not in unit
     assert "/srv/jax-prod/venv" not in unit
+    assert "PrivateDevices=true" in unit
+    assert "CapabilityBoundingSet=\n" in unit
+    assert "LimitCORE=0" in unit
+    assert "TimeoutStartSec=3h" in unit

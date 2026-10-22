@@ -11,10 +11,13 @@ User=jaxinvite
 Group=jaxinvite
 EnvironmentFile=/etc/jax/invitation-worker.env
 WorkingDirectory=/srv/jax-prod/jax-platform/backend
-ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
+# EnvironmentFile is root-only.  The preflight merely validates inherited
+# settings and its ownership before the unprivileged process starts.
+ExecStartPre=+/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
 ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
@@ -23,9 +26,13 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+LimitCORE=0
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0077
-TimeoutStartSec=90
+# Maximum configured batch is 1,000 and SMTP's verified per-attempt timeout is
+# 10 seconds; leave margin for bounded DB settlement and finalization.
+TimeoutStartSec=3h
 KillMode=control-group
 

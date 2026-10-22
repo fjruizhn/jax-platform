@@ -8,10 +8,10 @@ Antes de habilitar el timer, el operador ejecuta la migración de Office, instal
 archivos de `ops/virtualoffice/`, y ejecuta como root:
 
 ```bash
-ops/virtualoffice/provision-invitation-worker.sh /etc/jax/runtime.env
+ops/virtualoffice/provision-invitation-worker.sh --env /etc/jax/runtime.env
 systemctl daemon-reload
 systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py --check-import
-systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es -c "import sys;sys.path.insert(0,'/srv/jax-prod/jax-platform/backend');from virtual_office.invitation_smtp_preflight import main;raise SystemExit(main())"
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py --smtp-preflight
 systemctl enable --now axioma-office-invitation-worker.timer
 ```
 
@@ -29,7 +29,7 @@ worker falla antes de reclamar una fila si falta configuración de invitación o
 Salud y recuperación:
 
 ```bash
-sudo -u jaxinvite /srv/jax-prod/venv/bin/python -I -m virtual_office.invitation_worker_health
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py --health
 systemctl status axioma-office-invitation-worker.timer axioma-office-invitation-worker.service
 ```
 
