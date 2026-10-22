@@ -304,8 +304,8 @@ app.add_middleware(limite_de_subidas.LimiteDeSubidas)
 app.add_middleware(OfficeSurfaceBarrierMiddleware)
 
 
-class _MfaNoStoreMiddleware:
-    """MFA capabilities and validation failures must never be cacheable.
+class _OfficeNoStoreMiddleware:
+    """Office and MFA capabilities and failures must never be cacheable.
 
     This outer boundary covers dependency, barrier, validation and route
     errors alike.  Individual handlers also declare no-store where a caller
@@ -315,7 +315,10 @@ class _MfaNoStoreMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not scope["path"].startswith("/api/auth/"):
+        if (scope["type"] != "http" or not (
+            scope["path"].startswith("/api/auth/")
+            or scope["path"].startswith("/api/virtual-office/")
+        )):
             await self.app(scope, receive, send)
             return
 
@@ -333,7 +336,7 @@ class _MfaNoStoreMiddleware:
 # Added after the Office barrier: the last registered middleware is outermost,
 # so even barrier/dependency/validation denials cannot leak a cacheable MFA
 # bearer response.
-app.add_middleware(_MfaNoStoreMiddleware)
+app.add_middleware(_OfficeNoStoreMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

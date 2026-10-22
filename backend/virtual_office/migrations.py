@@ -85,6 +85,29 @@ _MFA_TRIGGER_METADATA = {
     "no_delete_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
 }
 
+_BOOTSTRAP_FOREIGN_KEYS = {
+    "fk_office_bootstrap_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_bootstrap_actor": (("identity_actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_bootstrap_proof": (("identity_proof_event_id",), "office_mfa_security_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_bootstrap_credential_audit": (("credential_audit_id",), "user_admin_audit", ("id",), "RESTRICT", "RESTRICT"),
+}
+
+_BOOTSTRAP_TRIGGER_METADATA = {
+    "no_update_office_bootstrap_state": (
+        "office_bootstrap_state", "BEFORE", "UPDATE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
+    ),
+    "no_delete_office_bootstrap_state": (
+        "office_bootstrap_state", "BEFORE", "DELETE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
+    ),
+}
+
+_BOOTSTRAP_CHECKS = {
+    "chk_office_bootstrap_identity": "`target_user_id` = `identity_actor_user_id`",
+    "chk_office_bootstrap_basis": "`basis_ref` <> ''",
+}
+
 _MFA_UNIQUE_INDEXES = {
     ("office_mfa_challenge", "PRIMARY"): ("token_hash",),
     ("office_mfa_challenge", "challenge_id"): ("challenge_id",),
@@ -350,7 +373,7 @@ async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body
         raise RuntimeError("Office MFA triggers are missing or invalid")
 
 
-async def assert_bootstrap_runtime_metadata(cur) -> None:
+async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
     """Attest bootstrap's signed/unsigned foreign keys and append-only guard."""
     await cur.execute(
         "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
@@ -365,23 +388,60 @@ async def assert_bootstrap_runtime_metadata(cur) -> None:
     ):
         raise RuntimeError("Office bootstrap state column metadata is invalid")
     await cur.execute(
-        "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() "
-        "AND TABLE_NAME='office_bootstrap_state' AND CONSTRAINT_TYPE='FOREIGN KEY' ORDER BY CONSTRAINT_NAME"
+        "SELECT COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_bootstrap_state' "
+        "AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX"
     )
-    if tuple(row[0] for row in await cur.fetchall()) != (
-        "fk_office_bootstrap_actor", "fk_office_bootstrap_credential_audit",
-        "fk_office_bootstrap_proof", "fk_office_bootstrap_target",
-    ):
-        raise RuntimeError("Office bootstrap state foreign keys are invalid")
+    if tuple(await cur.fetchall()) != (("ceremony_key", 0),):
+        raise RuntimeError("Office bootstrap state primary key is invalid")
+    await cur.execute("SELECT DATABASE()")
+    schema_row = await cur.fetchone()
+    schema = None if schema_row is None else str(schema_row[0])
+    if not schema:
+        raise RuntimeError("Office bootstrap state schema is unavailable")
+    for name, expected in _BOOTSTRAP_FOREIGN_KEYS.items():
+        await cur.execute(
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
+            "r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k "
+            "JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA "
+            "AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME "
+            "WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME='office_bootstrap_state' "
+            "AND k.CONSTRAINT_NAME=%s ORDER BY k.ORDINAL_POSITION",
+            (name,),
+        )
+        rows = await cur.fetchall()
+        if not rows or rows[0][1] != schema or (
+            tuple(row[0] for row in rows), rows[0][2], tuple(row[3] for row in rows),
+            rows[0][4], rows[0][5],
+        ) != expected:
+            raise RuntimeError("Office bootstrap state foreign keys are invalid")
     await cur.execute(
-        "SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION FROM information_schema.TRIGGERS "
+        "SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN "
+        "('chk_office_bootstrap_identity','chk_office_bootstrap_basis')"
+    )
+    checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
+    if checks != {name: _normalize_mariadb_check(clause) for name, clause in _BOOTSTRAP_CHECKS.items()}:
+        raise RuntimeError("Office bootstrap state checks are invalid")
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS "
         "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
         "('no_update_office_bootstrap_state','no_delete_office_bootstrap_state')"
     )
-    if {(row[0], row[1], row[2]) for row in await cur.fetchall()} != {
-        ("no_update_office_bootstrap_state", "BEFORE", "UPDATE"),
-        ("no_delete_office_bootstrap_state", "BEFORE", "DELETE"),
-    }:
+    found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    if allow_redacted_trigger_body:
+        found = {
+            name: (*metadata[:-1], None if metadata[-1] is None else metadata[-1])
+            for name, metadata in found.items()
+        }
+        expected = {
+            name: (*metadata[:-1], None if found.get(name, (None,))[-1] is None else metadata[-1])
+            for name, metadata in _BOOTSTRAP_TRIGGER_METADATA.items()
+        }
+    else:
+        expected = _BOOTSTRAP_TRIGGER_METADATA
+    if found != expected:
         raise RuntimeError("Office bootstrap state triggers are invalid")
 
 

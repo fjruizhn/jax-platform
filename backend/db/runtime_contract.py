@@ -69,7 +69,10 @@ async def _mfa_trigger_metadata(cur):
 
 async def _bootstrap_metadata(cur):
     try:
-        await assert_bootstrap_runtime_metadata(cur)
+        # The web DML principal can legitimately receive a redacted trigger
+        # body.  Table/FK/CHECK/PK metadata and trigger identity remain
+        # enforceable here; the migration principal attests the full body.
+        await assert_bootstrap_runtime_metadata(cur, allow_redacted_trigger_body=True)
     except RuntimeError as error:
         raise RuntimeDbContractError("Office bootstrap state metadata is invalid") from error
 

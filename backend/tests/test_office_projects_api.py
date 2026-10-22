@@ -67,32 +67,91 @@ def _configure_mfa(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
-def test_office_projects_list_enforces_namespace_profile_and_external_publication(client):
+def test_office_projects_list_enforces_namespace_profile_and_external_publication(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, root_tv, root_mv, root_proof = client.portal.call(_office_root_with_current_proof)
     async def scenario():
-        root, _ = await crear_usuario()
         member, _ = await crear_usuario()
         external, _ = await crear_usuario()
         await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (external,))
-        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'COLLABORATOR','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (root, member, external))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (member, external))
         office = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", ("office-api-" + uuid.uuid4().hex,))
         classic = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", ("classic-api-" + uuid.uuid4().hex,))
         await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6)),(%s,1,'CLASSIC','ACTIVE',NOW(6),'test',NOW(6))", (office, classic))
+        await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), office, member))
         await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s),(%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (office, member, root, office, external, root))
         group = await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (office, root))
         await sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (office, external, group))
-        return root, member, external, office, classic
-    root, member, external, office, classic = client.portal.call(scenario)
-    root_ids = [row["id"] for row in client.get("/api/virtual-office/projects", headers=_headers(root)).json()["projects"]]
+        return member, external, office, classic
+    member, external, office, classic = client.portal.call(scenario)
+    page = f"/api/virtual-office/projects?after_id={office - 1}"
+    root_ids = [row["id"] for row in client.get(
+        page,
+        headers=_proof_headers(root, root_tv, root_mv, root_proof, str(uuid.uuid4())),
+    ).json()["projects"]]
     assert office in root_ids
     assert classic not in root_ids
-    assert [row["id"] for row in client.get("/api/virtual-office/projects", headers=_headers(member)).json()["projects"]] == [office]
-    external_projects = client.get("/api/virtual-office/projects", headers=_headers(external)).json()["projects"]
+    assert [row["id"] for row in client.get(page, headers=_headers(member)).json()["projects"]] == [office]
+    # The list route delegates the same internal predicates as a project
+    # read: client publication and revoked membership never become an
+    # internal shortcut.
+    client.portal.call(sql, "UPDATE office_project_grant SET audience='CLIENT_PUBLISHED' WHERE project_id=%s AND user_id=%s", (office, member))
+    assert client.get(page, headers=_headers(member)).json()["projects"] == []
+    client.portal.call(sql, "UPDATE office_project_grant SET audience='INTERNAL' WHERE project_id=%s AND user_id=%s", (office, member))
+    client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (office, member))
+    assert client.get(page, headers=_headers(member)).json()["projects"] == []
+    client.portal.call(sql, "UPDATE jax_project_membership SET status='ACTIVE' WHERE project_id=%s AND user_id=%s", (office, member))
+    # Root is global only after the current verified MFA proof is reread.
+    assert client.get(page, headers=_headers(root)).json()["projects"] == []
+    external_projects = client.get(page, headers=_headers(external)).json()["projects"]
     assert [row["id"] for row in external_projects] == [office]
     assert external_projects[0]["description"] is None
     no_profile, _ = client.portal.call(crear_usuario)
-    assert client.get("/api/virtual-office/projects", headers=_headers(no_profile)).status_code == 403
+    denied = client.get(page, headers=_headers(no_profile))
+    assert denied.status_code == 403
+    assert denied.headers["Cache-Control"] == "no-store"
     client.portal.call(sql, "UPDATE office_external_relation SET status='REVOKED' WHERE user_id=%s", (external,))
-    assert client.get("/api/virtual-office/projects", headers=_headers(external)).json()["projects"] == []
+    assert client.get(page, headers=_headers(external)).json()["projects"] == []
+
+
+def test_virtual_office_route_sets_no_store_for_success_and_validation_errors(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    success = client.get("/api/virtual-office/projects", headers=_proof_headers(root, tv, mv, proof, str(uuid.uuid4())))
+    assert success.status_code == 200
+    assert success.headers["Cache-Control"] == "no-store"
+    validation = client.get("/api/virtual-office/projects?limit=101", headers=_headers(root))
+    assert validation.status_code == 422
+    assert validation.headers["Cache-Control"] == "no-store"
+
+
+def test_project_list_cursor_advances_over_a_bounded_stable_scope_scan(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        ids = []
+        for suffix in ("one", "two"):
+            project_id = await sql(
+                "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                ("office-cursor-" + suffix + "-" + uuid.uuid4().hex,),
+            )
+            await sql(
+                "INSERT INTO jax_project_scope "
+                "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+                "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))",
+                (project_id,),
+            )
+            ids.append(project_id)
+        return ids
+
+    first_id, second_id = client.portal.call(scenario)
+    headers = _proof_headers(root, tv, mv, proof, str(uuid.uuid4()))
+    first = client.get(f"/api/virtual-office/projects?after_id={first_id - 1}&limit=1", headers=headers).json()
+    assert first["projects"] == [{"id": first_id, "name": first["projects"][0]["name"], "description": None, "tenant_id": 1}]
+    assert first["next_after_id"] == first_id
+    second = client.get(f"/api/virtual-office/projects?after_id={first['next_after_id']}&limit=1", headers=headers).json()
+    assert second["projects"][0]["id"] == second_id
 
 
 def test_create_project_jax_first_then_exact_replay_and_one_client_group(client, monkeypatch):

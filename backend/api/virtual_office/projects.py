@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
@@ -107,30 +107,86 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
         raise _PhaseBRetryable("office project initialization failed") from error
 
 
-async def _profile(user: AuthUser):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT p.global_role,p.status,u.account_class FROM office_account_profile p JOIN jax_users u ON u.user_id=p.user_id WHERE p.user_id=%s", (int(user.user_id),))
-            return await cur.fetchone()
+async def _active_profile_in_cursor(cur, actor_user_id: int) -> bool:
+    """Establish that this is an active Office identity in the same read.
+
+    Project visibility itself is always decided by the canonical resolver
+    below.  This small precondition distinguishes an unprovisioned/revoked
+    Office identity (403) from a valid identity with no visible projects ([]).
+    """
+    await cur.execute(
+        "SELECT u.status,t.status,p.status FROM jax_users u "
+        "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+        "JOIN office_account_profile p ON p.user_id=u.user_id "
+        "WHERE u.user_id=%s",
+        (actor_user_id,),
+    )
+    row = await cur.fetchone()
+    return row is not None and tuple(row) == ("active", "active", "ACTIVE")
 
 
 @router.get("")
-async def list_projects(user: AuthUser = Depends(get_current_user)):
-    profile = await _profile(user)
-    if profile is None or profile[1] != "ACTIVE":
-        raise HTTPException(status_code=403, detail="office_access_denied")
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            if profile[2] == "EXTERNAL_CLIENT":
-                await cur.execute("SELECT DISTINCT p.id,p.name,NULL,s.tenant_id FROM projects p JOIN jax_project_scope s ON s.project_id=p.id JOIN office_project_grant g ON g.project_id=p.id JOIN office_external_relation r ON r.project_id=g.project_id AND r.user_id=g.user_id JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=r.project_id WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' AND g.user_id=%s AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' AND r.status='ACTIVE' AND rg.status='ACTIVE' ORDER BY p.id", (int(user.user_id),))
-            elif profile[0] == "OFFICE_SUPERUSER":
-                await cur.execute("SELECT p.id,p.name,p.description,s.tenant_id FROM projects p JOIN jax_project_scope s ON s.project_id=p.id WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' ORDER BY p.id")
-            else:
-                await cur.execute("SELECT p.id,p.name,p.description,s.tenant_id FROM projects p JOIN jax_project_scope s ON s.project_id=p.id JOIN office_project_grant g ON g.project_id=p.id WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' AND g.user_id=%s AND g.status='ACTIVE' ORDER BY p.id", (int(user.user_id),))
-            rows = await cur.fetchall()
-    return {"projects": [{"id": int(row[0]), "name": row[1], "description": row[2], "tenant_id": int(row[3])} for row in rows]}
+async def list_projects(
+    limit: int = Query(default=50, ge=1, le=100),
+    after_id: int | None = Query(default=None, gt=0),
+    user: AuthUser = Depends(get_current_user),
+):
+    """List only scopes approved by the same Office resolver used elsewhere.
+
+    Candidate discovery deliberately knows only the Office namespace.  Every
+    candidate is then resolved in one READ COMMITTED transaction with the
+    actor/profile, current tenant, membership/grant or external relation, and
+    MFA proof reread from the database.  This prevents list-only shortcuts
+    from becoming a confidential-project access path.
+    """
+    try:
+        actor_user_id = int(user.user_id)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=403, detail="office_access_denied") from error
+    config = load_mfa_config_from_environment()
+    proof_event_id = user.mfa_proof_event_id
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _active_profile_in_cursor(cur, actor_user_id):
+            raise HTTPException(status_code=403, detail="office_access_denied")
+        predicate = " AND p.id>%s" if after_id is not None else ""
+        params: tuple[object, ...] = (() if after_id is None else (after_id,)) + (limit + 1,)
+        await cur.execute(
+            "SELECT p.id,p.name,p.description,s.tenant_id FROM projects p "
+            "JOIN jax_project_scope s ON s.project_id=p.id "
+            "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE'"
+            + predicate + " ORDER BY p.id LIMIT %s",
+            params,
+        )
+        candidates = await cur.fetchall()
+        project_ids = [int(row[0]) for row in candidates]
+        external_groups: dict[int, int] = {}
+        if project_ids:
+            placeholders = ",".join("%s" for _ in project_ids)
+            await cur.execute(
+                "SELECT project_id,recipient_group_id FROM office_external_relation "
+                "WHERE user_id=%s AND project_id IN (" + placeholders + ")",
+                (actor_user_id, *project_ids),
+            )
+            external_groups = {int(project_id): int(group_id) for project_id, group_id in await cur.fetchall()}
+        visible = []
+        for project_id, name, description, tenant_id in candidates:
+            project_id = int(project_id)
+            decision = await authorize_office_in_cursor(
+                cur, actor_user_id, OfficeOperation.VIEW_PROJECT, project_id,
+                recipient_group_id=external_groups.get(project_id),
+                mfa_proof_event_id=proof_event_id, mfa_config=config,
+            )
+            if decision.allowed:
+                visible.append({
+                    "id": project_id, "name": name,
+                    "description": None if decision.audience == "CLIENT_PUBLISHED" else description,
+                    "tenant_id": int(tenant_id),
+                })
+        # The cursor advances over scanned candidates, not visible rows: a
+        # caller with no grants must still be able to progress past a dense
+        # range of scopes that it cannot see.
+        next_after_id = int(candidates[limit - 1][0]) if len(candidates) > limit else None
+    return {"projects": visible[:limit], "next_after_id": next_after_id}
 
 
 @router.post("")
@@ -139,9 +195,6 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
     config = load_mfa_config_from_environment()
     if config is None or user.mfa_proof_event_id is None:
         raise HTTPException(status_code=403, detail="office_mfa_required")
-    profile = await _profile(user)
-    if profile is None or profile[0] != "OFFICE_SUPERUSER" or profile[1] != "ACTIVE" or profile[2] not in {"INTERNAL", "OFFICE_INTERNAL"}:
-        raise HTTPException(status_code=403, detail="office_access_denied")
     from jax.memory.b9_mariadb import MariaDBB9Store
     from jax.memory.project_authority import (
         AuthorizationDenied,

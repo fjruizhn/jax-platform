@@ -68,19 +68,24 @@ async def credential_self_control_in_cursor(cur, *, user_id: int) -> int | None:
     canonical writers that append those events in the same user transaction.
     """
     await cur.execute(
-        "SELECT id,action,ts FROM user_admin_audit WHERE target_user_id=%s "
+        "SELECT id,actor_user_id,action,ts FROM user_admin_audit WHERE target_user_id=%s "
         "AND action IN ('create','update_email','password_set_by_admin',"
         "'password_reset_completed','password_changed_self') ORDER BY ts ASC,id ASC",
         (user_id,),
     )
     latest_admin: tuple[object, object] | None = None
     latest_self_id: int | None = None
-    for audit_id, action, timestamp in await cur.fetchall():
+    for audit_id, audit_actor_user_id, action, timestamp in await cur.fetchall():
         if action in {"create", "update_email", "password_set_by_admin"}:
             latest_admin = (timestamp, audit_id)
             latest_self_id = None
         elif action in {"password_reset_completed", "password_changed_self"}:
-            if latest_admin is not None:
+            # A reset-completion record means self control only when its
+            # immutable audit actor is the credential subject.  A forged or
+            # administrator-originated completion must never satisfy the
+            # bootstrap ceremony; any later admin credential control resets
+            # the chain again.
+            if latest_admin is not None and audit_actor_user_id == user_id:
                 latest_self_id = int(audit_id)
     return latest_self_id
 

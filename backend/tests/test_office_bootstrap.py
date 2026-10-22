@@ -9,6 +9,7 @@ from auth.models import AuthUser
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from virtual_office.bootstrap import bootstrap_initial_office_root
+from virtual_office.bootstrap import credential_self_control_in_cursor
 from virtual_office.mfa import (
     MFAConfig, confirm_enrollment_in_cursor, issue_login_challenge_after_password_in_cursor,
     start_first_enrollment_after_password_in_cursor, verify_and_consume_totp_in_cursor,
@@ -16,6 +17,35 @@ from virtual_office.mfa import (
 from virtual_office.migrations import apply_office_migrations
 
 CONFIG = MFAConfig(120, 3, 300, 300, 3)
+
+
+def test_bootstrap_credential_chain_requires_a_self_actor_and_resets_after_admin_control(client):
+    async def scenario():
+        subject, _ = await crear_usuario()
+        administrator, _ = await crear_usuario()
+        await sql(
+            "INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES "
+            "(UTC_TIMESTAMP(6),%s,%s,'create'),(UTC_TIMESTAMP(6),%s,%s,'password_reset_completed')",
+            (administrator, subject, administrator, subject),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await credential_self_control_in_cursor(cur, user_id=subject) is None
+        await sql(
+            "INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES "
+            "(UTC_TIMESTAMP(6),%s,%s,'password_changed_self')",
+            (subject, subject),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            self_audit_id = await credential_self_control_in_cursor(cur, user_id=subject)
+            assert self_audit_id is not None
+        await sql(
+            "INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES "
+            "(UTC_TIMESTAMP(6),%s,%s,'password_set_by_admin')",
+            (administrator, subject),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await credential_self_control_in_cursor(cur, user_id=subject) is None
+    client.portal.call(scenario)
 
 
 async def _login_proof(user_id: int, secret: str, correlation: bytes, offset: int):

@@ -19,6 +19,35 @@ from virtual_office.migrations import (
 )
 
 
+def test_bootstrap_attestation_rejects_homonymous_noop_trigger_and_missing_check(client):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
+                await cur.execute(
+                    "CREATE TRIGGER no_update_office_bootstrap_state BEFORE UPDATE "
+                    "ON office_bootstrap_state FOR EACH ROW SET NEW.basis_ref=NEW.basis_ref"
+                )
+                with pytest.raises(RuntimeError, match="bootstrap state triggers are invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
+                await cur.execute(
+                    "CREATE TRIGGER no_update_office_bootstrap_state BEFORE UPDATE "
+                    "ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' "
+                    "SET MESSAGE_TEXT = 'office_bootstrap_state append-only'"
+                )
+                await cur.execute("ALTER TABLE office_bootstrap_state DROP CONSTRAINT chk_office_bootstrap_basis")
+                with pytest.raises(RuntimeError, match="bootstrap state checks are invalid"):
+                    await apply_office_migrations(cur)
+                await cur.execute("ALTER TABLE office_bootstrap_state ADD CONSTRAINT chk_office_bootstrap_basis CHECK (basis_ref <> '')")
+                await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
 def test_audit_check_comparison_preserves_binary_literal_case():
     assert _is_canonical_audit_shape(_CANONICAL_AUDIT_SHAPE)
     assert not _is_canonical_audit_shape(_CANONICAL_AUDIT_SHAPE.replace("office-audit-fence-v1", "OFFICE-AUDIT-FENCE-V1"))
