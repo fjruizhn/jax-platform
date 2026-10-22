@@ -21,9 +21,10 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v13 adds the inert critic trust-anchor schema; its digest still binds the
-# unchanged per-table web write contract and forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v13-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v15 binds candidate origin scope after the separately attested critic v14
+# upgrade; its digest still binds the unchanged per-table web write contract
+# and forces a migrator restamp.
+RUNTIME_REVISION = f"office-runtime-v15-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 
 # Global module governance is deliberately distinct from client artefacts.

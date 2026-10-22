@@ -23,6 +23,14 @@ def _ddl(table: str) -> str:
     return next(statement for statement in candidate.MODULE_CANDIDATE_DDL if f"CREATE TABLE IF NOT EXISTS {table} " in statement)
 
 
+async def _create_project_scope(cur) -> None:
+    await cur.execute(
+        "CREATE TABLE jax_project_scope (project_id INT NOT NULL,tenant_id INT NOT NULL,"
+        "PRIMARY KEY(project_id,tenant_id)) ENGINE=InnoDB"
+    )
+    await cur.execute("INSERT INTO jax_project_scope VALUES (11,12)")
+
+
 def test_candidate_storage_has_no_release_authority_surface() -> None:
     source = "\n".join(candidate.MODULE_CANDIDATE_DDL)
     for forbidden in ("PUBLISHED", "APPROVED", "PASS", "effective_", "authorization_event", "mfa_proof", "rights_verdict", "creative_approval"):
@@ -35,6 +43,8 @@ def test_candidate_identity_manifest_claim_and_generic_evidence_are_bound() -> N
     revision = _ddl("office_module_candidate_revision")
     evidence = _ddl("office_module_candidate_evidence")
     assert "UNIQUE KEY uq_office_module_candidate_identity (module_id,module_version)" in identity
+    assert "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL" in identity
+    assert "FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id)" in identity
     assert "manifest_sha256=UNHEX(SHA2(manifest_bytes,256))" in revision
     assert "claimed_artifact_set_digest BINARY(32)" in revision
     assert "claimed_signing_key_id" in revision
@@ -73,9 +83,10 @@ def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
-                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version) VALUES ('studio','1.0.0')")
+                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('studio','1.0.0',11,12)")
                 candidate_id = cur.lastrowid
                 manifest = b'{"untrusted":true}'
                 artifact = bytes.fromhex("11" * 32)
@@ -123,6 +134,44 @@ def test_mariadb_legacy_tables_are_preserved_and_rejected_empty_or_nonempty(clie
     client.portal.call(scenario)
 
 
+def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(client) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_candidate_predecessor_{uuid.uuid4().hex[:16]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
+                for statement in candidate.MODULE_CANDIDATE_DDL:
+                    predecessor = statement.replace(
+                        "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,", ""
+                    ).replace(
+                        "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),", ""
+                    ).replace(
+                        "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),", ""
+                    )
+                    await cur.execute(predecessor)
+                for table in candidate._APPEND_ONLY:
+                    for operation in ("UPDATE", "DELETE"):
+                        await cur.execute(
+                            f"CREATE TRIGGER no_{operation.lower()}_{table} BEFORE {operation} ON {table} "
+                            f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
+                        )
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("SHOW COLUMNS FROM office_module_candidate LIKE 'origin_project_id'")
+                assert (await cur.fetchone())[1:3] == ("int(11)", "NO")
+                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('predecessor','1',11,12)")
+                with pytest.raises(IntegrityError):
+                    await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('wrong-scope','1',99,12)")
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
+
+
 def test_mariadb_metadata_rejects_noop_append_only_trigger(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
@@ -132,6 +181,7 @@ def test_mariadb_metadata_rejects_noop_append_only_trigger(client) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("DROP TRIGGER no_update_office_module_candidate")
                 await cur.execute("CREATE TRIGGER no_update_office_module_candidate BEFORE UPDATE ON office_module_candidate FOR EACH ROW SET NEW.module_id=NEW.module_id")
@@ -153,6 +203,7 @@ def test_mariadb_metadata_rejects_weakened_hash_check(client) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("ALTER TABLE office_module_candidate_revision DROP CONSTRAINT chk_office_module_candidate_revision_payload")
                 await cur.execute("ALTER TABLE office_module_candidate_revision ADD CONSTRAINT chk_office_module_candidate_revision_payload CHECK (revision_no>=0)")
@@ -174,6 +225,7 @@ def test_mariadb_metadata_rejects_check_clause_on_decoy_table(client) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("ALTER TABLE office_module_candidate DROP CONSTRAINT chk_office_module_candidate_identity")
                 await cur.execute("CREATE TABLE office_module_candidate_decoy (value INT NOT NULL, CONSTRAINT chk_office_module_candidate_identity CHECK (value>0)) ENGINE=InnoDB")
@@ -195,8 +247,9 @@ def test_mariadb_mediumblob_boundary_matches_declared_cap(client) -> None:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
-                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version) VALUES ('bounded','1')")
+                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('bounded','1',11,12)")
                 candidate_id = cur.lastrowid
                 digest = bytes.fromhex("22" * 32)
                 await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,1,UNHEX(SHA2(REPEAT('x',16777215),256)),REPEAT('x',16777215),%s,'untrusted-key')", (candidate_id, digest))

@@ -13,6 +13,14 @@ from virtual_office import migrations
 from virtual_office import module_release_ledger as candidate
 
 
+async def _create_project_scope(cur) -> None:
+    await cur.execute(
+        "CREATE TABLE jax_project_scope (project_id INT NOT NULL,tenant_id INT NOT NULL,"
+        "PRIMARY KEY(project_id,tenant_id)) ENGINE=InnoDB"
+    )
+    await cur.execute("INSERT INTO jax_project_scope VALUES (11,12)")
+
+
 def test_staging_has_three_distinct_authorities_and_no_effective_release() -> None:
     source = "\n".join(migrations.OFFICE_MODULE_PUBLICATION_STAGING_DDL)
     assert "human_user_id" in source
@@ -48,10 +56,11 @@ def test_mariadb_staging_is_bound_append_only_and_pending_contract(client) -> No
                 await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
                 await cur.execute("INSERT INTO jax_users VALUES (7)")
                 await cur.execute("INSERT INTO office_mfa_security_event VALUES (9)")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await migrations.apply_module_publication_staging_migrations(cur)
                 await migrations.apply_module_publication_staging_migrations(cur)
-                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version) VALUES ('studio','1')")
+                await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('studio','1',11,12)")
                 candidate_id = cur.lastrowid
                 manifest, digest = b'{}', bytes.fromhex('11' * 32)
                 await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,1,UNHEX(SHA2(%s,256)),%s,%s,'pending-key')", (candidate_id, manifest, manifest, digest))
@@ -97,6 +106,7 @@ def test_mariadb_attestation_rejects_moved_check_and_lost_auto_increment(client)
                 await cur.execute(f"USE `{schema}`")
                 await cur.execute("CREATE TABLE jax_users (user_id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
                 await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await migrations.apply_module_publication_staging_migrations(cur)
                 await cur.execute("ALTER TABLE office_module_creative_review_event DROP CONSTRAINT chk_office_module_creative_review_decision")
@@ -130,6 +140,7 @@ def test_mariadb_rejects_malformed_existing_release_head_before_candidate_replay
                 await cur.execute("DROP TABLE office_module_release")
                 await cur.execute("CREATE TABLE jax_users (user_id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
                 await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("CREATE TABLE office_module_release (candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,release_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,status VARCHAR(24) NOT NULL) ENGINE=InnoDB")
                 with pytest.raises(RuntimeError, match="columns|indexes|foreign keys|checks"):
@@ -156,6 +167,7 @@ def test_mariadb_rejects_malformed_existing_release_head_before_candidate_replay
                 await cur.execute("DROP TABLE office_module_release")
                 await cur.execute("CREATE TABLE jax_users (user_id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
                 await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await _create_project_scope(cur)
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("CREATE TABLE office_module_release (candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,release_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,status VARCHAR(24) NOT NULL) ENGINE=InnoDB")
                 with pytest.raises(RuntimeError, match="columns|indexes|foreign keys|checks"):
