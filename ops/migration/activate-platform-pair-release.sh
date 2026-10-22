@@ -4,6 +4,7 @@
 set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ROOT=/opt/jax-platform-pair RELEASE= EXPECTED= PREVIOUS= SELECTION=/etc/jax/platform-pair-selection.json SYSTEMCTL=/usr/bin/systemctl HELPER=/usr/local/libexec/pair_artifact_readiness.py HEALTH=/usr/bin/curl
+LOCK_WAIT=30
 while [[ $# -gt 0 ]]; do
  case "$1" in
   --release) RELEASE=${2:?}; shift;; --expected-manifest-sha256) EXPECTED=${2:?}; shift;; --previous-manifest-sha256) PREVIOUS=${2:?}; shift;; --root) ROOT=${2:?}; shift;;
@@ -14,6 +15,8 @@ if [[ $ROOT != /opt/jax-platform-pair ]]; then
   SELECTION="$ROOT/platform-pair-selection.json"; HELPER="$ROOT/libexec/pair_artifact_readiness.py"
   [[ -n ${JAX_PAIR_SYSTEMCTL_BIN:-} && -x ${JAX_PAIR_SYSTEMCTL_BIN} && -n ${JAX_PAIR_HEALTH_BIN:-} && -x ${JAX_PAIR_HEALTH_BIN} ]] || { echo 'test tools rejected' >&2; exit 2; }
   SYSTEMCTL=$JAX_PAIR_SYSTEMCTL_BIN; HEALTH=$JAX_PAIR_HEALTH_BIN
+  [[ -z ${JAX_PAIR_TEST_LOCK_SECONDS:-} || ${JAX_PAIR_TEST_LOCK_SECONDS} =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo 'test lock timeout rejected' >&2; exit 2; }
+  [[ -z ${JAX_PAIR_TEST_LOCK_SECONDS:-} ]] || LOCK_WAIT=$JAX_PAIR_TEST_LOCK_SECONDS
 fi
 [[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ && $PREVIOUS =~ ^[0-9a-f]{64}$ ]] || { echo 'external target and predecessor manifest digests required' >&2; exit 2; }
 JOURNAL="$ROOT/activation-journal.json"
@@ -47,8 +50,15 @@ if action == 'recover':
     if data.get('schema')!='axioma.pair-activation/v1': raise SystemExit('invalid activation journal')
     if data.get('state') == 'DDL_STARTED': raise SystemExit('RECOVERY_REQUIRED: migration may have modified the database')
     if data.get('state') != 'PRE_DDL': raise SystemExit('invalid activation journal state')
-    atomic(selection,base64.b64decode(data['previous_selection_b64']))
-    link('current',data['previous_current'])
+    previous_selection=base64.b64decode(data['previous_selection_b64'])
+    atomic(selection,previous_selection)
+    # Selection is the authoritative runtime input. Derive current from those
+    # restored bytes instead of replaying a potentially stale relative link.
+    prior=json.loads(previous_selection)
+    release=Path(prior['release']).resolve(strict=True)
+    releases=(root/'releases').resolve(strict=True)
+    if release.parent != releases: raise SystemExit('invalid prior selection in activation journal')
+    link('current','releases/'+release.name)
     journal.unlink(); d=os.open(root,os.O_RDONLY|os.O_DIRECTORY); os.fsync(d); os.close(d)
 elif action == 'prepare':
     previous = selection.read_bytes()
@@ -70,7 +80,7 @@ else: raise SystemExit(2)
 PY
 }
 
-exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -w 30 9 || { echo 'activation lock timeout' >&2; exit 1; }
+exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -w "$LOCK_WAIT" 9 || { echo 'activation lock timeout' >&2; exit 1; }
 transaction recover "$ROOT" "$SELECTION" "$JOURNAL"
 [[ ! -e $ROOT/.runtime.lock ]] && /usr/bin/install -o root -g root -m 0644 /dev/null "$ROOT/.runtime.lock"
 [[ ! -L $ROOT/.runtime.lock && $(/usr/bin/stat -c '%U:%G:%a' "$ROOT/.runtime.lock") == root:root:644 ]] || { echo 'unsafe runtime lock' >&2; exit 1; }
@@ -98,7 +108,7 @@ for unit in jax-platform.service jax-platform-migrate.service; do
   pid=$($SYSTEMCTL show --value --property=MainPID "$unit")
   [[ $state == inactive && $pid == 0 ]] || { echo "service did not stop: $unit" >&2; exit 1; }
 done
-exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -w 30 -x 8 || { echo 'runtime lock timeout' >&2; exit 1; }
+exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x -w "$LOCK_WAIT" 8 || { echo 'runtime lock timeout' >&2; exit 1; }
 transaction prepare "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 transaction publish "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 if [[ ${JAX_PAIR_TEST_KILL_AT:-} == after_publish ]]; then kill -KILL $$; fi

@@ -148,21 +148,21 @@ def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() ->
     assert "unset JAX_REPO_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV" in launcher
     assert 'export JAX_REPO_PATH="$release/jax"' in launcher
     assert "/usr/bin/flock -s 9" in launcher
-    assert "/usr/bin/flock -x 8" in activator
+    assert "/usr/bin/flock -x -w" in activator
     assert "--expected-manifest-sha256" in activator
-    assert 'mktemp "$(dirname "$SELECTION")/.platform-pair-selection.' in activator
-    assert "$SYSTEMCTL start jax-platform-migrate.service" in activator
+    assert "os.replace(temp,path)" in activator
+    assert "os.fsync(d)" in activator
     assert "$SYSTEMCTL start jax-platform.service" in activator
-    assert activator.index("$SYSTEMCTL start jax-platform-migrate.service") < activator.index("$SYSTEMCTL start jax-platform.service")
+    assert "Requires=jax-platform-migrate.service" in (root / "ops" / "migration" / "systemd-units" / "jax-platform.service").read_text(encoding="utf-8")
     assert "git -C" not in activator
     assert "git -C" not in installer
-    assert "--platform-source-sha256" in installer
-    assert "source archive digest mismatch" in installer
-    assert "-m venv --copies" in installer
-    assert "--require-hashes --no-deps" in installer
-    assert "current" not in installer.split("name=", 1)[1]
-    assert "refusing existing drop-in" in runtime_installer
-    assert '"$SOURCE/artifact_readiness.py" / /usr/bin/busctl' in runtime_installer
+    assert "is disabled" in installer
+    assert "sealed jaxbuild builder and root adopter handoff" in installer
+    assert "--expected-package-digest" in runtime_installer
+    assert "--bootstrap-sha256" in runtime_installer
+    assert "--effective-validator-sha256" in runtime_installer
+    assert '"/proc/self/fd/$bootstrap_fd" import' in runtime_installer
+    assert "$PACKAGE/artifact_readiness.py" not in runtime_installer
     for unit in ("jax-platform.service", "jax-platform-migrate.service"):
         text = (root / "ops" / "migration" / "systemd-units" / unit).read_text(encoding="utf-8")
         assert "EnvironmentFile=" not in text

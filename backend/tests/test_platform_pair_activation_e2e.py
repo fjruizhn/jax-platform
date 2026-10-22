@@ -138,18 +138,19 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     while not calls.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert calls.exists(), first.communicate(timeout=5)[1]
-    second = subprocess.run(command, text=True, capture_output=True, check=False)
     deadline = time.monotonic() + 5
     while "start jax-platform.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
         time.sleep(0.02)
     assert "start jax-platform.service" in calls.read_text(encoding="utf-8")
+    contended = command[:script_index] + ["JAX_PAIR_TEST_LOCK_SECONDS=0.1"] + command[script_index:]
+    second = subprocess.run(contended, text=True, capture_output=True, check=False)
+    assert second.returncode != 0
+    assert "activation lock timeout" in second.stderr
     while not migration_started.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert migration_started.exists()
     stdout, stderr = first.communicate(timeout=10)
     assert first.returncode == 0, stderr or stdout
-    assert second.returncode != 0
-    assert "predecessor digest mismatch" in second.stderr or "activation lock timeout" in second.stderr
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
