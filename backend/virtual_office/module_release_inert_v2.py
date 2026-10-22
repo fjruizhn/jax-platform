@@ -149,10 +149,10 @@ def validate_release_receipt(value: Any, *, module_package_digest: str, project_
         if not isinstance(value[name], str) or not _HEX.fullmatch(value[name]): raise ReleaseReceiptRejected("release receipt digest is invalid")
     fields = ("module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
     expected = (module_package_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
-    if tuple(value[field] for field in fields) != expected or any(type(value[field]) is not int or value[field] <= 0 for field in fields[1:]): raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
+    if any(type(value[field]) is not int or value[field] <= 0 for field in fields[1:]) or tuple(value[field] for field in fields) != expected: raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
     signer = value["office_release_signer"]
     critic = value["critic_principal"]
-    if not isinstance(critic, str) or not critic.startswith("critic:") or critic == human_principal: raise ReleaseReceiptRejected("release critic is not distinct authority")
+    if not isinstance(critic, str) or not critic.startswith("critic:") or critic == "critic:" or critic == human_principal: raise ReleaseReceiptRejected("release critic is not distinct authority")
     if not isinstance(signer, str) or not signer.startswith("office-release:") or signer == "office-release:" or signer in {human_principal, critic}: raise ReleaseReceiptRejected("release signer is not distinct Office authority")
     return BoundReleaseReceipt(*expected, signer)
 
@@ -164,13 +164,14 @@ async def apply_inert_release_v2_migrations(cur) -> None:
         await _apply_inert_release_v2_locked(cur)
     finally:
         await cur.execute("SELECT RELEASE_LOCK(CONCAT('office-release-v2:',DATABASE()))")
+        if await cur.fetchone() != (1,): raise RuntimeError("inert release v2 migration lock release failed")
 
 async def _apply_inert_release_v2_locked(cur) -> None:
     """Advance only exact, empty table-and-trigger prefixes; never normalize drift."""
     await cur.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s,%s,%s,%s,%s,%s)", TABLES)
     if {row[0] for row in await cur.fetchall()} == set(TABLES):
         await assert_inert_release_v2_metadata(cur)
-        await _assert_release_stamp(cur)
+        await _ensure_release_stamp(cur)
         return
     for index, (table, statement) in enumerate(zip(TABLES, DDL)):
         await _assert_release_prefix(cur, index)
@@ -178,14 +179,25 @@ async def _apply_inert_release_v2_locked(cur) -> None:
         for operation in ("UPDATE", "DELETE"):
             await cur.execute(f"CREATE TRIGGER IF NOT EXISTS no_{operation.lower()}_{table} BEFORE {operation} ON {table} FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
         await _assert_release_prefix(cur, index + 1)
-    await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
-    await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version) VALUES (%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION))
-    await _assert_release_stamp(cur)
+    await _ensure_release_stamp(cur)
     await assert_inert_release_v2_metadata(cur)
 
 async def _assert_release_stamp(cur) -> None:
+    await cur.execute("SELECT ENGINE,TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (STAMP_TABLE,))
+    if await cur.fetchone() != ("InnoDB", "utf8mb4_bin"): raise RuntimeError("inert release v2 stamp metadata is invalid")
+    await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (STAMP_TABLE,))
+    if await cur.fetchall() != (("component","varchar(64)","NO",None,"","ascii","ascii_bin"),("version","varchar(16)","NO",None,"","ascii","ascii_bin"),("created_at","datetime(6)","NO","current_timestamp(6)","",None,None)): raise RuntimeError("inert release v2 stamp columns are invalid")
+    await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,INDEX_TYPE,SUB_PART,COLLATION,IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (STAMP_TABLE,))
+    if await cur.fetchall() != (("PRIMARY",0,"component","BTREE",None,"A","NO"),): raise RuntimeError("inert release v2 stamp index is invalid")
+    await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME=%s AND tc.CONSTRAINT_TYPE='CHECK'", (STAMP_TABLE,))
+    if await cur.fetchall() != (("chk_office_module_release_v2_stamp", f"`component` = '{_STAMP_COMPONENT}' and `version` = '{_STAMP_VERSION}'"),): raise RuntimeError("inert release v2 stamp check is invalid")
     await cur.execute(f"SELECT component,version FROM {STAMP_TABLE}")
     if await cur.fetchall() != ((_STAMP_COMPONENT, _STAMP_VERSION),): raise RuntimeError("inert release v2 stamp is invalid")
+
+async def _ensure_release_stamp(cur) -> None:
+    await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
+    await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version) VALUES (%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION))
+    await _assert_release_stamp(cur)
 
 async def _assert_release_prefix(cur, count: int) -> None:
     """A partial release schema is safe only as the exact empty prefix we create."""

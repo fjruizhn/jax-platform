@@ -33,6 +33,7 @@ _FORBIDDEN_TABLES = frozenset((
     "office_module_rights_verdict_v2",
     "office_module_release_operation_v2",
     "office_module_release_receipt_v2",
+    "office_module_release_v2_schema_stamp",
     "office_module_effective_release_head_v2",
     "office_trusted_critic_key",
     "office_trusted_critic_key_revocation",
