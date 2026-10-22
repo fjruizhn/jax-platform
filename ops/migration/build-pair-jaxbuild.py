@@ -239,7 +239,7 @@ def main() -> None:
                    "jax_commit":arguments.jax_commit, "jax_tree":jax_tree,
                    "manifest_sha256":hashlib.sha256(manifest_raw.encode()).hexdigest(),
                    "output_dev":out_stat.st_dev, "output_ino":out_stat.st_ino,
-                   "builder_sha256":digest(Path(__file__).resolve())}
+                   "builder_sha256":digest(Path(__file__).resolve()),"python":str(Path(arguments.python).resolve())}
         raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()+b"\n"
         os.write(arguments.receipt_fd, raw)
 
