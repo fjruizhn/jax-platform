@@ -63,6 +63,18 @@ describe('Virtual Office', () => {
     expect(screen.getByRole('button', { name: 'Cerrar' }).className).toMatch(/min-h-11/)
   })
 
+  it('wraps a 255-character unbroken project name in both list and detail title', async () => {
+    const name = 'n'.repeat(255)
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 23, name, description: null, tenant_id: 4 }], next_after_id: null } })
+    projects.detail.mockResolvedValue({ data: { id: 23, name, description: null, tenant_id: 4, scope_version: 7, audience: 'CLIENT_PUBLISHED' } })
+    show()
+    const project = await screen.findByRole('button', { name })
+    expect(project.className).toMatch(/break-words/)
+    fireEvent.click(project)
+    const dialog = await screen.findByRole('dialog', { name })
+    expect(dialog.querySelector('h2').className).toMatch(/break-words/)
+  })
+
   it('does not issue duplicate cursor requests while the next page is loading', async () => {
     let resolveNext
     projects.list.mockResolvedValueOnce({ data: { projects: [], next_after_id: 30 } }).mockReturnValueOnce(new Promise((resolve) => { resolveNext = resolve }))
