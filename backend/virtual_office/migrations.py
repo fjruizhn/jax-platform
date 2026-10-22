@@ -21,7 +21,7 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-RUNTIME_REVISION = f"office-runtime-v7-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v8-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -1609,3 +1609,8 @@ async def apply_office_migrations(cursor) -> None:
     if await _table_exists(cursor, "office_membership_mutation_receipt"):
         await assert_membership_receipt_runtime_metadata(cursor)
     await assert_profile_revocation_runtime_metadata(cursor)
+    # Candidate storage is intentionally inert: it is only untrusted bytes and
+    # claims, never publication, approval, or a release decision.  It must be
+    # attested here, before db.migrations stamps the Office runtime revision.
+    from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
+    await apply_module_candidate_storage_migrations(cursor)
