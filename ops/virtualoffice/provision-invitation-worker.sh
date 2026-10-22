@@ -85,6 +85,12 @@ admin_sql() {
   if [[ -n "$ADMIN_TRANSPORT" ]]; then "$ADMIN_TRANSPORT"; else docker exec -i mariadb-12-3-jax sh -ec 'MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)" exec mariadb -uroot --batch --skip-column-names'; fi
 }
 quote() { local q=$1; q=${q//\'/\'\'}; printf "'%s'" "$q"; }
+worker_hosts=$(printf "SELECT Host FROM mysql.user WHERE User=%s ORDER BY Host;\n" "$(quote "$WORKER_DB_USER")" | admin_sql)
+if [[ -n "$worker_hosts" ]]; then
+  while IFS= read -r existing_host || [[ -n "$existing_host" ]]; do
+    [[ "$existing_host" == "$host" ]] || { printf '%s\n' 'worker principal exists at an unexpected host' >&2; exit 1; }
+  done <<< "$worker_hosts"
+fi
 principal="$(quote "$WORKER_DB_USER")@$(quote "$host")"
 exists=$(printf "SELECT COUNT(*) FROM mysql.user WHERE User=%s AND Host=%s;\n" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
 [[ "$exists" == 0 || "$exists" == 1 ]] || { printf '%s\n' 'ambiguous worker principal lookup' >&2; exit 1; }

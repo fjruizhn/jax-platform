@@ -18,7 +18,9 @@ docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixtur
 TEMP=$(mktemp -d /tmp/invitation-worker-provision.XXXXXX)
 USER_NAME=officecvinvite_$(openssl rand -hex 6)
 HOST=
+OLD_HOST=old.invalid
 OWNED=0
+OLD_PRINCIPAL=0
 FIXTURE_PROCEDURE=0
 JAX_DIR_BEFORE=$(stat -c '%U:%G:%a' /etc/jax)
 RELEASE=/opt/axioma-office-invitation-worker-fixture-$USER_NAME
@@ -30,6 +32,9 @@ cleanup() {
   fi
   if [[ $OWNED == 1 && -n $HOST ]]; then
     printf "DROP USER IF EXISTS '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin >/dev/null 2>&1 || true
+  fi
+  if [[ $OLD_PRINCIPAL == 1 ]]; then
+    printf "DROP USER IF EXISTS '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin >/dev/null 2>&1 || true
   fi
   rm -rf "$RELEASE"
   rm -rf "$SUPPLY"
@@ -86,6 +91,18 @@ fi
 if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host 'host$' >/dev/null 2>&1; then
   echo 'provisioner accepted an invalid measured grantee host' >&2; exit 1
 fi
+[[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$USER_NAME" "$OLD_HOST" | admin) == 0 ]] || { echo 'fixture stale worker principal already exists' >&2; exit 2; }
+printf "CREATE USER '%s'@'%s' IDENTIFIED BY 'fixture-stale-secret'; GRANT SELECT ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" "$DB" "$USER_NAME" "$OLD_HOST" | admin
+OLD_PRINCIPAL=1
+old_grants_before=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin)
+if run_helper >/dev/null 2>&1; then
+  echo 'provisioner accepted a stale worker principal at a different host' >&2; exit 1
+fi
+old_grants_after=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin)
+[[ "$old_grants_after" == "$old_grants_before" ]] || { echo 'provisioner altered the stale worker principal' >&2; exit 1; }
+[[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$USER_NAME" "$HOST" | admin) == 0 ]] || { echo 'provisioner created a worker principal despite stale host' >&2; exit 1; }
+printf "DROP USER '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin
+OLD_PRINCIPAL=0
 ln -s "$ENV_FILE" "$TEMP/runtime-link.env"
 if "$HELPER" --env "$TEMP/runtime-link.env" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" >/dev/null 2>&1; then
   echo 'symlinked runtime env was accepted' >&2; exit 1
