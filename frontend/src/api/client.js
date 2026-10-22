@@ -29,6 +29,9 @@ const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
   // si el servidor consumió OTP, contraseña o capacidad. Nunca se repiten.
   '/auth/mfa/reenrollment/start', '/auth/mfa/recovery-codes/regenerate',
   '/auth/mfa/disable', '/auth/mfa/step-up/verify',
+  // El bearer de invitación puede consumirse aunque una respuesta se pierda.
+  // Es una capacidad pública, no una sesión que un refresh pueda recuperar.
+  '/virtual-office/invitations/accept',
 ]
 
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de

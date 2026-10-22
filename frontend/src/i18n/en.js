@@ -1689,6 +1689,7 @@ export default {
   },
   officeInvitation: {
     title: 'Virtual Office invitation', invalidLink: 'The invitation link is invalid.',
+    checkingSession: 'Checking your session…',
     signedInAs: (email) => `You will accept this invitation as ${email}.`,
     newAccountIntro: 'Create an account to accept this invitation.', createAccount: 'Create my account',
     newPasswordIntro: 'Choose a password for your new account.', newPassword: 'New password', confirmPassword: 'Confirm password',
@@ -1696,7 +1697,7 @@ export default {
     accepted: 'The invitation was accepted.', error: 'The invitation could not be accepted. Check the link and try again.',
     manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
     send: 'Send invitation', revoke: 'Revoke invitation', revokeFor: (email) => `Revoke invitation for ${email}`,
-    revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.',
+    revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.', refreshError: 'The invitation was saved, but the list could not be refreshed.',
   },
   mfa: {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',

@@ -42,4 +42,25 @@ describe('OfficeInvitationManager', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación' }))
     await waitFor(() => expect(invitations.revoke).toHaveBeenCalledWith(12, 44, 3, 'fixed-uuid'))
   })
+
+  it('makes the parent dialog inert and Escape closes only the top revoke confirmation', () => {
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
+    const manager = screen.getByRole('dialog', { name: 'Gestionar invitaciones' })
+    expect(manager.querySelector('[data-office-invitation-content]')).toHaveAttribute('inert')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Revocar invitación' })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Gestionar invitaciones' })).toBeInTheDocument()
+  })
+
+  it('reports a refresh failure separately after a committed invitation mutation', async () => {
+    const onChanged = vi.fn().mockRejectedValue(new Error('refresh failed'))
+    show({ onChanged })
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('La invitación se guardó, pero no se pudo actualizar la lista.')
+    expect(screen.queryByText('No se pudo completar la operación de invitación.')).not.toBeInTheDocument()
+  })
 })

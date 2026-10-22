@@ -86,6 +86,12 @@ describe('client.js -- el interceptor no toca los endpoints de auth (integració
     },
   )
 
+  it('a 401 from invitation acceptance never refreshes or retries a bearer that may be consumed', async () => {
+    await expect(onRejected(err401('/virtual-office/invitations/accept'))).rejects.toBeTruthy()
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(useJaxStore.getState().token).toBe('viejo')
+  })
+
   it('(c) CONTROL: 401 de otra ruta con refresh fallido sigue poniendo el aviso', async () => {
     axiosPostMock.mockRejectedValue({ response: { status: 401, data: {} } })
 

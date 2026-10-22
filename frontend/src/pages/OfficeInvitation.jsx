@@ -15,6 +15,9 @@ function tokenFromFragment(hash) {
 export default function OfficeInvitation() {
   const { t } = useI18n()
   const user = useJaxStore((s) => s.user)
+  const sessionRestoring = useJaxStore((s) => s.sessionRestoring)
+  const sessionEpoch = useJaxStore((s) => s._sessionEpoch)
+  const sessionToken = useJaxStore((s) => s.token)
   const [token] = useState(() => tokenFromFragment(window.location.hash))
   const [newAccount, setNewAccount] = useState(false)
   const [password, setPassword] = useState('')
@@ -29,24 +32,30 @@ export default function OfficeInvitation() {
     if (token && window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname)
   }, [token])
 
-  const useExisting = Boolean(user)
-  const canSubmit = token && (useExisting || (newAccount && password.length > 0 && password === confirm))
+  const useExisting = Boolean(user && sessionToken)
+  const canSubmit = !sessionRestoring && token && (useExisting || (newAccount && password.length > 0 && password === confirm))
 
   async function submit(event) {
     event.preventDefault()
     if (!canSubmit || loading) return
+    const snapshot = { epoch: sessionEpoch, token: sessionToken, userId: user?.user_id ?? null }
+    const sameSession = () => {
+      const current = useJaxStore.getState()
+      return current._sessionEpoch === snapshot.epoch && current.token === snapshot.token && (current.user?.user_id ?? null) === snapshot.userId
+    }
     setLoading(true)
     setResult(null)
     try {
       const payload = useExisting ? { token } : { token, password }
       await officeInvitationsApi.accept(payload)
+      if (!sameSession()) return
       setPassword('')
       setConfirm('')
       setResult('accepted')
     } catch {
-      setResult('error')
+      if (sameSession()) setResult('error')
     } finally {
-      setLoading(false)
+      if (sameSession()) setLoading(false)
     }
   }
 
@@ -55,7 +64,8 @@ export default function OfficeInvitation() {
       <section className="mx-auto max-w-md rounded-xl border border-borde bg-superficie p-5 sm:p-6">
         <h1 className="text-xl font-bold">{t.officeInvitation.title}</h1>
         {!token && <p role="alert" className="mt-3 text-sm text-peligro">{t.officeInvitation.invalidLink}</p>}
-        {token && <form onSubmit={submit} className="mt-4 space-y-4">
+        {token && sessionRestoring && <p role="status" className="mt-3 text-sm text-texto-suave">{t.officeInvitation.checkingSession}</p>}
+        {token && !sessionRestoring && <form onSubmit={submit} className="mt-4 space-y-4">
           {useExisting ? <p className="text-sm text-texto-suave">{t.officeInvitation.signedInAs(user.email)}</p> : <>
             {!newAccount ? <>
               <p className="text-sm text-texto-suave">{t.officeInvitation.newAccountIntro}</p>

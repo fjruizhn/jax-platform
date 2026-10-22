@@ -17,6 +17,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
   const [audience, setAudience] = useState('INTERNAL')
   const [revoke, setRevoke] = useState(null)
   const [error, setError] = useState(null)
+  const [refreshError, setRefreshError] = useState(null)
   const [busy, setBusy] = useState(false)
   const issueKey = useRef(null)
   const revokeKey = useRef(null)
@@ -29,13 +30,20 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
     issueKey.current ??= crypto.randomUUID()
     setBusy(true)
     setError(null)
+    setRefreshError(null)
     try {
       await officeInvitationsApi.issue(projectId, { email: email.trim(), audience }, issueKey.current)
       issueKey.current = null
       setEmail('')
-      await onChanged?.()
     } catch {
       setError(t.officeInvitation.managerError)
+      setBusy(false)
+      return
+    }
+    try {
+      await onChanged?.()
+    } catch {
+      setRefreshError(t.officeInvitation.refreshError)
     } finally {
       setBusy(false)
     }
@@ -46,13 +54,20 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
     revokeKey.current ??= crypto.randomUUID()
     setBusy(true)
     setError(null)
+    setRefreshError(null)
     try {
       await officeInvitationsApi.revoke(projectId, revoke.id, revoke.version, revokeKey.current)
       revokeKey.current = null
       setRevoke(null)
-      await onChanged?.()
     } catch {
       setError(t.officeInvitation.managerError)
+      setBusy(false)
+      return
+    }
+    try {
+      await onChanged?.()
+    } catch {
+      setRefreshError(t.officeInvitation.refreshError)
     } finally {
       setBusy(false)
     }
@@ -60,7 +75,8 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
 
   return <>
     <button type="button" onClick={() => setOpen(true)} className={BUTTON}>{t.officeInvitation.manage}</button>
-    {open && <Dialogo idTitulo="office-invitations" titulo={t.officeInvitation.manage} onCerrar={() => { if (!busy) setOpen(false) }}>
+    {open && <Dialogo idTitulo="office-invitations" titulo={t.officeInvitation.manage} onCerrar={() => { if (!busy && !revoke) setOpen(false) }}>
+      <div data-office-invitation-content={true} inert={revoke || undefined} aria-hidden={revoke ? 'true' : undefined}>
       <form onSubmit={issue} className="space-y-3">
         <label className="block text-sm text-texto-suave" htmlFor="office-invitation-email">{t.officeInvitation.email}
           <input id="office-invitation-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required className={`${INPUT} mt-1`} />
@@ -72,6 +88,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
           </select>
         </label>
         {error && <p role="alert" className="text-sm text-peligro">{error}</p>}
+        {refreshError && <p role="status" className="text-sm text-texto-suave">{refreshError}</p>}
         <button disabled={busy} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{t.officeInvitation.send}</button>
       </form>
       {invitations.length > 0 && <ul className="mt-5 divide-y divide-borde border-y border-borde">
@@ -80,6 +97,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
           <button type="button" disabled={busy} onClick={() => { revokeKey.current = null; setRevoke(invitation) }} className={BUTTON} aria-label={t.officeInvitation.revokeFor(invitation.email)}>{t.officeInvitation.revoke}</button>
         </li>)}
       </ul>}
+      </div>
     </Dialogo>}
     {revoke && <Dialogo idTitulo="office-invitation-revoke" titulo={t.officeInvitation.revoke} onCerrar={() => { if (!busy) setRevoke(null) }}>
       <p className="text-sm text-texto-suave">{t.officeInvitation.revokePrompt(revoke.email)}</p>
