@@ -7,7 +7,7 @@ import { officeMembersApi, officePeopleApi } from '../../api/virtualOffice'
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BUTTON = `${TAMANO_BOTON_ACCION} rounded border border-borde px-3 text-texto hover:bg-hundido disabled:opacity-60`
 const validPeople = (data) => data && Array.isArray(data.people) && data.people.every((person) => Number.isInteger(person.user_id) && typeof person.email === 'string')
-const validMember = (member) => member && Number.isInteger(member.user_id) && ['PROJECT_ADMIN', 'COLLABORATOR'].includes(member.grant_role) && ['INTERNAL', 'CLIENT_PUBLISHED'].includes(member.audience) && ['ACTIVE', 'REVOKED'].includes(member.status) && Number.isInteger(member.version) && member.version >= 1
+const validMember = (member) => member && Number.isInteger(member.user_id) && (member.email === undefined || member.email === null || typeof member.email === 'string') && ['PROJECT_ADMIN', 'COLLABORATOR'].includes(member.grant_role) && ['INTERNAL', 'CLIENT_PUBLISHED'].includes(member.audience) && ['ACTIVE', 'REVOKED'].includes(member.status) && Number.isInteger(member.version) && member.version >= 1
 const validMembers = (data, projectId) => data && data.project_id === projectId && Array.isArray(data.members) && data.members.every(validMember) && (data.next_cursor === null || Number.isInteger(data.next_cursor))
 
 // The people endpoint is server-authorized and intentionally unavailable to a
@@ -134,8 +134,10 @@ export default function OfficeProjectMembershipManager({ projectId, canBrowsePeo
     } finally { setBusy(false) }
   }
 
-  function personLabel(userId) {
-    return people?.find((person) => person.user_id === userId)?.email || t.virtualOffice.members.userId(userId)
+  function personLabel(member) {
+    return (typeof member.email === 'string' && member.email)
+      || people?.find((person) => person.user_id === member.user_id)?.email
+      || t.virtualOffice.members.userId(member.user_id)
   }
 
   async function loadMoreMembers() {
@@ -170,7 +172,7 @@ export default function OfficeProjectMembershipManager({ projectId, canBrowsePeo
         <h3 className="text-sm font-semibold text-texto">{t.virtualOffice.members.currentTitle}</h3>
         {members === null && !error && <p role="status" className="mt-2 text-sm text-texto-suave">{t.virtualOffice.members.loading}</p>}
         {members?.length === 0 && <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.members.empty}</p>}
-        {members?.length > 0 && <ul className="mt-2 divide-y divide-borde border-y border-borde">{members.map((member) => <li key={member.user_id} className="py-3 text-sm"><p className="break-all text-texto">{personLabel(member.user_id)}</p><p className="text-texto-suave">{t.virtualOffice.members.audiences[member.audience]} · {t.virtualOffice.members.states[member.status]}</p><div className="mt-2 flex flex-wrap items-center gap-2">{canAssignProjectAdmin && member.status === 'ACTIVE' && member.audience === 'INTERNAL' ? <select aria-label={t.virtualOffice.members.roleFor(personLabel(member.user_id))} disabled={busy} value={member.grant_role} onChange={(event) => mutateMember(member, 'role', event.target.value)} className={`${INPUT} w-auto`}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select> : <span className="text-texto-suave">{t.virtualOffice.members.roles[member.grant_role]}</span>}{member.status === 'ACTIVE' ? <button type="button" disabled={busy} onClick={() => mutateMember(member, 'revoke')} className={BUTTON}>{t.virtualOffice.members.revoke}</button> : <button type="button" disabled={busy} onClick={() => mutateMember(member, 'restore')} className={BUTTON}>{t.virtualOffice.members.restore}</button>}</div></li>)}</ul>}
+        {members?.length > 0 && <ul className="mt-2 divide-y divide-borde border-y border-borde">{members.map((member) => <li key={member.user_id} className="py-3 text-sm"><p className="break-all text-texto">{personLabel(member)}</p><p className="text-texto-suave">{t.virtualOffice.members.audiences[member.audience]} · {t.virtualOffice.members.states[member.status]}</p><div className="mt-2 flex flex-wrap items-center gap-2">{canAssignProjectAdmin && member.status === 'ACTIVE' && member.audience === 'INTERNAL' ? <select aria-label={t.virtualOffice.members.roleFor(personLabel(member))} disabled={busy} value={member.grant_role} onChange={(event) => mutateMember(member, 'role', event.target.value)} className={`${INPUT} w-auto`}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select> : <span className="text-texto-suave">{t.virtualOffice.members.roles[member.grant_role]}</span>}{member.status === 'ACTIVE' ? <button type="button" disabled={busy} onClick={() => mutateMember(member, 'revoke')} className={BUTTON}>{t.virtualOffice.members.revoke}</button> : <button type="button" disabled={busy} onClick={() => mutateMember(member, 'restore')} className={BUTTON}>{t.virtualOffice.members.restore}</button>}</div></li>)}</ul>}
         {nextCursor !== null && <button type="button" disabled={busy || membersLoading.current} onClick={loadMoreMembers} className={`${BUTTON} mt-3`}>{t.virtualOffice.members.more}</button>}
       </section>
     </Dialogo>}

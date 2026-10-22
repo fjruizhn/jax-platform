@@ -55,6 +55,7 @@ describe('Virtual Office', () => {
   it('shows member management to a project administrator from the project capability, without offering role elevation', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
     projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
+    members.list.mockResolvedValue({ data: { project_id: 25, members: [{ user_id: 19, email: 'proyecto@example.test', grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 1 }], next_cursor: null } })
     const onOfficeDenied = vi.fn()
     render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'COLLABORATOR' }, capabilities: { administer_office: false } }} onOfficeDenied={onOfficeDenied} /></MemoryRouter></I18nProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
@@ -65,6 +66,8 @@ describe('Virtual Office', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(onOfficeDenied).not.toHaveBeenCalled()
     expect(screen.getByText('Para agregar personas, usá Gestionar invitaciones.')).toBeInTheDocument()
+    expect(screen.getByText('proyecto@example.test')).toBeInTheDocument()
+    expect(screen.queryByText('Usuario #19')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Papel en el proyecto')).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Administrador del proyecto' })).not.toBeInTheDocument()
   })
