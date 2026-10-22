@@ -9,3 +9,10 @@ def test_rejects_bad_digest_and_extra(tmp_path):
  with pytest.raises(rp.PackageError): rp.validate(p,'0'*64)
  (p/'extra').write_text('x')
  with pytest.raises(rp.PackageError): rp.validate(p,hashlib.sha256(raw).hexdigest())
+
+def test_snapshot_restore_preserves_present_and_absent(tmp_path):
+ root=tmp_path/'root'; old=root/'helper'; old.parent.mkdir(); old.write_text('old'); old.chmod(0o600)
+ paths={'helper':old,'unit':root/'unit'}; backup=tmp_path/'backup'; rp.snapshot(paths,backup)
+ old.write_text('new'); old.chmod(0o644); paths['unit'].write_text('newunit')
+ rp.restore(paths,backup)
+ assert old.read_text()=='old' and (old.stat().st_mode&0o777)==0o600 and not paths['unit'].exists()

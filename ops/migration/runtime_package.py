@@ -1,6 +1,7 @@
 """Fail-closed validator for a root-owned runtime package; never executes it."""
 from __future__ import annotations
 import hashlib, json, os, stat
+import shutil
 from pathlib import Path
 
 SCHEMA="axioma.platform-runtime-package/v1"
@@ -30,3 +31,17 @@ def validate(root: Path, expected_digest: str):
  actual={str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()}
  if actual != seen|{'manifest.json'}: raise PackageError('extra payload')
  return data
+
+def snapshot(paths, backup):
+ backup.mkdir()
+ for n,p in paths.items():
+  q=backup/n
+  if not p.exists(): (backup/(n+'.ABSENT')).write_text(''); continue
+  q.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,q)
+def restore(paths, backup):
+ for n,p in paths.items():
+  q=backup/n
+  if (backup/(n+'.ABSENT')).exists():
+   if p.exists(): p.unlink()
+  else:
+   p.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(q,p)
