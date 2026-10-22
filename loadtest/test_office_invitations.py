@@ -145,7 +145,9 @@ def test_clean_git_revision_rejects_untracked_or_modified_sources(monkeypatch, t
         oi.clean_git_revision(tmp_path, "fixture")
 
 
-def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_path):
+def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(monkeypatch, tmp_path):
+    monkeypatch.setenv("JAX_PUBLIC_HOST_ORIGIN_BINDINGS", "evil.example.test=https://evil.example.test")
+    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://evil.example.test")
     cfg = {
         "JAX_OFFICE_LOAD_DB": "jax_memory_test_a1b2c3d4", "JAX_DB_HOST": "127.0.0.1",
         "JAX_DB_PORT": "33991", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p",
@@ -159,6 +161,8 @@ def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_p
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS"] == "20000"
     assert env["JAX_ENVIRONMENT"] == "test"
     assert env["FRONTEND_ORIGIN"] == "http://127.0.0.1:54321"
+    assert env["JAX_PUBLIC_HOST_ORIGIN_BINDINGS"] == "127.0.0.1=http://127.0.0.1:54321"
+    assert env["OFFICE_PUBLIC_ORIGIN"] == "http://127.0.0.1:54321"
 
 
 @pytest.mark.parametrize("base", ["http://example.test", "https://127.0.0.1:54321", "http://127.0.0.1:54321/path"])

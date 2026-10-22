@@ -266,6 +266,7 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
     env.update(cfg, JAX_DB_NAME=cfg["JAX_OFFICE_LOAD_DB"], JAX_JWT_SECRET=secrets.token_urlsafe(48),
                FERNET_KEY=base64.urlsafe_b64encode(os.urandom(32)).decode(),
                JAX_ENVIRONMENT="test", JAX_PLATFORM_URL=origin, FRONTEND_ORIGIN=origin,
+               JAX_PUBLIC_HOST_ORIGIN_BINDINGS=f"127.0.0.1={origin}", OFFICE_PUBLIC_ORIGIN=origin,
                # Configuration validates the canonical public origin even
                # though this harness never sends an email or opens that URL.
                OFFICE_INVITATION_PUBLIC_BASE_URL="https://virtualoffice.example.test",
