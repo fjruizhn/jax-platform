@@ -540,19 +540,23 @@ _INVITATION_COLUMNS = {
 # deliberately not folded into issuance evidence: retries are request
 # transport semantics and must not alter the proof that authorized issuance.
 _INVITATION_MUTATION_RECEIPT_COLUMNS = (
-    ("idempotency_key", "char", "char(36)"), ("request_digest", "binary", "binary(32)"),
-    ("operation", "varchar", "varchar(16)"), ("actor_user_id", "int", "int(11)"),
-    ("project_id", "int", "int(11)"), ("invitation_id", "char", "char(36)"),
-    ("expected_version", "bigint", "bigint(20)"), ("response_version", "bigint", "bigint(20)"),
-    ("result_event_id", "bigint", "bigint(20) unsigned"), ("authorization_event_id", "bigint", "bigint(20) unsigned"),
-    ("response_contract", "varchar", "varchar(48)"), ("expires_at", "datetime", "datetime(6)"),
-    ("created_at", "datetime", "datetime(6)"),
+    ("idempotency_key","char","char(36)","NO","ascii","ascii_bin","",None),
+    ("request_digest","binary","binary(32)","NO",None,None,"",None),
+    ("operation","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),
+    ("actor_user_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),
+    ("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),
+    ("expected_version","bigint","bigint(20)","NO",None,None,"",None),("response_version","bigint","bigint(20)","NO",None,None,"",None),
+    ("result_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),
+    ("response_contract","varchar","varchar(48)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),
+    ("expires_at","datetime","datetime(6)","YES",None,None,"","NULL"),("created_at","datetime","datetime(6)","NO",None,None,"",None),
 )
 _INVITATION_MUTATION_RECEIPT_INDEXES = {
     "PRIMARY": (("idempotency_key",), True),
     "uq_office_invitation_mutation_receipt_invitation_operation": (("invitation_id", "operation"), True),
     "idx_office_invitation_mutation_receipt_actor": (("actor_user_id", "created_at", "idempotency_key"), False),
     "fk_office_invitation_mutation_receipt_project": (("project_id",), False),
+    "fk_office_invitation_mutation_receipt_event": (("result_event_id",), False),
+    "fk_office_invitation_mutation_receipt_authorization": (("authorization_event_id",), False),
 }
 _INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS = {
     "fk_office_invitation_mutation_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
@@ -703,14 +707,7 @@ async def _assert_invitation_mutation_receipt_runtime_metadata(cur) -> None:
     table = "office_invitation_mutation_receipt"
     if not await _table_exists(cur, table):
         raise RuntimeError("Office invitation mutation receipt is missing")
-    await cur.execute(
-        "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
-    actual_columns = tuple(await cur.fetchall())
-    expected_columns = tuple((name, data_type, column_type, "YES" if name == "expires_at" else "NO")
-                             for name, data_type, column_type in _INVITATION_MUTATION_RECEIPT_COLUMNS)
-    if actual_columns != expected_columns:
-        raise RuntimeError("Office invitation mutation receipt column metadata is invalid")
+    await _assert_columns(cur, table=table, expected=_INVITATION_MUTATION_RECEIPT_COLUMNS)
     await _assert_indexes(cur, table=table, expected=_INVITATION_MUTATION_RECEIPT_INDEXES)
     await _assert_foreign_keys(cur, table=table, expected=_INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS)
     await cur.execute(
@@ -718,6 +715,9 @@ async def _assert_invitation_mutation_receipt_runtime_metadata(cur) -> None:
         "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
     if {row[0] for row in await cur.fetchall()} != set(_INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS):
         raise RuntimeError("Office invitation mutation receipt foreign key set is invalid")
+    await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+    if {row[0] for row in await cur.fetchall()} != set(_INVITATION_MUTATION_RECEIPT_INDEXES):
+        raise RuntimeError("Office invitation mutation receipt index set is invalid")
     await _assert_append_only_table_metadata(
         cur, table=table, triggers=_INVITATION_MUTATION_RECEIPT_TRIGGERS,
         primary_key=("idempotency_key",))
