@@ -167,6 +167,7 @@ def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(monke
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN"] == "10000/60"
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS"] == "20000"
     assert env["JAX_ENVIRONMENT"] == "test"
+    assert env["OFFICE_INVITATION_DELIVERY_BATCH_LIMIT"] == "25"
     assert env["FRONTEND_ORIGIN"] == "http://127.0.0.1:54321"
     assert env["JAX_PUBLIC_HOST_ORIGIN_BINDINGS"] == "127.0.0.1=http://127.0.0.1:54321"
     assert env["OFFICE_PUBLIC_ORIGIN"] == "http://127.0.0.1:54321"
