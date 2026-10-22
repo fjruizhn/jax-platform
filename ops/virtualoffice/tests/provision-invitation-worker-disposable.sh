@@ -115,6 +115,16 @@ grep -Fqx 'Office invitation schema tables are missing' <<< "$no_schema_error" |
 [[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin) == 0 ]] || { echo 'missing Office schema created a worker principal' >&2; exit 1; }
 printf "DROP DATABASE \`%s\`;\n" "$EMPTY_DB" | admin
 EMPTY_DB_CREATED=0
+printf "CREATE DATABASE \`%s\`; USE \`%s\`; CREATE TABLE office_invitation (status varchar(16)); CREATE TABLE office_invitation_issuance (id int); CREATE TABLE office_invitation_event (id int); CREATE TABLE office_invitation_outbox (outbox_id char(36));\n" "$EMPTY_DB" "$EMPTY_DB" | admin
+EMPTY_DB_CREATED=1
+partial_schema_error=$("$HELPER" --env "$NO_SCHEMA_ENV" --state-root "$NO_SCHEMA_STATE" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$NO_SCHEMA_USER" --measured-grantee-host "$HOST" 2>&1) && {
+  echo 'provisioner accepted an Office invitation schema with missing columns' >&2; exit 1
+}
+grep -Fqx 'Office invitation schema columns are missing' <<< "$partial_schema_error" || { echo 'partial schema failed before the column gate' >&2; exit 1; }
+[[ ! -e "$NO_SCHEMA_STATE" ]] || { echo 'partial Office schema created worker state or secret' >&2; exit 1; }
+[[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin) == 0 ]] || { echo 'partial Office schema created a worker principal' >&2; exit 1; }
+printf "DROP DATABASE \`%s\`;\n" "$EMPTY_DB" | admin
+EMPTY_DB_CREATED=0
 
 # Start the installation proof at the actual fresh boundary: no delivery
 # routines and no procedure grants survive the DROP. The fixture database is
