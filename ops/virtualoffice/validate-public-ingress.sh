@@ -7,7 +7,7 @@ usage() {
 Usage:
   validate-public-ingress.sh offline --config FILE --site-root DIR --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA [--nginx-user USER]
   validate-public-ingress.sh syntax --nginx NGINX --config COMPLETE_NGINX_CONF
-  validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE
+  validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE --expected-asset-sha SHA256
 USAGE
 }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
