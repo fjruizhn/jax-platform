@@ -262,21 +262,37 @@ async def _db_now(cur) -> dt.datetime:
     return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value.astimezone(dt.timezone.utc)
 
 
+async def lock_office_actor_project_tenants_in_cursor(cur, *, actor_user_id: int,
+                                                       project_id: int) -> None:
+    """Acquire the common Office tenant prefix before actor/scope locks.
+
+    Discovery reads are deliberately unlocked and advisory only.  The
+    canonical resolver re-reads actor, scope, profile, and grants after this
+    prefix, so a deletion or tenant change cannot be authorized from this
+    snapshot.  Missing rows are likewise decided by that definitive read.
+    """
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
+    actor_tenant = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+    scope_tenant = await cur.fetchone()
+    if actor_tenant is None or scope_tenant is None:
+        return
+    for tenant_id in sorted({int(actor_tenant[0]), int(scope_tenant[0])}):
+        await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+        # Do not decide from the discovery snapshot.  The resolver below is
+        # authoritative and returns the opaque denial for a missing tenant.
+        await cur.fetchone()
+
+
 async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
                            proof_event_id: int, mfa_config: MFAConfig):
     # Establish the same tenant-first lock order used by invitation
     # acceptance and JAX membership.  These are discovery hints only: the
     # canonical resolver below re-reads actor, tenant, scope and grants under
     # lock before it permits issuance or revocation.
-    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
-    actor_tenant = await cur.fetchone()
-    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
-    scope_tenant = await cur.fetchone()
-    if actor_tenant is not None and scope_tenant is not None:
-        for tenant_id in sorted({int(actor_tenant[0]), int(scope_tenant[0])}):
-            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
-            if await cur.fetchone() is None:
-                raise InvitationError("office_invitation_issuer_denied", status_code=403)
+    await lock_office_actor_project_tenants_in_cursor(
+        cur, actor_user_id=actor_user_id, project_id=project_id,
+    )
     decision = await authorize_office_in_cursor(
         cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
         require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,

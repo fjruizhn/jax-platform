@@ -10,7 +10,10 @@ from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
-from virtual_office.invitations import InvitationError, can_manage_invitations_in_cursor
+from virtual_office.invitations import (
+    InvitationError, can_manage_invitations_in_cursor,
+    lock_office_actor_project_tenants_in_cursor,
+)
 from virtual_office.mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_verified_in_cursor
 from virtual_office.namespace_adapter import (
     OfficeNamespaceAuthorizationDenied,
@@ -281,6 +284,12 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
     The row is locked for mutation callers.  Reads use the same resolver and
     intentionally omit confidential metadata for a published-client grant.
     """
+    # Share the tenant → actor → scope prefix with invitation issuance and
+    # listing before either resolver can lock actor/scope rows.  Both later
+    # authorizations re-read all authority facts in this same transaction.
+    await lock_office_actor_project_tenants_in_cursor(
+        cur, actor_user_id=actor_user_id, project_id=project_id,
+    )
     await cur.execute(
         "SELECT p.id,p.name,p.description,s.tenant_id,s.version FROM projects p "
         "JOIN jax_project_scope s ON s.project_id=p.id "
