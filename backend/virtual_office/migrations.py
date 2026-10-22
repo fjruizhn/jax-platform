@@ -463,6 +463,16 @@ _3978115_INVITATION_GUARD_DIGESTS = {
     "guard_office_invitation_outbox_insert": "71f9948829a2480dba24787de96df65210c59243c871e97933178efdc328caee",
     "guard_office_invitation_outbox_update": "e3055bbada2bb011d4ff9e78cbe6057d7e47640eada0660307657c5a614eaf9c",
 }
+_JAX_MEMORY_TEST_INVITATION_GUARD_DIGESTS = {
+    # Measured from the private disposable template on 2026-10-22.  This is
+    # an installed predecessor, not a heuristic: every body is matched by
+    # SHA-256 before it can be replaced and existing evidence is untouched.
+    "guard_office_invitation_insert": "ac75e051a9191b3d4dc8b91f245678490c8abde52d3e11a092871be37345beea",
+    "guard_office_invitation_update": "a8055bbf119acf7ca79766e897bf637d8e96fc349be0e13891bf85c3fc57cdce",
+    "guard_office_invitation_event_insert": "32590cdd9a6ad3a6231309b0171ebe996c288abab878a10c39958f4b8e0fd213",
+    "guard_office_invitation_outbox_insert": "71f9948829a2480dba24787de96df65210c59243c871e97933178efdc328caee",
+    "guard_office_invitation_outbox_update": "98bc45fc6de21b242b66d35bd7474cab49e02ff786f8c3b8a48fd996d5767752",
+}
 
 _INVITATION_FOREIGN_KEYS = {
     "office_invitation_issuance": {
@@ -794,12 +804,23 @@ async def _upgrade_invitation_event_causality(cur) -> None:
     if not await _column_exists(cur, "office_invitation_event", "authorization_event_id"):
         await cur.execute(
             "ALTER TABLE office_invitation_event "
-            "ADD COLUMN authorization_event_id BIGINT UNSIGNED NULL"
+            "ADD COLUMN authorization_event_id BIGINT UNSIGNED NULL AFTER observed_outbox_state"
         )
     if not await _column_exists(cur, "office_invitation_event", "invocation_digest"):
         await cur.execute(
-            "ALTER TABLE office_invitation_event ADD COLUMN invocation_digest BINARY(32) NULL"
+            "ALTER TABLE office_invitation_event "
+            "ADD COLUMN invocation_digest BINARY(32) NULL AFTER authorization_event_id"
         )
+    await cur.execute(
+        "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_invitation_event' "
+        "AND COLUMN_NAME IN ('authorization_event_id','invocation_digest') ORDER BY ORDINAL_POSITION"
+    )
+    if tuple(await cur.fetchall()) != (
+        ("authorization_event_id", "bigint", "bigint(20) unsigned", "YES"),
+        ("invocation_digest", "binary", "binary(32)", "YES"),
+    ):
+        raise RuntimeError("Office invitation event causal columns are incompatible; historic evidence is not rewritten")
     if not await _index_exists(cur, "office_invitation_event", "idx_office_invitation_event_authorization"):
         await cur.execute(
             "ALTER TABLE office_invitation_event ADD KEY idx_office_invitation_event_authorization (authorization_event_id)"
@@ -832,7 +853,11 @@ async def _upgrade_invitation_guards(cur) -> None:
     expected = {name: all_expected[name] for name in names}
     if found == expected:
         return
-    predecessors = (_B44_INVITATION_GUARD_DIGESTS, _3978115_INVITATION_GUARD_DIGESTS)
+    predecessors = (
+        _B44_INVITATION_GUARD_DIGESTS,
+        _3978115_INVITATION_GUARD_DIGESTS,
+        _JAX_MEMORY_TEST_INVITATION_GUARD_DIGESTS,
+    )
     for name, metadata in found.items():
         table, timing, event, orientation, action = metadata
         expected_table = "office_invitation_outbox" if "outbox" in name else (
