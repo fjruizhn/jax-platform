@@ -33,7 +33,12 @@ install_from_audited_commit () {
 install_from_audited_commit ops/virtualoffice/invitation-worker-runtime-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-readiness 0755
 install_from_audited_commit ops/virtualoffice/install-invitation-worker-release.sh /usr/local/libexec/axioma-office-invitation-worker-install 0750
 install_from_audited_commit ops/virtualoffice/provision-invitation-worker.sh /usr/local/libexec/axioma-office-invitation-worker-provision 0750
+install_from_audited_commit ops/virtualoffice/install-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-install 0750
+install_from_audited_commit ops/virtualoffice/attest-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-attest 0750
+install_from_audited_commit ops/virtualoffice/office-invitation-delivery-v1.sql /usr/local/share/axioma-office-invitation-delivery-v1.sql 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
+sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$JAX_DB_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
 test ! -L "$WHEELHOUSE"
 if [[ ! -e "$WHEELHOUSE" ]]; then
