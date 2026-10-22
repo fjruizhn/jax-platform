@@ -85,50 +85,73 @@ def test_office_schema_is_idempotent_and_has_append_only_audit_and_scope_index(c
 def test_membership_receipt_attestation_rejects_weakened_matrix_and_wrong_digest_shape(client):
     """A same-named receipt table/check cannot silently authorize replay."""
     async def scenario():
+        import os
+        import uuid
         from db.connection import get_pool
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_receipt_attest_{uuid.uuid4().hex[:16]}"
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await apply_office_migrations(cur)
-                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
-                await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
-                await cur.execute("ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK (audience IN ('INTERNAL','CLIENT_PUBLISHED'))")
-                with pytest.raises(RuntimeError, match="receipt CHECK .* invalid"):
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_project_membership", "jax_project_membership_event",
+                        "jax_namespace_membership_mutation_request",
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
-                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
-                assert await cur.fetchone() is None
-                await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
-                await cur.execute(
-                    "ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK ("
-                    "(audience='INTERNAL' AND external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) "
-                    "OR (audience='CLIENT_PUBLISHED' AND grant_role='COLLABORATOR' AND external_relation_id IS NOT NULL "
-                    "AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL))"
-                )
-                await apply_office_migrations(cur)
-                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
-                await cur.execute("ALTER TABLE office_membership_mutation_receipt MODIFY request_digest CHAR(64) NOT NULL")
-                with pytest.raises(RuntimeError, match="receipt column metadata is invalid"):
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
+                    await cur.execute("ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK (audience IN ('INTERNAL','CLIENT_PUBLISHED'))")
+                    with pytest.raises(RuntimeError, match="receipt CHECK .* invalid"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+                    await cur.execute("ALTER TABLE office_membership_mutation_receipt DROP CONSTRAINT chk_office_membership_receipt_external")
+                    await cur.execute(
+                        "ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT chk_office_membership_receipt_external CHECK ("
+                        "(audience='INTERNAL' AND external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) "
+                        "OR (audience='CLIENT_PUBLISHED' AND grant_role='COLLABORATOR' AND external_relation_id IS NOT NULL "
+                        "AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL))"
+                    )
                     await apply_office_migrations(cur)
-                await cur.execute("ALTER TABLE office_membership_mutation_receipt MODIFY request_digest BINARY(32) NOT NULL")
-                await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("ALTER TABLE office_membership_mutation_receipt MODIFY request_digest CHAR(64) NOT NULL")
+                    with pytest.raises(RuntimeError, match="receipt column metadata is invalid"):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)
 
 
 def test_delegation_tenant_fk_attestation_rejects_homonymous_wrong_target(client):
     async def scenario():
+        import os
+        import uuid
         from db.connection import get_pool
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_delegation_attest_{uuid.uuid4().hex[:16]}"
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await apply_office_migrations(cur)
-                await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
-                await cur.execute("ALTER TABLE office_admin_delegation DROP FOREIGN KEY fk_office_admin_delegation_tenant")
-                await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_users(user_id)")
-                with pytest.raises(RuntimeError, match="delegation.*foreign key.*invalid"):
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
-                await cur.execute("ALTER TABLE office_admin_delegation DROP FOREIGN KEY fk_office_admin_delegation_tenant")
-                await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id)")
-                await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("ALTER TABLE office_admin_delegation DROP FOREIGN KEY fk_office_admin_delegation_tenant")
+                    await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_users(user_id)")
+                    with pytest.raises(RuntimeError, match="delegation.*foreign key.*invalid"):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)
 
 
