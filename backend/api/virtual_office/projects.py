@@ -9,7 +9,7 @@ from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
-from virtual_office.mfa import load_mfa_config_from_environment
+from virtual_office.mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_verified_in_cursor
 from virtual_office.namespace_adapter import (
     OfficeNamespaceAuthorizationDenied,
     OfficeNamespaceAuthorizer,
@@ -151,9 +151,19 @@ async def list_projects(
         profile = await _active_profile_in_cursor(cur, actor_user_id)
         if profile is None:
             raise HTTPException(status_code=403, detail="office_access_denied")
+        proof_valid = False
+        if type(proof_event_id) is int and proof_event_id > 0:
+            proof_valid = not isinstance(
+                await reload_current_self_mfa_verified_in_cursor(
+                    cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id,
+                ),
+                MFADenied,
+            )
         predicate = " AND p.id>%s" if after_id is not None else ""
         cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
         if profile["global_role"] == "OFFICE_SUPERUSER":
+            if not proof_valid:
+                return {"projects": [], "next_after_id": None}
             query = (
                 "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
                 "JOIN jax_project_scope s ON s.project_id=p.id "
@@ -170,7 +180,13 @@ async def list_projects(
                 "AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
                 "AND g.grant_role IN ('COLLABORATOR','PROJECT_ADMIN') AND m.status='ACTIVE'"
             )
-            params = (actor_user_id, actor_user_id, profile["tenant_id"], *cursor_params, limit + 1)
+            if not proof_valid:
+                query += (
+                    " AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
+                    "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
+                    "AND pg.status='ACTIVE')"
+                )
+            params = (actor_user_id, actor_user_id, profile["tenant_id"], *( () if proof_valid else (actor_user_id,) ), *cursor_params, limit + 1)
         else:
             query = (
                 "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM projects p "
@@ -182,7 +198,13 @@ async def list_projects(
                 "AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' "
                 "AND r.status='ACTIVE' AND rg.status='ACTIVE'"
             )
-            params = (actor_user_id, actor_user_id, *cursor_params, limit + 1)
+            if not proof_valid:
+                query += (
+                    " AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
+                    "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
+                    "AND pg.status='ACTIVE')"
+                )
+            params = (actor_user_id, actor_user_id, *( () if proof_valid else (actor_user_id,) ), *cursor_params, limit + 1)
         await cur.execute(query + predicate + " ORDER BY p.id LIMIT %s", params)
         candidates = await cur.fetchall()
         visible = []
@@ -193,12 +215,16 @@ async def list_projects(
                 recipient_group_id=None if recipient_group_id is None else int(recipient_group_id),
                 mfa_proof_event_id=proof_event_id, mfa_config=config,
             )
-            if decision.allowed:
-                visible.append({
-                    "id": project_id, "name": name,
-                    "description": None if decision.audience == "CLIENT_PUBLISHED" else description,
-                    "tenant_id": int(tenant_id),
-                })
+            if not decision.allowed:
+                # Candidate SQL and the central resolver must agree while the
+                # actor/proof lock is held.  A mismatch is a race or schema
+                # invariant break, never a partially disclosed page.
+                raise HTTPException(status_code=503, detail="office_project_list_retryable")
+            visible.append({
+                "id": project_id, "name": name,
+                "description": None if decision.audience == "CLIENT_PUBLISHED" else description,
+                "tenant_id": int(tenant_id),
+            })
         # For non-roots the candidate predicates are exactly the resolver's
         # active-view prerequisites (the resolver remains the authoritative
         # final decision).  Thus a bounded candidate page cannot be consumed

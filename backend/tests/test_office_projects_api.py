@@ -202,6 +202,50 @@ def test_project_list_never_uses_hidden_lookahead_as_a_cursor(client):
     }
 
 
+def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
+    async def scenario():
+        user_id, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
+        projects = []
+        for role in ("PROJECT_ADMIN", "PROJECT_ADMIN", "COLLABORATOR"):
+            project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", ("office-mfa-page-" + uuid.uuid4().hex,))
+            await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,))
+            await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project_id, user_id))
+            await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,%s,'INTERNAL','ACTIVE',%s)", (project_id, user_id, role, user_id))
+            projects.append(project_id)
+        return user_id, projects
+
+    user_id, (admin_a, admin_b, collaborator_c) = client.portal.call(scenario)
+    page = client.get("/api/virtual-office/projects?limit=3", headers=_headers(user_id)).json()
+    assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [collaborator_c]
+    assert page["next_after_id"] is None
+
+
+def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(client, monkeypatch):
+    import api.virtual_office.projects as projects_api
+    from virtual_office.models import OfficeDecision
+
+    async def scenario():
+        user_id, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", ("office-race-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,))
+        await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project_id, user_id))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)", (project_id, user_id, user_id))
+        return user_id, project_id
+
+    user_id, project_id = client.portal.call(scenario)
+
+    async def revoked(*_args, **_kwargs):
+        return OfficeDecision(False, "office_grant_missing", user_id, "VIEW_PROJECT", project_id, project_id)
+
+    monkeypatch.setattr(projects_api, "authorize_office_in_cursor", revoked)
+    response = client.get("/api/virtual-office/projects?limit=1", headers=_headers(user_id))
+    assert response.status_code == 503
+    assert response.json() == {"detail": "office_project_list_retryable"}
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 def test_create_project_jax_first_then_exact_replay_and_one_client_group(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
