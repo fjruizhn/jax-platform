@@ -46,13 +46,28 @@ note() { printf 'provision-db-runtime: %s\n' "$*"; }
 [[ -r "$ENV_FILE" ]] || die "environment file is not readable"
 
 declare -A CFG=()
-PAIR_EXEC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jax-platform-pair-exec.py"
+# The service executes this installed helper, so provisioning derives the
+# allowlist from those exact bytes.  A source checkout must never silently
+# create a credential the installed launcher rejects.  The override exists
+# solely for the root-owned disposable fixture, which deliberately has no
+# installed runtime package.
+PAIR_EXEC=/usr/local/libexec/jax-platform-pair-exec.py
+if [[ -n ${JAX_PAIR_EXEC_FIXTURE:-} ]]; then
+  [[ -n $ADMIN_TRANSPORT ]] || die "pair-exec fixture override requires test transport"
+  PAIR_EXEC=$JAX_PAIR_EXEC_FIXTURE
+fi
+[[ -f $PAIR_EXEC && ! -L $PAIR_EXEC ]] || die "installed runtime credential launcher is unavailable"
 allowed_keys=$(python3 -I -S "$PAIR_EXEC" --list-allowed-keys) || die "runtime credential allowlist is unavailable"
 declare -A RUNTIME_ALLOWED=()
 while IFS= read -r allowed_key; do
   [[ -z $allowed_key ]] || RUNTIME_ALLOWED["$allowed_key"]=1
 done <<< "$allowed_keys"
 [[ ${#RUNTIME_ALLOWED[@]} -gt 0 ]] || die "runtime credential allowlist is empty"
+# These are consumed by the platform's Ejecutor subprocess.  Reject a stale
+# installed launcher before it can silently strip them while making runtime.env.
+for required_runtime_key in JAX_GITHUB_TOKEN JAX_EJECUTOR_MISIONES JAX_EJECUTOR_POLITICA JAX_EJECUTOR_TURNO_TOPE_S JAX_EJECUTOR_VIGIA_ESPERA_S JAX_PROXY_CARRIL_MODELO JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS; do
+  [[ -n ${RUNTIME_ALLOWED[$required_runtime_key]+yes} ]] || die "installed runtime credential launcher lacks required key: $required_runtime_key"
+done
 parse_env() {
   local line key value line_no=0
   while IFS= read -r line || [ -n "$line" ]; do

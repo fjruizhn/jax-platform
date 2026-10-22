@@ -53,17 +53,26 @@ case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 
 
 ENV_FILE="$TEMP/deployment.env"
 printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
-printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=must-not-copy\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
+printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
+
+# Provisioning reads the installed launcher in production.  A stale helper is
+# rejected before it can silently omit live Ejecutor settings from runtime.env.
+STALE_PAIR_EXEC="$TEMP/stale-pair-exec.py"
+printf '#!/usr/bin/python3\nimport sys\nif sys.argv[1:] == ["--list-allowed-keys"]: print("JAX_DB_HOST")\nelse: raise SystemExit(1)\n' > "$STALE_PAIR_EXEC"
+chmod 700 "$STALE_PAIR_EXEC"
+if JAX_PAIR_EXEC_FIXTURE="$STALE_PAIR_EXEC" "$HELPER" --plan --env "$ENV_FILE" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'stale runtime launcher was accepted' >&2; exit 1
+fi
 
 absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') AND Host='%s';\n" "$WEB" "$MIG" "$HOST" | admin)
 [ "$absent" = 0 ] || { echo 'random fixture principal already exists; refusing ownership' >&2; exit 2; }
 OWNED=1
 
-run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
-run_migrator_only() { "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_helper() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_migrator_only() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$WEB" "$HOST" | admin)" = 0
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
@@ -96,7 +105,11 @@ spec=importlib.util.spec_from_file_location('pair_exec',script); assert spec and
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 runtime = module.credential(Path(os.environ['RUNTIME_ENV']))
 assert runtime['JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA'] == 'fixture-platform-credential'
-assert 'JAX_GITHUB_TOKEN' not in runtime
+assert runtime['JAX_GITHUB_TOKEN'] == 'fixture-github-token'
+for key in ('JAX_EJECUTOR_MISIONES', 'JAX_EJECUTOR_POLITICA',
+            'JAX_EJECUTOR_TURNO_TOPE_S', 'JAX_EJECUTOR_VIGIA_ESPERA_S',
+            'JAX_PROXY_CARRIL_MODELO', 'JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS'):
+    assert key in runtime
 assert 'JAX_LAS_MANOS_CREDENCIAL_JACOBS' not in runtime
 assert module.credential(Path(os.environ['MIGRATE_ENV']))
 PY
