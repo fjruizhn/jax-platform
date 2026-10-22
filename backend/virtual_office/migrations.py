@@ -21,9 +21,9 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v11 combines pending-contract publication staging, invitation indexes, and
-# the per-table write contract.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v11-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v12 binds the per-table write contract after v11 introduced the pending
+# publication staging.  Its digest forces a migrator restamp.
+RUNTIME_REVISION = f"office-runtime-v12-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical

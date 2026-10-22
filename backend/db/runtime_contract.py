@@ -503,8 +503,11 @@ async def assert_runtime_db_contract(pool) -> None:
             await _bootstrap_metadata(cur)
             await _membership_receipt_metadata(cur)
             await _profile_revocation_metadata(cur)
-            await _module_candidate_storage_metadata(cur)
-            await _module_publication_staging_metadata(cur)
+    # MariaDB intentionally hides CHECK_CONSTRAINTS from the restricted web
+    # principal, even when it has schema SELECT.  Both module schemas are
+    # attested by the migrator before it stamps _revision; the web principal
+    # cannot change either their metadata or that stamp.  Re-querying them
+    # here would turn metadata visibility into a false readiness failure.
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")
     await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
