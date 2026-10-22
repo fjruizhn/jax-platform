@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import os
+import json
 import subprocess
 from pathlib import Path
 
@@ -117,3 +118,26 @@ def test_adoption_validator_rejects_extended_attributes(tmp_path: Path) -> None:
         pytest.skip(f"filesystem does not provide test xattrs: {error}")
     with pytest.raises(SystemExit, match="xattr or ACL"):
         adoption.validate_builder_tree(source, os.getuid())
+
+
+def test_real_jax_commit_extracts_all_internal_links_in_disposable_clone(tmp_path: Path) -> None:
+    source = Path("/home/fruiz/jax")
+    if not source.is_dir():
+        pytest.skip("local JAX source unavailable")
+    clone = tmp_path / "jax"
+    subprocess.run(["/usr/bin/git", "clone", "-q", "--no-hardlinks", str(source), str(clone)], check=True)
+    target = tmp_path / "release" / "jax"
+    tree, links = builder.extract(clone, "8da1473939af2c8178b8b632e2d77b9120556cab", target)
+    assert tree == "5a04d2ca83d6eda75d1b1b8b32d0b4f4942fb9fb"
+    assert len(links) == 16
+    assert all((target / link["path"]).is_symlink() for link in links)
+    assert (target / "las_manos" / "jacobs").is_dir()
+
+
+@pytest.mark.parametrize("target", ["/etc/passwd", "../../outside", "missing.py"])
+def test_internal_link_rejects_absolute_escape_and_dangling_targets(tmp_path: Path, target: str) -> None:
+    source, _ = _repository(tmp_path)
+    (source / "bad").symlink_to(target)
+    _git(source, "add", "."); _git(source, "commit", "-qm", "bad link")
+    with pytest.raises(SystemExit, match="unsafe symlink target"):
+        builder.extract(source, _git(source, "rev-parse", "HEAD"), tmp_path / "out")
