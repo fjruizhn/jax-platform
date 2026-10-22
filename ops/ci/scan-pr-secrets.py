@@ -42,6 +42,7 @@ EXCLUIDOS = {"ops/ci/known-secrets-ci.txt"}
 # grande no multiplique en silencio el costo de scrypt.
 MAX_TOKENS = 50000
 MAX_WORK_UNITS = 100000
+MAX_UBICACIONES = 100000
 MAX_WORKERS = 2
 SEPARADORES = re.compile(r"""[\s"'`,;()\[\]{}<>=:]+""")
 RUNS = re.compile(rb"[\x20-\x7e]{%d,}" % MIN_TOKEN)
@@ -127,7 +128,19 @@ def main():
 
     # token -> todos los archivos que lo introducen. El KDF se hace una vez
     # por token/entrada y el informe conserva cada ruta afectada.
-    cands, con_texto, archivo, en_hunk = {}, set(), None, False
+    cands, con_texto, archivo, en_hunk, ubicaciones = {}, set(), None, False, 0
+
+    def agregar_candidato(token, ruta):
+        nonlocal ubicaciones
+        rutas = cands.setdefault(token, set())
+        if ruta in rutas:
+            return
+        rutas.add(ruta)
+        ubicaciones += 1
+        if ubicaciones > MAX_UBICACIONES:
+            fallar(f"el diff supera el techo de {MAX_UBICACIONES} ubicaciones archivo-token ({ubicaciones}).",
+                   "  Se falla en vez de truncar: el mapa que conserva todas las rutas tambien debe ser acotado.")
+
     for linea in diff.splitlines():
         if linea.startswith("diff --git "):
             archivo, en_hunk = None, False
@@ -141,7 +154,7 @@ def main():
             if archivo:
                 con_texto.add(archivo)
             for t in tokens_de(linea[1:]):
-                cands.setdefault(t, set()).add(archivo)
+                agregar_candidato(t, archivo)
 
     # Binarios y rutas con el diff apagado por .gitattributes: sin lineas '+'.
     # Se leen enteros desde head. Es la clase del .pyc que origino todo esto.
@@ -151,7 +164,7 @@ def main():
         crudo = git(["show", f"{head}:{a}"], binario=True)
         for run in RUNS.findall(crudo):
             for t in tokens_de(run.decode("ascii", "replace")):
-                cands.setdefault(t, set()).add(a)
+                agregar_candidato(t, a)
 
     unicos = tuple(sorted(cands))
     if len(unicos) > MAX_TOKENS:
@@ -163,7 +176,7 @@ def main():
                "  Se falla en vez de truncar: una lista futura no puede degradar el escaneo hasta hacerlo inusable.")
 
     print(f"scan-pr-secrets: {len(archivos)} archivos, {len(unicos)} tokens unicos, "
-          f"{len(entradas)} entradas conocidas, {trabajo} comparaciones")
+          f"{ubicaciones} ubicaciones, {len(entradas)} entradas conocidas, {trabajo} comparaciones")
 
     # Una tarea por entrada, nunca por token: como maximo dos workers y no
     # miles de Futures. executor.map conserva las excepciones como fallo duro.

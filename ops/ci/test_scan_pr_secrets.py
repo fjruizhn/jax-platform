@@ -97,6 +97,19 @@ def test_rechaza_techo_de_trabajo_antes_de_hacer_kdf(monkeypatch, capsys, escane
     assert "techo de 1 comparaciones" in capsys.readouterr().out
 
 
+def test_rechaza_techo_de_ubicaciones_antes_de_hacer_kdf(monkeypatch, capsys, escaner):
+    monkeypatch.setattr(escaner, "MAX_UBICACIONES", 1)
+    llamadas = []
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda *_a, **_k: llamadas.append(1))
+    with pytest.raises(SystemExit) as salida:
+        _ejecutar(monkeypatch, escaner, ["uno.txt", "dos.txt"],
+                  _diff(("uno.txt", "token-repetido"), ("dos.txt", "token-repetido")),
+                  [(b"a" * 16, "nunca", "entrada")])
+    assert salida.value.code == 1
+    assert not llamadas
+    assert "techo de 1 ubicaciones archivo-token" in capsys.readouterr().out
+
+
 def test_binario_sin_hunk_tambien_se_compara(monkeypatch, capsys, escaner):
     def git_falso(args, binario=False):
         if args[:2] == ["diff", "--name-only"]:
@@ -125,3 +138,28 @@ def test_lista_malformada_falla_cerrado(monkeypatch, tmp_path, capsys, escaner):
         escaner.cargar()
     assert salida.value.code == 1
     assert "lista no parsea (FAIL-CLOSED)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("contenido, esperado", [("", "lista esta vacia (FAIL-CLOSED)"),
+                                                   (None, "no se pudo leer la lista (FAIL-CLOSED)")])
+def test_lista_ausente_o_vacia_falla_cerrado(monkeypatch, tmp_path, capsys, escaner, contenido, esperado):
+    lista = tmp_path / "lista.txt"
+    if contenido is None:
+        lista.unlink(missing_ok=True)
+    else:
+        lista.write_text(contenido, encoding="utf-8")
+    monkeypatch.setattr(escaner, "LISTA", str(lista))
+    with pytest.raises(SystemExit) as salida:
+        escaner.cargar()
+    assert salida.value.code == 1
+    assert esperado in capsys.readouterr().out
+
+
+def test_excepcion_del_worker_no_se_convierte_en_aprobacion(monkeypatch, escaner):
+    def explotar(_entrada, _tokens):
+        raise RuntimeError("fallo del KDF")
+
+    monkeypatch.setattr(escaner, "comparar_entrada", explotar)
+    with pytest.raises(RuntimeError, match="fallo del KDF"):
+        _ejecutar(monkeypatch, escaner, ["a.txt"], _diff(("a.txt", "token-unico")),
+                  [(b"a" * 16, "nunca", "entrada")])
