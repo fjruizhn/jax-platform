@@ -102,8 +102,8 @@ def test_office_projects_list_enforces_namespace_profile_and_external_publicatio
     client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (office, member))
     assert client.get(page, headers=_headers(member)).json()["projects"] == []
     client.portal.call(sql, "UPDATE jax_project_membership SET status='ACTIVE' WHERE project_id=%s AND user_id=%s", (office, member))
-    # Root is global only after the current verified MFA proof is reread.
-    assert client.get(page, headers=_headers(root)).json()["projects"] == []
+    # The Office root can list projects without an MFA step-up.
+    assert office in [row["id"] for row in client.get(page, headers=_headers(root)).json()["projects"]]
     external_projects = client.get(page, headers=_headers(external)).json()["projects"]
     assert [row["id"] for row in external_projects] == [office]
     assert external_projects[0]["description"] is None
@@ -543,7 +543,7 @@ def test_root_bootstrap_creates_lists_and_views_project_without_mfa_or_config(cl
     )
     assert created.status_code == 200
     project_id = created.json()["id"]
-    listed = client.get("/api/virtual-office/projects", headers=headers)
+    listed = client.get(f"/api/virtual-office/projects?after_id={project_id - 1}", headers=headers)
     assert listed.status_code == 200
     assert project_id in [project["id"] for project in listed.json()["projects"]]
     detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
