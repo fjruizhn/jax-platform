@@ -27,7 +27,7 @@ FORBIDDEN_RUNTIME_TABLES = frozenset(TABLES)
 DDL = (
     "CREATE TABLE IF NOT EXISTS office_module_artifact_snapshot_v2 ("
     "snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,module_package_digest BINARY(32) NOT NULL,client_artifact_set_digest BINARY(32) NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
-    "UNIQUE KEY uq_office_module_snapshot_v2 (snapshot_id,candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,client_artifact_set_digest,project_id,tenant_id),KEY idx_office_module_snapshot_v2_scope (project_id,tenant_id,snapshot_id),"
+    "UNIQUE KEY uq_office_module_snapshot_v2 (snapshot_id,candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,client_artifact_set_digest,project_id,tenant_id),KEY idx_office_module_snapshot_v2_revision (candidate_revision_id,candidate_id,manifest_sha256,client_artifact_set_digest),KEY idx_office_module_snapshot_v2_scope (project_id,tenant_id,snapshot_id),"
     "CONSTRAINT fk_office_module_snapshot_v2_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,client_artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_snapshot_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT chk_office_module_snapshot_v2_digest CHECK (OCTET_LENGTH(module_package_digest)=32 AND OCTET_LENGTH(client_artifact_set_digest)=32 AND module_package_digest<>client_artifact_set_digest)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
     "CREATE TABLE IF NOT EXISTS office_module_publication_request_v2 ("
     "publication_request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,snapshot_id BIGINT UNSIGNED NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,requested_by_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NULL,state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
@@ -73,6 +73,7 @@ _EXPECTED_INDEX_SHAPES = {}
 for _table, _ddl in _DDL_BY_TABLE.items():
     _primary = re.search(r"PRIMARY KEY\(([^)]*)\)", _ddl)
     if _primary: _EXPECTED_INDEX_SHAPES[(_table, "PRIMARY")] = (True, tuple(_primary.group(1).split(",")))
+    elif "PRIMARY KEY" in _ddl: _EXPECTED_INDEX_SHAPES[(_table, "PRIMARY")] = (True, (_EXPECTED_COLUMNS[_table][0],))
     for _kind, _name, _columns in re.findall(r"(UNIQUE KEY|KEY) ([a-z0-9_]+) \(([^)]*)\)", _ddl):
         _EXPECTED_INDEX_SHAPES[(_table, _name)] = (_kind == "UNIQUE KEY", tuple(_columns.split(",")))
 def _check_clauses(ddl: str) -> dict[str, str]:
@@ -138,10 +139,10 @@ async def assert_inert_release_v2_metadata(cur) -> None:
         if await cur.fetchone() != ("utf8mb4_bin",): raise RuntimeError(f"inert release v2 collation {table} is invalid")
         await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
         if tuple(row[0] for row in await cur.fetchall()) != _EXPECTED_COLUMNS[table]: raise RuntimeError(f"inert release v2 columns {table} are invalid")
-        await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,COLLATION,SUB_PART,IS_VISIBLE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
+        await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,COLLATION,SUB_PART,IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
         found_indexes: dict[str, tuple[bool, tuple[str, ...]]] = {}
-        for name, non_unique, column, collation, sub_part, visible in await cur.fetchall():
-            if collation != "A" or sub_part is not None or str(visible).upper() not in {"YES", "1"}: raise RuntimeError(f"inert release v2 index shape {table} is invalid")
+        for name, non_unique, column, collation, sub_part, ignored in await cur.fetchall():
+            if collation != "A" or sub_part is not None or str(ignored).upper() not in {"NO", "0"}: raise RuntimeError(f"inert release v2 index shape {table} is invalid")
             unique, columns = found_indexes.get(name, (not bool(non_unique), ()))
             if unique != (not bool(non_unique)): raise RuntimeError(f"inert release v2 index uniqueness {table} is invalid")
             found_indexes[name] = (unique, (*columns, column))
