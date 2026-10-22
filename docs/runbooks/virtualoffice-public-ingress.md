@@ -51,18 +51,36 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 AUDIT_SHA=SHA_DEL_VEREDICTO
 INSTALLER=/usr/local/libexec/jax-office-install-public-release.sh
 VALIDATOR=/usr/local/libexec/jax-office-validate-public-ingress.sh
+ACTIVATOR=/usr/local/libexec/jax-office-activate-public-release.sh
+ROLLBACK=/usr/local/libexec/jax-office-rollback-public-release.sh
+LOCKER=/usr/local/libexec/with-office-activation-lock.py
 installer_tmp=$(mktemp)
 validator_tmp=$(mktemp)
+activator_tmp=$(mktemp)
+rollback_tmp=$(mktemp)
+locker_tmp=$(mktemp)
 gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/install-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$installer_tmp"
 gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/validate-public-ingress.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$validator_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/activate-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$activator_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/rollback-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$rollback_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/with-office-activation-lock.py?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$locker_tmp"
 sudo install -d -o root -g root -m 0755 /usr/local/libexec
 sudo install -o root -g root -m 0755 "$installer_tmp" "$INSTALLER"
 sudo install -o root -g root -m 0755 "$validator_tmp" "$VALIDATOR"
+sudo install -o root -g root -m 0755 "$activator_tmp" "$ACTIVATOR"
+sudo install -o root -g root -m 0755 "$rollback_tmp" "$ROLLBACK"
+sudo install -o root -g root -m 0755 "$locker_tmp" "$LOCKER"
 sudo cmp "$installer_tmp" "$INSTALLER"
 sudo cmp "$validator_tmp" "$VALIDATOR"
+sudo cmp "$activator_tmp" "$ACTIVATOR"
+sudo cmp "$rollback_tmp" "$ROLLBACK"
+sudo cmp "$locker_tmp" "$LOCKER"
 sudo test "$(stat -c '%U:%G:%a' "$INSTALLER")" = root:root:755
 sudo test "$(stat -c '%U:%G:%a' "$VALIDATOR")" = root:root:755
-rm -- "$installer_tmp" "$validator_tmp"
+sudo test "$(stat -c '%U:%G:%a' "$ACTIVATOR")" = root:root:755
+sudo test "$(stat -c '%U:%G:%a' "$ROLLBACK")" = root:root:755
+sudo test "$(stat -c '%U:%G:%a' "$LOCKER")" = root:root:755
+rm -- "$installer_tmp" "$validator_tmp" "$activator_tmp" "$rollback_tmp" "$locker_tmp"
 ```
 
    Después se construye e instala con las copias root-owned:
@@ -91,9 +109,11 @@ escritura de grupo u otros, antes y después de copiar. Copia a
 entonces renombra el directorio. También ejecuta la atestación `offline` sobre
 los bytes ya instalados. Si la atestación falla, no se cambia `current`;
 investigar el release conservado antes de intentar otra instalación.
-2. Instalar la plantilla como un nuevo archivo de vhost de aaPanel, sin editar
-   el vhost de `axioma-ia.io`. Ajustar sólo rutas físicas que difieran de la
-   plantilla y registrar el diff.
+2. Preparar la plantilla root-owned fuera del directorio efectivo de aaPanel,
+sin editar ni crear todavía el vhost de `axioma-ia.io`. Ajustar sólo rutas
+físicas que difieran de la plantilla y registrar el diff. El activador del paso
+4 es quien instala atómicamente ese archivo y por ello puede capturar
+correctamente `VHOST_ABSENT` en el primer despliegue.
 3. Comprobar bytes y rutas de forma local antes de cargar nginx:
 
 ```bash
@@ -132,13 +152,41 @@ enlace creado por root dentro de `SITE_ROOT`; sus directorios padre también son
 0755 root:root. No se acepta un `manifest.json` enlazado ni ningún enlace dentro
 del release.
 
-4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
-no sobre el fragmento aislado. Luego recargar sólo después de los gates de
-producción y de tener una reversión lista.
+4. Activar con el ejecutable root-owned descargado del SHA auditado. Este toma
+la instantánea 0700 del vhost y `current` antes de tocar nada, valida el
+release directo y a través de `current`, ejecuta `nginx -t`, recarga y hace el
+smoke pre-DNS. Un fallo después del cambio restaura automáticamente la
+instantánea. No sustituir estos pasos con `ln -s` o una recarga manual.
 
 ```bash
-sudo nginx -t
+sudo /usr/local/libexec/jax-office-activate-public-release.sh \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --releases-root /opt/jax-office/virtualoffice.axioma-ia.io/releases \
+  --release /opt/jax-office/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
+  --vhost-source /RUTA/A/virtualoffice.axioma-ia.io.conf \
+  --vhost-path /RUTA/EFECTIVA/AApanel/virtualoffice.axioma-ia.io.conf \
+  --backup-root /var/lib/jax-office/activation-backups \
+  --validator /usr/local/libexec/jax-office-validate-public-ingress.sh \
+  --nginx /usr/sbin/nginx --expected-source-sha SHA_DE_FUENTE \
+  --public-ip INGRESS_PUBLIC_IP --expected-index-sha SHA256_DE_INDEX_HTML \
+  --asset-path /assets/ARCHIVO_DEL_MANIFIESTO \
+  --expected-asset-sha SHA256_DEL_ASSET --nginx-user www
 ```
+
+Instalar `jax-office-activate-public-release.sh` y
+`jax-office-rollback-public-release.sh` de la misma manera root-owned y
+comparada que el instalador y validador del paso 1. Conservar la ruta de la
+instantánea que imprime el activador hasta que la publicación quede aceptada.
+La instantánea contiene `ACTIVATION_IN_PROGRESS` desde antes del primer cambio;
+si queda tras un corte o un `SIGKILL`, no hacer otro despliegue: ejecutar la
+reversión con `--recover-incomplete` y esa ruta; el ejecutable exige el
+marcador y los bytes previo/nuevo exactos. Conservar `RECOVERY_REQUIRED` si
+ella falla.
+
+Si una reversión queda interrumpida, el mismo directorio conserva
+`ROLLBACK_IN_PROGRESS`. No volver a activar: reanudar exactamente esa
+instantánea con `--recover-rollback`, que sólo admite la combinación de vhost
+y `current` previo/nuevo registrada por ella.
 
 ## Comprobación sin DNS
 
@@ -169,16 +217,25 @@ detiene el procedimiento.
 
 ## Reversión
 
-Antes de activar, guardar en un directorio de respaldo con permisos 0700: la
-salida de `nginx -T`, el vhost previo **o el marcador `VHOST_ABSENT`**, la ruta
-canónica de `current` **o el marcador `CURRENT_ABSENT`**, y el manifiesto
-original del release anterior. La reversión lee esos marcadores: si había
-vhost/current, los restaura; si era el primer despliegue, retira únicamente el
-vhost y el enlace `current` que instaló este cambio. En ambos casos ejecuta
-`nginx -t`, recarga nginx, y comprueba con `--resolve` que el SNI de Office ya
-no sirve su hash; para un estado previo existente, también repite el smoke con
-el hash anterior. No se borra el release nuevo hasta que la reversión pasó estas
-comprobaciones.
+El activador deja en su instantánea 0700 el vhost previo **o el marcador
+`VHOST_ABSENT`**, la ruta canónica de `current` **o el marcador
+`CURRENT_ABSENT`**, el manifiesto anterior y el hash del índice nuevo. La
+reversión ejecutable usa esos datos: si había vhost/current, los restaura y
+repite el smoke con el manifiesto anterior; si era primer despliegue, retira
+solamente el vhost y el enlace `current` creados y demuestra que ya no entrega
+el hash nuevo. En ambos casos hace `nginx -t` y recarga antes de declarar éxito.
+
+```bash
+sudo /usr/local/libexec/jax-office-rollback-public-release.sh \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --vhost-path /RUTA/EFECTIVA/AApanel/virtualoffice.axioma-ia.io.conf \
+  --backup /var/lib/jax-office/activation-backups/office-activation.XXXXXXXX \
+  --nginx /usr/sbin/nginx \
+  --validator /usr/local/libexec/jax-office-validate-public-ingress.sh \
+  --public-ip INGRESS_PUBLIC_IP --new-index-sha256 SHA256_DEL_INDICE_NUEVO
+```
+
+No se borra el release nuevo hasta que la reversión pasó estas comprobaciones.
 
 ## Gates que este archivo no reemplaza
 
