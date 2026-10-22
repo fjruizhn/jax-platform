@@ -8,7 +8,11 @@ from auth.conexiones import _cortar_conexiones
 from auth.models import AuthUser
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
-from .mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_proof_in_cursor
+from .mfa import (
+    MFADenied, load_mfa_config_from_environment,
+    reload_current_self_mfa_proof_in_cursor,
+    terminalize_recovery_receipts_after_token_cut_in_cursor,
+)
 
 
 CEREMONY_KEY = "INITIAL_OFFICE_SUPERUSER"
@@ -150,6 +154,7 @@ async def bootstrap_initial_office_root(*, session_user: AuthUser, target_user_i
         )
         await cur.execute("DELETE FROM password_reset_tokens WHERE user_id=%s AND used=FALSE", (target_user_id,))
         await cur.execute("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (target_user_id,))
+        await terminalize_recovery_receipts_after_token_cut_in_cursor(cur, user_id=target_user_id)
         await cur.execute(
             "INSERT INTO office_bootstrap_state "
             "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref,completed_at) "
