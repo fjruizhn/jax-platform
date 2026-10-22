@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 
 const { login, establecerSesion, clearAvisoSesion, verify, recover, confirm } = vi.hoisted(() => ({
   login: vi.fn(), establecerSesion: vi.fn(), clearAvisoSesion: vi.fn(), verify: vi.fn(), recover: vi.fn(), confirm: vi.fn(),
@@ -12,7 +12,8 @@ vi.mock('../api/client', () => ({ default: { post: vi.fn() } }))
 import Login from './Login'
 import { I18nProvider } from '../i18n/index.jsx'
 
-function show() { return render(<I18nProvider><MemoryRouter><Login /></MemoryRouter></I18nProvider>) }
+function Location() { return <output data-testid="location">{useLocation().pathname}</output> }
+function show(entry = '/login') { return render(<I18nProvider><MemoryRouter initialEntries={[entry]}><Login /><Location /></MemoryRouter></I18nProvider>) }
 function credentials() { fireEvent.change(screen.getByPlaceholderText('nombre@empresa.com'), { target: { value: 'a@b.c' } }); fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'secret' } }); fireEvent.click(screen.getByRole('button', { name: /Entrar/i })) }
 beforeEach(() => { vi.clearAllMocks(); login.mockResolvedValue({ mfa_required: true, challenge_token: 'x'.repeat(43), expires_at: 'soon', token_type: 'mfa_challenge' }) })
 
@@ -32,6 +33,12 @@ describe('Login MFA', () => {
     show(); credentials(); await screen.findByLabelText('Código de autenticación')
     fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
     await waitFor(() => expect(establecerSesion).toHaveBeenCalledWith(expect.objectContaining({ access_token: 'new' })))
+  })
+  it('returns to Virtual Office after MFA when that was the protected destination', async () => {
+    verify.mockResolvedValue({ data: { access_token: 'new', account_class: 'OFFICE_INTERNAL' } })
+    show({ pathname: '/login', state: { from: { pathname: '/virtual-office' } } }); credentials(); await screen.findByLabelText('Código de autenticación')
+    fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/virtual-office'))
   })
   it('cancel clears the challenge and returns to password entry', async () => {
     show(); credentials(); await screen.findByLabelText('Código de autenticación'); fireEvent.click(screen.getByText(/Volver al inicio/))

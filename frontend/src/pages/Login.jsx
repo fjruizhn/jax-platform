@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import { useI18n } from '../i18n/index.jsx'
 import { useNombreDelSistema } from '../store/useApariencia'
@@ -38,6 +38,7 @@ export default function Login() {
   const { lang, setLang, t } = useI18n()
   const nombre = useNombreDelSistema(t)
   const navigate = useNavigate()
+  const location = useLocation()
   const [view, setView] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -63,7 +64,7 @@ export default function Login() {
   const clearTransient = () => { setChallenge(null); setEnrollment(null); setEnrollmentUnknown(false); setOtp(''); setRecoveryCode(''); setRecoveryPending(false); setRecoveryTerminal(false) }
   const cancel = () => { generation.current += 1; clearTransient(); setConfirmAbandonRecovery(false); setError(''); setView('login') }
   const requestCancel = () => recoveryPending ? setConfirmAbandonRecovery(true) : cancel()
-  const destination = (data) => navigate(restringida(data) ? '/account/security' : '/')
+  const destination = (data) => navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
   async function submitLogin(e) {
     e.preventDefault(); setError(''); clearAvisoSesion(); setLoading(true); const request = ++generation.current; const epoch = sessionEpoch
     try {

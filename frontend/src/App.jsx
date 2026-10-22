@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import Login from './pages/Login'
@@ -13,6 +13,7 @@ import AccountSecurity from './pages/AccountSecurity'
 import VirtualOffice from './pages/VirtualOffice'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
+import { officeSessionApi } from './api/virtualOffice'
 
 function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)
@@ -20,10 +21,40 @@ function RequireSuperadmin({ children }) {
   return children
 }
 
-function RequireOfficeAccount({ children }) {
+function respuestaOfficeValida(data, userId) {
+  return data && typeof data === 'object'
+    && data.identity?.user_id === userId
+    && typeof data.identity.tenant_id === 'number'
+    && typeof data.mfa?.verified === 'boolean'
+    && typeof data.mfa?.recent === 'boolean'
+    && typeof data.capabilities?.create_project === 'boolean'
+    && typeof data.capabilities?.administer_office === 'boolean'
+    && typeof data.capabilities?.administer_identity_security === 'boolean'
+}
+
+function RequireOfficeSession({ children }) {
   const user = useJaxStore((s) => s.user)
-  const isOfficeAccount = ['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'].includes(user?.account_class)
-  if (!isOfficeAccount) return <Navigate to="/" replace />
+  const token = useJaxStore((s) => s.token)
+  const epoch = useJaxStore((s) => s._sessionEpoch)
+  const location = useLocation()
+  const [decision, setDecision] = useState('pending')
+
+  useEffect(() => {
+    let active = true
+    const snapshot = { epoch, token, userId: user?.user_id }
+    const sigueSiendoLaMismaSesion = () => {
+      const current = useJaxStore.getState()
+      return active && current._sessionEpoch === snapshot.epoch && current.token === snapshot.token && current.user?.user_id === snapshot.userId
+    }
+    setDecision('pending')
+    officeSessionApi.read()
+      .then(({ data }) => { if (sigueSiendoLaMismaSesion()) setDecision(respuestaOfficeValida(data, snapshot.userId) ? 'allowed' : 'denied') })
+      .catch(() => { if (sigueSiendoLaMismaSesion()) setDecision('denied') })
+    return () => { active = false }
+  }, [epoch, token, user?.user_id])
+
+  if (decision === 'pending') return null
+  if (decision !== 'allowed') return <Navigate to="/account/security" replace state={{ from: location }} />
   return children
 }
 export default function App() {
@@ -51,7 +82,7 @@ export default function App() {
           path="/virtual-office"
           element={
             <RequireAuth allowOfficeAccount>
-              <RequireOfficeAccount><VirtualOffice /></RequireOfficeAccount>
+              <RequireOfficeSession><VirtualOffice /></RequireOfficeSession>
             </RequireAuth>
           }
         />

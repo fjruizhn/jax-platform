@@ -12,3 +12,10 @@ export const mfaApi = {
   regenerateCodes: (password) => api.post('/auth/mfa/recovery-codes/regenerate', { password }),
   disable: (password) => api.post('/auth/mfa/disable', { password }),
 }
+
+// La respuesta 200 de esta ruta es la única señal de entrada para Office.
+// Los datos de sesión del navegador sólo sirven para desechar una respuesta
+// tardía de otra identidad; nunca para conceder acceso.
+export const officeSessionApi = {
+  read: () => api.get('/virtual-office/session'),
+}
