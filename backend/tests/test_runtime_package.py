@@ -155,3 +155,15 @@ def test_import_leaves_durable_verified_journal(tmp_path):
     backup = tmp_path / "backup"
     rp.import_package(bundle, digest, tmp_path / "destination", backup, lambda: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
     assert json.loads((backup / "journal.json").read_text())["phase"] == "VERIFIED"
+
+
+def test_incomplete_journal_restores_snapshot(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("old")
+    backup = tmp_path / "backup"
+    rp.snapshot({"unit": target}, backup)
+    rp._journal(backup, "MUTATING", {"unit": target})
+    target.write_text("candidate")
+    rp.recover_incomplete(backup)
+    assert target.read_text() == "old"
+    assert json.loads((backup / "journal.json").read_text())["phase"] == "ROLLED_BACK"

@@ -255,8 +255,30 @@ def restore(paths: dict[str, Path], backup: Path) -> None:
         raise PackageError("RECOVERY_REQUIRED") from exc
 
 
-def _journal(backup: Path, phase: str) -> None:
-    _write_file(backup / "journal.json", json.dumps({"phase": phase}, sort_keys=True, separators=(",", ":")).encode() + b"\n", mode=0o600, uid=os.geteuid(), gid=os.getegid())
+def _journal(backup: Path, phase: str, paths: dict[str, Path] | None = None) -> None:
+    journal = backup / "journal.json"
+    try:
+        data = json.loads(journal.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    data["phase"] = phase
+    if paths is not None:
+        data["destinations"] = {name: str(path) for name, path in paths.items()}
+    _write_file(journal, json.dumps(data, sort_keys=True, separators=(",", ":")).encode() + b"\n", mode=0o600, uid=os.geteuid(), gid=os.getegid())
+
+
+def recover_incomplete(backup: Path) -> None:
+    try:
+        data = json.loads((backup / "journal.json").read_text(encoding="utf-8"))
+        phase, raw_paths = data.get("phase"), data.get("destinations")
+        if phase in {"VERIFIED", "ROLLED_BACK"}:
+            return
+        if not isinstance(raw_paths, dict) or not all(isinstance(name, str) and isinstance(path, str) and path.startswith("/") for name, path in raw_paths.items()):
+            raise ValueError("journal")
+        restore({name: Path(path) for name, path in raw_paths.items()}, backup)
+        _journal(backup, "ROLLED_BACK")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, PackageError) as exc:
+        raise PackageError("RECOVERY_REQUIRED") from exc
 
 
 def _destinations(data: dict[str, object], root: Path) -> dict[str, Path]:
@@ -288,7 +310,7 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
     data, sealed_bytes = _load(bundle, digest, owner_uid=package_owner_uid, owner_gid=package_owner_gid)
     destinations = _destinations(data, destination_root)
     snapshot(destinations, backup)
-    _journal(backup, "PREPARED")
+    _journal(backup, "PREPARED", destinations)
     declared = {entry["path"] for entry in data["payload"] if isinstance(entry, dict)}
     swaps = 0
     try:
