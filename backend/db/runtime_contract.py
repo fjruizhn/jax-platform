@@ -6,6 +6,7 @@ import secrets
 from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
 from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
 from virtual_office.migrations import assert_mfa_ledger_runtime_metadata
+from virtual_office.migrations import assert_mfa_recovery_receipt_runtime_metadata
 from virtual_office.migrations import assert_bootstrap_runtime_metadata
 
 FENCE_KEY = "office-audit-fence-v1"
@@ -68,6 +69,13 @@ async def _mfa_trigger_metadata(cur):
         await assert_mfa_ledger_runtime_metadata(cur, allow_redacted_trigger_body=True)
     except RuntimeError as error:
         raise RuntimeDbContractError("Office MFA triggers or ledger metadata are invalid") from error
+
+
+async def _mfa_recovery_receipt_metadata(cur):
+    try:
+        await assert_mfa_recovery_receipt_runtime_metadata(cur)
+    except RuntimeError as error:
+        raise RuntimeDbContractError("Office MFA recovery receipt metadata is invalid") from error
 
 
 async def _bootstrap_metadata(cur):
@@ -407,6 +415,7 @@ async def assert_runtime_db_contract(pool) -> None:
             await _trigger_metadata(cur)
             await _mfa_fence_snapshot(cur)
             await _mfa_trigger_metadata(cur)
+            await _mfa_recovery_receipt_metadata(cur)
             await _bootstrap_metadata(cur)
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")

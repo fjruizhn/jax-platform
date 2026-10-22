@@ -16,7 +16,7 @@ OFFICE_DDL = (
 )
 
 RUNTIME_COMPONENT = "virtual-office"
-RUNTIME_REVISION = "office-runtime-v6-bootstrap-state"
+RUNTIME_REVISION = "office-runtime-v7-mfa-recovery-replay"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.

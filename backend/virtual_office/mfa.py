@@ -671,7 +671,6 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         "FROM office_mfa_recovery_receipt WHERE source_code_hash=%s", (code_hash,),
     )
     receipt = await cur.fetchone()
-    now = await _db_now(cur)
     if receipt:
         # The lookup only finds the subject.  Every mutating/replay path then
         # takes the canonical user lock before the receipt lock, matching
@@ -686,6 +685,7 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         if receipt is None:
             return MFADenied("recovery_invalid", terminal=True)
         user_id, output_hash, ceremony, tv, mv, replay_until, state, ciphertext, digest = receipt
+        now = await _db_now(cur)
         if state != "REPLAYABLE" or replay_until < now or versions != (int(tv), int(mv)) or output_hash is None:
             if state == "REPLAYABLE":
                 await cur.execute(
@@ -716,7 +716,11 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
             return MFADenied("recovery_invalid", terminal=True)
         replay = _decode_recovery_receipt(ciphertext, digest, code_hash=code_hash, user_id=int(user_id),
                                           ceremony_id=bytes(ceremony), versions=versions)
-        if replay is None or not hmac.compare_digest(_hash(replay.enrollment_id), bytes(output_hash)):
+        pending_secret = _decrypted_secret_or_raise(credential[1])
+        if (replay is None or not hmac.compare_digest(_hash(replay.enrollment_id), bytes(output_hash))
+                or not hmac.compare_digest(replay.secret, pending_secret)
+                or replay.expires_at != _utc(replay_until) or replay.expires_at != _utc(challenge[4])
+                or replay.expires_at != _utc(credential[2])):
             raise MFAError("recovery_receipt_unavailable")
         return replay
 
@@ -726,6 +730,7 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         return MFADenied("recovery_invalid", terminal=True)
     user_id = int(found[0])
     versions = await _user(cur, user_id)
+    now = await _db_now(cur)
     await cur.execute("SELECT recovery_code_id,mfa_version,used_at FROM office_mfa_recovery_code WHERE code_hash=%s FOR UPDATE", (code_hash,))
     source = await cur.fetchone()
     if source and source[2] is not None:
