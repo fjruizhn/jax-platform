@@ -44,6 +44,80 @@ OFFICE_BOOTSTRAP_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_bootstrap_state BEFORE DELETE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
 )
 
+# 3C2 deliberately separates the mutable invitation lifecycle from the proof
+# that made its issuance lawful.  The bearer is identified only by SHA-256;
+# neither this schema nor its audit evidence stores a raw invitation link.
+# An issuance is inserted before its invitation in the same transaction.  The
+# invitation references it one-to-one, so acceptance can never manufacture a
+# proof row after the fact.
+OFFICE_INVITATION_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_invitation_issuance ("
+    "issuance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "token_hash BINARY(32) NOT NULL,email_normalized VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "tenant_id INT NOT NULL,project_id INT NOT NULL,recipient_group_id BIGINT UNSIGNED NULL,"
+    "target_account_class VARCHAR(24) NOT NULL,grant_role VARCHAR(24) NOT NULL,audience VARCHAR(24) NOT NULL,"
+    "issued_by_user_id INT NOT NULL,issuer_proof_event_id BIGINT UNSIGNED NOT NULL,issuer_mfa_version BIGINT NOT NULL,"
+    "issuer_mfa_at DATETIME(6) NOT NULL,issuance_authorization_event_id BIGINT UNSIGNED NOT NULL,"
+    "correlation_id BINARY(16) NOT NULL,issued_at DATETIME(6) NOT NULL,expires_at DATETIME(6) NOT NULL,"
+    "UNIQUE KEY uq_office_invitation_issuance_token (token_hash),"
+    "KEY idx_office_invitation_issuance_scope (project_id,tenant_id,expires_at,issuance_id),"
+    "KEY idx_office_invitation_issuance_expiry (expires_at,issuance_id),"
+    "CONSTRAINT fk_office_invitation_issuance_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
+    "CONSTRAINT fk_office_invitation_issuance_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id),"
+    "CONSTRAINT fk_office_invitation_issuance_issuer FOREIGN KEY (issued_by_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_invitation_issuance_proof FOREIGN KEY (issuer_proof_event_id) REFERENCES office_mfa_security_event(event_id),"
+    "CONSTRAINT fk_office_invitation_issuance_authorization FOREIGN KEY (issuance_authorization_event_id) REFERENCES office_authorization_event(event_id),"
+    "CONSTRAINT chk_office_invitation_issuance_shape CHECK ("
+    "email_normalized <> '' AND issuer_mfa_version >= 0 AND issued_at < expires_at AND "
+    "((target_account_class='OFFICE_INTERNAL' AND grant_role='COLLABORATOR' AND audience='INTERNAL' AND recipient_group_id IS NULL) OR "
+    "(target_account_class='EXTERNAL_CLIENT' AND grant_role='COLLABORATOR' AND audience='CLIENT_PUBLISHED' AND recipient_group_id IS NOT NULL))"
+    ")) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_issuance BEFORE UPDATE ON office_invitation_issuance FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_issuance append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_issuance BEFORE DELETE ON office_invitation_issuance FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_issuance append-only'",
+    "CREATE TABLE IF NOT EXISTS office_invitation ("
+    "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "issuance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "status VARCHAR(16) NOT NULL DEFAULT 'ISSUED',version BIGINT NOT NULL DEFAULT 1,"
+    "accepted_user_id INT NULL,accepted_at DATETIME(6) NULL,revoked_by_user_id INT NULL,revoked_at DATETIME(6) NULL,"
+    "UNIQUE KEY uq_office_invitation_issuance (issuance_id),"
+    "KEY idx_office_invitation_expiry (status,issuance_id,invitation_id),"
+    "CONSTRAINT fk_office_invitation_issuance FOREIGN KEY (issuance_id) REFERENCES office_invitation_issuance(issuance_id),"
+    "CONSTRAINT fk_office_invitation_accepted_user FOREIGN KEY (accepted_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_invitation_revoker FOREIGN KEY (revoked_by_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_invitation_shape CHECK (version >= 1 AND ((status='ISSUED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL) OR "
+    "(status='ACCEPTED' AND accepted_user_id IS NOT NULL AND accepted_at IS NOT NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL) OR "
+    "(status='REVOKED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NOT NULL AND revoked_at IS NOT NULL) OR "
+    "(status='EXPIRED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL)))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_invitation_event ("
+    "event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "event_kind VARCHAR(24) NOT NULL,actor_user_id INT NULL,observed_outbox_state VARCHAR(16) NULL,"
+    "correlation_id BINARY(16) NOT NULL,occurred_at DATETIME(6) NOT NULL,"
+    "KEY idx_office_invitation_event_invitation (invitation_id,occurred_at,event_id),"
+    "CONSTRAINT fk_office_invitation_event_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
+    "CONSTRAINT fk_office_invitation_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_invitation_event_shape CHECK ((event_kind='ISSUED' AND actor_user_id IS NOT NULL AND observed_outbox_state IS NULL) OR "
+    "(event_kind='ACCEPTED' AND actor_user_id IS NOT NULL AND observed_outbox_state IN ('QUEUED','CLAIMED','SMTP_ACCEPTED','UNKNOWN','CANCELLED')) OR "
+    "(event_kind='REVOKED' AND actor_user_id IS NOT NULL AND observed_outbox_state IS NULL) OR "
+    "(event_kind='EXPIRED' AND actor_user_id IS NULL AND observed_outbox_state IS NULL) OR "
+    "(event_kind='DELIVERY_OBSERVED' AND actor_user_id IS NULL AND observed_outbox_state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED')))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_event BEFORE UPDATE ON office_invitation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_event BEFORE DELETE ON office_invitation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'",
+    "CREATE TABLE IF NOT EXISTS office_invitation_outbox ("
+    "outbox_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "state VARCHAR(16) NOT NULL DEFAULT 'QUEUED',attempt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,attempt_count INT NOT NULL DEFAULT 0,cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,"
+    "payload_ciphertext MEDIUMBLOB NULL,result_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+    "claimed_at DATETIME(6) NULL,finished_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL,updated_at DATETIME(6) NOT NULL,"
+    "UNIQUE KEY uq_office_invitation_outbox_invitation (invitation_id),KEY idx_office_invitation_outbox_claim (state,created_at,outbox_id),"
+    "CONSTRAINT fk_office_invitation_outbox_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
+    "CONSTRAINT chk_office_invitation_outbox_shape CHECK ((state='QUEUED' AND attempt_id IS NULL AND attempt_count=0 AND cancel_requested=FALSE AND payload_ciphertext IS NOT NULL AND result_code IS NULL AND claimed_at IS NULL AND finished_at IS NULL) OR "
+    "(state='CLAIMED' AND attempt_id IS NOT NULL AND attempt_count>=1 AND payload_ciphertext IS NOT NULL AND claimed_at IS NOT NULL AND finished_at IS NULL) OR "
+    "(state IN ('SMTP_ACCEPTED','UNKNOWN') AND attempt_id IS NOT NULL AND attempt_count>=1 AND payload_ciphertext IS NULL AND result_code IS NOT NULL AND finished_at IS NOT NULL) OR "
+    "(state='CANCELLED' AND cancel_requested=TRUE AND payload_ciphertext IS NULL AND finished_at IS NOT NULL AND result_code IS NOT NULL))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
 # These records are the Office half of an already immutable JAX namespace
 # mutation.  They deliberately have their own receipt key: the JAX request is
 # re-authorized by the core before it can be read, and this FK makes a partial
@@ -212,6 +286,78 @@ _PROFILE_REVOCATION_CHECK_DIGESTS = {
     "chk_office_profile_revocation_shape": "f769f02954fa70ced3504de2e004fc64e0908b2286a053962efa99bc2859777a",
 }
 
+_INVITATION_ISSUANCE_TRIGGERS = {
+    "no_update_office_invitation_issuance": (
+        "office_invitation_issuance", "BEFORE", "UPDATE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_issuance append-only'",
+    ),
+    "no_delete_office_invitation_issuance": (
+        "office_invitation_issuance", "BEFORE", "DELETE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_issuance append-only'",
+    ),
+}
+_INVITATION_EVENT_TRIGGERS = {
+    "no_update_office_invitation_event": (
+        "office_invitation_event", "BEFORE", "UPDATE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'",
+    ),
+    "no_delete_office_invitation_event": (
+        "office_invitation_event", "BEFORE", "DELETE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'",
+    ),
+}
+
+_INVITATION_FOREIGN_KEYS = {
+    "office_invitation_issuance": {
+        "fk_office_invitation_issuance_scope": (("project_id", "tenant_id"), "jax_project_scope", ("project_id", "tenant_id"), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_group_project": (("recipient_group_id", "project_id"), "office_recipient_group", ("recipient_group_id", "project_id"), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_issuer": (("issued_by_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_proof": (("issuer_proof_event_id",), "office_mfa_security_event", ("event_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_authorization": (("issuance_authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    },
+    "office_invitation": {
+        "fk_office_invitation_issuance": (("issuance_id",), "office_invitation_issuance", ("issuance_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_accepted_user": (("accepted_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_revoker": (("revoked_by_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    },
+    "office_invitation_event": {
+        "fk_office_invitation_event_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_event_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    },
+    "office_invitation_outbox": {
+        "fk_office_invitation_outbox_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
+    },
+}
+
+_INVITATION_INDEXES = {
+    "office_invitation_issuance": {
+        "PRIMARY": (("issuance_id",), True),
+        "uq_office_invitation_issuance_token": (("token_hash",), True),
+        "idx_office_invitation_issuance_scope": (("project_id", "tenant_id", "expires_at", "issuance_id"), False),
+        "idx_office_invitation_issuance_expiry": (("expires_at", "issuance_id"), False),
+    },
+    "office_invitation": {
+        "PRIMARY": (("invitation_id",), True),
+        "uq_office_invitation_issuance": (("issuance_id",), True),
+        "idx_office_invitation_expiry": (("status", "issuance_id", "invitation_id"), False),
+    },
+    "office_invitation_event": {
+        "PRIMARY": (("event_id",), True),
+        "idx_office_invitation_event_invitation": (("invitation_id", "occurred_at", "event_id"), False),
+    },
+    "office_invitation_outbox": {
+        "PRIMARY": (("outbox_id",), True),
+        "uq_office_invitation_outbox_invitation": (("invitation_id",), True),
+        "idx_office_invitation_outbox_claim": (("state", "created_at", "outbox_id"), False),
+    },
+}
+_INVITATION_CHECK_DIGESTS = {
+    "chk_office_invitation_issuance_shape": "7a0b27d2b160c65f88d12283da9bcf7d5c6a8e25a1057a593cca670fe7ffa949",
+    "chk_office_invitation_shape": "c07efa419383b9f00f9bc5b0a8884aac877de5f6f5a5babd8e16cd347522abb6",
+    "chk_office_invitation_event_shape": "6ab80bb7048a8781072e84067c053d004968b8a16d5640ecf30ca583f68d9c96",
+    "chk_office_invitation_outbox_shape": "3a48763bd4d7191b0f05740198a35bcdc27facf57bd414e0e01d8ad7f40edd2e",
+}
+
 
 async def _assert_columns(cur, *, table: str, expected: tuple[tuple[object, ...], ...]) -> None:
     await cur.execute(
@@ -251,7 +397,8 @@ async def _assert_indexes(cur, *, table: str, expected: dict[str, tuple[tuple[st
 
 
 async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]],
-                                             allow_redacted_trigger_body: bool = False) -> None:
+                                             allow_redacted_trigger_body: bool = False,
+                                             primary_key: tuple[str, ...] | None = None) -> None:
     """Reject homonymous/no-op append-only guards before readiness is stamped."""
     await cur.execute(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,"
@@ -270,9 +417,61 @@ async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[
     await cur.execute(
         "SELECT COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS "
         "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX", (table,))
-    expected_primary = (("namespace", 0), ("idempotency_key", 0)) if table == "office_membership_mutation_receipt" else (("event_id", 0),)
+    expected_primary = (
+        tuple((column, 0) for column in primary_key)
+        if primary_key is not None
+        else (("namespace", 0), ("idempotency_key", 0))
+        if table == "office_membership_mutation_receipt" else (("event_id", 0),)
+    )
     if tuple(await cur.fetchall()) != expected_primary:
         raise RuntimeError(f"Office {table} primary key is invalid")
+
+
+async def assert_invitation_runtime_metadata(cur) -> None:
+    """Attest the dormant 3C2 physical contract before readiness is stamped."""
+    for table, indexes in _INVITATION_INDEXES.items():
+        if not await _table_exists(cur, table):
+            raise RuntimeError(f"Office {table} is missing")
+        await _assert_indexes(cur, table=table, expected=indexes)
+        await _assert_foreign_keys(cur, table=table, expected=_INVITATION_FOREIGN_KEYS[table])
+    await _assert_append_only_table_metadata(
+        cur, table="office_invitation_issuance", triggers=_INVITATION_ISSUANCE_TRIGGERS,
+        primary_key=("issuance_id",))
+    await _assert_append_only_table_metadata(
+        cur, table="office_invitation_event", triggers=_INVITATION_EVENT_TRIGGERS)
+    for name, expected_digest in _INVITATION_CHECK_DIGESTS.items():
+        if _check_digest(await _check_clause(cur, name)) != expected_digest:
+            raise RuntimeError(f"Office invitation check {name} is invalid")
+
+
+async def _prepare_invitation_schema(cur) -> None:
+    """Replace only an empty, never-ready rejected 3C2 shape.
+
+    The previous development branch used ``office_invitation`` for a
+    different, incomplete record.  It never reached a reviewed runtime, but
+    private databases can retain its empty DDL.  Rows are evidence: any row
+    in that incompatible shape is a hard stop, never a migration heuristic.
+    """
+    if not await _table_exists(cur, "office_invitation"):
+        return
+    if await _column_exists(cur, "office_invitation", "issuance_id"):
+        return
+    tables = (
+        "office_invitation_event", "office_invitation_outbox",
+        "office_invitation", "office_invitation_issuance",
+    )
+    for table in tables:
+        if await _table_exists(cur, table):
+            await cur.execute(f"SELECT 1 FROM {table} LIMIT 1")
+            if await cur.fetchone() is not None:
+                raise RuntimeError("Office incompatible invitation history requires reviewed migration")
+    for trigger in (
+        "no_update_office_invitation_event", "no_delete_office_invitation_event",
+        "no_update_office_invitation_issuance", "no_delete_office_invitation_issuance",
+    ):
+        await cur.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in tables:
+        await cur.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False,
@@ -1048,6 +1247,10 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_BOOTSTRAP_DDL:
         await cursor.execute(statement)
     await assert_bootstrap_runtime_metadata(cursor)
+    await _prepare_invitation_schema(cursor)
+    for statement in OFFICE_INVITATION_DDL:
+        await cursor.execute(statement)
+    await assert_invitation_runtime_metadata(cursor)
     await _upgrade_credential_shape(cursor)
     ledger = {name: _check_digest(await _check_clause(cursor, name)) for name in _MFA_V5_CHECK_SQL}
     if ledger == _CANONICAL_V4_MFA_CHECK_DIGESTS:

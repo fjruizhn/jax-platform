@@ -24,6 +24,8 @@ motor UPDATE
 office_account_profile UPDATE
 office_admin_delegation UPDATE
 office_external_relation UPDATE
+office_invitation UPDATE
+office_invitation_outbox UPDATE
 office_mfa_challenge UPDATE
 office_mfa_credential UPDATE
 office_mfa_recovery_code UPDATE,DELETE
