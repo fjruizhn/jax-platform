@@ -497,10 +497,9 @@ async def verify_mfa_step_up(
 
 @router.post("/mfa/recover")
 async def mfa_recover(req: MFARecoveryRequest, request: Request, response: Response):
-    # Recovery has no account identifier.  The shared IP limiter applies
-    # before the code hash lookup; its email bucket is intentionally not used
-    # as an account selector.
-    retry = rate_limit.LOGIN_IP_LIMITER.hit(rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
+    # Recovery has no account identifier.  Its separate bounded IP bucket is
+    # checked before the code hash lookup and cannot consume login's NAT pool.
+    retry = rate_limit.MFA_RECOVERY_IP_LIMITER.hit(rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
     if retry is not None:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail=rate_limit.DEMASIADOS_INTENTOS,

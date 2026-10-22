@@ -81,6 +81,16 @@ _MFA_FOREIGN_KEYS = {
     "fk_office_mfa_security_event_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
 }
 
+_MFA_RECEIPT_FOREIGN_KEYS = {
+    "fk_office_mfa_recovery_receipt_user": (("user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_mfa_recovery_receipt_output": (("output_challenge_hash",), "office_mfa_challenge", ("token_hash",), "RESTRICT", "RESTRICT"),
+}
+
+_MFA_RECEIPT_CHECKS = {
+    "chk_office_mfa_recovery_receipt_versions": "`token_version` >= 0 and `mfa_version` >= 0",
+    "chk_office_mfa_recovery_receipt_state": "`state` = 'CLAIMED' and `output_challenge_hash` is null and `response_ciphertext` is null and `response_digest` is null or `state` = 'REPLAYABLE' and `output_challenge_hash` is not null and `response_ciphertext` is not null and `response_digest` is not null or `state` = 'TERMINAL' and `response_ciphertext` is null and `response_digest` is null",
+}
+
 _MFA_TRIGGER_METADATA = {
     "no_update_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
     "no_delete_office_mfa_security_event": ("office_mfa_security_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'"),
@@ -390,13 +400,50 @@ async def assert_mfa_recovery_receipt_runtime_metadata(cur) -> None:
     )
     if tuple(await cur.fetchall()) != expected:
         raise RuntimeError("Office MFA recovery receipt schema is incompatible")
-    for name, columns in {
-        "PRIMARY": ("source_code_hash",),
-        "uq_office_mfa_recovery_receipt_output": ("output_challenge_hash",),
-        "idx_office_mfa_recovery_receipt_user": ("user_id", "state", "replay_until"),
-    }.items():
-        if await _index_columns(cur, "office_mfa_recovery_receipt", name) != columns:
+    for name, unique, columns in (
+        ("PRIMARY", 0, ("source_code_hash",)),
+        ("uq_office_mfa_recovery_receipt_output", 0, ("output_challenge_hash",)),
+        ("idx_office_mfa_recovery_receipt_user", 1, ("user_id", "state", "replay_until")),
+    ):
+        await cur.execute(
+            "SELECT SEQ_IN_INDEX,NON_UNIQUE,SUB_PART,COLLATION,INDEX_TYPE,IGNORED,COLUMN_NAME "
+            "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='office_mfa_recovery_receipt' AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",
+            (name,),
+        )
+        rows = tuple(await cur.fetchall())
+        if (len(rows) != len(columns) or tuple(row[0] for row in rows) != tuple(range(1, len(columns) + 1))
+                or any(int(row[1]) != unique or row[2] is not None or row[3] != "A" or row[4] != "BTREE" or row[5] != "NO" for row in rows)
+                or tuple(row[6] for row in rows) != columns):
             raise RuntimeError("Office MFA recovery receipt index is incompatible")
+    await cur.execute("SELECT DATABASE()")
+    schema_row = await cur.fetchone()
+    schema = None if schema_row is None else str(schema_row[0])
+    if not schema:
+        raise RuntimeError("Office MFA recovery receipt schema is unavailable")
+    for name, expected in _MFA_RECEIPT_FOREIGN_KEYS.items():
+        await cur.execute(
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,"
+            "r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k "
+            "JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA "
+            "AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME "
+            "WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME='office_mfa_recovery_receipt' "
+            "AND k.CONSTRAINT_NAME=%s ORDER BY k.ORDINAL_POSITION",
+            (name,),
+        )
+        rows = await cur.fetchall()
+        if not rows or rows[0][1] != schema or (
+            tuple(row[0] for row in rows), rows[0][2], tuple(row[3] for row in rows), rows[0][4], rows[0][5]
+        ) != expected:
+            raise RuntimeError("Office MFA recovery receipt foreign key is incompatible")
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (%s,%s)",
+        tuple(_MFA_RECEIPT_CHECKS),
+    )
+    checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
+    if checks != {name: _normalize_mariadb_check(clause) for name, clause in _MFA_RECEIPT_CHECKS.items()}:
+        raise RuntimeError("Office MFA recovery receipt checks are incompatible")
 
 
 async def _preflight_legacy_recovery_in_flight(cur) -> None:

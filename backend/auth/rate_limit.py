@@ -149,11 +149,18 @@ if not TRUSTED_PROXIES:
 _MAX_KEYS = int(os.getenv("JAX_LOGIN_RATE_MAX_KEYS", "20000"))
 LOGIN_IP_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_LOGIN_RATE_IP", "20/60")), max_keys=_MAX_KEYS)
 LOGIN_EMAIL_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_LOGIN_RATE_EMAIL", "10/300")), max_keys=_MAX_KEYS)
+# Recovery codes are high-value bearer capabilities and have no email field;
+# keep their pressure separate so a NAT's recovery traffic cannot deny login.
+MFA_RECOVERY_IP_LIMITER = SlidingWindowLimiter(
+    *parse_rate(os.getenv("JAX_MFA_RECOVERY_RATE_IP", "10/300")),
+    max_keys=int(os.getenv("JAX_MFA_RECOVERY_RATE_MAX_KEYS", str(_MAX_KEYS))),
+)
 
 
 def reset_login_limiters() -> None:
     LOGIN_IP_LIMITER.reset()
     LOGIN_EMAIL_LIMITER.reset()
+    MFA_RECOVERY_IP_LIMITER.reset()
 
 
 def _demasiados(retry: float) -> HTTPException:
