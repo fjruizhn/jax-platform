@@ -1388,7 +1388,7 @@ jobs:
         run: |
           # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ed589a6e75c46adfc12b68e8757847fb946209ef
+          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4961,7 +4961,7 @@ jobs:
         run: |
           # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ed589a6e75c46adfc12b68e8757847fb946209ef
+          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
