@@ -11,6 +11,11 @@ if not SECRET:
 ALGORITHM = "HS256"
 
 
+def _firmar(payload: dict) -> str:
+    """Single signing primitive for every JAX-issued token shape."""
+    return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
+
+
 # `con_iat` (frente C, 2026-09-16): el refresh lleva `iat` para que
 # api/auth.py::refresh mida su vida contra el ajuste vigente; el access no lo
 # necesita y no cambia.
@@ -34,7 +39,7 @@ def _crear_token(tipo: str, segundos: int, user_id: str, tenant_id: str, role: s
         payload["mfa_proof_event_id"] = int(mfa_proof_event_id)
         payload["mfa_version"] = int(mfa_version)
         payload["mfa_at"] = int(mfa_at)
-    return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
+    return _firmar(payload)
 
 
 # `tv` = jax_users.token_version al emitir (2026-09-12, admin usuarios etapa
@@ -88,7 +93,7 @@ def create_refresh_token_preserving_window(
         "mfa_version": int(mfa_version),
         "mfa_at": int(mfa_at),
     }
-    return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
+    return _firmar(payload)
 
 
 def decode_token(token: str) -> dict:

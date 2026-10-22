@@ -406,6 +406,17 @@ def test_auth_validation_hides_login_password_and_sets_no_store(client):
     assert response.json() == {"detail": "auth_invalid_request"}
 
 
+def test_auth_validation_keeps_missing_classic_login_fields_machine_readable(client):
+    """No credential was submitted, so older clients retain field hints."""
+    response = client.post("/api/auth/login", json={})
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert isinstance(response.json()["detail"], list)
+    assert {tuple(error["loc"]) for error in response.json()["detail"]} == {
+        ("body", "email"), ("body", "password"),
+    }
+
+
 def test_reenrollment_http_preserves_active_factor_until_confirmation(client, monkeypatch):
     _mfa_env(monkeypatch)
     user_id, _email, old_secret = client.portal.call(_active_factor_user)

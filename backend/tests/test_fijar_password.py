@@ -232,7 +232,7 @@ def test_nadie_mas_admite_la_marca():
         # The Office barrier is not an endpoint opt-in.  It must classify a
         # pending-password bearer before body/route work, then lets the route
         # dependency enforce its own finite allowlist.
-        ("auth/office_barrier.py", "dispatch"),
+        ("auth/office_barrier.py", "__call__"),
     }
 
 

@@ -110,7 +110,7 @@ class OfficeSurfaceBarrierMiddleware:
         except HTTPException:
             await self.app(scope, receive, send)
             return
-        except Exception:
+        except Exception:  # fail-soft: classifier fault becomes a terminal 401 before any classic handler runs
             # An unexpected classification failure must never turn into a
             # classic access grant for a bearer that reached this boundary.
             response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "sesion_invalida"})
