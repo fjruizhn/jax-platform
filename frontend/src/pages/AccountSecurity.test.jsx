@@ -15,7 +15,7 @@ describe('Account security MFA', () => {
   it('does not apply a late step-up token after account B replaces account A', async () => {
     let resolve; api.stepUp.mockResolvedValue({ data: { challenge_token: 'c' } }); api.stepUpVerify.mockReturnValue(new Promise((r) => { resolve = r }))
     show(); await screen.findByText('Generar códigos nuevos'); fireEvent.click(screen.getByText('Generar códigos nuevos'))
-    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'p' } }); api.regenerateCodes.mockRejectedValue({ response: { status: 403 } }); fireEvent.click(screen.getByText('Confirmar'))
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'p' } }); api.regenerateCodes.mockRejectedValue({ response: { status: 403, data: { detail: 'proof_stale' } } }); fireEvent.click(screen.getByText('Confirmar'))
     await screen.findByText('Confirmá con tu autenticador'); fireEvent.change(screen.getByRole('textbox'), { target: { value: '123456' } }); fireEvent.click(screen.getAllByText('Verificar').at(-1))
     useJaxStore.setState({ token: 'b', user: { user_id: 2, email: 'b@b.c' }, _sessionEpoch: 2 }); resolve({ data: { access_token: 'late-a' } })
     await waitFor(() => expect(useJaxStore.getState().token).toBe('b'))

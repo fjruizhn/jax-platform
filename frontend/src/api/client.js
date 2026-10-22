@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useJaxStore, SESION_VACIA } from '../store/useJaxStore'
+import { useJaxStore } from '../store/useJaxStore'
 import { codigoDe } from './errores'
 
 // Código que manda el backend (auth/middleware.py, SESION_INVALIDA) cuando
@@ -134,7 +134,11 @@ api.interceptors.response.use(
               : refreshErr?.response?.status >= 500
                 ? 'error_del_servidor'
                 : 'sesion_expirada'
-        useJaxStore.setState({ ...SESION_VACIA, avisoSesion, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
+        const cerrarSesion = useJaxStore.getState().cerrarSesionPorRefresh
+        // Compatibilidad con los consumidores aislados del store durante la
+        // migración; el store real siempre expone el reset atómico.
+        if (typeof cerrarSesion === 'function') cerrarSesion(avisoSesion)
+        else useJaxStore.setState({ token: null, user: null, proyectoActivo: null, avisoSesion, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
       }
     }
     return Promise.reject(err)
