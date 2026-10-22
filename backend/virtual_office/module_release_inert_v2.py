@@ -269,8 +269,10 @@ async def _assert_inert_release_v2_tables(cur, tables) -> None:
         if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_CHECKS[table]: raise RuntimeError(f"inert release v2 checks {table} are invalid")
         await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK')", (table,))
         if {name: _normalize_clause(clause) for name, clause in await cur.fetchall()} != _EXPECTED_CHECK_CLAUSES[table]: raise RuntimeError(f"inert release v2 check clauses {table} are invalid")
-        await cur.execute("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
-        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"))
+        await cur.execute("SELECT CURRENT_USER(),@@SESSION.sql_mode")
+        definer, sql_mode = await cur.fetchone()
+        await cur.execute("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,DEFINER,SQL_MODE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
+        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", definer, sql_mode), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", definer, sql_mode))
         if tuple(tuple(row) for row in await cur.fetchall()) != expected_triggers: raise RuntimeError(f"inert release v2 triggers {table} are invalid")
 
 async def _database_name(cur) -> str:
