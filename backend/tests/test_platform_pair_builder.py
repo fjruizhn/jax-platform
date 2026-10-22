@@ -46,9 +46,10 @@ def test_extracts_regular_blobs_from_exact_clean_git_tree(tmp_path: Path) -> Non
     target = tmp_path / "target"
     target.mkdir()
 
-    tree = builder.extract(source, commit, target)
+    tree, links = builder.extract(source, commit, target)
 
     assert tree == _git(source, "rev-parse", f"{commit}^{{tree}}")
+    assert links == []
     assert (target / "backend" / "main.py").read_text(encoding="utf-8") == "app = object()\n"
     assert (target / "backend" / "main.py").stat().st_mode & 0o777 == 0o644
 
@@ -58,8 +59,10 @@ def test_rejects_symlink_git_entry_before_writing_any_source_bytes(tmp_path: Pat
     target = tmp_path / "target"
     target.mkdir()
 
-    with pytest.raises(SystemExit, match="unsafe tree entry"):
-        builder.extract(source, commit, target)
+    tree, links = builder.extract(source, commit, target)
+    assert tree
+    assert links[0]["target"] == "backend/main.py"
+    assert (target / "linked.py").is_symlink()
 
 
 def test_rejects_alternate_object_database_and_dirty_checkout(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import subprocess
 import sys
 from pathlib import Path
@@ -56,13 +57,14 @@ def repo_tree(repo: Path, commit: str) -> tuple[str, list[bytes]]:
     if actual != commit:
         die("commit mismatch")
     tree = run("rev-parse", f"{commit}^{{tree}}", cwd=repo).decode("ascii").strip()
-    rows = run("ls-tree", "-rz", "-r", commit, cwd=repo).split(b"\0")[:-1]
+    rows = run("ls-tree", "-rz", "-r", "-t", commit, cwd=repo).split(b"\0")[:-1]
     return tree, rows
 
 
-def extract(repo: Path, commit: str, destination: Path) -> str:
+def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[str, str]]]:
     """Write only regular Git blobs; never consult a checkout worktree path."""
     tree, rows = repo_tree(repo, commit)
+    entries: dict[str, tuple[bytes, bytes, bytes]] = {}
     for row in rows:
         metadata, raw_name = row.split(b"\t", 1)
         mode, object_type, object_id = metadata.split()
@@ -71,14 +73,34 @@ def extract(repo: Path, commit: str, destination: Path) -> str:
         except UnicodeDecodeError:
             die("non-UTF-8 tree path")
         path = Path(name)
-        if path.is_absolute() or ".." in path.parts or object_type != b"blob" or mode not in REGULAR_MODES or len(object_id) != 40:
+        if path.is_absolute() or ".." in path.parts or len(object_id) != 40 or (object_type == b"tree" and mode != b"040000") or (object_type == b"blob" and mode not in REGULAR_MODES | {b"120000"}):
             die("unsafe tree entry")
+        entries[name] = (mode, object_type, object_id)
+    links: list[dict[str, str]] = []
+    for name, (mode, object_type, object_id) in entries.items():
+        if object_type != b"blob" or mode not in REGULAR_MODES:
+            continue
+        path = Path(name)
         output = destination / path
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("xb") as target:
             target.write(run("cat-file", "blob", object_id.decode("ascii"), cwd=repo))
         output.chmod(0o755 if mode == b"100755" else 0o644)
-    return tree
+    for name, (mode, object_type, object_id) in entries.items():
+        if mode != b"120000":
+            continue
+        target = run("cat-file", "blob", object_id.decode("ascii"), cwd=repo).decode("utf-8")
+        if not target or target.startswith("/") or "\x00" in target:
+            die("unsafe symlink target")
+        target_path = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
+        target_entry = entries.get(target_path)
+        if target_entry is None or target_entry[0] == b"120000" or target_entry[1] not in (b"blob", b"tree"):
+            die("unsafe symlink target")
+        output = destination / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.symlink_to(target)
+        links.append({"path": name, "mode": "120000", "blob_oid": object_id.decode("ascii"), "target": target, "target_path": target_path, "target_mode": target_entry[0].decode("ascii"), "target_oid": target_entry[2].decode("ascii")})
+    return tree, links
 
 
 def wheelhouse_digest(wheelhouse: Path) -> str:
@@ -122,14 +144,14 @@ def main() -> None:
     jax_output = arguments.out / "jax"
     platform_output.mkdir()
     jax_output.mkdir()
-    platform_tree = extract(arguments.platform, arguments.platform_commit, platform_output)
-    jax_tree = extract(arguments.jax, arguments.jax_commit, jax_output)
+    platform_tree, platform_links = extract(arguments.platform, arguments.platform_commit, platform_output)
+    jax_tree, jax_links = extract(arguments.jax, arguments.jax_commit, jax_output)
     venv = platform_output / "backend" / ".venv"
     subprocess.run([arguments.python, "-m", "venv", "--copies", str(venv)], check=True, env=SAFE_ENV)
     subprocess.run([str(venv / "bin" / "pip"), "install", "--no-index", f"--find-links={arguments.wheelhouse}", "--require-hashes", "-r", str(arguments.lock)], check=True, env=SAFE_ENV)
     with (arguments.out / "freeze.txt").open("xb") as freeze:
         subprocess.run([str(venv / "bin" / "pip"), "freeze", "--all"], check=True, stdout=freeze, env=SAFE_ENV)
-    attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
+    attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "platform_links": platform_links, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "jax_links": jax_links, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
     (arguments.out / "build-attestation.json").write_text(json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
