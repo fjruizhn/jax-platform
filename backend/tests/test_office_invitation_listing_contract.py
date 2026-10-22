@@ -79,7 +79,7 @@ def test_listing_gates_before_confidential_email_query(monkeypatch):
     async def denied(*_args, **_kwargs):
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
 
-    monkeypatch.setattr("virtual_office.invitations._issuer_snapshot", denied)
+    monkeypatch.setattr("virtual_office.invitations._session_authorization_snapshot", denied)
     with pytest.raises(InvitationError) as rejected:
         asyncio.run(list_active_invitations_in_cursor(
             cursor, actor_user_id=7, project_id=12, proof_event_id=9,
@@ -137,9 +137,9 @@ def test_listing_uses_limit_plus_one_live_project_index_keyset(monkeypatch):
     ])
 
     async def allowed(*_args, **_kwargs):
-        return object(), object(), 1, 1
+        return object(), 1, 1
 
-    monkeypatch.setattr("virtual_office.invitations._issuer_snapshot", allowed)
+    monkeypatch.setattr("virtual_office.invitations._session_authorization_snapshot", allowed)
     page, next_cursor = asyncio.run(list_active_invitations_in_cursor(
         cursor, actor_user_id=7, project_id=12, proof_event_id=9,
         mfa_config=object(), limit=1, cursor=None,
@@ -228,7 +228,7 @@ def test_http_list_rejects_malformed_cursor_before_confidential_query(monkeypatc
         yield _Cursor()
 
     async def allowed(*_args, **_kwargs):
-        return object(), object(), 1, 1
+        return object(), 1, 1
 
     cursor = _opaque_cursor({
         "domain": "office-invitation-list/v1", "project_id": 12,
@@ -237,7 +237,7 @@ def test_http_list_rejects_malformed_cursor_before_confidential_query(monkeypatc
     })
     monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
     monkeypatch.setattr(invitation_api, "load_mfa_config_from_environment", lambda: object())
-    monkeypatch.setattr("virtual_office.invitations._issuer_snapshot", allowed)
+    monkeypatch.setattr("virtual_office.invitations._session_authorization_snapshot", allowed)
     from starlette.responses import Response
     with pytest.raises(HTTPException) as rejected:
         asyncio.run(invitation_api.list_invitations(12, Response(), 25, cursor, _user()))
