@@ -179,7 +179,10 @@ async def _apply_inert_release_v2_locked(cur) -> None:
     await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (STAMP_TABLE,))
     stamp_exists = await cur.fetchone() is not None
     if present == set(TABLES):
-        await assert_inert_release_v2_metadata(cur)
+        if stamp_exists:
+            await assert_inert_release_v2_metadata(cur)
+        else:
+            await _assert_inert_release_v2_tables(cur, TABLES)
         if not stamp_exists:
             for table in TABLES:
                 await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
@@ -201,7 +204,7 @@ async def _assert_release_stamp(cur) -> None:
     await cur.execute("SELECT ENGINE,TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (STAMP_TABLE,))
     if await cur.fetchone() != ("InnoDB", "utf8mb4_bin"): raise RuntimeError("inert release v2 stamp metadata is invalid")
     await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (STAMP_TABLE,))
-    if await cur.fetchall() != (("component","varchar(64)","NO",None,"","ascii","ascii_bin"),("version","varchar(16)","NO",None,"","ascii","ascii_bin"),("created_at","datetime(6)","NO","current_timestamp(6)","",None,None)): raise RuntimeError("inert release v2 stamp columns are invalid")
+    if await cur.fetchall() != (("component","varchar(64)","NO",None,"","ascii","ascii_bin"),("version","varchar(16)","NO",None,"","ascii","ascii_bin"),("trigger_definer","varchar(288)","NO",None,"","ascii","ascii_bin"),("trigger_sql_mode","varchar(1024)","NO",None,"","ascii","ascii_bin"),("created_at","datetime(6)","NO","current_timestamp(6)","",None,None)): raise RuntimeError("inert release v2 stamp columns are invalid")
     await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,INDEX_TYPE,SUB_PART,COLLATION,IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (STAMP_TABLE,))
     if await cur.fetchall() != (("PRIMARY",0,"component","BTREE",None,"A","NO"),): raise RuntimeError("inert release v2 stamp index is invalid")
     await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (STAMP_TABLE,))
@@ -210,16 +213,21 @@ async def _assert_release_stamp(cur) -> None:
     if await cur.fetchall(): raise RuntimeError("inert release v2 stamp triggers are invalid")
     await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME=%s AND tc.CONSTRAINT_TYPE='CHECK'", (STAMP_TABLE,))
     if await cur.fetchall() != (("chk_office_module_release_v2_stamp", f"`component` = '{_STAMP_COMPONENT}' and `version` = '{_STAMP_VERSION}'"),): raise RuntimeError("inert release v2 stamp check is invalid")
-    await cur.execute(f"SELECT component,version FROM {STAMP_TABLE}")
-    if await cur.fetchall() != ((_STAMP_COMPONENT, _STAMP_VERSION),): raise RuntimeError("inert release v2 stamp is invalid")
+    await cur.execute(f"SELECT component,version,trigger_definer,trigger_sql_mode FROM {STAMP_TABLE}")
+    rows = await cur.fetchall()
+    if len(rows) != 1 or rows[0][0:2] != (_STAMP_COMPONENT, _STAMP_VERSION) or not rows[0][2] or rows[0][3] is None:
+        raise RuntimeError("inert release v2 stamp is invalid")
+    return rows[0][2], rows[0][3]
 
 async def _ensure_release_stamp(cur) -> None:
     await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (STAMP_TABLE,))
     columns = tuple(row[0] for row in await cur.fetchall())
-    if columns and columns != ("component", "version", "created_at"):
+    if columns and columns != ("component", "version", "trigger_definer", "trigger_sql_mode", "created_at"):
         raise RuntimeError("inert release v2 stamp columns are invalid")
-    await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
-    await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version) VALUES (%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION))
+    await cur.execute("SELECT CURRENT_USER(),@@SESSION.sql_mode")
+    trigger_definer, trigger_sql_mode = await cur.fetchone()
+    await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,trigger_definer VARCHAR(288) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,trigger_sql_mode VARCHAR(1024) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
+    await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version,trigger_definer,trigger_sql_mode) VALUES (%s,%s,%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION, trigger_definer, trigger_sql_mode))
     await _assert_release_stamp(cur)
 
 async def _assert_release_prefix(cur, count: int) -> None:
@@ -237,9 +245,10 @@ async def _assert_release_prefix(cur, count: int) -> None:
         await _assert_inert_release_v2_tables(cur, TABLES[:count])
 
 async def assert_inert_release_v2_metadata(cur) -> None:
-    await _assert_inert_release_v2_tables(cur, TABLES)
+    trigger_definer, trigger_sql_mode = await _assert_release_stamp(cur)
+    await _assert_inert_release_v2_tables(cur, TABLES, trigger_definer, trigger_sql_mode)
 
-async def _assert_inert_release_v2_tables(cur, tables) -> None:
+async def _assert_inert_release_v2_tables(cur, tables, trigger_definer=None, trigger_sql_mode=None) -> None:
     for table in tables:
         await cur.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if await cur.fetchone() != ("InnoDB",): raise RuntimeError(f"inert release v2 table {table} is invalid")
@@ -269,10 +278,14 @@ async def _assert_inert_release_v2_tables(cur, tables) -> None:
         if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_CHECKS[table]: raise RuntimeError(f"inert release v2 checks {table} are invalid")
         await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK')", (table,))
         if {name: _normalize_clause(clause) for name, clause in await cur.fetchall()} != _EXPECTED_CHECK_CLAUSES[table]: raise RuntimeError(f"inert release v2 check clauses {table} are invalid")
-        await cur.execute("SELECT CURRENT_USER(),@@SESSION.sql_mode")
-        definer, sql_mode = await cur.fetchone()
+        if trigger_definer is None or trigger_sql_mode is None:
+            # Prefixes precede the durable stamp.  They are inspected only
+            # within this migration invocation, so its trigger context is the
+            # only valid expectation at that point.
+            await cur.execute("SELECT CURRENT_USER(),@@SESSION.sql_mode")
+            trigger_definer, trigger_sql_mode = await cur.fetchone()
         await cur.execute("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,DEFINER,SQL_MODE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
-        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", definer, sql_mode), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", definer, sql_mode))
+        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", trigger_definer, trigger_sql_mode), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", trigger_definer, trigger_sql_mode))
         if tuple(tuple(row) for row in await cur.fetchall()) != expected_triggers: raise RuntimeError(f"inert release v2 triggers {table} are invalid")
 
 async def _database_name(cur) -> str:

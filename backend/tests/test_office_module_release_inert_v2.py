@@ -108,7 +108,17 @@ def test_mariadb_v2_is_resumable_append_only_and_mfa_optional(client):
                     await cur.execute("INSERT INTO office_module_release_operation_v2 (publication_request_id,project_id,tenant_id,module_id,module_version,creative_approval_id,rights_verdict_id,office_release_signer,state) VALUES (%s,11,12,'studio','1.0.0',%s,%s,'office-release:one','PENDING_CONTRACT')", (request, other_approval, verdict))
                 with pytest.raises(OperationalError, match="append-only"):
                     await cur.execute("UPDATE office_module_publication_request_v2 SET state='PENDING_CONTRACT' WHERE publication_request_id=1")
+                # The ready stamp binds trigger creation metadata.  A later
+                # migration caller with a different session mode must inspect
+                # that durable contract, rather than accepting its own mode.
+                await cur.execute("SET SESSION sql_mode='' ")
                 await module.assert_inert_release_v2_metadata(cur)
+                # A forged stamp cannot make re-created triggers acceptable:
+                # the physical trigger metadata must still equal the sealed
+                # creation context.
+                await cur.execute(f"UPDATE {module.STAMP_TABLE} SET trigger_sql_mode='ANSI'")
+                with pytest.raises(RuntimeError, match="triggers.*invalid"):
+                    await module.assert_inert_release_v2_metadata(cur)
         finally:
             async with conn.cursor() as cur: await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
             conn.close()
