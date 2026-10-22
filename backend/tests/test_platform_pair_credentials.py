@@ -1,5 +1,7 @@
 """Credential parser keeps service input separate from inherited environment."""
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 import pytest
 
@@ -15,3 +17,13 @@ def test_credential_parser_accepts_values_with_equals_and_spaces_once(tmp_path):
 def test_credential_parser_rejects_unknown_duplicate_or_malformed_input(tmp_path,text):
     path=tmp_path/'runtime.env'; path.write_text(text)
     with pytest.raises(SystemExit): pair_exec.credential(path)
+
+def test_isolated_child_uses_real_venv_site_packages(tmp_path):
+    wheelhouse=Path('/home/fruiz/encargos-codex/office-worker-wheelhouse-20261022')
+    if not wheelhouse.is_dir(): pytest.skip('pinned wheelhouse unavailable')
+    venv=tmp_path/'venv'
+    subprocess.run([sys.executable,'-m','venv',str(venv)],check=True)
+    python=venv/'bin/python'
+    subprocess.run([str(python),'-m','pip','install','--no-index',f'--find-links={wheelhouse}','uvicorn==0.51.0'],check=True)
+    assert subprocess.run([str(python),'-I','-c','import uvicorn'],check=False).returncode == 0
+    assert subprocess.run([str(python),'-I','-S','-c','import uvicorn'],check=False).returncode != 0

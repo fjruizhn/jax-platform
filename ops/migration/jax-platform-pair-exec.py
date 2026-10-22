@@ -44,7 +44,9 @@ def main():
     child=credential(Path(cred)); child['PATH']='/usr/bin:/bin'; child['JAX_REPO_PATH']=str(release/'jax')
     backend=release/'jax-platform'/'backend'; os.chdir(backend)
     python=str(backend/'.venv/bin/python')
-    argv=[python,'-I','-S','-m','uvicorn','main:app','--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-S','-m','db.migrate']
+    # -I keeps the child environment isolated; do not add -S here because the
+    # venv's own site-packages contains uvicorn and the application modules.
+    argv=[python,'-I','-m','uvicorn','main:app','--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-m','db.migrate']
     if mode=='web' and not child['JAX_TRUSTED_PROXIES']: die()
     os.execve(python,argv,child)
 if __name__ == '__main__': main()
