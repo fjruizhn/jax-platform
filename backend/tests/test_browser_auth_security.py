@@ -21,11 +21,13 @@ CLASSIC_ORIGIN = f"https://{CLASSIC_HOST}"
 
 def _app():
     from auth.browser_security import BrowserOriginGuard, HostBoundCORSMiddleware
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     bindings = {CLASSIC_HOST: CLASSIC_ORIGIN, OFFICE_HOST: OFFICE_ORIGIN}
     app = FastAPI()
     app.add_middleware(HostBoundCORSMiddleware, host_origins=bindings)
     app.add_middleware(BrowserOriginGuard, host_origins=bindings)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*bindings, "127.0.0.1", "localhost"])
 
     @app.post("/api/auth/logout")
     async def logout():
@@ -82,6 +84,21 @@ def test_bearer_unsafe_request_without_origin_stays_available_to_non_browser_cli
     assert response.status_code == 200
 
 
+def test_operational_health_host_is_trusted_without_receiving_browser_cors_capability():
+    response = TestClient(_app()).get("/api/auth/me", headers={"Host": "127.0.0.1"})
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_operational_host_rejects_browser_origin_on_unsafe_requests():
+    response = TestClient(_app()).post(
+        "/api/auth/logout", headers={"Host": "localhost", "Origin": OFFICE_ORIGIN}
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "origin_not_allowed"}
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_refresh_cookie_set_and_delete_share_browser_security_attributes(monkeypatch):
     from auth import browser_security
     from starlette.responses import Response
@@ -110,6 +127,29 @@ def _production_environment(monkeypatch, bindings=f"{CLASSIC_HOST}={CLASSIC_ORIG
     monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", OFFICE_ORIGIN)
     monkeypatch.setenv("JAX_REFRESH_COOKIE_SECURE", "true")
     monkeypatch.setenv("JAX_TRUSTED_PROXIES", "127.0.0.1")
+    monkeypatch.setenv("JAX_OPERATIONAL_TRUSTED_HOSTS", "127.0.0.1,localhost")
+
+
+def test_development_accepts_canonical_vite_origin_with_port(monkeypatch):
+    from auth.browser_security import load_browser_security_config
+
+    monkeypatch.setenv("JAX_ENVIRONMENT", "development")
+    monkeypatch.setenv("FRONTEND_ORIGIN", "http://localhost:5173")
+    monkeypatch.delenv("JAX_PUBLIC_HOST_ORIGIN_BINDINGS", raising=False)
+    monkeypatch.delenv("OFFICE_PUBLIC_ORIGIN", raising=False)
+    monkeypatch.delenv("JAX_OPERATIONAL_TRUSTED_HOSTS", raising=False)
+    config = load_browser_security_config()
+    assert dict(config.host_origins) == {"localhost": "http://localhost:5173"}
+    assert config.allowed_hosts == ("localhost",)
+
+
+def test_production_requires_separate_operational_host_allowlist(monkeypatch):
+    from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config
+
+    _production_environment(monkeypatch)
+    monkeypatch.delenv("JAX_OPERATIONAL_TRUSTED_HOSTS")
+    with pytest.raises(BrowserSecurityConfigError):
+        load_browser_security_config()
 
 
 @pytest.mark.parametrize("environment", (None, "typo"))
@@ -129,6 +169,7 @@ def test_public_security_config_requires_explicit_production_mode(monkeypatch, e
     "bindings, office_origin",
     [
         (f"{OFFICE_HOST}=http://{OFFICE_HOST}", f"http://{OFFICE_HOST}"),
+        (f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}=https://{OFFICE_HOST}:8443", f"https://{OFFICE_HOST}:8443"),
         (f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}=https://other.example.test", OFFICE_ORIGIN),
     ],
 )
@@ -146,6 +187,18 @@ def test_production_requires_a_literal_trusted_proxy_address(monkeypatch):
 
     _production_environment(monkeypatch)
     monkeypatch.setenv("JAX_TRUSTED_PROXIES", "*")
+    with pytest.raises(BrowserSecurityConfigError):
+        load_browser_security_config()
+
+
+def test_operational_host_allowlist_rejects_ports_and_public_hosts(monkeypatch):
+    from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config
+
+    _production_environment(monkeypatch)
+    monkeypatch.setenv("JAX_OPERATIONAL_TRUSTED_HOSTS", f"127.0.0.1,{OFFICE_HOST}")
+    with pytest.raises(BrowserSecurityConfigError):
+        load_browser_security_config()
+    monkeypatch.setenv("JAX_OPERATIONAL_TRUSTED_HOSTS", "127.0.0.1:8080")
     with pytest.raises(BrowserSecurityConfigError):
         load_browser_security_config()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from urllib.parse import urlsplit
@@ -20,13 +21,14 @@ class BrowserSecurityConfigError(RuntimeError):
 @dataclass(frozen=True)
 class BrowserSecurityConfig:
     host_origins: MappingProxyType
+    operational_hosts: tuple[str, ...]
     office_origin: str | None
     cookie_secure: bool
     trusted_proxies: tuple[str, ...]
 
     @property
     def allowed_hosts(self) -> tuple[str, ...]:
-        return tuple(self.host_origins)
+        return tuple(dict.fromkeys((*self.host_origins, *self.operational_hosts)))
 
 
 def _environment() -> str:
@@ -38,15 +40,36 @@ def _environment() -> str:
 
 def _validate_origin(value: str, *, production: bool) -> tuple[str, str]:
     parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise BrowserSecurityConfigError("public origins must use valid ports") from exc
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
-            or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port):
+            or parsed.password or parsed.path or parsed.query or parsed.fragment):
         raise BrowserSecurityConfigError("public origins must be exact scheme and host pairs")
-    if production and parsed.scheme != "https":
-        raise BrowserSecurityConfigError("production public origins must use HTTPS")
-    canonical = f"{parsed.scheme}://{parsed.hostname}"
+    host = _validate_host(parsed.hostname)
+    if production and (parsed.scheme != "https" or port is not None):
+        raise BrowserSecurityConfigError("production public origins must use HTTPS without a port")
+    canonical = f"{parsed.scheme}://{host}"
+    if port is not None:
+        canonical = f"{canonical}:{port}"
     if value != canonical:
         raise BrowserSecurityConfigError("public origins must be canonical exact origins")
-    return parsed.hostname, canonical
+    return host, canonical
+
+
+def _validate_host(value: str) -> str:
+    host = value.strip().lower()
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if not host or len(host) > 253 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host):
+        raise BrowserSecurityConfigError("trusted hosts must be exact hostnames or literal IP addresses")
+    if any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+           for label in host.split(".")):
+        raise BrowserSecurityConfigError("trusted hosts must be exact hostnames or literal IP addresses")
+    return host
 
 
 def _bindings_from_environment(*, production: bool) -> dict[str, str]:
@@ -65,11 +88,26 @@ def _bindings_from_environment(*, production: bool) -> dict[str, str]:
         if not separator or not host or not origin:
             raise BrowserSecurityConfigError("JAX_PUBLIC_HOST_ORIGIN_BINDINGS uses host=origin pairs")
         origin_host, canonical_origin = _validate_origin(origin.strip(), production=production)
-        host = host.strip().lower()
+        host = _validate_host(host)
         if host != origin_host or host in bindings:
             raise BrowserSecurityConfigError("each public host must bind once to its own exact origin")
         bindings[host] = canonical_origin
     return bindings
+
+
+def _operational_hosts(*, production: bool, public_hosts: set[str]) -> tuple[str, ...]:
+    values = tuple(
+        _validate_host(value)
+        for value in os.getenv("JAX_OPERATIONAL_TRUSTED_HOSTS", "").split(",")
+        if value.strip()
+    )
+    if production and not values:
+        raise BrowserSecurityConfigError("production requires JAX_OPERATIONAL_TRUSTED_HOSTS")
+    if len(values) != len(set(values)):
+        raise BrowserSecurityConfigError("JAX_OPERATIONAL_TRUSTED_HOSTS contains duplicates")
+    if public_hosts.intersection(values):
+        raise BrowserSecurityConfigError("operational trusted hosts must be separate from public hosts")
+    return values
 
 
 def _trusted_proxies(*, production: bool) -> tuple[str, ...]:
@@ -113,7 +151,9 @@ def load_browser_security_config() -> BrowserSecurityConfig:
         if bindings.get(office_host) != office_origin:
             raise BrowserSecurityConfigError("OFFICE_PUBLIC_ORIGIN must match a declared host-origin binding")
     return BrowserSecurityConfig(
-        host_origins=MappingProxyType(bindings), office_origin=office_origin,
+        host_origins=MappingProxyType(bindings),
+        operational_hosts=_operational_hosts(production=production, public_hosts=set(bindings)),
+        office_origin=office_origin,
         cookie_secure=_cookie_secure_from_environment(production=production),
         trusted_proxies=_trusted_proxies(production=production),
     )
@@ -180,7 +220,8 @@ class HostBoundCORSMiddleware(BaseHTTPMiddleware):
         self._host_origins = dict(host_origins)
 
     def _matches(self, request: Request) -> bool:
-        return request.headers.get("origin") == self._host_origins.get(_request_host(request))
+        origin = request.headers.get("origin")
+        return origin is not None and origin == self._host_origins.get(_request_host(request))
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
