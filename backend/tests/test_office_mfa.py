@@ -590,3 +590,290 @@ def test_enrollment_rows_and_receipt_share_one_db_expiry(client):
         )
         assert rows == ((start.expires_at.replace(tzinfo=None), start.expires_at.replace(tzinfo=None)),)
     client.portal.call(scenario)
+
+
+def test_recovery_pending_origin_survives_token_only_session_revocation(client):
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            recovery = await consume_recovery_code_in_cursor(
+                cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"8" * 16,
+            )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await start_recovery_enrollment_in_cursor(
+                cur, recovery_capability_token=recovery.token, config=CONFIG,
+            )
+        original = await sql(
+            "SELECT pending_enrollment_id,pending_secret_ciphertext FROM office_mfa_credential "
+            "WHERE user_id=%s", (user_id,), True,
+        )
+        enrollment_count = await sql(
+            "SELECT COUNT(*) FROM office_mfa_challenge WHERE user_id=%s AND purpose='ENROLLMENT'",
+            (user_id,), True,
+        )
+        await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+        await sql(
+            "UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=NOW(6),"
+            "expires_at=DATE_SUB(NOW(6),INTERVAL 1 SECOND) "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (pending.enrollment_id,),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            denied = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert isinstance(denied, MFADenied) and denied.code == "recovery_required"
+        assert await sql(
+            "SELECT pending_enrollment_id,pending_secret_ciphertext FROM office_mfa_credential "
+            "WHERE user_id=%s", (user_id,), True,
+        ) == original
+        assert await sql(
+            "SELECT COUNT(*) FROM office_mfa_challenge WHERE user_id=%s AND purpose='ENROLLMENT'",
+            (user_id,), True,
+        ) == enrollment_count
+    client.portal.call(scenario)
+
+
+def test_first_pending_origin_anchor_fails_closed_when_its_subject_or_shape_is_wrong(client):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        other, _ = await crear_usuario()
+        await sql(
+            "UPDATE office_mfa_challenge SET user_id=%s WHERE token_hash=UNHEX(SHA2(%s,256))",
+            (other, first.enrollment_id),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            denied = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert isinstance(denied, MFADenied)
+        assert denied.code == "pending_origin_invalid"
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (("purpose", "LOGIN"), ("expected_mfa_version", 999)),
+)
+def test_first_pending_origin_anchor_wrong_purpose_or_mfa_fails_closed(client, column, value):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        await sql(
+            f"UPDATE office_mfa_challenge SET {column}=%s WHERE token_hash=UNHEX(SHA2(%s,256))",
+            (value, first.enrollment_id),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            denied = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert isinstance(denied, MFADenied) and denied.code == "pending_origin_invalid"
+    client.portal.call(scenario)
+
+
+def test_first_origin_pending_restart_survives_token_only_revocation_after_its_window(client):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+        await sql(
+            "UPDATE office_mfa_challenge SET state='EXPIRED',expires_at=DATE_SUB(NOW(6),INTERVAL 1 SECOND) "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (first.enrollment_id,),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            restarted = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert not isinstance(restarted, MFADenied)
+        assert restarted.enrollment_id != first.enrollment_id
+    client.portal.call(scenario)
+
+
+def test_pending_origin_queries_use_primary_key_and_proof_index_without_sorting(client):
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+        anchor = await sql(
+            "EXPLAIN SELECT user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at,attempt_count,max_attempts "
+            "FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256)) FOR UPDATE",
+            (first.enrollment_id,), True,
+        )
+        lineage = await sql(
+            "EXPLAIN SELECT event_id FROM office_mfa_security_event FORCE INDEX (idx_office_mfa_security_event_proof) "
+            "WHERE subject_user_id=%s AND purpose='RECOVERY' AND token_version=0 AND mfa_version=0 "
+            "AND event_kind='MFA_STATE_CHANGE' AND operation='RECOVERY_CONSUME' "
+            "AND principal_kind='RECOVERY_CAPABILITY' AND result='RECORDED' LIMIT 1",
+            (user_id,), True,
+        )
+        assert anchor[0][5] == "PRIMARY"
+        assert lineage[0][5] == "idx_office_mfa_security_event_proof"
+        for plan in (anchor, lineage):
+            extra = str(plan[0][-1]).lower()
+            assert "filesort" not in extra and "temporary" not in extra
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("cas_target", ("capability", "credential"))
+def test_recovery_enrollment_cas_loss_after_real_update_rolls_back_everything(client, cas_target):
+    """The post-insert CAS guards are rollback boundaries, not advisory checks."""
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            recovery = await consume_recovery_code_in_cursor(
+                cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"C" * 16,
+            )
+        before = await sql(
+            "SELECT state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,"
+            "pending_expires_at FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        )
+        event_count = await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (user_id,), True,
+        )
+        enrollment_count = await sql(
+            "SELECT COUNT(*) FROM office_mfa_challenge WHERE user_id=%s AND purpose='ENROLLMENT'", (user_id,), True,
+        )
+
+        class LostRowcountAfterUpdate:
+            def __init__(self, delegate): self._delegate, self._lost = delegate, False
+            async def execute(self, statement, *args):
+                result = await self._delegate.execute(statement, *args)
+                capability = "UPDATE office_mfa_challenge SET state='CONSUMED'" in statement
+                credential = "UPDATE office_mfa_credential SET state='PENDING'" in statement
+                if (cas_target == "capability" and capability) or (cas_target == "credential" and credential):
+                    self._lost = True
+                return result
+            @property
+            def rowcount(self): return 0 if self._lost else self._delegate.rowcount
+            def __getattr__(self, name): return getattr(self._delegate, name)
+
+        with pytest.raises(RuntimeError, match=f"recovery {cas_target} CAS lost"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await start_recovery_enrollment_in_cursor(
+                    LostRowcountAfterUpdate(cur), recovery_capability_token=recovery.token, config=CONFIG,
+                )
+        assert await sql(
+            "SELECT state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,"
+            "pending_expires_at FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        ) == before == (("RECOVERY_REQUIRED", None, None, None, None),)
+        assert await sql(
+            "SELECT state FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))",
+            (recovery.token,), True,
+        ) == (("ISSUED",),)
+        assert await sql(
+            "SELECT COUNT(*) FROM office_mfa_challenge WHERE user_id=%s AND purpose='ENROLLMENT'", (user_id,), True,
+        ) == enrollment_count
+        assert await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (user_id,), True,
+        ) == event_count
+    client.portal.call(scenario)
+
+
+def test_password_first_and_recovery_start_race_leaves_only_recovery_authorized(client):
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            recovery = await consume_recovery_code_in_cursor(
+                cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                server_correlation_id=b"R" * 16,
+            )
+        async def password_first():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await start_first_enrollment_after_password_in_cursor(
+                    cur, preauthenticated_user_id=user_id, config=CONFIG,
+                )
+        async def recovery_start():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await start_recovery_enrollment_in_cursor(
+                    cur, recovery_capability_token=recovery.token, config=CONFIG,
+                )
+        password, replacement = await asyncio.gather(password_first(), recovery_start())
+        assert isinstance(password, MFADenied) and password.code == "recovery_required"
+        assert not isinstance(replacement, MFADenied)
+        assert await sql(
+            "SELECT state FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        ) == (("PENDING",),)
+    client.portal.call(scenario)
+
+
+def test_reenrollment_old_factor_authenticates_pending_and_failed_confirm_rolls_back(client, monkeypatch):
+    async def scenario():
+        await _migrate()
+        from virtual_office import mfa
+        user_id, old, enrolled = await _active_user()
+        proof = await _step_up_proof(user_id, old.secret, b"O" * 16)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await start_reenrollment_after_password_in_cursor(
+                cur, actor_user_id=user_id, proof_event_id=proof.event_id, config=CONFIG,
+            )
+        # A pending replacement does not withdraw the old active factor.
+        await sql("DELETE FROM office_mfa_totp_use WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            login = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            old_proof = await verify_and_consume_totp_in_cursor(
+                cur, challenge_token=login.token, otp=_otp(old.secret), server_correlation_id=b"P" * 16,
+            )
+        assert not isinstance(old_proof, MFADenied)
+        before = await sql(
+            "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True,
+        ), await sql(
+            "SELECT state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        ), await sql("SELECT COUNT(*) FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,), True), await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (user_id,), True,
+        )
+        original = mfa._append_state
+        async def fail_after_insert(*_args, **_kwargs): raise RuntimeError("state append injected")
+        monkeypatch.setattr(mfa, "_append_state", fail_after_insert)
+        with pytest.raises(RuntimeError, match="state append injected"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await confirm_enrollment_in_cursor(
+                    cur, enrollment_capability_token=pending.enrollment_id, otp=_otp(pending.secret),
+                    config=CONFIG, server_correlation_id=b"Q" * 16,
+                )
+        monkeypatch.setattr(mfa, "_append_state", original)
+        after = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True), await sql(
+            "SELECT state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s", (user_id,), True,
+        ), await sql("SELECT COUNT(*) FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,), True), await sql(
+            "SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s", (user_id,), True,
+        )
+        assert after == before
+        assert await sql("SELECT state FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))", (pending.enrollment_id,), True) == (("ISSUED",),)
+    client.portal.call(scenario)
+
+
+def test_replayed_otp_exhausts_exact_budget_until_its_original_window_expires(client):
+    async def scenario():
+        await _migrate()
+        user_id, active, _ = await _active_user()
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            successful = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert not isinstance(await verify_and_consume_totp_in_cursor(cur, challenge_token=successful.token, otp=_previous_otp(active.secret), server_correlation_id=b"S" * 16), MFADenied)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            retry = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        for cid in (b"T" * 16, b"U" * 16):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                denial = await verify_and_consume_totp_in_cursor(cur, challenge_token=retry.token, otp="000000", server_correlation_id=cid)
+            assert isinstance(denial, MFADenied) and denial.code == "totp_invalid"
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            exhausted = await verify_and_consume_totp_in_cursor(cur, challenge_token=retry.token, otp=_previous_otp(active.secret), server_correlation_id=b"V" * 16)
+        assert isinstance(exhausted, MFADenied) and exhausted.code == "challenge_exhausted"
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            blocked = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        assert isinstance(blocked, MFADenied) and blocked.code == "challenge_exhausted"
+        await sql("UPDATE office_mfa_challenge SET expires_at=DATE_SUB(NOW(6),INTERVAL 1 SECOND) WHERE token_hash=UNHEX(SHA2(%s,256))", (retry.token,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            reissued = await issue_login_challenge_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        assert not isinstance(reissued, MFADenied) and reissued.token != retry.token
+    client.portal.call(scenario)

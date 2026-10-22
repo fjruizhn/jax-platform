@@ -209,6 +209,26 @@ async def _has_current_recovery_lineage(cur, *, user: int, versions: tuple[int, 
     return await cur.fetchone() is not None
 
 
+async def _pending_enrollment_anchor(
+    cur, *, user: int, current_mfa_version: int, pending_enrollment_id: object,
+):
+    """Lock and validate the immutable challenge that owns a pending secret."""
+    if pending_enrollment_id is None:
+        return MFADenied("pending_origin_invalid", terminal=True)
+    await cur.execute(
+        "SELECT user_id,purpose,expected_token_version,expected_mfa_version,state,"
+        "expires_at,attempt_count,max_attempts FROM office_mfa_challenge "
+        "WHERE token_hash=%s FOR UPDATE", (pending_enrollment_id,),
+    )
+    anchor = await cur.fetchone()
+    if (
+        not anchor or int(anchor[0]) != user or anchor[1] != "ENROLLMENT"
+        or int(anchor[3]) != current_mfa_version
+    ):
+        return MFADenied("pending_origin_invalid", terminal=True)
+    return anchor
+
+
 async def issue_login_challenge_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
     versions = await _user(cur, preauthenticated_user_id)
     if versions is None or not await _active_credential(cur, preauthenticated_user_id): return MFADenied("mfa_subject_invalid", terminal=True)
@@ -273,19 +293,34 @@ async def verify_and_consume_totp_in_cursor(cur, *, challenge_token: str, otp: s
 async def start_first_enrollment_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
     versions = await _user(cur, preauthenticated_user_id)
     if versions is None: return MFADenied("mfa_subject_invalid", terminal=True)
-    await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (preauthenticated_user_id,))
+    await cur.execute(
+        "SELECT state,pending_enrollment_id FROM office_mfa_credential "
+        "WHERE user_id=%s FOR UPDATE", (preauthenticated_user_id,),
+    )
     existing = await cur.fetchone()
     if existing and existing[0] == "ACTIVE":
         return MFADenied("mfa_already_active", terminal=True)
     if existing and existing[0] == "RECOVERY_REQUIRED":
         return MFADenied("recovery_required", terminal=True)
-    if existing and existing[0] == "PENDING" and await _has_current_recovery_lineage(
-        cur, user=preauthenticated_user_id, versions=versions,
-    ):
-        return MFADenied("recovery_required", terminal=True)
+    now = await _db_now(cur)
+    if existing and existing[0] == "PENDING":
+        anchor = await _pending_enrollment_anchor(
+            cur, user=preauthenticated_user_id, current_mfa_version=versions[1],
+            pending_enrollment_id=existing[1],
+        )
+        if isinstance(anchor, MFADenied):
+            return anchor
+        historical_versions = (int(anchor[2]), int(anchor[3]))
+        if await _has_current_recovery_lineage(
+            cur, user=preauthenticated_user_id, versions=historical_versions,
+        ):
+            return MFADenied("recovery_required", terminal=True)
+        if anchor[4] == "EXHAUSTED" and anchor[5] >= now:
+            return MFADenied("challenge_exhausted", 0, True)
+        if anchor[4] == "ISSUED" and anchor[5] >= now:
+            return MFADenied("challenge_live", int(anchor[7]) - int(anchor[6]))
     token = _opaque()
     secret = pyotp.random_base32(length=32)
-    now = await _db_now(cur)
     expiry = now + dt.timedelta(seconds=config.enrollment_lifetime_seconds)
     challenge = await _insert_challenge(
         cur, user=preauthenticated_user_id, purpose="ENROLLMENT", versions=versions,

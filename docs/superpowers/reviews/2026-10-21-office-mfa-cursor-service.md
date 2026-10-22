@@ -54,3 +54,32 @@ Focused disposable-MariaDB `33991` validation passed: `21 passed, 603 warnings` 
 with `Using where; Using index` and `Using index condition`, without filesort or temporary.
 Compile and diff-whitespace checks passed. An independent adversarial review remains required
 before 3B integration or route enablement.
+
+## Service fix round 2 · 2026-10-21
+
+The earlier current-version recovery-lineage lookup was corrected after the verified
+token-only session-revocation counterexample. PENDING origin now comes from the exact locked
+challenge stored in `pending_enrollment_id`; its historical token/MFA version anchors the
+immutable `RECOVERY_CONSUME` lookup. Invalid anchors fail closed. This preserves recovery
+origin across session revocation while retaining the normal first-origin expired-window restart.
+
+Validation: focused MFA service suite on disposable MariaDB `33991` → `27 passed, 707 warnings`.
+Actual primary-key anchor and forced proof-index lineage EXPLAIN checks passed without
+filesort/temporary; compile and diff checks passed. No schema, route, auth, provider, commit,
+or production action was performed.
+
+## Service fault matrix completion · 2026-10-21
+
+The service matrix now executes both recovery-enrollment CAS-loss branches after the real
+`ENROLLMENT` insert and the respective real UPDATE. Each injected lost rowcount raises and the
+transaction rolls back to the issued recovery capability and `RECOVERY_REQUIRED` credential,
+without a new enrollment, secret, or event. It also covers the serialized password-first versus
+recovery-start race, old-factor login while a reenrollment is pending, and a state-append failure
+after enrollment confirmation has inserted its durable proof. The latter preserves the old active
+factor, pending capability, counters, versions, recovery codes, and event count.
+
+The replay sequence is explicit: a successful OTP, a fresh LOGIN challenge, two invalid attempts,
+the replayed previously used OTP exhausting the third attempt, denied issuance until that original
+window expires, then reissuance. Focused service command: `cv-office-run-tests.py jxp -q
+--disable-warnings tests/test_office_mfa.py` → **32 passed**, 812 inherited disposable-fixture
+warnings, 2.38 seconds. No production or external action occurred.
