@@ -58,7 +58,8 @@ def test_issue_derives_an_unbound_internal_target_from_the_email(client):
                 cur, actor_user_id=issuer, project_id=project_id,
                 email="new-invitee@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30))
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                idempotency_key=str(uuid.uuid4()))
         rows = await sql(
             "SELECT i.target_user_id,s.target_account_class,s.audience FROM office_invitation i "
             "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=%s",
@@ -66,6 +67,43 @@ def test_issue_derives_an_unbound_internal_target_from_the_email(client):
         return rows[0]
 
     assert client.portal.call(scenario) == (None, "OFFICE_INTERNAL", "INTERNAL")
+
+
+def test_issue_idempotency_replays_exact_intent_and_rejects_payload_drift(client):
+    issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("invitation-replay-" + uuid.uuid4().hex,))
+        await sql(
+            "INSERT INTO jax_project_scope "
+            "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (project_id,))
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+            (project_id, issuer, issuer))
+        key = str(uuid.uuid4())
+        kwargs = dict(actor_user_id=issuer, project_id=project_id,
+                      email="replay-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                      proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                      idempotency_key=key)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            first = await issue_invitation_in_cursor(cur, **kwargs)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            replay = await issue_invitation_in_cursor(cur, **kwargs)
+        assert replay.invitation_id == first.invitation_id and replay.replayed is True
+        with pytest.raises(InvitationError, match="office_invitation_idempotency_conflict"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await issue_invitation_in_cursor(cur, **{**kwargs, "email": "other-" + uuid.uuid4().hex + "@example.test"})
+        receipts = await sql(
+            "SELECT COUNT(*) FROM office_invitation_mutation_receipt WHERE idempotency_key=%s", (key,), True)
+        return receipts
+
+    assert client.portal.call(scenario) == ((1,),)
 
 
 def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch):
@@ -99,7 +137,8 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
                 cur, actor_user_id=issuer, project_id=project_id,
                 email=invitee_email, audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30))
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                idempotency_key=str(uuid.uuid4()))
         ciphertext = (await sql(
             "SELECT o.payload_ciphertext FROM office_invitation_outbox o WHERE o.invitation_id=%s",
             (invitation.invitation_id,), True))[0][0]

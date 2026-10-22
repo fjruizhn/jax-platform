@@ -55,20 +55,14 @@ def _raise(error: InvitationError) -> None:
 
 
 def _require_durable_idempotency(idempotency_key: str) -> str:
-    """Validate the UI retry key before failing closed on missing persistence.
-
-    The ingress must never silently discard a retry key.  The invitation
-    service has no request/receipt store for issue or revoke yet, so accepting
-    a syntactically valid key would promise a replay guarantee it cannot make.
-    Keep the HTTP boundary explicit until that service contract exists.
-    """
+    """Validate the global UUID that the transactional receipt owns."""
     try:
         parsed = uuid.UUID(idempotency_key)
     except (AttributeError, ValueError) as error:
         raise HTTPException(status_code=422, detail="office_invitation_idempotency_invalid") from error
     if str(parsed) != idempotency_key.lower():
         raise HTTPException(status_code=422, detail="office_invitation_idempotency_invalid")
-    raise HTTPException(status_code=503, detail="office_invitation_idempotency_unavailable")
+    return str(parsed)
 
 
 async def _optional_current_user(
@@ -83,7 +77,7 @@ async def _optional_current_user(
 async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
                            idempotency_key: str = Header(alias="Idempotency-Key"),
                            user: AuthUser = Depends(get_current_user)):
-    _require_durable_idempotency(idempotency_key)
+    idempotency_key = _require_durable_idempotency(idempotency_key)
     actor = _actor_id(user)
     invitation_config = load_invitation_config_from_environment()
     mfa_config = load_mfa_config_from_environment()
@@ -95,31 +89,34 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
                 cur, actor_user_id=actor, project_id=project_id, email=payload.email,
                 audience=payload.audience, proof_event_id=user.mfa_proof_event_id,
                 mfa_config=mfa_config, invitation_config=invitation_config,
+                idempotency_key=idempotency_key,
             )
     except InvitationError as error:
         _raise(error)
     return {"id": invitation.invitation_id, "invitation_id": invitation.invitation_id,
-            "version": 1, "expires_at": invitation.expires_at.isoformat()}
+            "version": invitation.version, "expires_at": invitation.expires_at.isoformat(),
+            "replayed": invitation.replayed}
 
 
 @router.delete("/projects/{project_id}/invitations/{invitation_id}")
 async def revoke_invitation(project_id: int, invitation_id: str, expected_version: int = Query(ge=1),
                             idempotency_key: str = Header(alias="Idempotency-Key"),
                             user: AuthUser = Depends(get_current_user)):
-    _require_durable_idempotency(idempotency_key)
+    idempotency_key = _require_durable_idempotency(idempotency_key)
     actor = _actor_id(user)
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            replayed = await revoke_invitation_in_cursor(
+            version, replayed = await revoke_invitation_in_cursor(
                 cur, actor_user_id=actor, project_id=project_id, invitation_id=invitation_id,
                 expected_version=expected_version,
                 proof_event_id=user.mfa_proof_event_id,
                 mfa_config=load_mfa_config_from_environment(),
+                idempotency_key=idempotency_key,
             )
     except InvitationError as error:
         _raise(error)
     return {"id": invitation_id, "invitation_id": invitation_id, "status": "REVOKED",
-            "version": expected_version + 1, "replayed": replayed}
+            "version": version, "replayed": replayed}
 
 
 @router.post("/invitations/accept")

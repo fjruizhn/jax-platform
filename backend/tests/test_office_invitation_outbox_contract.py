@@ -43,7 +43,7 @@ def test_late_relay_acceptance_remains_observed_after_revocation(client):
                 cur, actor_user_id=issuer, project_id=project_id,
                 email="outbox-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
-                invitation_config=_INVITATION_CONFIG)
+                invitation_config=_INVITATION_CONFIG, idempotency_key=str(uuid.uuid4()))
             attempt_id = str(uuid.uuid4())
             await cur.execute(
                 "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,"
@@ -55,7 +55,8 @@ def test_late_relay_acceptance_remains_observed_after_revocation(client):
             assert await revoke_invitation_in_cursor(
                 cur, actor_user_id=issuer, project_id=project_id,
                 invitation_id=invitation.invitation_id, expected_version=1,
-                proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG) is False
+                proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
+                idempotency_key=str(uuid.uuid4())) == (2, False)
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             assert await finalize_invitation_delivery_in_cursor(
                 cur, outbox_id=(await _outbox_id(cur, invitation.invitation_id)), attempt_id=attempt_id,

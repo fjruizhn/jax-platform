@@ -72,6 +72,8 @@ class InvitationError(RuntimeError):
 class IssuedInvitation:
     invitation_id: str
     expires_at: dt.datetime
+    version: int = 1
+    replayed: bool = False
 
 
 def _normalize_email(value: str) -> str:
@@ -87,6 +89,58 @@ def _token_hash(token: str) -> bytes:
     if not isinstance(token, str) or len(token) < 43 or len(token) > 256 or not token.isascii():
         raise InvitationError("office_invitation_invalid", status_code=403)
     return hashlib.sha256(token.encode("ascii")).digest()
+
+
+def _idempotency_key(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as error:
+        raise InvitationError("office_invitation_idempotency_invalid", status_code=422) from error
+    normalized = str(parsed)
+    if normalized != value.lower():
+        raise InvitationError("office_invitation_idempotency_invalid", status_code=422)
+    return normalized
+
+
+def _mutation_digest(*, operation: str, actor_user_id: int, project_id: int,
+                     email: str | None = None, audience: str | None = None,
+                     invitation_id: str | None = None, expected_version: int | None = None) -> bytes:
+    """Hash only stable user intent, never volatile proof or retry metadata."""
+    fields = {
+        "actor_user_id": actor_user_id, "audience": audience, "email": email,
+        "expected_version": expected_version, "invitation_id": invitation_id,
+        "operation": operation, "project_id": project_id,
+    }
+    return hashlib.sha256(json.dumps(fields, separators=(",", ":"), sort_keys=True).encode("utf-8")).digest()
+
+
+async def _load_mutation_receipt(cur, *, idempotency_key: str, digest: bytes,
+                                 operation: str, actor_user_id: int, project_id: int):
+    """Lock a global retry key after authority is current and before mutation."""
+    await cur.execute(
+        "SELECT request_digest,operation,actor_user_id,project_id,invitation_id,response_version,expires_at "
+        "FROM office_invitation_mutation_receipt WHERE idempotency_key=%s FOR UPDATE", (idempotency_key,))
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    if (not hmac.compare_digest(bytes(row[0]), digest) or row[1] != operation
+            or int(row[2]) != actor_user_id or int(row[3]) != project_id):
+        raise InvitationError("office_invitation_idempotency_conflict")
+    return row
+
+
+async def _write_mutation_receipt(cur, *, idempotency_key: str, digest: bytes,
+                                  operation: str, actor_user_id: int, project_id: int,
+                                  invitation_id: str, response_version: int,
+                                  expires_at: dt.datetime | None) -> None:
+    """The receipt is last: it cannot attest a lifecycle mutation that rolled back."""
+    await cur.execute(
+        "INSERT INTO office_invitation_mutation_receipt "
+        "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,response_version,expires_at,created_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+        (idempotency_key, digest, operation, actor_user_id, project_id, invitation_id,
+         response_version, None if expires_at is None else expires_at.replace(tzinfo=None)),
+    )
 
 
 def _proof_digest(*, token_hash: bytes, email: str, tenant_id: int, project_id: int,
@@ -158,7 +212,7 @@ async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
 async def issue_invitation_in_cursor(
     cur, *, actor_user_id: int, project_id: int, email: str, audience: str,
     proof_event_id: int | None, mfa_config: MFAConfig | None,
-    invitation_config: InvitationConfig,
+    invitation_config: InvitationConfig, idempotency_key: str,
 ) -> IssuedInvitation:
     """Derive the target and audience server-side, then queue delivery."""
     if type(actor_user_id) is not int or type(project_id) is not int:
@@ -166,6 +220,7 @@ async def issue_invitation_in_cursor(
     if mfa_config is None or type(proof_event_id) is not int or proof_event_id < 1:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     normalized_email = _normalize_email(email)
+    idempotency_key = _idempotency_key(idempotency_key)
     if audience not in {"INTERNAL", "CLIENT_PUBLISHED"}:
         raise InvitationError("office_invitation_target_denied", status_code=409)
     target_account_class = "OFFICE_INTERNAL" if audience == "INTERNAL" else "EXTERNAL_CLIENT"
@@ -173,6 +228,21 @@ async def issue_invitation_in_cursor(
         cur, actor_user_id=actor_user_id, project_id=project_id,
         proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
+    mutation_digest = _mutation_digest(
+        operation="ISSUE", actor_user_id=actor_user_id, project_id=project_id,
+        email=normalized_email, audience=audience,
+    )
+    receipt = await _load_mutation_receipt(
+        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="ISSUE",
+        actor_user_id=actor_user_id, project_id=project_id,
+    )
+    if receipt is not None:
+        expires_at = receipt[6]
+        if expires_at is None:
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        expires_at = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
+        return IssuedInvitation(invitation_id=str(receipt[4]), expires_at=expires_at,
+                                version=int(receipt[5]), replayed=True)
     await cur.execute(
         "SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
     scope = await cur.fetchone()
@@ -233,6 +303,11 @@ async def issue_invitation_in_cursor(
         "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_id,attempt_count,cancel_requested,payload_ciphertext,message_id,result_code,claimed_at,finished_at,created_at,updated_at) "
         "VALUES (%s,%s,'QUEUED',NULL,0,FALSE,%s,NULL,NULL,NULL,NULL,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
         (outbox_id, invitation_id, payload))
+    await _write_mutation_receipt(
+        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="ISSUE",
+        actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
+        response_version=1, expires_at=expires_at,
+    )
     return IssuedInvitation(invitation_id=invitation_id, expires_at=expires_at)
 
 
@@ -240,10 +315,24 @@ async def revoke_invitation_in_cursor(
     cur, *, actor_user_id: int, project_id: int, invitation_id: str, expected_version: int,
     proof_event_id: int | None,
     mfa_config: MFAConfig | None,
-) -> bool:
+    idempotency_key: str,
+) -> tuple[int, bool]:
     """Revoke an unconsumed invitation and let the DB guard cancel delivery."""
     if mfa_config is None or type(proof_event_id) is not int or type(expected_version) is not int or expected_version < 1:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
+    idempotency_key = _idempotency_key(idempotency_key)
+    await _issuer_snapshot(cur, actor_user_id=actor_user_id, project_id=project_id,
+                           proof_event_id=proof_event_id, mfa_config=mfa_config)
+    mutation_digest = _mutation_digest(
+        operation="REVOKE", actor_user_id=actor_user_id, project_id=project_id,
+        invitation_id=invitation_id, expected_version=expected_version,
+    )
+    receipt = await _load_mutation_receipt(
+        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
+        actor_user_id=actor_user_id, project_id=project_id,
+    )
+    if receipt is not None:
+        return int(receipt[5]), True
     await cur.execute(
         "SELECT i.status,i.version,i.project_id,s.correlation_id FROM office_invitation i "
         "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
@@ -252,13 +341,11 @@ async def revoke_invitation_in_cursor(
     if invitation is None or int(invitation[2]) != project_id:
         raise InvitationError("office_invitation_not_found", status_code=404)
     if invitation[0] == "REVOKED":
-        return True
+        raise InvitationError("office_invitation_terminal")
     if invitation[0] != "ISSUED":
         raise InvitationError("office_invitation_terminal")
     if int(invitation[1]) != expected_version:
         raise InvitationError("office_invitation_version_conflict")
-    await _issuer_snapshot(cur, actor_user_id=actor_user_id, project_id=int(invitation[2]),
-                           proof_event_id=proof_event_id, mfa_config=mfa_config)
     await cur.execute(
         "SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE",
         (invitation_id,))
@@ -275,7 +362,13 @@ async def revoke_invitation_in_cursor(
         (actor_user_id, invitation_id, expected_version))
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
-    return False
+    response_version = expected_version + 1
+    await _write_mutation_receipt(
+        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="REVOKE",
+        actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
+        response_version=response_version, expires_at=None,
+    )
+    return response_version, False
 
 
 class _InvitationAcceptanceAuthorizer:

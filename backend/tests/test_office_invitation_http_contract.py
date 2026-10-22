@@ -1,9 +1,4 @@
-"""HTTP boundary contract shared with the isolated invitation UI.
-
-Issue and revoke receive their retry UUID in the ``Idempotency-Key`` header.
-Until the transactional service owns durable request receipts, the boundary
-must fail closed instead of accepting a header it would silently ignore.
-"""
+"""HTTP boundary contract shared with the isolated invitation UI."""
 from __future__ import annotations
 
 import inspect
@@ -46,13 +41,11 @@ def test_issue_and_revoke_expose_the_ui_header_and_expected_version_contract():
     assert "idempotency_key" in inspect.signature(revoke_invitation).parameters
 
 
-def test_invitation_retry_uuid_is_validated_and_never_silently_discarded():
+def test_invitation_retry_uuid_is_validated_and_returned_for_the_receipt_service():
     with pytest.raises(HTTPException) as invalid:
         _require_durable_idempotency("not-a-uuid")
     assert invalid.value.status_code == 422
     assert invalid.value.detail == "office_invitation_idempotency_invalid"
 
-    with pytest.raises(HTTPException) as unavailable:
-        _require_durable_idempotency(str(uuid.uuid4()))
-    assert unavailable.value.status_code == 503
-    assert unavailable.value.detail == "office_invitation_idempotency_unavailable"
+    key = str(uuid.uuid4())
+    assert _require_durable_idempotency(key) == key
