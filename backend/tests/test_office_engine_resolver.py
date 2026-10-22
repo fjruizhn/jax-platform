@@ -59,3 +59,11 @@ def test_unallowed_classification_fails_closed_instead_of_selecting_another_engi
 
     with pytest.raises(OfficeEngineUnavailable):
         resolve_office_engine_row(_row(), data_classification="CLIENT_CONFIDENTIAL")
+
+
+def test_non_string_json_classification_fails_closed_instead_of_leaking_typeerror():
+    """A malformed JSON array is unavailable even when it cannot form a set."""
+    from virtual_office.engine_resolver import OfficeEngineUnavailable, resolve_office_engine_row
+
+    with pytest.raises(OfficeEngineUnavailable):
+        resolve_office_engine_row(_row(allowed_data_classifications="[{}]"), data_classification="SYSTEM_SMOKE")

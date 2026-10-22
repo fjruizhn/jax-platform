@@ -40,9 +40,10 @@ def _classifications(raw: object) -> frozenset[str]:
         raise OfficeEngineUnavailable("engine classifications are malformed") from error
     if not isinstance(decoded, list) or not decoded:
         raise OfficeEngineUnavailable("engine classifications are malformed")
+    if any(not isinstance(value, str) or not _CLASSIFICATION.fullmatch(value) for value in decoded):
+        raise OfficeEngineUnavailable("engine classifications are malformed")
     values = frozenset(decoded)
-    if (len(values) != len(decoded)
-            or any(not isinstance(value, str) or not _CLASSIFICATION.fullmatch(value) for value in values)):
+    if len(values) != len(decoded):
         raise OfficeEngineUnavailable("engine classifications are malformed")
     return values
 
