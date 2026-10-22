@@ -13,6 +13,7 @@ class InvitationConfig:
     stale_claim_batch_limit: int
     expiry_sweep_batch_limit: int
     public_base_url: str
+    delivery_batch_limit: int = 25
 
     def __post_init__(self) -> None:
         if type(self.lifetime_seconds) is not int or not 1 <= self.lifetime_seconds <= 604_800:
@@ -21,8 +22,15 @@ class InvitationConfig:
             raise ValueError("invitation claim timeout is outside the supported range")
         if type(self.stale_claim_batch_limit) is not int or not 1 <= self.stale_claim_batch_limit <= 1_000:
             raise ValueError("invitation stale claim batch limit is outside the supported range")
-        if type(self.expiry_sweep_batch_limit) is not int or not 1 <= self.expiry_sweep_batch_limit <= 1_000:
+        # The SQL SECURITY DEFINER routine rejects values above 100.  Keep the
+        # runtime contract identical, so a valid config can never make each
+        # worker one-shot fail at privilege-protected procedure input.
+        if type(self.expiry_sweep_batch_limit) is not int or not 1 <= self.expiry_sweep_batch_limit <= 100:
             raise ValueError("invitation expiry sweep batch limit is outside the supported range")
+        # SMTP timeouts apply to individual protocol exchanges.  Keep this
+        # bound deliberately small under the systemd one-shot deadline.
+        if type(self.delivery_batch_limit) is not int or not 1 <= self.delivery_batch_limit <= 25:
+            raise ValueError("invitation delivery batch limit is outside the supported range")
         if not _is_public_https_origin(self.public_base_url):
             raise ValueError("invitation public base URL must be a canonical HTTPS origin")
 
@@ -56,20 +64,24 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
     raw_claim_timeout = os.getenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS")
     raw_stale_claim_batch_limit = os.getenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT")
     raw_expiry_sweep_batch_limit = os.getenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT")
+    raw_delivery_batch_limit = os.getenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT")
     public_base_url = os.getenv("OFFICE_INVITATION_PUBLIC_BASE_URL")
     if (raw_lifetime is None or raw_claim_timeout is None or raw_stale_claim_batch_limit is None
-            or raw_expiry_sweep_batch_limit is None or public_base_url is None):
+            or raw_expiry_sweep_batch_limit is None or raw_delivery_batch_limit is None
+            or public_base_url is None):
         return None
     try:
         lifetime = int(raw_lifetime)
         claim_timeout = int(raw_claim_timeout)
         stale_claim_batch_limit = int(raw_stale_claim_batch_limit)
         expiry_sweep_batch_limit = int(raw_expiry_sweep_batch_limit)
+        delivery_batch_limit = int(raw_delivery_batch_limit)
     except (TypeError, ValueError):
         return None
     if (str(lifetime) != raw_lifetime or str(claim_timeout) != raw_claim_timeout
             or str(stale_claim_batch_limit) != raw_stale_claim_batch_limit
-            or str(expiry_sweep_batch_limit) != raw_expiry_sweep_batch_limit):
+            or str(expiry_sweep_batch_limit) != raw_expiry_sweep_batch_limit
+            or str(delivery_batch_limit) != raw_delivery_batch_limit):
         return None
     try:
         return InvitationConfig(
@@ -78,6 +90,7 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
             stale_claim_batch_limit=stale_claim_batch_limit,
             expiry_sweep_batch_limit=expiry_sweep_batch_limit,
             public_base_url=public_base_url,
+            delivery_batch_limit=delivery_batch_limit,
         )
     except ValueError:
         return None

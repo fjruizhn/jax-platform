@@ -64,6 +64,7 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
     monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "25")
     monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", config.public_base_url)
 
     async def scenario():
@@ -229,6 +230,7 @@ def test_delivery_maintenance_expires_terminal_unknown_without_rewriting_transpo
     monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "1")
+    monkeypatch.setenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "25")
     monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", "https://virtualoffice.example.test")
 
     async def no_delivery(_cur):

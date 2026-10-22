@@ -62,7 +62,7 @@ def _validate_host(value: str) -> str:
     host = value.strip().lower()
     try:
         return str(ipaddress.ip_address(host))
-    except ValueError:
+    except ValueError:  # fail-soft: a non-IP hostname remains subject to the strict hostname validator below
         pass
     if not host or len(host) > 253 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host):
         raise BrowserSecurityConfigError("trusted hosts must be exact hostnames or literal IP addresses")
