@@ -7,7 +7,9 @@ from db.connection import get_pool
 from .capabilities import ADMIN_OPERATIONS, OfficeOperation, grant_permits, operation_requires_project
 from .models import OfficeDecision
 from . import repository
-from .mfa import MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor, reload_current_self_mfa_verified_in_cursor
+from .mfa import (MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor,
+                  reload_current_self_mfa_verified_in_cursor,
+                  reload_issued_invitation_mfa_proof_in_cursor)
 
 
 def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None,
@@ -58,7 +60,9 @@ async def authorize_office_in_cursor(cur, actor_user_id: int, operation: OfficeO
 
 
 async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
-                                                 project_id: int, proof_event_id: int) -> OfficeDecision:
+                                                 project_id: int, proof_event_id: int,
+                                                 issued_mfa_version: int,
+                                                 issued_mfa_at) -> OfficeDecision:
     """Revalidate an issuance proof for delegated acceptance without its age.
 
     This narrow resolver is intentionally separate from the general MFA
@@ -82,8 +86,9 @@ async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
                          OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
                          decision.tenant_id, decision.global_role, decision.audience,
                          decision.grant_role, decision.recipient_group_id, decision.project_id)
-    proof = await reload_current_self_mfa_verified_in_cursor(
-        cur, actor_user_id=issuer_user_id, proof_event_id=proof_event_id)
+    proof = await reload_issued_invitation_mfa_proof_in_cursor(
+        cur, issuer_user_id=issuer_user_id, proof_event_id=proof_event_id,
+        issued_mfa_version=issued_mfa_version, issued_at=issued_mfa_at)
     if isinstance(proof, MFADenied):
         return _decision(False, "office_invitation_issuer_proof_invalid", issuer_user_id,
                          OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,

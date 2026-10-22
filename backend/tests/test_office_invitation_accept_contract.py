@@ -59,7 +59,7 @@ def test_issue_derives_an_unbound_internal_target_from_the_email(client):
                 cur, actor_user_id=issuer, project_id=project_id,
                 email="new-invitee@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                 idempotency_key=str(uuid.uuid4()))
         rows = await sql(
             "SELECT i.target_user_id,s.target_account_class,s.audience FROM office_invitation i "
@@ -111,7 +111,7 @@ def test_issue_is_opaque_for_missing_and_incompatible_email_accounts(client):
                 invitation = await issue_invitation_in_cursor(
                     cur, actor_user_id=issuer, project_id=project_id, email=email, audience="INTERNAL",
                     proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                    invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                    invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                     idempotency_key=str(uuid.uuid4()))
             row = (await sql(
                 "SELECT i.target_user_id,i.status,o.state FROM office_invitation i "
@@ -145,7 +145,7 @@ def test_issue_idempotency_replays_exact_intent_and_rejects_payload_drift(client
         kwargs = dict(actor_user_id=issuer, project_id=project_id,
                       email="replay-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                       proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                       idempotency_key=key)
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             first = await issue_invitation_in_cursor(cur, **kwargs)
@@ -181,7 +181,7 @@ def test_concurrent_same_issue_key_commits_one_invitation_and_one_receipt(client
         kwargs = dict(actor_user_id=issuer, project_id=project_id,
                       email="race-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                       proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                       idempotency_key=str(uuid.uuid4()))
 
         async def issue_once():
@@ -210,7 +210,7 @@ def test_cross_actor_key_collision_creates_no_second_invitation(client):
         await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s),(%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
                   (project_id, first, first, project_id, second, first))
         key = str(uuid.uuid4())
-        config = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30)
+        config = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50)
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             winner = await issue_invitation_in_cursor(cur, actor_user_id=first, project_id=project_id,
                 email="winner-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
@@ -246,7 +246,7 @@ def test_receipt_write_failure_rolls_back_issue_companions(client, monkeypatch):
                 await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
                     email="rollback-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                     proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                    invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                    invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                     idempotency_key=str(uuid.uuid4()))
         return await sql("SELECT COUNT(*) FROM office_invitation WHERE project_id=%s", (project_id,), True)
 
@@ -266,7 +266,7 @@ def test_revoke_replay_reauthorizes_and_new_key_cannot_revoke_terminal_invitatio
             invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
                 email="revoke-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=config,
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                 idempotency_key=str(uuid.uuid4()))
         key = str(uuid.uuid4())
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -304,7 +304,7 @@ def test_service_receipts_bind_issue_and_revoke_to_their_own_evidence(client):
                 cur, actor_user_id=issuer, project_id=project_id,
                 email="receipt-binding-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                 idempotency_key=issue_key)
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             assert await revoke_invitation_in_cursor(
@@ -361,7 +361,7 @@ def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch
                 cur, actor_user_id=issuer, project_id=project_id,
                 email=invitee_email, audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                 idempotency_key=str(uuid.uuid4()))
         ciphertext = (await sql(
             "SELECT o.payload_ciphertext FROM office_invitation_outbox o WHERE o.invitation_id=%s",
@@ -414,7 +414,7 @@ def test_delegated_acceptance_allows_an_issuance_proof_older_than_901_seconds(cl
             invitation = await issue_invitation_in_cursor(
                 cur, actor_user_id=issuer, project_id=project_id, email=email, audience="INTERNAL",
                 proof_event_id=old_proof, mfa_config=MFAConfig(120, 3, 300, 1000, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30),
+                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50),
                 idempotency_key=str(uuid.uuid4()))
         ciphertext = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
         _recipient, bearer, _expiry = _decode_outbox_payload(ciphertext)
@@ -449,22 +449,27 @@ def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_roll
                 invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
                     email=email, audience="INTERNAL", proof_event_id=proof_event_id,
                     mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                    invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30), idempotency_key=str(uuid.uuid4()))
+                    invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50), idempotency_key=str(uuid.uuid4()))
             ciphertext = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
             return invitation.invitation_id, email, _decode_outbox_payload(ciphertext)[1]
 
         results = []
+        invitation_id, email, bearer = await issue("ordinary-login")
+        await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (issuer,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await accept_invitation_in_cursor(
+                cur, accepting_user_id=None, accepting_email=None,
+                new_password_hash=_hash("ordinary-login-password"), bearer_token=bearer) is False
+        await sql("UPDATE jax_users SET token_version=token_version-1 WHERE user_id=%s", (issuer,))
+        assert await sql("SELECT status FROM office_invitation WHERE invitation_id=%s", (invitation_id,), True) == (("ACCEPTED",),)
         for label, deny, restore in (
-            ("token", "UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", "UPDATE jax_users SET token_version=token_version-1 WHERE user_id=%s"),
             ("mfa", "UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", "UPDATE jax_users SET mfa_version=mfa_version-1 WHERE user_id=%s"),
             ("grant", "UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s", "UPDATE office_project_grant SET status='ACTIVE' WHERE project_id=%s AND user_id=%s"),
             ("project", "UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", "UPDATE jax_project_scope SET status='ACTIVE' WHERE project_id=%s"),
         ):
             invitation_id, email, bearer = await issue(label)
-            args = (issuer,) if label in {"token", "mfa"} else ((project_id, issuer) if label == "grant" else (project_id,))
+            args = (issuer,) if label == "mfa" else ((project_id, issuer) if label == "grant" else (project_id,))
             await sql(deny, args)
-            if label == "token":
-                assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (issuer,), True))[0][0] != _tv
             try:
                 async with transaccion(AISLAMIENTO_ADMIN) as cur:
                     await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
@@ -499,7 +504,7 @@ def test_bearer_preflight_cannot_authorize_a_raced_revocation(client):
             invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
                 email="preflight-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
                 proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
-                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30), idempotency_key=str(uuid.uuid4()))
+                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50), idempotency_key=str(uuid.uuid4()))
         cipher = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
         bearer = _decode_outbox_payload(cipher)[1]
         assert await invitation_bearer_preflight(bearer) is True

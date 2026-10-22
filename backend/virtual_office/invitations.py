@@ -396,7 +396,7 @@ class _InvitationAcceptanceAuthorizer:
     """Trusted JXP proof resolver used only by JAX's typed capability call."""
     def __init__(self, *, invitation_id: str, issuer_user_id: int, target_user_id: int,
                  target_tenant_id: int, project_id: int, mfa_version: int,
-                 proof_event_id: int):
+                 proof_event_id: int, mfa_at: dt.datetime):
         self.invitation_id = invitation_id
         self.issuer_user_id = issuer_user_id
         self.target_user_id = target_user_id
@@ -404,6 +404,7 @@ class _InvitationAcceptanceAuthorizer:
         self.project_id = project_id
         self.mfa_version = mfa_version
         self.proof_event_id = proof_event_id
+        self.mfa_at = mfa_at
         self.authorization_event_id: int | None = None
 
     async def authorize_membership_in_transaction(self, cursor, *, actor_user_id: int,
@@ -427,7 +428,8 @@ class _InvitationAcceptanceAuthorizer:
             raise AuthorizationDenied("Office invitation issuer proof is no longer current")
         decision = await authorize_invitation_issuer_in_cursor(
             cursor, issuer_user_id=self.issuer_user_id, project_id=self.project_id,
-            proof_event_id=self.proof_event_id)
+            proof_event_id=self.proof_event_id, issued_mfa_version=self.mfa_version,
+            issued_mfa_at=self.mfa_at)
         if not decision.allowed:
             raise AuthorizationDenied("Office invitation issuer authority is no longer current")
         self.authorization_event_id = await record_authorization_event(cursor, decision)
@@ -475,6 +477,22 @@ async def accept_invitation_in_cursor(
 ) -> bool | None:
     """Consume one bearer through JAX and the Office companion atomically."""
     token_hash = _token_hash(bearer_token)
+    # Discover only the immutable issuance binding without a lock, then take
+    # the issuer/project locks before the lifecycle row.  The locked read
+    # below must match this hint exactly.  This gives acceptance the same
+    # actor → scope → invitation order as revoke and prevents their former
+    # lock inversion.
+    await cur.execute(
+        "SELECT issued_by_user_id,project_id,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at "
+        "FROM office_invitation_issuance WHERE token_hash=%s", (token_hash,))
+    discovered = await cur.fetchone()
+    if discovered is None:
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    discovered_issuer, discovered_project, discovered_proof, discovered_mfa_version, discovered_mfa_at = discovered
+    await authorize_invitation_issuer_in_cursor(
+        cur, issuer_user_id=int(discovered_issuer), project_id=int(discovered_project),
+        proof_event_id=int(discovered_proof), issued_mfa_version=int(discovered_mfa_version),
+        issued_mfa_at=discovered_mfa_at)
     await cur.execute(
         "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,s.email_normalized,"
         "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_proof_event_id,"
@@ -491,6 +509,10 @@ async def accept_invitation_in_cursor(
      issuance_auth_id, stored_proof_digest, stored_hash, issued_at, expires_at, correlation_id) = row
     if stored_hash != token_hash:
         raise InvitationError("office_invitation_invalid", status_code=403)
+    if (int(issuer_user_id), int(project_id), int(proof_event_id), int(issuer_mfa_version), issuer_mfa_at) != (
+            int(discovered_issuer), int(discovered_project), int(discovered_proof),
+            int(discovered_mfa_version), discovered_mfa_at):
+        raise InvitationError("office_invitation_retryable", status_code=503)
     # A completed invitation can only be observed by its authenticated owner.
     # A bearer alone must never become a password-reset capability after use.
     if status == "ACCEPTED":
@@ -552,17 +574,6 @@ async def accept_invitation_in_cursor(
         stored_proof_digest,
     ):
         raise InvitationError("office_invitation_integrity", status_code=503)
-    # Proof event is immutable issuance evidence, then the callback below
-    # reauthorizes the issuer from current Office state without minting a new
-    # user session or treating a request boolean as authority.
-    await cur.execute(
-        "SELECT subject_user_id,event_kind,purpose,mfa_version,result,occurred_at FROM office_mfa_security_event "
-        "WHERE event_id=%s FOR UPDATE", (proof_event_id,))
-    proof = await cur.fetchone()
-    if (proof is None or int(proof[0]) != int(issuer_user_id) or proof[1] != "MFA_PROOF"
-            or proof[2] not in {"LOGIN", "STEP_UP"} or proof[4] != "VERIFIED" or int(proof[3]) != int(issuer_mfa_version)
-            or proof[5] != issuer_mfa_at):
-        raise InvitationError("office_invitation_invalid", status_code=403)
     await cur.execute(
         "SELECT state FROM office_invitation_outbox WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
     outbox = await cur.fetchone()
@@ -581,7 +592,7 @@ async def accept_invitation_in_cursor(
     authorizer = _InvitationAcceptanceAuthorizer(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
         target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version),
-        proof_event_id=int(proof_event_id))
+        proof_event_id=int(proof_event_id), mfa_at=issuer_mfa_at)
     result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
         cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
         target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
@@ -771,7 +782,8 @@ async def settle_stale_invitation_claims_in_cursor(cur, *, config: InvitationCon
     await cur.execute(
         "SELECT outbox_id,attempt_id,invitation_id FROM office_invitation_outbox WHERE state='CLAIMED' "
         "AND claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL %s SECOND) "
-        "ORDER BY claimed_at,outbox_id", (config.claim_timeout_seconds,))
+        "ORDER BY claimed_at,outbox_id LIMIT %s",
+        (config.claim_timeout_seconds, config.stale_claim_batch_limit))
     stale = await cur.fetchall()
     settled = 0
     for outbox_id, attempt_id, invitation_id in stale:
