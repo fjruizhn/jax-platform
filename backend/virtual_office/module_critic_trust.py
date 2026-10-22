@@ -229,6 +229,11 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
 
 _V14_COMPONENT = "virtual-office-critic-trust"
 _V14_LOCK_PREFIX = "axioma.office.critic-trust.v14:"
+# A global schema revision change must not let a previous v14 attestation
+# stand.  This durable value records why the ready seal stopped being valid;
+# it is deliberately not a v14 descriptor and therefore cannot be mistaken
+# for ready by a caller that has not re-attested the new global contract.
+_V15_INVALIDATED_MARKER = "critic-v14-invalidated-office-v15"
 
 
 def _v14_descriptor(contract: ActivationContract, state: str) -> str:
@@ -329,14 +334,26 @@ async def _preflight_v14(cur, contract: ActivationContract) -> str | None:
     await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (_V14_COMPONENT,))
     marker = await cur.fetchone()
     state = None if marker is None else marker[0]
-    known = {None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready")}
+    known = {
+        None, _v14_descriptor(contract, "invalid"), _v14_descriptor(contract, "ready"),
+        _V15_INVALIDATED_MARKER,
+    }
     if state not in known:
         raise RuntimeError("critic-trust v14 marker is unknown or belongs to another contract")
     if state == _v14_descriptor(contract, "ready"):
         await _transition_ready_to_invalid(cur, contract)
         return "ready"
     await _assert_v14_preconditions(cur, contract)
-    return "invalid" if state is not None else None
+    return "invalidated-v15" if state == _V15_INVALIDATED_MARKER else ("invalid" if state is not None else None)
+
+
+async def invalidate_critic_trust_v14_for_office_v15(cur) -> None:
+    """Tombstone a v14-ready seal made under the v13 global runtime stamp."""
+    await cur.execute(
+        "UPDATE office_schema_revision SET revision=%s,applied_at=NOW(6) "
+        "WHERE component=%s AND revision LIKE 'critic-v14-ready-%%'",
+        (_V15_INVALIDATED_MARKER, _V14_COMPONENT),
+    )
 
 
 async def _assert_v14_preconditions(cur, contract: ActivationContract) -> None:
@@ -351,7 +368,7 @@ async def _assert_v14_preconditions(cur, contract: ActivationContract) -> None:
     await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
     from virtual_office.migrations import RUNTIME_REVISION
     if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
-        raise RuntimeError("critic-trust v14 requires the exact global Office v13 marker")
+        raise RuntimeError("critic-trust v14 requires the exact global Office v15 marker")
     await _assert_v14_definer_privileges(cur, contract)
     await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
 

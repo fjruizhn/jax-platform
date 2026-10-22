@@ -15,7 +15,7 @@ import pytest
 from db_connect_config import db_connect_timeout_seconds
 from virtual_office import module_critic_trust as trust
 from virtual_office import critic_trust_activation as activation
-from virtual_office.migrations import RUNTIME_REVISION
+from virtual_office.migrations import RUNTIME_REVISION, invalidate_office_runtime_revision
 
 
 def _root_owned_contract_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -171,6 +171,21 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     cur, expected_columns=trust._TABLE_COLUMNS, expected_clauses=trust._CHECK_CLAUSES,
                     v14_contract=contract,
                 )
+                # A v13-ready global runtime stamp cannot carry this v14
+                # seal into the v15 candidate-origin contract.  The global
+                # invalidation preserves a durable cause, and v14 refuses to
+                # become ready until the v15 runtime marker is re-stamped.
+                old_v13 = RUNTIME_REVISION.replace("office-runtime-v15-", "office-runtime-v13-", 1)
+                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (old_v13,))
+                await invalidate_office_runtime_revision(cur)
+                assert await _revision(cur, "virtual-office") != RUNTIME_REVISION
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._V15_INVALIDATED_MARKER
+                with pytest.raises(RuntimeError, match="global Office v15 marker"):
+                    await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._V15_INVALIDATED_MARKER
+                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (RUNTIME_REVISION,))
+                await trust.migrate_critic_trust_v14(contract, connect=dedicated)
+                assert await _revision(cur, "virtual-office-critic-trust") == trust._v14_descriptor(contract, "ready")
                 # A ready seal is invalidated before mutable v13 authority is
                 # examined, so a v13 drift cannot remain falsely ready.
                 await cur.execute("UPDATE office_schema_revision SET revision='wrong-v13' WHERE component='virtual-office'")

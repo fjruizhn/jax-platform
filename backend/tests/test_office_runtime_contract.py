@@ -524,14 +524,14 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v12 marker cannot certify the v13 critic trust-anchor contract."""
+    """A v12 marker cannot certify the v15 origin-bound candidate contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v13-")
+        assert SCHEMA_REVISION.startswith("office-runtime-v15-")
         predecessor = "office-runtime-v12-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:

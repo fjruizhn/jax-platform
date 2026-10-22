@@ -21,9 +21,10 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v13 adds the inert critic trust-anchor schema; its digest still binds the
-# unchanged per-table web write contract and forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v13-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v15 binds candidate origin scope after the separately attested critic v14
+# upgrade; its digest still binds the unchanged per-table web write contract
+# and forces a migrator restamp.
+RUNTIME_REVISION = f"office-runtime-v15-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 
 # Global module governance is deliberately distinct from client artefacts.
@@ -1856,6 +1857,18 @@ async def invalidate_office_runtime_revision(cur) -> None:
     await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_schema_revision'")
     if await cur.fetchone() is not None:
         if await _column_exists(cur, "office_schema_revision", "component"):
+            await cur.execute(
+                "SELECT revision FROM office_schema_revision WHERE component=%s",
+                (RUNTIME_COMPONENT,),
+            )
+            prior = await cur.fetchone()
+            # A v14 critic seal was previously keyed only to its activation
+            # contract.  The v15 candidate-origin schema changes the global
+            # Office contract, so preserve a durable tombstone and force the
+            # separate v14 migrator to re-attest before it can be ready again.
+            if prior is not None and str(prior[0]).startswith("office-runtime-v13-"):
+                from virtual_office.module_critic_trust import invalidate_critic_trust_v14_for_office_v15
+                await invalidate_critic_trust_v14_for_office_v15(cur)
             # Keep an explicit non-ready tombstone.  MariaDB DDL commits
             # implicitly, so deleting the v13 row would make a later restart
             # unable to distinguish post-stamp trust-schema drift from a
