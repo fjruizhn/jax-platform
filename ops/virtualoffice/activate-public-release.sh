@@ -79,8 +79,17 @@ printf '%s\n' "$index" > "$backup/new-index-sha256"
 rollback="$(dirname "$(readlink -f -- "$0")")/rollback-public-release.sh"
 [[ -x $rollback ]] || die 'rollback executable is unavailable'
 changed=0
-restore_on_error() { local code=$?; if ((changed)); then if ! "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then : > "$backup/RECOVERY_REQUIRED"; fi; fi; exit "$code"; }
-trap restore_on_error ERR INT TERM
+durable_marker() { python3 - "$backup" "$1" <<'PY'
+import os,sys
+d,name=sys.argv[1:]; p=os.path.join(d,name)
+fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.fsync(fd); os.close(fd)
+dfd=os.open(d,os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
+PY
+}
+recover() { local code=$1; if ((changed)); then if ! "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then durable_marker RECOVERY_REQUIRED; fi; fi; exit "$code"; }
+trap 'recover 1' ERR
+trap 'recover 130' INT
+trap 'recover 143' TERM
 
 vhost_parent=$(dirname -- "$vhost")
 parent_mode=$(stat -c %a "$vhost_parent" 2>/dev/null || true)
@@ -90,7 +99,8 @@ sha256sum "$vhost.new" | awk '{print $1}' > "$backup/new-vhost-sha256"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"
 changed=1
-: > "$backup/ACTIVATION_IN_PROGRESS"
+durable_marker ACTIVATION_IN_PROGRESS
+printf 'public Office activation snapshot (recover if interrupted): %s\n' "$backup"
 mv -f -- "$vhost.new" "$vhost"
 mv -Tf -- "$site/.current.new" "$current"
 "$validator" offline --config "$vhost" --site-root "$site" --releases-root "$releases" --release "$current" --expected-source-sha "$sha" --nginx-user "$nginx_user"
@@ -98,5 +108,8 @@ mv -Tf -- "$site/.current.new" "$current"
 "$nginx" -s reload
 "$validator" smoke --public-ip "$ip" --expected-index-sha "$index" --asset-path "$asset" --expected-asset-sha "$asset_sha"
 trap - ERR INT TERM
-rm -f -- "$backup/ACTIVATION_IN_PROGRESS"
+python3 - "$backup/ACTIVATION_IN_PROGRESS" "$backup" <<'PY'
+import os,sys
+os.unlink(sys.argv[1]); fd=os.open(sys.argv[2],os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
 printf 'public Office activation passed; rollback snapshot: %s\n' "$backup"

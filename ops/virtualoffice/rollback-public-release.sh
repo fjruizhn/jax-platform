@@ -69,5 +69,12 @@ PY
 )
   "$validator" smoke --public-ip "$ip" --expected-index-sha "${prior[1]}" --asset-path "${prior[2]}" --expected-asset-sha "${prior[3]}"
 fi
-rm -f -- "$backup/ACTIVATION_IN_PROGRESS" "$backup/RECOVERY_REQUIRED"
+python3 - "$backup" <<'PY'
+import os,sys
+d=sys.argv[1]
+for name in ('ACTIVATION_IN_PROGRESS','RECOVERY_REQUIRED'):
+ try: os.unlink(os.path.join(d,name))
+ except FileNotFoundError: pass
+fd=os.open(d,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+PY
 printf 'public Office rollback passed from snapshot: %s\n' "$backup"

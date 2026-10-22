@@ -51,18 +51,36 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 AUDIT_SHA=SHA_DEL_VEREDICTO
 INSTALLER=/usr/local/libexec/jax-office-install-public-release.sh
 VALIDATOR=/usr/local/libexec/jax-office-validate-public-ingress.sh
+ACTIVATOR=/usr/local/libexec/jax-office-activate-public-release.sh
+ROLLBACK=/usr/local/libexec/jax-office-rollback-public-release.sh
+LOCKER=/usr/local/libexec/with-office-activation-lock.py
 installer_tmp=$(mktemp)
 validator_tmp=$(mktemp)
+activator_tmp=$(mktemp)
+rollback_tmp=$(mktemp)
+locker_tmp=$(mktemp)
 gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/install-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$installer_tmp"
 gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/validate-public-ingress.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$validator_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/activate-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$activator_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/rollback-public-release.sh?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$rollback_tmp"
+gh api "repos/fjruizhn/jax-platform/contents/ops/virtualoffice/with-office-activation-lock.py?ref=$AUDIT_SHA" -H 'Accept: application/vnd.github.raw' > "$locker_tmp"
 sudo install -d -o root -g root -m 0755 /usr/local/libexec
 sudo install -o root -g root -m 0755 "$installer_tmp" "$INSTALLER"
 sudo install -o root -g root -m 0755 "$validator_tmp" "$VALIDATOR"
+sudo install -o root -g root -m 0755 "$activator_tmp" "$ACTIVATOR"
+sudo install -o root -g root -m 0755 "$rollback_tmp" "$ROLLBACK"
+sudo install -o root -g root -m 0755 "$locker_tmp" "$LOCKER"
 sudo cmp "$installer_tmp" "$INSTALLER"
 sudo cmp "$validator_tmp" "$VALIDATOR"
+sudo cmp "$activator_tmp" "$ACTIVATOR"
+sudo cmp "$rollback_tmp" "$ROLLBACK"
+sudo cmp "$locker_tmp" "$LOCKER"
 sudo test "$(stat -c '%U:%G:%a' "$INSTALLER")" = root:root:755
 sudo test "$(stat -c '%U:%G:%a' "$VALIDATOR")" = root:root:755
-rm -- "$installer_tmp" "$validator_tmp"
+sudo test "$(stat -c '%U:%G:%a' "$ACTIVATOR")" = root:root:755
+sudo test "$(stat -c '%U:%G:%a' "$ROLLBACK")" = root:root:755
+sudo test "$(stat -c '%U:%G:%a' "$LOCKER")" = root:root:755
+rm -- "$installer_tmp" "$validator_tmp" "$activator_tmp" "$rollback_tmp" "$locker_tmp"
 ```
 
    Después se construye e instala con las copias root-owned:
