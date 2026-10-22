@@ -6,6 +6,7 @@ bearer is hashed immediately and never enters SQL, an exception, or a log.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import hmac
@@ -14,7 +15,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from crypto_secrets import clave_de_cifrado_utilizable, encrypt_secret
+from crypto_secrets import clave_de_cifrado_utilizable, decrypt_db_secret, encrypt_secret
 from validacion import direccion_unica_valida
 
 from .audit import record_authorization_event
@@ -419,3 +420,151 @@ async def accept_invitation_in_cursor(
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     return False
+
+
+@dataclass(frozen=True)
+class ClaimedInvitationDelivery:
+    outbox_id: str
+    attempt_id: str
+    invitation_id: str
+    recipient: str
+    bearer_token: str
+    expires_at: str
+
+
+def _decode_outbox_payload(ciphertext: bytes | str) -> tuple[str, str, str]:
+    """Decrypt and validate one claimed payload without exposing its bearer."""
+    try:
+        raw = ciphertext.decode("ascii") if isinstance(ciphertext, bytes) else ciphertext
+        payload = json.loads(decrypt_db_secret(raw))
+        if (payload.get("domain") != "office-invitation-outbox/v1"
+                or not isinstance(payload.get("email"), str)
+                or not isinstance(payload.get("token"), str)
+                or not isinstance(payload.get("expires_at"), str)):
+            raise ValueError("invalid invitation payload")
+        # Validation is intentionally separate from the returned value, so a
+        # raw bearer never appears in a diagnostic expression or exception.
+        _token_hash(payload["token"])
+        return _normalize_email(payload["email"]), payload["token"], payload["expires_at"]
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise InvitationError("office_invitation_transport_unavailable", status_code=503) from error
+
+
+async def claim_next_invitation_delivery_in_cursor(cur) -> ClaimedInvitationDelivery | None:
+    """Fence one queued mail before any worker touches SMTP."""
+    await cur.execute(
+        "SELECT outbox_id,invitation_id,payload_ciphertext FROM office_invitation_outbox "
+        "WHERE state='QUEUED' ORDER BY created_at,outbox_id LIMIT 1 FOR UPDATE SKIP LOCKED")
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    outbox_id, invitation_id, ciphertext = row
+    await cur.execute(
+        "SELECT i.status,s.expires_at FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
+    invitation = await cur.fetchone()
+    if invitation is None or invitation[0] != "ISSUED":
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    now = await _db_now(cur)
+    expiry = invitation[1].replace(tzinfo=dt.timezone.utc) if invitation[1].tzinfo is None else invitation[1].astimezone(dt.timezone.utc)
+    if now > expiry:
+        # The acceptance path owns the causal EXPIRED transition.  A sender
+        # which discovers it first reports terminal ambiguity for an operator
+        # instead of fabricating evidence from a delivery loop.
+        raise InvitationError("office_invitation_expired", status_code=410)
+    recipient, token, expires_at = _decode_outbox_payload(ciphertext)
+    attempt_id = str(uuid.uuid4())
+    await cur.execute(
+        "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6),"
+        "updated_at=IF(UTC_TIMESTAMP(6)>updated_at,UTC_TIMESTAMP(6),DATE_ADD(updated_at,INTERVAL 1 MICROSECOND)) "
+        "WHERE outbox_id=%s AND state='QUEUED'", (attempt_id, outbox_id))
+    if cur.rowcount != 1:
+        raise InvitationError("office_invitation_retryable", status_code=503)
+    return ClaimedInvitationDelivery(str(outbox_id), attempt_id, str(invitation_id), recipient, token, expires_at)
+
+
+async def finalize_invitation_delivery_in_cursor(
+    cur, *, outbox_id: str, attempt_id: str, relay_accepted: bool,
+    message_id: str | None = None, result_code: str | None = None,
+) -> bool:
+    """Persist the only two post-claim truths: accepted relay or UNKNOWN."""
+    await cur.execute(
+        "SELECT invitation_id,state,attempt_id,cancel_requested FROM office_invitation_outbox WHERE outbox_id=%s FOR UPDATE",
+        (outbox_id,))
+    row = await cur.fetchone()
+    if row is None or row[1] != "CLAIMED" or row[2] != attempt_id:
+        return False
+    invitation_id = str(row[0])
+    state = "SMTP_ACCEPTED" if relay_accepted else "UNKNOWN"
+    if relay_accepted and (not isinstance(message_id, str) or not message_id or len(message_id) > 320 or not message_id.isascii()):
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    code = ("SMTP_ACCEPTED" if relay_accepted else (result_code or "SMTP_UNKNOWN"))
+    if not isinstance(code, str) or not code.isascii() or not 1 <= len(code) <= 64:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    await cur.execute(
+        "UPDATE office_invitation_outbox SET state=%s,payload_ciphertext=NULL,message_id=%s,result_code=%s,"
+        "finished_at=UTC_TIMESTAMP(6),updated_at=IF(UTC_TIMESTAMP(6)>updated_at,UTC_TIMESTAMP(6),DATE_ADD(updated_at,INTERVAL 1 MICROSECOND)) "
+        "WHERE outbox_id=%s AND state='CLAIMED' AND attempt_id=%s",
+        (state, message_id if relay_accepted else None, code, outbox_id, attempt_id))
+    if cur.rowcount != 1:
+        return False
+    await cur.execute("SELECT event_id,correlation_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
+    issued = await cur.fetchone()
+    if issued is None:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+        "VALUES (%s,'DELIVERY_OBSERVED',%s,NULL,NULL,%s,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, int(issued[0]), state, issued[1]))
+    return True
+
+
+async def deliver_one_invitation() -> bool:
+    """Run one delivery outside database locks and settle its fenced result.
+
+    This is intentionally not scheduled by application startup.  A reviewed
+    worker may call it; until then issuing stays durable but no SMTP action is
+    performed merely because a web process imported this module.
+    """
+    from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+    import smtp_config
+
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        delivery = await claim_next_invitation_delivery_in_cursor(cur)
+    if delivery is None:
+        return False
+    accepted = False
+    message_id: str | None = None
+    result_code = "SMTP_UNKNOWN"
+    try:
+        settings = await smtp_config.cargar_settings()
+        message = smtp_config.construir_mensaje(
+            settings, delivery.recipient, "Axioma — Invitación a Oficina Virtual",
+            "Use este código en la pantalla de aceptación de la Oficina Virtual:\n\n"
+            f"{delivery.bearer_token}\n\nVence: {delivery.expires_at}",
+            "<p>Use este código en la pantalla de aceptación de la Oficina Virtual:</p>"
+            f"<p><code>{delivery.bearer_token}</code></p><p>Vence: {delivery.expires_at}</p>",
+        )
+        message_id = str(message["Message-ID"])
+        await asyncio.to_thread(smtp_config.enviar, settings, message)
+        accepted = True
+    except BaseException:
+        # A network exception, cancelled task, or malformed mail config is
+        # delivery ambiguity after the claim.  Never put the payload back in
+        # QUEUED and risk a second bearer send.
+        result_code = "SMTP_UNKNOWN"
+        try:
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await finalize_invitation_delivery_in_cursor(
+                    cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
+                    relay_accepted=False, result_code=result_code)
+        except Exception:
+            # Leave a fenced CLAIMED row for the operator rather than claim a
+            # false state after a second persistence failure.
+            pass
+        raise
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await finalize_invitation_delivery_in_cursor(
+            cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
+            relay_accepted=accepted, message_id=message_id, result_code=result_code)
+    return True
