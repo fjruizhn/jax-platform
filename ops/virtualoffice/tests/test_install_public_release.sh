@@ -29,6 +29,7 @@ make_built_release() {
 
 good=1111111111111111111111111111111111111111
 bad=2222222222222222222222222222222222222222
+untrusted=3333333333333333333333333333333333333333
 mkdir -p "$fixture/built" "$fixture/site/releases"
 make_built_release "$good"
 chown -R nobody:nogroup "$fixture/built"
@@ -46,12 +47,14 @@ target="$fixture/site/releases/$good"
 if runuser -u nobody -- sh -c "printf changed >> '$target/dist/index.html'" 2>/dev/null; then
   echo 'unexpected write to immutable asset' >&2; exit 1
 fi
-if "$installer" --built-release "$fixture/built/$good" --site-root "$fixture/site" \
+make_built_release "$untrusted"
+if "$installer" --built-release "$fixture/built/$untrusted" --site-root "$fixture/site" \
   --releases-root "$fixture/site/releases" --operational-root "$fixture" --config "$config" \
-  --validator "$validator" --expected-source-sha "$good" \
+  --validator "$validator" --expected-source-sha "$untrusted" \
   --expected-manifest-sha256 "0000000000000000000000000000000000000000000000000000000000000000" --nginx-user nobody >/dev/null 2>&1; then
   echo 'unexpected self-attested manifest install' >&2; exit 1
 fi
+[[ ! -e "$fixture/site/releases/$untrusted" && ! -L "$fixture/site/releases/$untrusted" ]]
 
 make_built_release "$bad"
 ln -s /etc/passwd "$fixture/built/$bad/dist/leak"
