@@ -248,8 +248,26 @@ runtime_grant_state() {
     done
     printf 'legacy-prefix:%s' "$prefix_count"; return
   fi
-  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] || {
-    [ "$actual_set" = "SELECT" ] || { printf invalid; return; }
+  if [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ]; then
+    # This can occur only after the v2 table grants have been made and before
+    # the final schema INSERT revoke.  Check the whole v2 set here; a real
+    # v11 principal has different table rows and is handled below as v1.
+    prefix_count=$((actual_count - 2))
+    [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
+    index=0
+    for ((index=0; index<prefix_count; index++)); do
+      table=${RUNTIME_TABLES[$index]}; privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || break
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || break
+    done
+    if [ "$index" -eq "$prefix_count" ] && [ "$prefix_count" -eq "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_count" ]; then
+      # Every named v2 grant may be durable before the final REVOKE.  This is
+      # still a transition: reporting it as `new` would leave broad INSERT.
+      printf 'new-schema-insert'; return
+    fi
+  elif [ "$actual_set" = "SELECT" ]; then
     prefix_count=$((actual_count - 2))
     [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
     for ((index=0; index<prefix_count; index++)); do
@@ -261,7 +279,9 @@ runtime_grant_state() {
     done
     [ "$prefix_count" -eq "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_count" ] || { printf 'new-prefix:%s' "$prefix_count"; return; }
     printf new; return
-  }
+  else
+    printf invalid; return
+  fi
   # v1 can have been interrupted after any ordered old-table grant.  Verify
   # that exact prefix before adding v2's named INSERT grants; arbitrary table
   # grants still fail closed.
@@ -334,6 +354,11 @@ case "$runtime_state" in
         table=${RUNTIME_TABLES[$index]}
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge runtime table privileges"
       done
+      ;;
+    new-schema-insert)
+      # The only accepted post-GRANT cut point has every exact v2 grant and
+      # no additional capability.  Finish the interrupted convergence.
+      printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke transitional runtime schema INSERT"
       ;;
     legacy-prefix:*)
       # Add the narrow table grants before revoking broad schema DML.

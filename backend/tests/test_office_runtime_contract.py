@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from hashlib import sha256
+from pathlib import Path
 
 import aiomysql
 import pytest
@@ -458,7 +460,21 @@ def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
 
         pool = await get_pool()
         assert SCHEMA_REVISION.startswith("office-runtime-v12-")
-        predecessor = SCHEMA_REVISION.replace("office-runtime-v12-", "office-runtime-v11-", 1)
+        # v11 used the checked-in v1 table contract.  Do not fabricate a v11
+        # marker by retaining the v2 digest: that state was never a deployable
+        # predecessor and would not exercise the actual migration boundary.
+        v1_manifest = (
+            Path(__file__).resolve().parents[2]
+            / "ops" / "migration" / "runtime-table-privileges-v1.txt"
+        )
+        v1_rows = [
+            line.strip() for line in v1_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        predecessor = (
+            "office-runtime-v11-runtime-table-privileges-v1-"
+            + sha256("\n".join(v1_rows).encode("ascii")).hexdigest()[:16]
+        )
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
@@ -671,7 +687,9 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT ON `{schema}`.* TO `{user}`@'%'")
+                # This empty-tenant path must use the exact v2 ACL: the
+                # bootstrap probe creates and rolls back jax_tenants itself.
+                await _grant_exact_runtime_acl(cur, schema, user)
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:
