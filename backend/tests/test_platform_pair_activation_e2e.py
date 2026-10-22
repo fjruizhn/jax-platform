@@ -61,6 +61,8 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
+        "if [ \"$1\" = is-active ]; then exit 1; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform-migrate.service' ]; then exec \"$JAX_PAIR_TEST_LAUNCHER\" migrate; fi\n"
         "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
         encoding="utf-8",
     )
@@ -72,6 +74,9 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_TEST_ROOT": str(root),
         "JAX_PAIR_SYSTEMCTL_BIN": str(fake_systemctl),
         "JAX_PAIR_TEST_CALLS": str(calls),
+        "JAX_PAIR_TEST_LAUNCHER": str(MIGRATION / "jax-platform-pair-exec"),
+        "JAX_PAIR_TEST_OUTPUT": str(output),
+        "JAX_TRUSTED_PROXIES": "127.0.0.1",
     }
     command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest]
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -89,8 +94,10 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     assert selection["manifest_sha256"] == digest
     assert calls.read_text(encoding="utf-8").splitlines() == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
+        "is-active --quiet jax-platform.service", "is-active --quiet jax-platform-migrate.service",
         "start jax-platform-migrate.service", "start jax-platform.service",
     ]
+    assert output.read_text(encoding="utf-8") == str(release / "jax")
     launcher = ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}", "JAX_REPO_PATH=/attacker/checkout", "JAX_TRUSTED_PROXIES=127.0.0.1", f"JAX_PAIR_TEST_OUTPUT={output}", str(MIGRATION / "jax-platform-pair-exec"), "web"]
     result = subprocess.run(launcher, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr

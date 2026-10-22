@@ -27,6 +27,12 @@ fi
 exec 8>"$ROOT/.runtime.lock"; /usr/bin/flock -x 8
 $SYSTEMCTL stop jax-platform.service
 $SYSTEMCTL stop jax-platform-migrate.service
+for unit in jax-platform.service jax-platform-migrate.service; do
+  if $SYSTEMCTL is-active --quiet "$unit"; then
+    echo "service did not stop: $unit" >&2
+    exit 1
+  fi
+done
 selection_tmp=$(/usr/bin/mktemp "$(dirname "$SELECTION")/.platform-pair-selection.XXXXXX")
 trap 'rm -f -- "$selection_tmp"' EXIT
 /usr/bin/python3 -Es - "$RELEASE" "$EXPECTED" <<'PY' >"$selection_tmp"
@@ -36,6 +42,10 @@ print(json.dumps({'release':sys.argv[1],'jax_platform_revision':x['jax_platform_
 PY
 /usr/bin/chown root:root "$selection_tmp"; /usr/bin/chmod 0644 "$selection_tmp"; /usr/bin/mv -fT "$selection_tmp" "$SELECTION"
 trap - EXIT
+# The selection is now durable.  Do not retain the exclusive runtime lock while
+# systemd synchronously runs the migration launcher: it needs the shared lock.
+/usr/bin/flock -u 8
+exec 8>&-
 $SYSTEMCTL start jax-platform-migrate.service
 $SYSTEMCTL start jax-platform.service
 ln -sfn "releases/$(basename "$RELEASE")" "$ROOT/.current.new"; mv -T "$ROOT/.current.new" "$ROOT/current"
