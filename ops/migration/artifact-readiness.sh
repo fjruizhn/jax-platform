@@ -8,5 +8,5 @@ verify_platform_artifact_readiness() {
   [ "$#" -gt 0 ] || set -- busctl
   helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/artifact_readiness.py"
   [ -r "$helper" ] || { printf 'artifact readiness: verifier unavailable\n' >&2; return 1; }
-  python3 "$helper" "$artifact_root" "$@"
+  python3 "$helper" "$artifact_root" --units-dir "$(dirname "$helper")/systemd-units" "$@"
 }

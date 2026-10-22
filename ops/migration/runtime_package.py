@@ -267,7 +267,7 @@ def _journal(backup: Path, phase: str, paths: dict[str, Path] | None = None) -> 
     _write_file(journal, json.dumps(data, sort_keys=True, separators=(",", ":")).encode() + b"\n", mode=0o600, uid=os.geteuid(), gid=os.getegid())
 
 
-def recover_incomplete(backup: Path) -> None:
+def recover_incomplete(backup: Path, verify_restored: Callable[[Path], None] | None = None) -> None:
     try:
         data = json.loads((backup / "journal.json").read_text(encoding="utf-8"))
         phase, raw_paths = data.get("phase"), data.get("destinations")
@@ -276,19 +276,21 @@ def recover_incomplete(backup: Path) -> None:
         if not isinstance(raw_paths, dict) or not all(isinstance(name, str) and isinstance(path, str) and path.startswith("/") for name, path in raw_paths.items()):
             raise ValueError("journal")
         restore({name: Path(path) for name, path in raw_paths.items()}, backup)
+        if verify_restored is not None:
+            verify_restored(_snapshot_unit_source(backup))
         _journal(backup, "ROLLED_BACK")
     except (OSError, ValueError, TypeError, json.JSONDecodeError, PackageError) as exc:
         raise PackageError("RECOVERY_REQUIRED") from exc
 
 
-def recover_pending_imports(parent: Path, current: Path) -> None:
+def recover_pending_imports(parent: Path, current: Path, verify_restored: Callable[[Path], None] | None = None) -> None:
     try:
         entries = sorted(parent.iterdir())
     except OSError as exc:
         raise PackageError("RECOVERY_REQUIRED") from exc
     for entry in entries:
         if entry != current and entry.is_dir() and (entry / "journal.json").is_file():
-            recover_incomplete(entry)
+            recover_incomplete(entry, verify_restored)
 
 
 def _destinations(data: dict[str, object], root: Path) -> dict[str, Path]:
@@ -311,15 +313,39 @@ def _destinations(data: dict[str, object], root: Path) -> dict[str, Path]:
     return declared
 
 
+def _sealed_unit_source(directory: Path, units: dict[str, bytes]) -> Path:
+    """Write unit bytes already sealed by _load into a root-private source tree."""
+    directory.mkdir(mode=0o700)
+    os.chmod(directory, 0o700)
+    for package_path in _UNITS:
+        _write_file(directory / Path(package_path).name, units[package_path], mode=0o600, uid=os.geteuid(), gid=os.getegid())
+    return directory
+
+
+def _snapshot_unit_source(backup: Path) -> Path:
+    """Materialize exactly the pre-import unit bytes for rollback verification."""
+    try:
+        records = json.loads((backup / "snapshot.json").read_text(encoding="utf-8"))
+        units = {path: (backup / "files" / path).read_bytes() for path in _UNITS
+                 if records.get(path, {}).get("absent") is False}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise PackageError("RECOVERY_REQUIRED") from exc
+    if set(units) != set(_UNITS):
+        raise PackageError("RECOVERY_REQUIRED")
+    return _sealed_unit_source(backup / "restored-units", units)
+
+
 def import_package(bundle: Path, digest: str, destination_root: Path, backup: Path,
-                   verify_effective: Callable[[], None], *, fail_after: int | None = None,
-                   verify_restored: Callable[[], None] | None = None,
+                   verify_effective: Callable[[Path], None], *, fail_after: int | None = None,
+                   verify_restored: Callable[[Path], None] | None = None,
                    package_owner_uid: int = 0, package_owner_gid: int = 0,
                    install_owner_uid: int = 0, install_owner_gid: int = 0) -> None:
     """Commit all files, D-Bus verification included, or restore every file."""
     data, sealed_bytes = _load(bundle, digest, owner_uid=package_owner_uid, owner_gid=package_owner_gid)
     destinations = _destinations(data, destination_root)
     snapshot(destinations, backup)
+    candidate_units = _sealed_unit_source(backup / "candidate-units", sealed_bytes)
+    restored_units = _snapshot_unit_source(backup) if verify_restored is not None else None
     _journal(backup, "PREPARED", destinations)
     declared = {entry["path"] for entry in data["payload"] if isinstance(entry, dict)}
     swaps = 0
@@ -336,14 +362,15 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
         for path, destination in destinations.items():
             if path not in declared:
                 destination.unlink()
-        verify_effective()
+        verify_effective(candidate_units)
         _journal(backup, "VERIFIED")
     except BaseException as original:
         try:
             _journal(backup, "ROLLING_BACK")
             restore(destinations, backup)
             if verify_restored is not None:
-                verify_restored()
+                assert restored_units is not None
+                verify_restored(restored_units)
             _journal(backup, "ROLLED_BACK")
         except BaseException as rollback_error:
             _journal(backup, "RECOVERY_REQUIRED")
@@ -424,17 +451,20 @@ def main(argv: list[str]) -> int:
         if any(backup.iterdir()):
             raise PackageError("invalid runtime transaction path")
 
-        def verify() -> None:
+        def verify(units_dir: Path) -> None:
+            # Reload before every D-Bus comparison: a restored unit file is not
+            # effective until PID 1 has discarded its cached definition.
             _run_checked(["/usr/bin/systemctl", "daemon-reload"])
             _run_checked(["/usr/bin/systemd-analyze", "verify", "/etc/systemd/system/jax-platform.service", "/etc/systemd/system/jax-platform-migrate.service"])
-            # The validator's fixed arguments bind it to the live effective
-            # systemd view; a zero-argument program cannot silently no-op.
-            _run_checked([f"/proc/self/fd/{validator_fd}", "/", "/usr/bin/busctl"], pass_fds=(validator_fd,))
+            # `units_dir` is a root-private copy made from sealed FD bytes, not
+            # a pathname reopened from the mutable package or live unit tree.
+            _run_checked([f"/proc/self/fd/{validator_fd}", "/", "--units-dir", str(units_dir), "/usr/bin/busctl"], pass_fds=(validator_fd,))
 
         try:
             with _exclusive_runtime_lock():
-                recover_pending_imports(backup.parent, backup)
+                # Never restore or replace a definition while either unit runs.
                 _require_units_inactive()
+                recover_pending_imports(backup.parent, backup, verify)
                 import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
         finally:
             os.close(validator_fd)

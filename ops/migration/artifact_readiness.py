@@ -7,6 +7,8 @@ import ipaddress
 import shlex
 import subprocess
 import sys
+import os
+import stat
 from pathlib import Path
 
 
@@ -34,8 +36,18 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
         sections: dict[str, list[tuple[str, str]]] = {"Unit": [], "Service": []}
         section = ""
         try:
-            lines = (units_dir / unit).read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
+            descriptor = os.open(units_dir / unit, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                value = os.fstat(descriptor)
+                if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+                    raise OSError("unsafe source unit")
+                chunks: list[bytes] = []
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    chunks.append(chunk)
+                lines = b"".join(chunks).decode("utf-8").splitlines()
+            finally:
+                os.close(descriptor)
+        except (OSError, UnicodeDecodeError) as exc:
             raise ReadinessError(f"artifact readiness: {unit}: source unit unavailable") from exc
         for raw in lines:
             line = raw.strip()
@@ -109,8 +121,8 @@ def effective_contract(command: list[str], unit: str) -> dict[str, object]:
     return values
 
 
-def verify(artifact: Path, command: list[str]) -> None:
-    expected = source_contract(Path(__file__).with_name("systemd-units"), artifact)
+def verify(artifact: Path, command: list[str], units_dir: Path) -> None:
+    expected = source_contract(units_dir, artifact)
     for unit in UNITS:
         actual = effective_contract(command, unit)
         wanted = expected[unit]
@@ -153,10 +165,10 @@ def verify(artifact: Path, command: list[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3:
+    if len(argv) < 5 or argv[2] != "--units-dir":
         return 2
     try:
-        verify(Path(argv[1]), argv[2:])
+        verify(Path(argv[1]), argv[4:], Path(argv[3]))
     except ReadinessError as exc:
         print(exc, file=sys.stderr)
         return 1
