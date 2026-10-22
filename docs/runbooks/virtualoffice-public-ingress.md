@@ -8,7 +8,7 @@ de JAX Platform y hable con su API usando el mismo origen.
 
 El vhost modelo está en
 [`ops/virtualoffice/virtualoffice.axioma-ia.io.conf`](../../ops/virtualoffice/virtualoffice.axioma-ia.io.conf).
-Sirve `dist/` del release inmutable bajo `/www/wwwroot/virtualoffice.axioma-ia.io/current`,
+Sirve `dist/` del release inmutable bajo `/opt/jax-office/virtualoffice.axioma-ia.io/current`,
 usa el certificado wildcard ya instalado para `axioma-ia.io`, habilita HSTS
 solamente para este host (`max-age=31536000`, sin `includeSubDomains`), y
 reenvía sólo:
@@ -74,9 +74,9 @@ BUILD_ROOT=$(mktemp -d)
 python3 ops/frontend/build.py --repo /RUTA/AL/REPO --releases "$BUILD_ROOT" --revision "$SHA"
 sudo "$INSTALLER" \
   --built-release "$BUILD_ROOT/$SHA" \
-  --site-root /www/wwwroot/virtualoffice.axioma-ia.io \
-  --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
-  --operational-root /www/wwwroot \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --releases-root /opt/jax-office/virtualoffice.axioma-ia.io/releases \
+  --operational-root /opt \
   --config /RUTA/AL/virtualoffice.axioma-ia.io.conf \
   --validator "$VALIDATOR" --expected-source-sha "$SHA" \
   --expected-manifest-sha256 "$MANIFEST_SHA256" --nginx-user www
@@ -85,7 +85,7 @@ rm -rf -- "$BUILD_ROOT"
 
 El instalador rechaza un SHA, manifiesto, árbol o enlace que no sea el
 artefacto auditado, incluidos sockets, pipes y dispositivos. Exige que todos
-los ancestros desde `site-root` hasta `/www/wwwroot` sean `root` y no tengan
+los ancestros desde `site-root` hasta `/opt` sean `root` y no tengan
 escritura de grupo u otros, antes y después de copiar. Copia a
 `releases/.SHA.new`, fija `root:root`, directorios 0755 y archivos 0644, y sólo
 entonces renombra el directorio. También ejecuta la atestación `offline` sobre
@@ -99,9 +99,9 @@ investigar el release conservado antes de intentar otra instalación.
 ```bash
 ops/virtualoffice/validate-public-ingress.sh offline \
   --config /ruta/al/virtualoffice.axioma-ia.io.conf \
-  --site-root /www/wwwroot/virtualoffice.axioma-ia.io \
-  --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
-  --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
+  --site-root /opt/jax-office/virtualoffice.axioma-ia.io \
+  --releases-root /opt/jax-office/virtualoffice.axioma-ia.io/releases \
+  --release /opt/jax-office/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
   --expected-source-sha SHA_DE_FUENTE_AUDITADO \
   --nginx-user www
 ```

@@ -1390,9 +1390,9 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # PIN = head auditado de jax#409: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
+          PIN=0ad257dd810eb1a6496a76eb84889a45b49a36be
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4963,9 +4963,9 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # PIN = head auditado de jax#409: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
+          PIN=0ad257dd810eb1a6496a76eb84889a45b49a36be
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
