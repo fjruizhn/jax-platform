@@ -236,7 +236,7 @@ def test_mfa_ledger_constraint_metadata_is_exact_and_permissive_replacements_fai
                     await cur.execute(
                         f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} CHECK (1=1)"
                     )
-                    with pytest.raises(RuntimeError, match=name):
+                    with pytest.raises(RuntimeError, match="ledger CHECK history"):
                         await apply_office_migrations(cur)
                     await cur.execute(
                         "SELECT 1 FROM office_schema_revision WHERE component='virtual-office'"

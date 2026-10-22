@@ -233,6 +233,21 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
+                    class CrashAfterFreshLedgerCreate:
+                        def __init__(self, delegate):
+                            self._delegate = delegate
+
+                        async def execute(self, statement, *args):
+                            result = await self._delegate.execute(statement, *args)
+                            if "CREATE TABLE IF NOT EXISTS office_mfa_security_event" in statement:
+                                raise ConnectionError("injected post-CREATE disconnect")
+                            return result
+
+                        def __getattr__(self, name):
+                            return getattr(self._delegate, name)
+
+                    with pytest.raises(ConnectionError, match="post-CREATE"):
+                        await apply_office_migrations(CrashAfterFreshLedgerCreate(cur))
                     await apply_office_migrations(cur)
                     await apply_office_migrations(cur)
                     # A v4 budget index is a valid predecessor and must be
@@ -248,6 +263,26 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     assert tuple(row[0] for row in await cur.fetchall()) == (
                         "user_id", "purpose", "expected_token_version", "expected_mfa_version", "state", "expires_at",
                     )
+                    # Same v4 columns are insufficient: predecessor metadata
+                    # must also be non-unique, unprefixed, ascending BTREE and
+                    # usable.  Preserve a FK-supporting user_id index while
+                    # replacing the canonical budget index in this owned DB.
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY v4_test_fk_support (user_id)")
+                    for definition in (
+                        "UNIQUE KEY idx_office_mfa_challenge_user (user_id,state,expires_at,token_hash)",
+                        "KEY idx_office_mfa_challenge_user (user_id,state(3),expires_at)",
+                    ):
+                        await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                        await cur.execute(f"ALTER TABLE office_mfa_challenge ADD {definition}")
+                        with pytest.raises(RuntimeError, match="budget index is incompatible"):
+                            await apply_office_migrations(cur)
+                        await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                        await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_user (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
+                    await cur.execute("ALTER TABLE office_mfa_challenge ALTER INDEX idx_office_mfa_challenge_user IGNORED")
+                    with pytest.raises(RuntimeError, match="budget index is incompatible"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("ALTER TABLE office_mfa_challenge ALTER INDEX idx_office_mfa_challenge_user NOT IGNORED")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX v4_test_fk_support")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
                     await cur.execute("ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED') OR 1=1)")
                     with pytest.raises(RuntimeError, match="challenge state is incompatible"):
@@ -264,6 +299,23 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                         "AND COLUMN_NAME='challenge_id'"
                     )
                     assert await cur.fetchone() == ("challenge_id", "NO", "auto_increment")
+                    await cur.execute(
+                        "SELECT 1 FROM information_schema.TABLE_CONSTRAINTS "
+                        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_security_event' "
+                        "AND CONSTRAINT_NAME='fk_office_mfa_security_event_challenge_subject'"
+                    )
+                    assert await cur.fetchone() == (1,)
+                    await apply_office_migrations(cur)
+                    # This is the real fresh-ledger ordering case: an older
+                    # challenge table survives, while the ledger does not.
+                    # The new ledger FK cannot be declared until the
+                    # challenge surrogate and composite uniqueness exist.
+                    await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
+                    await cur.execute("DROP TRIGGER no_delete_office_mfa_security_event")
+                    await cur.execute("DROP TABLE office_mfa_security_event")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX uq_office_mfa_challenge_subject")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP COLUMN challenge_id")
+                    await apply_office_migrations(cur)
                     await cur.execute(
                         "SELECT 1 FROM information_schema.TABLE_CONSTRAINTS "
                         "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_security_event' "
@@ -293,68 +345,55 @@ def test_mfa_schema_upgrade_resumes_only_attested_ddl_interruptions(client):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
-
-                    # Simulate a crash after a deliberate CHECK drop.  The
-                    # journal makes this one missing constraint distinguishable
-                    # from arbitrary tampering, and lets the runner resume.
-                    await cur.execute(
-                        "INSERT INTO office_mfa_schema_transition "
-                        "(transition_name,expected_digest,started_at) VALUES "
-                        "('credential-shape-v5','62aabe4d405a17df1389ad19c54d2380074d85346a1a9e09bc905e296e96e01c',NOW(6))"
-                    )
-                    await cur.execute("ALTER TABLE office_mfa_credential DROP CONSTRAINT chk_office_mfa_credential_shape")
+                    # The rejected DML journal has no authority.  A successful
+                    # migration removes a leftover development table only after
+                    # the physical contracts have been attested.
+                    await cur.execute("CREATE TABLE office_mfa_schema_transition (transition_name VARCHAR(64) NOT NULL PRIMARY KEY, expected_digest CHAR(64) NOT NULL, started_at DATETIME(6) NOT NULL)")
                     await apply_office_migrations(cur)
-                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='credential-shape-v5'")
+                    await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_schema_transition'")
                     assert await cur.fetchone() is None
 
-                    # The other crash boundary is after the journal write but
-                    # before ALTER starts: canonical DDL plus its old-digest
-                    # attestation is a completed no-op, not a lingering seal.
-                    await cur.execute(
-                        "INSERT INTO office_mfa_schema_transition "
-                        "(transition_name,expected_digest,started_at) VALUES "
-                        "('credential-shape-v5','62aabe4d405a17df1389ad19c54d2380074d85346a1a9e09bc905e296e96e01c',NOW(6))"
-                    )
-                    await apply_office_migrations(cur)
-                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='credential-shape-v5'")
-                    assert await cur.fetchone() is None
-
-                    # A challenge CHECK has the same recovery states.  Here
-                    # the interruption lands after DROP, before ADD.
-                    await cur.execute(
-                        "INSERT INTO office_mfa_schema_transition "
-                        "(transition_name,expected_digest,started_at) VALUES "
-                        "('challenge-state-v5','873de927db998ad7d6664ee6e849c3b09f6f3ec57afd20f1316fc90d8784eb9a',NOW(6))"
-                    )
-                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
-                    await apply_office_migrations(cur)
-                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='challenge-state-v5'")
-                    assert await cur.fetchone() is None
-
-                    # An interruption after creating the temporary v5 index
-                    # keeps the old v4 index and is atomically swapped.
+                    # The exact temporary v5 witness can resume the legacy
+                    # index-only interruption; no DML journal participates.
                     await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY legacy_budget (user_id,state,expires_at)")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
                     await cur.execute("ALTER TABLE office_mfa_challenge RENAME INDEX legacy_budget TO idx_office_mfa_challenge_user")
                     await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_budget_v5 (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
                     await apply_office_migrations(cur)
 
-                    # The previous non-atomic implementation could also leave
-                    # only the measured temporary index.  Resume its known
-                    # legacy state without reconstructing any rows.
+                    # The legacy temporary-only state is also resumable.
                     await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_budget_v5 (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
                     await apply_office_migrations(cur)
 
-                    # A missing CHECK without its transition attestation is
-                    # indistinguishable from tampering and must never stamp
-                    # readiness or silently repair the contract.
+                    # A missing CHECK is never a migration state. It fails
+                    # closed and preserves the leftover table for diagnosis.
                     await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("CREATE TABLE office_mfa_schema_transition (transition_name VARCHAR(64) NOT NULL PRIMARY KEY, expected_digest CHAR(64) NOT NULL, started_at DATETIME(6) NOT NULL)")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
                     with pytest.raises(RuntimeError, match="challenge state is incompatible"):
                         await apply_office_migrations(cur)
                     await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
                     assert await cur.fetchone() is None
+                    await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_schema_transition'")
+                    assert await cur.fetchone() == (1,)
+
+                    # A pre-existing ledger with a shape check and two absent
+                    # contracts is not a fresh-create provenance. It
+                    # must fail before consuming its diagnostic table or
+                    # stamping readiness.
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED'))")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("CREATE TABLE office_mfa_schema_transition (transition_name VARCHAR(64) NOT NULL PRIMARY KEY, expected_digest CHAR(64) NOT NULL, started_at DATETIME(6) NOT NULL)")
+                    await cur.execute("ALTER TABLE office_mfa_security_event DROP CONSTRAINT chk_office_mfa_security_event_fence")
+                    await cur.execute("ALTER TABLE office_mfa_security_event DROP CONSTRAINT chk_office_mfa_security_event_truth")
+                    with pytest.raises(RuntimeError, match="ledger CHECK history is incomplete"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+                    await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_schema_transition'")
+                    assert await cur.fetchone() == (1,)
                 finally:
                     await cur.execute(f"USE `{source}`")
                     await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")

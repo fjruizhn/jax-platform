@@ -13,7 +13,6 @@ OFFICE_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_update_office_authorization_event BEFORE UPDATE ON office_authorization_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_authorization_event append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_authorization_event BEFORE DELETE ON office_authorization_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_authorization_event append-only'",
     "CREATE TABLE IF NOT EXISTS office_schema_revision (component VARCHAR(64) NOT NULL PRIMARY KEY, revision VARCHAR(64) NOT NULL, applied_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS office_mfa_schema_transition (transition_name VARCHAR(64) NOT NULL PRIMARY KEY, expected_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, started_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 )
 
 RUNTIME_COMPONENT = "virtual-office"
@@ -154,21 +153,6 @@ async def _check_clause(cur, name: str) -> str | None:
     return None if row is None else str(row[0])
 
 
-async def _upgrade_mfa_check(cur, name: str, statement: str, *, old_digest: str | None = None) -> None:
-    """Install a measured v5 CHECK, accepting only an exact v4 predecessor."""
-    clause = await _check_clause(cur, name)
-    if clause is None:
-        await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {statement}")
-        return
-    digest = _check_digest(clause)
-    if digest == _CANONICAL_MFA_CHECK_DIGESTS[name]:
-        return
-    if old_digest is None or digest != old_digest:
-        raise RuntimeError(f"Office MFA constraint {name} is incompatible; historic evidence is not rewritten")
-    await cur.execute(f"ALTER TABLE office_mfa_security_event DROP CONSTRAINT {name}")
-    await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {statement}")
-
-
 async def _preflight_mfa_v5_rows(cur) -> None:
     """Refuse old canonical history which the stricter v5 truth cannot retain."""
     truth = _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_truth"]
@@ -198,9 +182,7 @@ async def _upgrade_mfa_budget_index(cur) -> None:
             raise RuntimeError("Office MFA challenge budget index is absent; historic evidence is not rewritten")
         await cur.execute(f"ALTER TABLE office_mfa_challenge RENAME INDEX {replacement} TO {name}")
         return
-    if await _index_columns(cur, "office_mfa_challenge", name) == _MFA_BUDGET_INDEX:
-        raise RuntimeError("Office MFA challenge budget index metadata is incompatible")
-    if await _index_columns(cur, "office_mfa_challenge", name) != _MFA_V4_BUDGET_INDEX:
+    if not _is_canonical_mfa_v4_budget_index(await _mfa_budget_index_metadata(cur, name)):
         raise RuntimeError("Office MFA challenge budget index is incompatible; historic evidence is not rewritten")
     if not replacement_exists:
         await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_budget_v5 (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
@@ -214,7 +196,7 @@ async def _upgrade_mfa_budget_index(cur) -> None:
 async def _upgrade_credential_shape(cur) -> None:
     await _upgrade_mfa_table_check(
         cur, table="office_mfa_credential", name="chk_office_mfa_credential_shape",
-        transition="credential-shape-v5", old_digest=_MFA_CREDENTIAL_SHAPE_V4,
+        old_digest=_MFA_CREDENTIAL_SHAPE_V4,
         new_digest=_MFA_CREDENTIAL_SHAPE_V5, old_statement=_MFA_CREDENTIAL_SHAPE_V4_SQL,
         new_statement=_MFA_CREDENTIAL_SHAPE_V5_SQL,
     )
@@ -239,28 +221,13 @@ def _is_canonical_mfa_budget_index(rows: tuple[tuple[object, ...], ...]) -> bool
     )
 
 
-async def _mfa_transition_digest(cur, transition: str) -> str | None:
-    await cur.execute(
-        "SELECT expected_digest FROM office_mfa_schema_transition WHERE transition_name=%s",
-        (transition,),
+def _is_canonical_mfa_v4_budget_index(rows: tuple[tuple[object, ...], ...]) -> bool:
+    return (
+        len(rows) == len(_MFA_V4_BUDGET_INDEX)
+        and tuple(row[0] for row in rows) == tuple(range(1, len(_MFA_V4_BUDGET_INDEX) + 1))
+        and all(int(row[1]) == 1 and row[2] is None and row[3] == "A" and row[4] == "BTREE" and row[5] == "NO" for row in rows)
+        and tuple(row[6] for row in rows) == _MFA_V4_BUDGET_INDEX
     )
-    row = await cur.fetchone()
-    return None if row is None else str(row[0])
-
-
-async def _begin_mfa_transition(cur, transition: str, expected_digest: str) -> None:
-    recorded = await _mfa_transition_digest(cur, transition)
-    if recorded is None:
-        await cur.execute(
-            "INSERT INTO office_mfa_schema_transition (transition_name,expected_digest,started_at) VALUES (%s,%s,NOW(6))",
-            (transition, expected_digest),
-        )
-    elif recorded != expected_digest:
-        raise RuntimeError(f"Office MFA schema transition {transition} is incompatible")
-
-
-async def _finish_mfa_transition(cur, transition: str) -> None:
-    await cur.execute("DELETE FROM office_mfa_schema_transition WHERE transition_name=%s", (transition,))
 
 
 async def _preflight_mfa_check_rows(cur, table: str, old_statement: str) -> None:
@@ -271,7 +238,7 @@ async def _preflight_mfa_check_rows(cur, table: str, old_statement: str) -> None
 
 
 async def _upgrade_mfa_table_check(
-    cur, *, table: str, name: str, transition: str, old_digest: str, new_digest: str,
+    cur, *, table: str, name: str, old_digest: str, new_digest: str,
     old_statement: str, new_statement: str,
 ) -> None:
     """Upgrade a CHECK with an attested recovery path for old interrupted DDL."""
@@ -281,26 +248,14 @@ async def _upgrade_mfa_table_check(
         else f"Office MFA constraint {name} is incompatible; historic evidence is not rewritten"
     )
     digest = _check_digest(await _check_clause(cur, name))
-    recorded = await _mfa_transition_digest(cur, transition)
     if digest == new_digest:
-        if recorded is not None:
-            if recorded != old_digest:
-                raise RuntimeError(f"Office MFA schema transition {transition} is incompatible")
-            await _finish_mfa_transition(cur, transition)
-        return
-    if digest is None:
-        if recorded != old_digest:
-            raise RuntimeError(error)
-        await _preflight_mfa_check_rows(cur, table, old_statement)
-        await cur.execute(f"ALTER TABLE {table} ADD CONSTRAINT {name} {new_statement}")
-        await _finish_mfa_transition(cur, transition)
         return
     if digest != old_digest:
         raise RuntimeError(error)
-    await _begin_mfa_transition(cur, transition, old_digest)
     await _preflight_mfa_check_rows(cur, table, old_statement)
     await cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT {name}, ADD CONSTRAINT {name} {new_statement}")
-    await _finish_mfa_transition(cur, transition)
+    if _check_digest(await _check_clause(cur, name)) != new_digest:
+        raise RuntimeError(error)
 
 
 async def _assert_mfa_ledger_metadata(cur) -> None:
@@ -448,6 +403,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
+    ledger_existed = await _table_exists(cursor, "office_mfa_security_event")
     for statement in OFFICE_MFA_DDL:
         if "office_mfa_security_event" not in statement:
             await cursor.execute(statement)
@@ -465,41 +421,47 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE office_mfa_challenge ADD UNIQUE KEY uq_office_mfa_challenge_subject (challenge_id,user_id)")
     await _upgrade_mfa_table_check(
         cursor, table="office_mfa_challenge", name="chk_office_mfa_challenge_state",
-        transition="challenge-state-v5", old_digest=_MFA_CHALLENGE_STATE_V4,
+        old_digest=_MFA_CHALLENGE_STATE_V4,
         new_digest=_MFA_CHALLENGE_STATE_V5, old_statement=_MFA_CHALLENGE_STATE_V4_SQL,
         new_statement=_MFA_CHALLENGE_STATE_V5_SQL,
     )
     await _upgrade_mfa_budget_index(cursor)
     proof_index = "idx_office_mfa_security_event_proof"
     proof_columns = ("subject_user_id", "purpose", "token_version", "mfa_version", "occurred_at", "event_id")
-    if await _index_exists(cursor, "office_mfa_security_event", proof_index):
+    if ledger_existed and await _index_exists(cursor, "office_mfa_security_event", proof_index):
         if await _index_columns(cursor, "office_mfa_security_event", proof_index) != proof_columns:
             await cursor.execute(f"ALTER TABLE office_mfa_security_event DROP INDEX {proof_index}")
             await cursor.execute(
                 "ALTER TABLE office_mfa_security_event ADD KEY "
                 "idx_office_mfa_security_event_proof (subject_user_id,purpose,token_version,mfa_version,occurred_at,event_id)"
             )
+    if not ledger_existed:
+        ledger_statement = next(statement for statement in OFFICE_MFA_DDL if statement.startswith("CREATE TABLE IF NOT EXISTS office_mfa_security_event"))
+        prefix, suffix = ledger_statement.split(" CONSTRAINT chk_office_mfa_security_event_shape ", 1)
+        _, engine = suffix.rsplit(" ENGINE=", 1)
+        await cursor.execute(
+            prefix
+            + " CONSTRAINT chk_office_mfa_security_event_fence " + _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_fence"]
+            + ", CONSTRAINT chk_office_mfa_security_event_shape " + _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_shape"]
+            + ", CONSTRAINT chk_office_mfa_security_event_truth " + _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_truth"]
+            + ") ENGINE=" + engine
+        )
     for statement in OFFICE_MFA_DDL:
-        if "office_mfa_security_event" in statement:
+        if statement.startswith("CREATE TRIGGER"):
             await cursor.execute(statement)
     await _upgrade_credential_shape(cursor)
-    present_mfa_checks = {
-        name: await _check_clause(cursor, name) is not None
-        for name in _MFA_V5_CHECK_SQL
-    }
-    fresh_ledger_shape = (
-        present_mfa_checks == {
-            "chk_office_mfa_security_event_fence": False,
-            "chk_office_mfa_security_event_shape": True,
-            "chk_office_mfa_security_event_truth": False,
-        }
-        and _check_digest(await _check_clause(cursor, "chk_office_mfa_security_event_shape"))
-        == _CANONICAL_V4_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_shape"]
-    )
-    if any(present_mfa_checks.values()) and not all(present_mfa_checks.values()) and not (legacy_challenge_surrogate or fresh_ledger_shape):
+    ledger = {name: _check_digest(await _check_clause(cursor, name)) for name in _MFA_V5_CHECK_SQL}
+    if ledger == _CANONICAL_V4_MFA_CHECK_DIGESTS:
+        await _preflight_mfa_v5_rows(cursor)
+        await cursor.execute(
+            "ALTER TABLE office_mfa_security_event "
+            "DROP CONSTRAINT chk_office_mfa_security_event_shape, "
+            "DROP CONSTRAINT chk_office_mfa_security_event_truth, "
+            "ADD CONSTRAINT chk_office_mfa_security_event_shape " + _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_shape"] + ", "
+            "ADD CONSTRAINT chk_office_mfa_security_event_truth " + _MFA_V5_CHECK_SQL["chk_office_mfa_security_event_truth"]
+        )
+    elif ledger != _CANONICAL_MFA_CHECK_DIGESTS:
         raise RuntimeError("Office MFA ledger CHECK history is incomplete; historic evidence is not rewritten")
-    for name, statement in _MFA_V5_CHECK_SQL.items():
-        await _upgrade_mfa_check(cursor, name, statement, old_digest=_CANONICAL_V4_MFA_CHECK_DIGESTS[name])
     if legacy_challenge_surrogate and not await _constraint_exists(cursor, "fk_office_mfa_security_event_challenge_subject"):
         await cursor.execute(
             "ALTER TABLE office_mfa_security_event ADD CONSTRAINT "
@@ -511,6 +473,12 @@ async def apply_office_migrations(cursor) -> None:
     await cursor.execute("SELECT event_id FROM office_mfa_security_event WHERE fence_key='office-mfa-fence-v1'")
     if not await cursor.fetchone():
         await cursor.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key) VALUES ('SYSTEM_FENCE',NULL,'SYSTEM_MIGRATOR',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'RECORDED',NULL,'office-mfa-fence-v1')")
+    # The rejected development journal never authorizes a schema state.  It is
+    # removed only after all measured physical contracts and runtime probes
+    # have passed; missing or mixed constraints return before this point.
+    await cursor.execute("DROP TABLE IF EXISTS office_mfa_schema_transition")
+    if await _table_exists(cursor, "office_mfa_schema_transition"):
+        raise RuntimeError("Office MFA schema transition table was not removed")
     if not await _column_exists(cursor, "office_schema_revision", "component"):
         await cursor.execute("ALTER TABLE office_schema_revision ADD COLUMN component VARCHAR(64) NULL FIRST")
         await cursor.execute("UPDATE office_schema_revision SET component=%s WHERE component IS NULL", (RUNTIME_COMPONENT,))
