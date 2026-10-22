@@ -17,20 +17,26 @@
   un workflow aparte ejecuta pruebas del scanner propuesto en `pull_request`
   sin secretos. Scanner acotado y pruebas negativas. La lista
   del HEAD no puede perder entradas ya conocidas.
+- **Verificación (Codex y auditor Sol, 2026-10-22):** SHA `5120ee74` pasó
+  22 pruebas focales, `no-fail-open-except`, compilación y `diff --check`.
+  Sol: APROBADO CON CAMBIOS, 0 BLOCK; queda una condición antes de sumar
+  colaboradores con escritura. El ruleset 21646089 se cambió y verificó
+  activo con `strict_required_status_checks_policy=true`, sin variar sus
+  demás parámetros. Snapshot y payload están en `~/encargos-codex/`.
 - **Secuencia:** auditoría independiente del SHA exacto de este PR; Fernando
   integra los workflows reservados; el PR bootstrap no genera `scan` nuevo
   desde la base vieja y requiere su integración explícita; rebasar #229 sobre
-  el nuevo master; solo el `scan` emitido por `pull_request_target` posterior
-  cuenta como barrera de secretos de #229.
+  el nuevo master; probar un PR canario positivo y negativos (secreto en
+  ruta, binario/no UTF-8 y base nueva) observando pending → success/failure;
+  solo el `scan` emitido por `pull_request_target` posterior cuenta como
+  barrera de secretos de #229.
 - **Pendiente:** #229 sigue sin publicación y requiere CI, auditoría exacta,
   respaldo/restauración, carga y comprobación de DNS/ingreso. El propietario
   `@fjruizhn` está declarado en CODEOWNERS, pero el ruleset todavía no exige
   su revisión: Fernando debe activar `require_code_owner_review` (y el piso de
   aprobación que GitHub exija) para cambios de esta barrera antes de tratarla
-  como control autónomo contra colaboradores con escritura. El ruleset vigente
-  también tiene `strict_required_status_checks_policy=false`: se debe activar
-  `true` al integrar para que un `scan` verde de una base vieja no apruebe un
-  HEAD contra `master` nuevo. Antes de sumar writers, hará falta un emisor de
+  como control autónomo contra colaboradores con escritura. Antes de sumar
+  writers, hará falta un emisor de
   status dedicado que GitHub distinga de los workflows que ellos puedan crear.
 - **Carreras y logs:** el workflow cancela la corrida vieja por PR, compara
   HEAD/base actuales antes de publicar success y mantiene `scan` pendiente o
