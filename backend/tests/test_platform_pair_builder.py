@@ -141,3 +141,15 @@ def test_internal_link_rejects_absolute_escape_and_dangling_targets(tmp_path: Pa
     _git(source, "add", "."); _git(source, "commit", "-qm", "bad link")
     with pytest.raises(SystemExit, match="unsafe symlink target"):
         builder.extract(source, _git(source, "rev-parse", "HEAD"), tmp_path / "out")
+
+
+@pytest.mark.parametrize("links", [("a", "backend/main.py", "b", "a"), ("a", "b", "b", "a"), ("a", "../platform.py", "", "")])
+def test_internal_link_rejects_chain_cycle_and_cross_tree(tmp_path: Path, links: tuple[str, str, str, str]) -> None:
+    source, _ = _repository(tmp_path)
+    first, first_target, second, second_target = links
+    (source / first).symlink_to(first_target)
+    if second:
+        (source / second).symlink_to(second_target)
+    _git(source, "add", "."); _git(source, "commit", "-qm", "unsafe links")
+    with pytest.raises(SystemExit, match="unsafe symlink target"):
+        builder.extract(source, _git(source, "rev-parse", "HEAD"), tmp_path / "out")
