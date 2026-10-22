@@ -14,4 +14,5 @@ def test_runtime_importer_executes_only_audited_bootstrap_and_validator() -> Non
     assert "RECOVERY_REQUIRED" in bootstrap
     assert '"/usr/bin/systemctl", "daemon-reload"' in bootstrap
     assert '"/usr/bin/systemd-analyze", "verify"' in bootstrap
-    assert 'str(validator), "/", "/usr/bin/busctl"' in bootstrap
+    assert '"/", "/usr/bin/busctl"' in bootstrap
+    assert '"/proc/self/fd/{validator_fd}"' in bootstrap

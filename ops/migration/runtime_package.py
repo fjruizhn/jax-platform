@@ -307,19 +307,35 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
         raise original
 
 
-def _trusted_program(path: Path, digest: str) -> Path:
+def _trusted_program(path: Path, digest: str) -> int:
     if not path.is_absolute() or not _HEX.fullmatch(digest):
         raise PackageError("invalid bootstrap dependency")
-    value = _safe_node(path)
     _trusted_ancestors(path)
-    if stat.S_IMODE(value.st_mode) not in {0o700, 0o750, 0o755} or _sha(path) != digest:
-        raise PackageError("untrusted bootstrap dependency")
-    return path
-
-
-def _run_checked(command: list[str]) -> None:
     try:
-        subprocess.run(command, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise PackageError("untrusted bootstrap dependency") from exc
+    value = os.fstat(descriptor)
+    try:
+        if (not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_uid != 0 or value.st_gid != 0
+                or value.st_mode & 0o022 or stat.S_IMODE(value.st_mode) not in {0o700, 0o750, 0o755}):
+            raise PackageError("untrusted bootstrap dependency")
+        digest_bytes = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest_bytes.update(chunk)
+        if digest_bytes.hexdigest() != digest:
+            raise PackageError("untrusted bootstrap dependency")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.set_inheritable(descriptor, True)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _run_checked(command: list[str], *, pass_fds: tuple[int, ...] = ()) -> None:
+    try:
+        subprocess.run(command, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=pass_fds)
     except (OSError, subprocess.SubprocessError) as exc:
         raise PackageError("effective runtime contract rejected") from exc
 
@@ -333,7 +349,7 @@ def main(argv: list[str]) -> int:
     package, digest, backup = Path(argv[3]), argv[5], Path(argv[7])
     validator, validator_digest = Path(argv[9]), argv[11]
     try:
-        validator = _trusted_program(validator, validator_digest)
+        validator_fd = _trusted_program(validator, validator_digest)
         if not package.is_absolute() or not backup.is_absolute():
             raise PackageError("invalid runtime transaction path")
         _safe_node(backup, directory=True)
@@ -345,9 +361,12 @@ def main(argv: list[str]) -> int:
             _run_checked(["/usr/bin/systemd-analyze", "verify", "/etc/systemd/system/jax-platform.service", "/etc/systemd/system/jax-platform-migrate.service"])
             # The validator's fixed arguments bind it to the live effective
             # systemd view; a zero-argument program cannot silently no-op.
-            _run_checked([str(validator), "/", "/usr/bin/busctl"])
+            _run_checked([f"/proc/self/fd/{validator_fd}", "/", "/usr/bin/busctl"], pass_fds=(validator_fd,))
 
-        import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
+        try:
+            import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
+        finally:
+            os.close(validator_fd)
     except PackageError as exc:
         print(str(exc), file=sys.stderr)
         return 1
