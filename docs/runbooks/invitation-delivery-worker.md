@@ -69,12 +69,14 @@ install_from_audited_commit ops/virtualoffice/install-invitation-worker-release.
 install_from_audited_commit ops/virtualoffice/provision-invitation-worker.sh /usr/local/libexec/axioma-office-invitation-worker-provision 0750
 install_from_audited_commit ops/virtualoffice/install-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-install 0750
 install_from_audited_commit ops/virtualoffice/attest-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-attest 0750
+ATTESTOR_SHA256=$(GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" show "$SHA:ops/virtualoffice/attest-invitation-delivery-routines.sh" | sha256sum | awk '{print $1}')
+test "$(sudo sha256sum /usr/local/libexec/axioma-office-invitation-delivery-attest | awk '{print $1}')" = "$ATTESTOR_SHA256"
 install_from_audited_commit ops/virtualoffice/office-invitation-delivery-v1.sql /usr/local/share/axioma-office-invitation-delivery-v1.sql 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
 install_from_audited_commit ops/virtualoffice/enable-invitation-worker-timer.sh /usr/local/libexec/axioma-office-invitation-worker-enable 0750
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --measured-grantee-host "$MEASURED_GRANTEE_HOST"
 sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$MEASURED_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
-sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --measured-grantee-host "$MEASURED_GRANTEE_HOST"
+sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env --measured-grantee-host "$MEASURED_GRANTEE_HOST" --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest --attestor-sha256 "$ATTESTOR_SHA256"
 test ! -L "$WHEELHOUSE"
 if [[ ! -e "$WHEELHOUSE" ]]; then
   SUPPLY_STAGE=$(mktemp -d /opt/.axioma-office-invitation-wheelhouse.XXXXXX)
@@ -112,7 +114,9 @@ principal recibe solamente SELECT para configuración y las columnas de observac
 del outbox, más EXECUTE en los tres procedimientos auditados. No recibe privilegios
 directos para emitir, revocar, expirar o liquidar invitaciones, administrar usuarios,
 ni DDL. El instalador sólo acepta el SQL con el SHA-256 fijado y siempre ejecuta el
-atestado instalado root-owned antes de devolver éxito.
+atestado instalado root-owned antes de devolver éxito. El segundo llamado al
+provisionador no escribe MariaDB: compara los grants completos, fija el hash del
+atestado contra el SHA auditado y vuelve a atestar la capacidad terminada.
 
 `/etc/jax/invitation-worker.env` es el único `EnvironmentFile` del worker. Es
 `root:root 0600` e incluye sólo conexión del principal, `FERNET_KEY`,

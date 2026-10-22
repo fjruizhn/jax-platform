@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Provision the least-privileged OS and database principal for invitation mail.
 # Run after the Office schema migration, before and after delivery-routine
-# installation: the locked definer must exist before CREATE PROCEDURE; a second
-# idempotent run grants EXECUTE afterwards. It does not issue invitations and
-# never starts the timer.
+# installation: the locked definer must exist before CREATE PROCEDURE; the
+# second run is read-only in MariaDB and attests the finished capability. It
+# does not issue invitations and never starts the timer.
 set -euo pipefail
 umask 077
 
@@ -75,7 +75,6 @@ worker_usage="GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'"
 owner_usage="GRANT USAGE ON *.* TO 'jaxoffice_invitation_owner'@'localhost'"
 expected_worker_pre_routine=$'GRANT SELECT ('"'attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at'"') ON '"'$db'"'.'"'office_invitation_outbox'"' TO '"'$WORKER_DB_USER'"'@'"'$host'"'\nGRANT SELECT ON '"'$db'"'.'"'axioma_config'"' TO '"'$WORKER_DB_USER'"'@'"'$host'"'\n'"$worker_usage"
 expected_owner_pre_routine=$'GRANT SELECT, UPDATE ('"'result_code', 'state', 'finished_at', 'attempt_id', 'updated_at', 'attempt_count', 'payload_ciphertext', 'message_id', 'claimed_at'"') ON '"'$db'"'.'"'office_invitation_outbox'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT ON '"'$db'"'.'"'office_invitation_issuance'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT, UPDATE ('"'version', 'status'"') ON '"'$db'"'.'"'office_invitation'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT, INSERT ON '"'$db'"'.'"'office_invitation_event'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\n'"$owner_usage"
-expected_worker_full="$expected_worker_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'"
 expected_owner_pre_routine=${expected_owner_pre_routine//\\n/$'\n'}
 expected_worker_pre_routine=${expected_worker_pre_routine//\\n/$'\n'}
 expected_worker_full="$expected_worker_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'"
@@ -151,17 +150,19 @@ secret="$SECRET_DIR/$WORKER_DB_USER.password"
 }
 password=$(<"$secret")
 [[ -n "$password" ]] || { printf '%s\n' 'worker DB secret is empty' >&2; exit 1; }
-if [[ "$exists" == 1 ]]; then
-  stored=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.authentication_string')) = PASSWORD(%s) FROM mysql.global_priv WHERE User=%s AND Host=%s;\n" "$(quote "$password")" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
-  [[ "$stored" == 1 ]] || { printf '%s\n' 'existing worker principal secret does not match' >&2; exit 1; }
-else
-  printf "CREATE USER %s IDENTIFIED BY %s;\n" "$principal" "$(quote "$password")" | admin_sql >/dev/null
+if [[ "$routine_count" == 0 ]]; then
+  if [[ "$exists" == 1 ]]; then
+    stored=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.authentication_string')) = PASSWORD(%s) FROM mysql.global_priv WHERE User=%s AND Host=%s;\n" "$(quote "$password")" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
+    [[ "$stored" == 1 ]] || { printf '%s\n' 'existing worker principal secret does not match' >&2; exit 1; }
+  else
+    printf "CREATE USER %s IDENTIFIED BY %s;\n" "$principal" "$(quote "$password")" | admin_sql >/dev/null
+  fi
+  if [[ "$owner_exists" == 0 ]]; then printf "CREATE USER %s ACCOUNT LOCK;\n" "$owner_principal" | admin_sql >/dev/null; fi
+  # The definer owns only the three authority transitions.  It has enough table
+  # privilege for the trigger-guarded statements inside them, never login.
+  printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_issuance\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_outbox\` TO %s;\nGRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT UPDATE (status,version) ON \`%s\`.\`office_invitation\` TO %s;\nGRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" | admin_sql >/dev/null
+  printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$principal" "$db" "$principal" | admin_sql >/dev/null
 fi
-if [[ "$owner_exists" == 0 ]]; then printf "CREATE USER %s ACCOUNT LOCK;\n" "$owner_principal" | admin_sql >/dev/null; fi
-# The definer owns only the three authority transitions.  It has enough table
-# privilege for the trigger-guarded statements inside them, never login.
-printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_issuance\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_outbox\` TO %s;\nGRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT UPDATE (status,version) ON \`%s\`.\`office_invitation\` TO %s;\nGRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" | admin_sql >/dev/null
-printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$principal" "$db" "$principal" | admin_sql >/dev/null
 worker_pre_routine_grants=$(show_grants "$principal")
 expected_worker_pre_routine=$(cat <<EOF2
 GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'
