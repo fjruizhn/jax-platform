@@ -55,6 +55,7 @@ PY
 lock_sha=$(sha256sum /opt/pair-e2e/inputs/lock | awk '{print $1}')
 builder_sha=$(sha256sum /usr/local/libexec/build-pair-jaxbuild.py | awk '{print $1}')
 python_sha=/usr/local/bin/python3.14
+python_digest=$(sha256sum "$python_sha" | awk '{print $1}')
 python3 - <<PY
 import json
 request = {
@@ -67,6 +68,7 @@ request = {
   'lock_sha256': '$lock_sha', 'out': '/opt/pair-e2e/jaxbuild/candidate',
   'bootstrap_predecessor': True, 'builder_sha256': '$builder_sha',
   'python': '$python_sha',
+  'python_sha256': '$python_digest',
 }
 open('/opt/pair-e2e/root/request.json', 'w', encoding='utf-8').write(json.dumps(request, sort_keys=True, separators=(',', ':')) + '\n')
 PY
@@ -76,6 +78,13 @@ install -d -o jaxbuild -g jaxbuild -m 0700 /opt/pair-e2e/jaxbuild
 
 # Root only supervises.  Git, venv and pip execute in the jaxbuild child; its
 # receipt crosses the privilege boundary solely through the inherited pipe FD.
+runuser -u jaxbuild -- sleep 30 & occupied_pid=$!
+if python3 -I -S /usr/local/libexec/pair-build-supervisor.py \
+  --request /opt/pair-e2e/root/request.json --builder /usr/local/libexec/build-pair-jaxbuild.py \
+  --receipt /opt/pair-e2e/evidence/occupied-receipt.json; then
+  echo 'supervisor accepted a pre-existing jaxbuild process' >&2; exit 1
+fi
+kill "$occupied_pid"; wait "$occupied_pid" || true
 python3 -I -S /usr/local/libexec/pair-build-supervisor.py \
   --request /opt/pair-e2e/root/request.json --builder /usr/local/libexec/build-pair-jaxbuild.py \
   --receipt /opt/pair-e2e/evidence/receipt.json

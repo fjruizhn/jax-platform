@@ -1,10 +1,23 @@
 #!/usr/bin/python3 -I
 """Root supervisor for a jaxbuild pair build. Root never opens Git objects."""
 from __future__ import annotations
-import argparse, hashlib, json, os, stat, subprocess
+import argparse, hashlib, json, os, pwd, stat, subprocess
 from pathlib import Path
 
 def die(message:str)->None: raise SystemExit('pair-build-supervisor: '+message)
+def process_uids() -> set[int]:
+ present:set[int]=set()
+ for process in Path('/proc').iterdir():
+  if not process.name.isdecimal(): continue
+  try:
+   for line in (process/'status').read_text(encoding='ascii').splitlines():
+    if line.startswith('Uid:'): present.add(int(line.split()[1])); break
+  except (FileNotFoundError, PermissionError, ProcessLookupError): continue
+ return present
+def require_quiescent_jaxbuild() -> None:
+ try: account=pwd.getpwnam('jaxbuild')
+ except KeyError: die('jaxbuild account absent')
+ if not account.pw_shell.endswith('nologin') or account.pw_uid in process_uids(): die('jaxbuild is not a stopped nologin account')
 def regular(path:Path, mode:int|None=None)->bytes:
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
  try:
@@ -17,9 +30,9 @@ def load_request(path:Path)->dict:
  try: x=json.loads(raw)
  except (UnicodeDecodeError, json.JSONDecodeError) as exc:
   raise SystemExit('pair-build-supervisor: invalid request') from exc
- required={'schema','nonce','platform','platform_commit','jax','jax_commit','platform_predecessor','jax_predecessor','inputs','wheelhouse_sha256','lock_sha256','out','bootstrap_predecessor','builder_sha256','python'}
+ required={'schema','nonce','platform','platform_commit','jax','jax_commit','platform_predecessor','jax_predecessor','inputs','wheelhouse_sha256','lock_sha256','out','bootstrap_predecessor','builder_sha256','python','python_sha256'}
  if set(x)!=required or x.get('schema')!='axioma.pair-build-request/v1' or not isinstance(x.get('bootstrap_predecessor'),bool): die('invalid request')
- for k,n in [('nonce',64),('platform_commit',40),('jax_commit',40),('wheelhouse_sha256',64),('lock_sha256',64),('builder_sha256',64)]:
+ for k,n in [('nonce',64),('platform_commit',40),('jax_commit',40),('wheelhouse_sha256',64),('lock_sha256',64),('builder_sha256',64),('python_sha256',64)]:
   if not isinstance(x[k],str) or len(x[k])!=n or any(c not in '0123456789abcdef' for c in x[k]): die('invalid request')
  if not isinstance(x['python'],str) or not x['python'].startswith('/'): die('invalid Python request')
  if x['bootstrap_predecessor'] != (x['platform_predecessor'] is None and x['jax_predecessor'] is None): die('invalid predecessor request')
@@ -29,12 +42,16 @@ def main()->None:
  if os.geteuid()!=0: die('root required')
  r=load_request(a.request); code=regular(a.builder,0o755)
  if hashlib.sha256(code).hexdigest()!=r['builder_sha256']: die('builder digest mismatch')
+ python=regular(Path(r['python']))
+ if hashlib.sha256(python).hexdigest()!=r['python_sha256']: die('Python digest mismatch')
+ require_quiescent_jaxbuild()
  read_fd,write_fd=os.pipe(); os.set_inheritable(write_fd,True)
  args=['/usr/sbin/runuser','-u','jaxbuild','--','/usr/bin/python3','-I','-S',str(a.builder),'--platform',r['platform'],'--platform-commit',r['platform_commit'],'--jax',r['jax'],'--jax-commit',r['jax_commit'],'--out',r['out'],'--inputs',r['inputs'],'--wheelhouse-sha256',r['wheelhouse_sha256'],'--lock-sha256',r['lock_sha256'],'--request-nonce',r['nonce'],'--receipt-fd',str(write_fd),'--python',r['python']]
  if r['bootstrap_predecessor']: args.append('--bootstrap-predecessor')
  else: args += ['--platform-predecessor',r['platform_predecessor'],'--jax-predecessor',r['jax_predecessor']]
  child=subprocess.Popen(args,pass_fds=(write_fd,),stdin=subprocess.DEVNULL);os.close(write_fd); raw=os.read(read_fd,65536);os.close(read_fd)
  if child.wait()!=0: die('builder failed')
+ require_quiescent_jaxbuild()
  try: receipt=json.loads(raw)
  except (UnicodeDecodeError, json.JSONDecodeError) as exc:
   raise SystemExit('pair-build-supervisor: invalid builder receipt') from exc
