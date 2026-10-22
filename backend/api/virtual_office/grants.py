@@ -170,6 +170,10 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             target_tenant_id = await _lock_grant_identities(
                 cur, actor_user_id=actor_user_id, target_user_id=target_user_id, audience=payload.audience)
+            recipient_group_id = (
+                await _lock_active_client_group(cur, project_id=project_id)
+                if payload.audience == "CLIENT_PUBLISHED" else None
+            )
             result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
                 cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
                 project_id=project_id, target_user_id=target_user_id,
@@ -208,8 +212,7 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
                     if cur.rowcount != 1:
                         raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                     version, replayed = version + 1, False
-            if payload.audience == "CLIENT_PUBLISHED":
-                recipient_group_id = await _lock_active_client_group(cur, project_id=project_id)
+            if recipient_group_id is not None:
                 await _upsert_external_relation(
                     cur, project_id=project_id, target_user_id=target_user_id,
                     recipient_group_id=recipient_group_id)
