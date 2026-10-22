@@ -183,18 +183,34 @@ verify_migrator_grants() {
 }
 
 runtime_grant_state() {
-  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count
+  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index
   grants=$(show_grants "$RUNTIME_USER") || die "could not inspect runtime grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$RUNTIME_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$"); [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || { printf invalid; return; }
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
   legacy_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE')
   expected_count=$((2 + ${#RUNTIME_TABLES[@]})); actual_count=$(printf '%s\n' "$grants" | grep -c '^GRANT ')
-  if [ "$actual_set" = "$legacy_set" ] && [ "$actual_count" -eq 2 ]; then printf legacy; return; fi
+  # A prior invocation can be interrupted between table GRANT statements and
+  # the final schema REVOKE.  Recognize only an exact ordered prefix of this
+  # manifest while the old broad DML schema grant is still present.  This is
+  # the sole resumable transitional state; it never repairs arbitrary grants
+  # and never broadens privileges again.
+  if [ "$actual_set" = "$legacy_set" ]; then
+    prefix_count=$((actual_count - 2))
+    [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
+    for ((index=0; index<prefix_count; index++)); do
+      table=${RUNTIME_TABLES[$index]}; privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { printf invalid; return; }
+    done
+    printf 'legacy-prefix:%s' "$prefix_count"; return
+  fi
   [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] && [ "$actual_count" -eq "$expected_count" ] || { printf invalid; return; }
   for table in "${RUNTIME_TABLES[@]}"; do
     privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
-    line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$")
+    line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
     [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
     actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
     [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { printf invalid; return; }
@@ -210,11 +226,15 @@ if [ "$runtime_exists" = 0 ]; then
     printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime table privileges"
   done
 else
-  case "$(runtime_grant_state)" in
+  runtime_state=$(runtime_grant_state)
+  case "$runtime_state" in
     new) ;;
-    legacy)
+    legacy-prefix:*)
       # Add the narrow table grants before revoking broad schema DML.
-      for table in "${RUNTIME_TABLES[@]}"; do
+      prefix_count=${runtime_state#legacy-prefix:}
+      [[ "$prefix_count" =~ ^[0-9]+$ ]] || die "runtime principal transitional state is malformed"
+      for ((index=prefix_count; index<${#RUNTIME_TABLES[@]}; index++)); do
+        table=${RUNTIME_TABLES[$index]}
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge runtime table privileges"
       done
       printf 'REVOKE UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"

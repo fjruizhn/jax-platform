@@ -69,6 +69,13 @@ if runtime_sql -e "DELETE FROM office_bootstrap_state WHERE ceremony_key='__acl_
   echo 'runtime DELETE on protected bootstrap state was accepted' >&2; exit 1
 fi
 
+# Simulate an interruption after the first narrow table GRANT but before the
+# legacy schema UPDATE/DELETE revoke.  The next invocation may resume that
+# exact manifest prefix; an arbitrary extra grant remains fail-closed below.
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
+
 chmod 644 "$TEMP/state/secrets/$WEB.password"
 if run_helper; then echo 'unsafe secret mode was accepted' >&2; exit 1; fi
 chmod 600 "$TEMP/state/secrets/$WEB.password"
