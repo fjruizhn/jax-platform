@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Sólo se mockea 'axios' (para no hacer llamadas de red reales), igual que
 // en client.test.js.
 const axiosPostMock = vi.fn()
+const axiosRequestMock = vi.fn(() => Promise.resolve({ data: 'retried' }))
 const requestUse = vi.fn()
 const responseUse = vi.fn()
 
@@ -27,7 +28,7 @@ vi.mock('axios', () => {
       response: { use: responseUse },
     },
   }
-  const axiosFn = vi.fn(() => Promise.resolve({ data: 'retried' }))
+  const axiosFn = axiosRequestMock
   axiosFn.create = vi.fn(() => instance)
   axiosFn.post = axiosPostMock
   return { default: axiosFn }
@@ -40,6 +41,7 @@ let useJaxStore
 beforeEach(async () => {
   vi.resetModules()
   axiosPostMock.mockReset()
+  axiosRequestMock.mockClear()
   requestUse.mockClear()
   responseUse.mockClear()
   // Importar el store real dispara, como efecto de módulo, el import de
@@ -80,13 +82,21 @@ describe('client.js -- el interceptor no toca los endpoints de auth (integració
     expect(useJaxStore.getState().avisoSesion).toBeNull()
   })
 
-  it.each(['/auth/mfa/login/verify', '/auth/mfa/recover', '/auth/mfa/enrollment/start', '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up'])(
+  it.each(['/auth/mfa/login/verify', '/auth/mfa/recover', '/auth/mfa/recovery/enrollment/start', '/auth/mfa/enrollment/start', '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up'])(
     'un 401 de capacidad MFA pública (%s) no refresca ni restaura sesión vieja', async (url) => {
       await expect(onRejected(err401(url))).rejects.toBeTruthy()
       expect(axiosPostMock).not.toHaveBeenCalled()
       expect(useJaxStore.getState().token).toBe('viejo')
     },
   )
+
+  it('a 401 from recovery enrollment start cannot refresh or replay its one-shot bearer', async () => {
+    await expect(onRejected(err401('/auth/mfa/recovery/enrollment/start'))).rejects.toBeTruthy()
+
+    expect(axiosPostMock).not.toHaveBeenCalled()
+    expect(axiosRequestMock).not.toHaveBeenCalled()
+    expect(useJaxStore.getState().token).toBe('viejo')
+  })
 
   it('a 401 from invitation acceptance never refreshes or retries a bearer that may be consumed', async () => {
     await expect(onRejected(err401('/virtual-office/invitations/accept'))).rejects.toBeTruthy()
