@@ -8,6 +8,7 @@ revalidated :class:`ActivationContract`.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -26,15 +27,13 @@ RECEIPT_DOMAIN = "axioma.office.critic-invocation-receipt"
 RECEIPT_SCHEMA_VERSION = 1
 RECEIPT_OPERATION = "rights.review"
 RECEIPT_ALGORITHM = "Ed25519"
-DATABASE_SCHEMA = "jax_memory"
-DATABASE_SERVER_VERSION = "12.3.3"
-DATABASE_SQL_MODE = "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION"
-DATABASE_CHARSET = "utf8mb4"
-DATABASE_COLLATION = "utf8mb4_uca1400_ai_ci"
 SOCKET_PATH = "/run/jax/office-critic-trust-guard/guard.sock"
 MAX_FRAME_BYTES = 20 * 1024
 _USER = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
-_HOST = re.compile(r"[A-Za-z0-9._:-]{1,255}\Z")
+_SQL_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\Z")
+_MODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _PRINCIPAL = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 _TOP_KEYS = frozenset({"database", "domain", "guard_protocol", "limits", "office_runtime_generation", "process", "receipt", "schema_version"})
@@ -77,6 +76,11 @@ class ActivationContract:
     socket_path: str
     guard_account: DatabaseAccount
     trigger_definer: DatabaseAccount
+    database_schema: str
+    database_server_version: str
+    database_sql_mode: str
+    database_charset: str
+    database_collation: str
     timeout_seconds: int
     max_inflight: int
     path: Path
@@ -126,10 +130,35 @@ def _account(value: object, name: str) -> DatabaseAccount:
     if not isinstance(value, dict) or set(value) != _ACCOUNT_KEYS:
         _reject(f"activation contract {name} is invalid")
     user = _text(value["user"], f"{name}.user", _USER)
-    host = _text(value["host"], f"{name}.host", _HOST)
-    if host == "%":
-        _reject(f"activation contract {name}.host is invalid")
+    host = _database_host(value["host"], f"{name}.host")
     return DatabaseAccount(user, host)
+
+
+def _database_host(value: object, name: str) -> str:
+    """Only a literal localhost, IP address, or DNS name names a DB account."""
+    if not isinstance(value, str) or not value.isascii() or not 1 <= len(value) <= 253 or "%" in value or "_" in value:
+        _reject(f"activation contract {name} is invalid")
+    if value == "localhost":
+        return value
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        if value.endswith(".") or any(_DNS_LABEL.fullmatch(label) is None for label in value.split(".")):
+            _reject(f"activation contract {name} is invalid")
+    return value
+
+
+def _database_metadata(value: object, name: str, pattern: re.Pattern[str]) -> str:
+    return _text(value, name, pattern)
+
+
+def _sql_mode(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        _reject("activation contract database.sql_mode is invalid")
+    parts = value.split(",")
+    if len(set(parts)) != len(parts) or any(_MODE.fullmatch(part) is None for part in parts):
+        _reject("activation contract database.sql_mode is invalid")
+    return value
 
 
 def _canonical(value: dict[str, object]) -> bytes:
@@ -166,8 +195,11 @@ def _parse_contract(raw: bytes) -> ActivationContract:
     database = value["database"]
     if not isinstance(database, dict) or set(database) != _DATABASE_KEYS:
         _reject("activation contract database is invalid")
-    if (database["schema"], database["server_version"], database["sql_mode"], database["charset"], database["collation"]) != (DATABASE_SCHEMA, DATABASE_SERVER_VERSION, DATABASE_SQL_MODE, DATABASE_CHARSET, DATABASE_COLLATION):
-        _reject("activation contract database metadata is invalid")
+    database_schema = _database_metadata(database["schema"], "database.schema", _SQL_IDENTIFIER)
+    database_server_version = _database_metadata(database["server_version"], "database.server_version", _VERSION)
+    database_sql_mode = _sql_mode(database["sql_mode"])
+    database_charset = _database_metadata(database["charset"], "database.charset", _SQL_IDENTIFIER)
+    database_collation = _database_metadata(database["collation"], "database.collation", _SQL_IDENTIFIER)
     guard_account = _account(database["guard_account"], "database.guard_account")
     trigger_definer = _account(database["trigger_definer"], "database.trigger_definer")
     if guard_account == trigger_definer:
@@ -193,7 +225,7 @@ def _parse_contract(raw: bytes) -> ActivationContract:
     if type(limits["max_frame_bytes"]) is not int or limits["max_frame_bytes"] != MAX_FRAME_BYTES:
         _reject("activation contract max_frame_bytes is invalid")
     # ``path`` and ``fingerprint`` are bound only after descriptor-safe I/O.
-    return ActivationContract(critic_principal, guard_uid, guard_gid, clients, SOCKET_PATH, guard_account, trigger_definer, timeout, max_inflight, Path(), ContractFingerprint(0, 0, 0, 0, ""))
+    return ActivationContract(critic_principal, guard_uid, guard_gid, clients, SOCKET_PATH, guard_account, trigger_definer, database_schema, database_server_version, database_sql_mode, database_charset, database_collation, timeout, max_inflight, Path(), ContractFingerprint(0, 0, 0, 0, ""))
 
 
 def _file_identity(info: os.stat_result) -> tuple[int, int, int, int]:
@@ -269,6 +301,7 @@ def load_activation_contract(path: Path = ACTIVATION_CONTRACT_PATH) -> Activatio
     parsed = _parse_contract(raw)
     return ActivationContract(
         parsed.critic_principal, parsed.guard_uid, parsed.guard_gid, parsed.allowed_client_uids,
-        parsed.socket_path, parsed.guard_account, parsed.trigger_definer, parsed.timeout_seconds,
-        parsed.max_inflight, locator, fingerprint,
+        parsed.socket_path, parsed.guard_account, parsed.trigger_definer, parsed.database_schema,
+        parsed.database_server_version, parsed.database_sql_mode, parsed.database_charset,
+        parsed.database_collation, parsed.timeout_seconds, parsed.max_inflight, locator, fingerprint,
     )

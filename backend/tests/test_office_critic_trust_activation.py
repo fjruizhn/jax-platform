@@ -14,10 +14,10 @@ from virtual_office import critic_trust_activation as activation
 def _value() -> dict[str, object]:
     return {
         "database": {
-            "charset": activation.DATABASE_CHARSET, "collation": activation.DATABASE_COLLATION,
+            "charset": "utf8mb4", "collation": "utf8mb4_uca1400_ai_ci",
             "guard_account": {"host": "localhost", "user": "jax_critic_guard"},
-            "schema": activation.DATABASE_SCHEMA, "server_version": activation.DATABASE_SERVER_VERSION,
-            "sql_mode": activation.DATABASE_SQL_MODE,
+            "schema": "jax_memory", "server_version": "12.3.3",
+            "sql_mode": "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION",
             "trigger_definer": {"host": "localhost", "user": "jax_critic_trust_owner"},
         },
         "domain": activation.DOMAIN, "guard_protocol": activation.GUARD_PROTOCOL,
@@ -62,6 +62,7 @@ def test_parser_requires_exact_canonical_schema_and_separate_db_definer() -> Non
     assert parsed.critic_principal == "agent:critic"
     assert parsed.guard_account.user == "jax_critic_guard"
     assert parsed.trigger_definer.user == "jax_critic_trust_owner"
+    assert (parsed.database_schema, parsed.database_server_version, parsed.database_charset) == ("jax_memory", "12.3.3", "utf8mb4")
     for mutation in (
         lambda value: value.update(extra=True),
         lambda value: value["database"].update(guard_account={"host": "localhost", "user": "jax_critic_trust_owner"}),  # type: ignore[index]
@@ -81,6 +82,13 @@ def test_parser_requires_exact_canonical_schema_and_separate_db_definer() -> Non
     value = _value(); value["schema_version"] = True
     with pytest.raises(activation.ActivationContractError):
         activation._parse_contract(_canonical(value))
+    value = _value(); value["database"]["schema"] = "office_fixture"  # type: ignore[index]
+    assert activation._parse_contract(_canonical(value)).database_schema == "office_fixture"
+    for account in ("guard_account", "trigger_definer"):
+        for host in ("db_%", "db_name"):
+            value = _value(); value["database"][account]["host"] = host  # type: ignore[index]
+            with pytest.raises(activation.ActivationContractError):
+                activation._parse_contract(_canonical(value))
 
 
 def test_root_file_contract_binds_descriptor_and_detects_content_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
