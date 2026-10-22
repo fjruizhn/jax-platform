@@ -11,6 +11,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from pymysql.err import OperationalError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from auth.jwt import decode_token
@@ -54,6 +55,12 @@ def _actor_id(user: AuthUser) -> int:
 
 def _raise(error: InvitationError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.code) from error
+
+
+def _raise_if_retryable_database_error(error: OperationalError) -> None:
+    """Translate only MariaDB's documented transaction-contention errors."""
+    if error.args and error.args[0] in {1205, 1213}:
+        raise HTTPException(status_code=503, detail="office_invitation_retryable") from error
 
 
 def _require_durable_idempotency(idempotency_key: str) -> str:
@@ -121,6 +128,9 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
             )
     except InvitationError as error:
         _raise(error)
+    except OperationalError as error:
+        _raise_if_retryable_database_error(error)
+        raise
     return {"id": invitation.invitation_id, "invitation_id": invitation.invitation_id,
             "version": invitation.version, "expires_at": invitation.expires_at.isoformat(),
             "replayed": invitation.replayed}
@@ -143,6 +153,9 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
             )
     except InvitationError as error:
         _raise(error)
+    except OperationalError as error:
+        _raise_if_retryable_database_error(error)
+        raise
     return {"id": invitation_id, "invitation_id": invitation_id, "status": "REVOKED",
             "version": version, "replayed": replayed}
 
@@ -191,6 +204,9 @@ async def accept_invitation(payload: InvitationAcceptRequest,
         # Keep the HTTP boundary fail-closed if JAX raises before that adapter
         # can do so: a revoked MFA/grant or closed project never becomes 500.
         raise HTTPException(status_code=403, detail="office_invitation_issuer_denied") from error
+    except OperationalError as error:
+        _raise_if_retryable_database_error(error)
+        raise
     if replayed is None:
         raise HTTPException(status_code=410, detail="office_invitation_expired")
     return {"status": "ACCEPTED", "replayed": replayed}
