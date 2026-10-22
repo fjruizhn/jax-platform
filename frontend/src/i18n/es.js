@@ -1783,6 +1783,17 @@ export default {
     close: 'Cerrar',
     projects: { title: 'Proyectos', loading: 'Cargando proyectos…', empty: 'No hay proyectos disponibles.', error: 'No se pudieron cargar los proyectos.', more: 'Cargar más', detailTitle: 'Detalle del proyecto', noDescription: 'Sin descripción.' },
   },
+  officeInvitation: {
+    title: 'Invitación a Oficina virtual', invalidLink: 'El enlace de invitación no es válido.',
+    signedInAs: (email) => `Vas a aceptar esta invitación con ${email}.`,
+    newAccountIntro: 'Creá una cuenta para aceptar esta invitación.', createAccount: 'Crear mi cuenta',
+    newPasswordIntro: 'Elegí una contraseña para tu cuenta nueva.', newPassword: 'Contraseña nueva', confirmPassword: 'Confirmar contraseña',
+    passwordMismatch: 'Las contraseñas no coinciden.', accept: 'Aceptar invitación', accepting: 'Aceptando invitación…',
+    accepted: 'La invitación fue aceptada.', error: 'No se pudo aceptar la invitación. Revisá el enlace e intentá de nuevo.',
+    manage: 'Gestionar invitaciones', email: 'Correo electrónico', audience: 'Audiencia', audiences: { INTERNAL: 'Equipo interno', CLIENT_PUBLISHED: 'Cliente publicado' },
+    send: 'Enviar invitación', revoke: 'Revocar invitación', revokeFor: (email) => `Revocar invitación para ${email}`,
+    revokePrompt: (email) => `¿Querés revocar la invitación para ${email}?`, cancel: 'Cancelar', managerError: 'No se pudo completar la operación de invitación.',
+  },
   mfa: {
     title: 'Verificación en dos pasos', otpLabel: 'Código de autenticación', verify: 'Verificar', verifying: 'Verificando…',
     challengeIntro: 'Ingresá el código de seis dígitos de tu aplicación autenticadora.', recoveryLink: 'Usar un código de recuperación', back: 'Volver al inicio de sesión',

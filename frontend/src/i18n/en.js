@@ -1687,6 +1687,17 @@ export default {
     close: 'Close',
     projects: { title: 'Projects', loading: 'Loading projects…', empty: 'No projects are available.', error: 'Projects could not be loaded.', more: 'Load more', detailTitle: 'Project detail', noDescription: 'No description.' },
   },
+  officeInvitation: {
+    title: 'Virtual Office invitation', invalidLink: 'The invitation link is invalid.',
+    signedInAs: (email) => `You will accept this invitation as ${email}.`,
+    newAccountIntro: 'Create an account to accept this invitation.', createAccount: 'Create my account',
+    newPasswordIntro: 'Choose a password for your new account.', newPassword: 'New password', confirmPassword: 'Confirm password',
+    passwordMismatch: 'Passwords do not match.', accept: 'Accept invitation', accepting: 'Accepting invitation…',
+    accepted: 'The invitation was accepted.', error: 'The invitation could not be accepted. Check the link and try again.',
+    manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
+    send: 'Send invitation', revoke: 'Revoke invitation', revokeFor: (email) => `Revoke invitation for ${email}`,
+    revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.',
+  },
   mfa: {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',
     challengeIntro: 'Enter the six-digit code from your authenticator app.', recoveryLink: 'Use a recovery code', back: 'Back to sign in',

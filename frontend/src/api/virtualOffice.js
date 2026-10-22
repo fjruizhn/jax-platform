@@ -24,3 +24,11 @@ export const officeProjectsApi = {
   list: ({ limit, after_id }) => api.get('/virtual-office/projects', { params: { limit, after_id } }),
   detail: (projectId) => api.get(`/virtual-office/projects/${projectId}`),
 }
+
+// El token de aceptación sólo llega aquí desde el fragmento del navegador y
+// viaja en el cuerpo del POST. Nunca se concatena a una ruta o query string.
+export const officeInvitationsApi = {
+  issue: (projectId, payload, idempotencyKey) => api.post(`/virtual-office/projects/${projectId}/invitations`, payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
+  revoke: (projectId, invitationId, expectedVersion, idempotencyKey) => api.delete(`/virtual-office/projects/${projectId}/invitations/${invitationId}`, { params: { expected_version: expectedVersion }, headers: { 'Idempotency-Key': idempotencyKey } }),
+  accept: (payload) => api.post('/virtual-office/invitations/accept', payload),
+}
