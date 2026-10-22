@@ -16,7 +16,12 @@ if [[ $ROOT != /opt/jax-platform-pair ]]; then
 fi
 [[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ ]] || exit 2
 exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -n 9 || { echo 'pair activation already in progress' >&2; exit 1; }
-install -o root -g root -m 0644 /dev/null "$ROOT/.runtime.lock"
+if [[ ! -e $ROOT/.runtime.lock ]]; then
+  # The activation lock serializes creators.  Never replace an existing lock:
+  # running web/migrate processes retain its inode across exec.
+  /usr/bin/install -o root -g root -m 0644 /dev/null "$ROOT/.runtime.lock"
+fi
+[[ ! -L $ROOT/.runtime.lock && $(/usr/bin/stat -c '%U:%G:%a' "$ROOT/.runtime.lock") == root:root:644 ]] || { echo 'unsafe runtime lock' >&2; exit 1; }
 releases_real=$(/usr/bin/realpath -e -- "$ROOT/releases") || { echo 'release root unavailable' >&2; exit 1; }
 release_real=$(/usr/bin/realpath -e -- "$RELEASE") || { echo 'unsafe release' >&2; exit 1; }
 [[ $release_real == "$releases_real/"* && -d $release_real && ! -L $release_real ]] || { echo 'unsafe release' >&2; exit 1; }

@@ -112,6 +112,10 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "start jax-platform-migrate.service", "start jax-platform.service",
     ]
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
+    lock_inode = (root / ".runtime.lock").stat().st_ino
+    repeat = subprocess.run(command, text=True, capture_output=True, check=False)
+    assert repeat.returncode == 0, repeat.stderr
+    assert (root / ".runtime.lock").stat().st_ino == lock_inode
     escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest], text=True, capture_output=True, check=False)
     assert escaped.returncode != 0
     assert "unsafe release" in escaped.stderr
