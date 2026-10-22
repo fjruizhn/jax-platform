@@ -128,8 +128,15 @@ def main(argv: list[str]) -> int:
     release = Path(argv[1])
     expected_jxp = argv[2] if len(argv) >= 3 else None
     expected_jax = argv[3] if len(argv) >= 4 else None
+    ancestor_stop = None
+    # The test harness uses a root-owned temporary tree under /tmp.  Production
+    # never accepts this escape hatch: it requires effective root and an exact
+    # temporary root path, while the deployed launcher runs unprivileged.
+    test_root = os.environ.get("JAX_PAIR_TEST_ROOT")
+    if os.environ.get("JAX_PAIR_TEST_MODE") == "1" and os.geteuid() == 0 and test_root and test_root.startswith("/tmp/"):
+        ancestor_stop = Path(test_root)
     try:
-        verify(release, expected_jxp=expected_jxp, expected_jax=expected_jax)
+        verify(release, expected_jxp=expected_jxp, expected_jax=expected_jax, ancestor_stop=ancestor_stop)
     except PairReadinessError as exc:
         print(exc, file=sys.stderr)
         return 1

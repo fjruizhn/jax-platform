@@ -104,10 +104,10 @@ def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() ->
     assert "/usr/bin/flock -s 9" in launcher
     assert "/usr/bin/flock -x 8" in activator
     assert "--expected-manifest-sha256" in activator
-    assert "mktemp /etc/jax/.platform-pair-selection." in activator
-    assert "systemctl start jax-platform-migrate.service" in activator
-    assert "systemctl start jax-platform.service" in activator
-    assert activator.index("systemctl start jax-platform-migrate.service") < activator.index("systemctl start jax-platform.service")
+    assert 'mktemp "$(dirname "$SELECTION")/.platform-pair-selection.' in activator
+    assert "$SYSTEMCTL start jax-platform-migrate.service" in activator
+    assert "$SYSTEMCTL start jax-platform.service" in activator
+    assert activator.index("$SYSTEMCTL start jax-platform-migrate.service") < activator.index("$SYSTEMCTL start jax-platform.service")
     assert "git -C" not in activator
     assert "git -C" not in installer
     assert "--platform-source-sha256" in installer

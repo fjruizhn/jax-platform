@@ -1,0 +1,97 @@
+"""Root-temporary exercise of the paired selection and launcher contract."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+
+REPO = Path(__file__).resolve().parents[2]
+MIGRATION = REPO / "ops" / "migration"
+SPEC = importlib.util.spec_from_file_location("pair_readiness_e2e", MIGRATION / "pair_artifact_readiness.py")
+assert SPEC and SPEC.loader
+readiness = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(readiness)
+
+
+def _sudo_available() -> bool:
+    return subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False).returncode == 0
+
+
+@pytest.mark.skipif(not _sudo_available(), reason="requires passwordless sudo only for a temporary root-owned release")
+def test_root_temporary_activation_serializes_selection_and_scrubs_environment(tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    root = tmp_path / "pair-root"
+    request.addfinalizer(lambda: subprocess.run(["sudo", "-n", "rm", "-rf", "--", str(root)], capture_output=True, check=False))
+    release = root / "releases" / ("a" * 40 + "-" + "b" * 40)
+    bin_dir = release / "jax-platform" / "backend" / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (release / "jax" / "jax").mkdir(parents=True)
+    output = tmp_path / "runtime-path.txt"
+    fake_python = "#!/bin/sh\nprintf '%s' \"$JAX_REPO_PATH\" > \"$JAX_PAIR_TEST_OUTPUT\"\n"
+    for name in ("python", "uvicorn"):
+        path = bin_dir / name
+        path.write_text(fake_python, encoding="utf-8")
+        path.chmod(0o755)
+    (release / "jax" / "jax" / "memory.py").write_text("x", encoding="utf-8")
+    for path in [root, root / "releases", release, *release.rglob("*")]:
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            path.chmod(0o755 if path.name in {"python", "uvicorn"} else 0o644)
+    manifest = {
+        "schema": readiness.SCHEMA,
+        "jax_platform_revision": "a" * 40,
+        "jax_revision": "b" * 40,
+        "dependency_lock_sha256": "c" * 64,
+        "wheelhouse_manifest_sha256": "d" * 64,
+        "files": readiness._inventory(release, owner_uid=os.getuid(), owner_gid=os.getgid()),
+    }
+    (release / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    (release / readiness.MANIFEST).chmod(0o644)
+    (root / "libexec").mkdir()
+    shutil.copy2(MIGRATION / "pair_artifact_readiness.py", root / "libexec" / "pair_artifact_readiness.py")
+    calls = tmp_path / "systemctl.calls"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
+        "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    subprocess.run(["sudo", "-n", "chown", "-R", "root:root", str(root)], check=True)
+    digest = hashlib.sha256((release / readiness.MANIFEST).read_bytes()).hexdigest()
+    base_env = {
+        "JAX_PAIR_TEST_MODE": "1",
+        "JAX_PAIR_TEST_ROOT": str(root),
+        "JAX_PAIR_SYSTEMCTL_BIN": str(fake_systemctl),
+        "JAX_PAIR_TEST_CALLS": str(calls),
+    }
+    command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest]
+    first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 5
+    while not calls.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert calls.exists(), first.communicate(timeout=5)[1]
+    second = subprocess.run(command, text=True, capture_output=True, check=False)
+    stdout, stderr = first.communicate(timeout=10)
+    assert first.returncode == 0, stderr or stdout
+    assert second.returncode != 0
+    assert "activation already in progress" in second.stderr
+    selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
+    assert selection["release"] == str(release)
+    assert selection["manifest_sha256"] == digest
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "stop jax-platform.service", "stop jax-platform-migrate.service",
+        "start jax-platform-migrate.service", "start jax-platform.service",
+    ]
+    launcher = ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}", "JAX_REPO_PATH=/attacker/checkout", "JAX_TRUSTED_PROXIES=127.0.0.1", f"JAX_PAIR_TEST_OUTPUT={output}", str(MIGRATION / "jax-platform-pair-exec"), "web"]
+    result = subprocess.run(launcher, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == str(release / "jax")
