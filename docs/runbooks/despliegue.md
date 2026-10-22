@@ -113,22 +113,33 @@ ancestros del nuevo par. Root adopta esos bytes sellados sin ejecutar Git, pip n
 código del release. El instalador histórico de tar/pip está deshabilitado: no
 puede fabricar la atestación, inventario y linaje exigidos por la adopción.
 
+El solicitante root escribe el request v1 completo, con modo `0600`, que ata
+commits, predecesores, inputs sellados, intérprete, digest del builder y nonce.
+No se invoca el builder directamente desde una terminal privilegiada: el
+supervisor root lo ejecuta como `jaxbuild`, recibe el recibo por FD privado y
+lo persiste root-owned antes de permitir adopción.
+
 ```bash
-# `--inputs` ya fue sellado root:root y contiene wheelhouse/ y lock.
-sudo -u jaxbuild /ruta/root-owned/build-pair-jaxbuild.py \
-  --platform /repos/jax-platform --platform-commit <SHA-JXP-40> --platform-predecessor <SHA-JXP-PREVIO-40> \
-  --jax /repos/jax --jax-commit <SHA-JAX-40> --jax-predecessor <SHA-JAX-PREVIO-40> \
-  --inputs /ruta/root-owned/inputs --wheelhouse-sha256 "$WHEELHOUSE_SHA256" --lock-sha256 "$LOCK_SHA256" \
-  --out /ruta-de-jaxbuild/par
-MANIFEST_SHA256=$(sha256sum /ruta-de-jaxbuild/par/pair-manifest.json | cut -d' ' -f1)
-sudo /ruta/root-owned/adopt-pair-root.sh --source /ruta-de-jaxbuild/par \
+sudo /usr/local/libexec/pair-build-supervisor.py \
+  --request /ruta-root/request.json \
+  --builder /usr/local/libexec/build-pair-jaxbuild.py \
+  --receipt /ruta-root/receipt.json
+MANIFEST_SHA256=<digest-del-manifiesto-verificado-independientemente-en-CI>
+
+# Sólo en el primer par: adopta y publica la selección inicial juntos.
+sudo /usr/local/libexec/bootstrap-pair-predecessor.py \
+  --source /ruta-de-jaxbuild/par \
   --destination /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
-  --expected-manifest-sha256 "$MANIFEST_SHA256"
-sudo /usr/local/libexec/activate-platform-pair-release.sh \
-  --release /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
   --expected-manifest-sha256 "$MANIFEST_SHA256" \
-  --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256"
+  --request /ruta-root/request.json --receipt /ruta-root/receipt.json
 ```
+
+Antes de usarlo en una máquina objetivo se puede reproducir el límite completo
+sin tocar sus cuentas, `/etc` ni `/opt`: `sudo
+ops/migration/tests/pair-supervisor-e2e-v1.sh`. El contenedor
+`python:3.14-bookworm` construye como `jaxbuild`, comprueba el recibo privado,
+rechaza request, recibo e inode de salida forjados y ejecuta el bootstrap sólo
+dentro del contenedor. La salida esperada es `PAIR_SUPERVISOR_E2E_V1_OK`.
 
 El launcher lee una selección JSON root-owned, toma el candado compartido de
 runtime durante todo el proceso y exige que coincida con `current`; fija

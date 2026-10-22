@@ -338,6 +338,7 @@ def _snapshot_unit_source(backup: Path) -> Path:
 def import_package(bundle: Path, digest: str, destination_root: Path, backup: Path,
                    verify_effective: Callable[[Path], None], *, fail_after: int | None = None,
                    verify_restored: Callable[[Path], None] | None = None,
+                   before_mutate: Callable[[], None] | None = None,
                    package_owner_uid: int = 0, package_owner_gid: int = 0,
                    install_owner_uid: int = 0, install_owner_gid: int = 0) -> None:
     """Commit all files, D-Bus verification included, or restore every file."""
@@ -350,6 +351,10 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
     declared = {entry["path"] for entry in data["payload"] if isinstance(entry, dict)}
     swaps = 0
     try:
+        # The shared pair lock prevents a launcher from acquiring its SH lock;
+        # re-read systemd at the last point before we replace any unit bytes.
+        if before_mutate is not None:
+            before_mutate()
         _journal(backup, "MUTATING")
         for item in data["payload"]:
             assert isinstance(item, dict)
@@ -411,11 +416,25 @@ def _run_checked(command: list[str], *, pass_fds: tuple[int, ...] = ()) -> None:
         raise PackageError("effective runtime contract rejected") from exc
 
 
+PAIR_RUNTIME_LOCK = Path("/opt/jax-platform-pair/.runtime.lock")
+
+
 @contextmanager
-def _exclusive_runtime_lock(path: Path = Path("/run/lock/jax-platform-runtime-import.lock")):
+def _exclusive_runtime_lock(path: Path = PAIR_RUNTIME_LOCK):
+    """Take the same inode that the launcher holds shared for its lifetime."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    except OSError as exc:
+        raise PackageError("unsafe runtime lock") from exc
+    try:
+        value = os.fstat(descriptor)
+        expected_uid = 0 if path == PAIR_RUNTIME_LOCK else os.geteuid()
+        expected_gid = 0 if path == PAIR_RUNTIME_LOCK else os.getegid()
+        if (not stat.S_ISREG(value.st_mode) or value.st_nlink != 1
+                or value.st_uid != expected_uid or value.st_gid != expected_gid
+                or stat.S_IMODE(value.st_mode) != 0o644):
+            raise PackageError("unsafe runtime lock")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -465,7 +484,11 @@ def main(argv: list[str]) -> int:
                 # Never restore or replace a definition while either unit runs.
                 _require_units_inactive()
                 recover_pending_imports(backup.parent, backup, verify)
-                import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
+                # Recovery itself reloads definitions. Recheck again after it,
+                # then once more inside import_package immediately before MUTATING.
+                _require_units_inactive()
+                import_package(package, digest, Path("/"), backup, verify,
+                               verify_restored=verify, before_mutate=_require_units_inactive)
         finally:
             os.close(validator_fd)
     except PackageError as exc:

@@ -169,14 +169,21 @@ def main() -> None:
     parser.add_argument("--platform-commit", required=True)
     parser.add_argument("--jax", type=Path, required=True)
     parser.add_argument("--jax-commit", required=True)
-    parser.add_argument("--platform-predecessor", required=True)
-    parser.add_argument("--jax-predecessor", required=True)
+    parser.add_argument("--bootstrap-predecessor", action="store_true")
+    parser.add_argument("--platform-predecessor")
+    parser.add_argument("--jax-predecessor")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True, help="root-sealed snapshot containing wheelhouse/ and lock")
     parser.add_argument("--wheelhouse-sha256", required=True)
     parser.add_argument("--lock-sha256", required=True)
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--request-nonce")
+    parser.add_argument("--receipt-fd", type=int)
     arguments = parser.parse_args()
+    if (arguments.request_nonce is None) != (arguments.receipt_fd is None):
+        die("receipt nonce and FD must be supplied together")
+    if arguments.request_nonce is not None and (len(arguments.request_nonce) != 64 or any(c not in "0123456789abcdef" for c in arguments.request_nonce)):
+        die("invalid request nonce")
     arguments.wheelhouse = arguments.inputs / "wheelhouse"
     arguments.lock = arguments.inputs / "lock"
     snapshot_stat = arguments.inputs.lstat() if arguments.inputs.exists() else None
@@ -185,8 +192,16 @@ def main() -> None:
     actual_wheelhouse = wheelhouse_digest(arguments.wheelhouse)
     if actual_wheelhouse != arguments.wheelhouse_sha256 or digest(arguments.lock) != arguments.lock_sha256:
         die("external dependency digest mismatch")
-    require_ancestor(arguments.platform, arguments.platform_predecessor, arguments.platform_commit)
-    require_ancestor(arguments.jax, arguments.jax_predecessor, arguments.jax_commit)
+    if arguments.receipt_fd is not None:
+        os.set_inheritable(arguments.receipt_fd, False)
+    if arguments.bootstrap_predecessor:
+        if arguments.platform_predecessor is not None or arguments.jax_predecessor is not None:
+            die("bootstrap predecessor has no Git predecessor")
+    elif arguments.platform_predecessor is None or arguments.jax_predecessor is None:
+        die("both Git predecessors are required")
+    else:
+        require_ancestor(arguments.platform, arguments.platform_predecessor, arguments.platform_commit)
+        require_ancestor(arguments.jax, arguments.jax_predecessor, arguments.jax_commit)
     arguments.out.mkdir(mode=0o700); arguments.out.chmod(0o700)
     platform_output = arguments.out / "jax-platform"
     jax_output = arguments.out / "jax"
@@ -204,9 +219,10 @@ def main() -> None:
         subprocess.run([str(venv / "bin" / "pip"), "freeze", "--all"], check=True, stdout=freeze, env=SAFE_ENV)
     attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "platform_links": platform_links, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "jax_links": jax_links, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
     (arguments.out / "build-attestation.json").write_text(json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-    lineage = {"schema": "axioma.pair-lineage/v1", "platform_predecessor": arguments.platform_predecessor,
-               "jax_predecessor": arguments.jax_predecessor}
-    (arguments.out / "release-lineage.json").write_text(json.dumps(lineage, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    if not arguments.bootstrap_predecessor:
+        lineage = {"schema": "axioma.pair-lineage/v1", "platform_predecessor": arguments.platform_predecessor,
+                   "jax_predecessor": arguments.jax_predecessor}
+        (arguments.out / "release-lineage.json").write_text(json.dumps(lineage, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     # The final root adoption re-owns this tree but never changes bytes.  Keep the
     # Git-link attestation beside the sealed inventory so readiness can compare it.
     readiness_spec = __import__("importlib.util").util.spec_from_file_location("pair_readiness", Path(__file__).with_name("pair_artifact_readiness.py"))
@@ -214,7 +230,18 @@ def main() -> None:
     readiness = __import__("importlib.util").util.module_from_spec(readiness_spec)
     readiness_spec.loader.exec_module(readiness)
     manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": arguments.platform_commit, "jax_revision": arguments.jax_commit, "dependency_lock_sha256": digest(arguments.lock), "wheelhouse_manifest_sha256": actual_wheelhouse, "jax_links": jax_links, "files": readiness._inventory(arguments.out, owner_uid=os.getuid(), owner_gid=os.getgid())}
-    (arguments.out / readiness.MANIFEST).write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    (arguments.out / readiness.MANIFEST).write_text(manifest_raw, encoding="utf-8")
+    if arguments.receipt_fd is not None:
+        out_stat = arguments.out.stat()
+        receipt = {"schema":"axioma.pair-build-receipt/v1", "nonce":arguments.request_nonce,
+                   "platform_commit":arguments.platform_commit, "platform_tree":platform_tree,
+                   "jax_commit":arguments.jax_commit, "jax_tree":jax_tree,
+                   "manifest_sha256":hashlib.sha256(manifest_raw.encode()).hexdigest(),
+                   "output_dev":out_stat.st_dev, "output_ino":out_stat.st_ino,
+                   "builder_sha256":digest(Path(__file__).resolve()),"python":str(Path(arguments.python).resolve())}
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()+b"\n"
+        os.write(arguments.receipt_fd, raw)
 
 
 if __name__ == "__main__":

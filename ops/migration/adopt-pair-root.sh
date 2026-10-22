@@ -351,8 +351,30 @@ def copy_and_seal(source: Path, destination: Path, contract: Contract, *, owner_
         raise
 
 
+def validate_supervisor_binding(source: Path, request: Path, receipt: Path) -> None:
+    """Adoption consumes the root supervisor receipt, never a builder digest."""
+    request_raw, request_stat = _read_regular_once(request)
+    receipt_raw, receipt_stat = _read_regular_once(receipt)
+    if any(x.st_uid != 0 or x.st_gid != 0 or stat.S_IMODE(x.st_mode) != 0o600 for x in (request_stat, receipt_stat)):
+        fail("unsafe supervisor evidence")
+    try:
+        wanted, got = json.loads(request_raw), json.loads(receipt_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("invalid supervisor evidence")
+    if (wanted.get("schema") != "axioma.pair-build-request/v1" or got.get("schema") != "axioma.pair-build-receipt/v1"
+            or got.get("nonce") != wanted.get("nonce") or got.get("platform_commit") != wanted.get("platform_commit")
+            or got.get("jax_commit") != wanted.get("jax_commit")):
+        fail("supervisor receipt mismatch")
+    value = source.stat()
+    if got.get("output_dev") != value.st_dev or got.get("output_ino") != value.st_ino:
+        fail("supervisor output identity mismatch")
+    manifest, _ = _read_regular_once(source / "pair-manifest.json")
+    if hashlib.sha256(manifest).hexdigest() != got.get("manifest_sha256"):
+        fail("supervisor manifest mismatch")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--source", type=Path, required=True); parser.add_argument("--destination", type=Path, required=True); parser.add_argument("--expected-manifest-sha256", required=True)
+    parser = argparse.ArgumentParser(); parser.add_argument("--source", type=Path, required=True); parser.add_argument("--destination", type=Path, required=True); parser.add_argument("--expected-manifest-sha256", required=True); parser.add_argument("--request", type=Path, required=True); parser.add_argument("--receipt", type=Path, required=True)
     arguments = parser.parse_args()
     if os.geteuid() != 0 or not _hex(arguments.expected_manifest_sha256, 64): fail("must run as root")
     try: builder = pwd.getpwnam("jaxbuild")
@@ -361,6 +383,7 @@ def main() -> None:
     if stat.S_ISLNK(arguments.source.lstat().st_mode): fail("builder source must not be a symlink")
     source = arguments.source.resolve(strict=True); destination = arguments.destination; parent_metadata = destination.parent.stat()
     if destination.exists() or destination.is_symlink() or parent_metadata.st_uid != 0 or parent_metadata.st_mode & 0o022 or parent_metadata.st_dev != source.stat().st_dev: fail("destination must be absent on source filesystem")
+    validate_supervisor_binding(source, arguments.request, arguments.receipt)
     contract = validate_builder_tree(source, builder.pw_uid, arguments.expected_manifest_sha256, builder.pw_gid)
     copy_and_seal(source, destination, contract, builder_uid=builder.pw_uid)
 
