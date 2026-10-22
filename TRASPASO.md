@@ -6,6 +6,10 @@ Task3A1 round1 producto congelado: Tier2 cerró tres hallazgos con canarioDENIED
 
 Round1RECHAZADO1051cd9: falta esquema referenciado en metadataFK. Round2 corrige mismoDATABASE para las cincoFKs, con negativas reales missing/wrongtable/crossschema y restauración positiva. Parent21focused3.14s; coveringtest tras conservar controles anteriores. Producto congelado para scopedSol;3A2 sigue esperando gate. No prod ni identidades habilitadas.
 
+Task3A1COMPLETE: SolAPROBADO exactec09e223d5347072030f154b951e27a56b122f2d. Task3A2necesitófronteraexplícitacursor/password/session; Solreadonlydelivery_pathresolvió yCodexpersistióspec2026-10-21-office-mfa-cursor-boundary.md (root-owned). OldMFAProof/wrappersseeliminan,3Bsoloauthorchestration. Tier2mfa_primitives dejó3líneasDDLWIP(sinclaimcomplete); freshTier2mfa_cursor_schema ahoraúnicodueñodeesquemav5+upgrades/testsantesdeimplementacióncursorcohesiva. No rutas/identidadesnuevas habilitadas. Siguientepaso: finalizarprerequisitodeesquema, luego11primitivascursorconcontratocongelado.
+
+3A2esquemacongeladoparaauditoríaacotada ysucesorservicio: v5,pendingACTIVE,INVALIDATED,budgetindex6cols,truthprincipalpropósito/casoactor. Rootprecheck corrigiópreflightfilas/CHALLENGEexacto/índiceupgrade;22pruebasfocalizadas. Bibliotecadocs/superpowers/reviews/2026-10-21-office-mfa-cursor-schema.md. PróximoTier2seráúnicodueñomfa.py+tests; esquemafilescongelados. No se declara3A2completaniAPIhabilitada.
+
 2026-10-20 · Codex · OP#343/345. Autorizado por Fernando en conversación.
 Base cdb9878b583b29d44c2dd86155525632fd92df6c, rama codex/virtual-office-20261020.
 Spec y plan: docs/superpowers/{specs,plans}/2026-10-20-office-administration.md.

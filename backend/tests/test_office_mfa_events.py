@@ -49,6 +49,55 @@ def test_mfa_ledger_rejects_malformed_fence_and_is_append_only(client):
     client.portal.call(scenario)
 
 
+def test_mfa_ledger_v5_principal_and_state_purpose_shapes(client):
+    """The ledger carries the immutable principal contract needed by 3A2."""
+    async def scenario():
+        from db.connection import get_pool
+
+        user_id, _ = await crear_usuario()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "INSERT INTO office_mfa_challenge "
+                    "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                    "VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, 'LOGIN', 0, 0, 3, DATE_ADD(NOW(6), INTERVAL 5 MINUTE), 'ISSUED', NOW(6))",
+                    (user_id,),
+                )
+                challenge_id = cur.lastrowid
+                with pytest.raises(aiomysql.OperationalError) as error:
+                    await cur.execute(
+                        "INSERT INTO office_mfa_security_event "
+                        "(event_kind,actor_user_id,principal_kind,subject_user_id,operation,purpose,token_version,mfa_version,result,server_correlation_id) "
+                        "VALUES ('MFA_PROOF',%s,'USER_SESSION',%s,'MFA_PROOF','LOGIN',0,0,'VERIFIED',UNHEX(REPLACE(UUID(),'-','')))",
+                        (user_id, user_id),
+                    )
+                assert error.value.args[0] == 4025
+                await cur.execute(
+                    "INSERT INTO office_mfa_security_event "
+                    "(event_kind,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,result,server_correlation_id) "
+                    "VALUES ('MFA_PROOF','PASSWORD_PREAUTH',%s,%s,'MFA_PROOF','LOGIN',0,0,'VERIFIED',UNHEX(REPLACE(UUID(),'-','')))",
+                    (challenge_id, user_id),
+                )
+                proof_id = cur.lastrowid
+                await cur.execute(
+                    "INSERT INTO office_mfa_security_event "
+                    "(event_kind,actor_user_id,principal_kind,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,result,server_correlation_id) "
+                    "VALUES ('MFA_STATE_CHANGE',%s,'USER_SESSION',%s,'RECOVERY_REGENERATE','RECOVERY',1,1,0,0,%s,'RECORDED',UNHEX(REPLACE(UUID(),'-','')))",
+                    (user_id, user_id, proof_id),
+                )
+                with pytest.raises(aiomysql.OperationalError) as error:
+                    await cur.execute(
+                        "INSERT INTO office_mfa_security_event "
+                        "(event_kind,actor_user_id,principal_kind,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,result,server_correlation_id) "
+                        "VALUES ('MFA_STATE_CHANGE',%s,'USER_SESSION',%s,'MFA_DISABLE','RECOVERY',1,1,0,0,%s,'RECORDED',UNHEX(REPLACE(UUID(),'-','')))",
+                        (user_id, user_id, proof_id),
+                    )
+                assert error.value.args[0] == 4025
+    client.portal.call(scenario)
+
+
 def test_mfa_ledger_constraint_metadata_is_exact_and_permissive_replacements_fail_closed(client):
     """Whitespace alone is harmless; case, NULL guards, grouping, and ORs are not."""
     async def scenario():
@@ -132,6 +181,13 @@ def test_mfa_ledger_lookup_indexes_have_real_explain_coverage(client):
                         "EXPLAIN SELECT user_id FROM office_mfa_challenge WHERE challenge_id=%s",
                         (challenge_id,),
                         "challenge_id",
+                    ),
+                    (
+                        "EXPLAIN SELECT token_hash FROM office_mfa_challenge "
+                        "WHERE user_id=%s AND purpose='STEP_UP' AND expected_token_version=0 "
+                        "AND expected_mfa_version=0 AND state='ISSUED' AND expires_at>NOW(6)",
+                        (user_id,),
+                        "idx_office_mfa_challenge_user",
                     ),
                     (
                         "EXPLAIN SELECT event_id FROM office_mfa_security_event "

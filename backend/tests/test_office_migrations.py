@@ -235,6 +235,25 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
                     await apply_office_migrations(cur)
+                    # A v4 budget index is a valid predecessor and must be
+                    # replaced without breaking the FK's user-id support.
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY legacy_budget (user_id,state,expires_at)")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                    await cur.execute("ALTER TABLE office_mfa_challenge RENAME INDEX legacy_budget TO idx_office_mfa_challenge_user")
+                    await apply_office_migrations(cur)
+                    await cur.execute(
+                        "SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+                        "AND TABLE_NAME='office_mfa_challenge' AND INDEX_NAME='idx_office_mfa_challenge_user' ORDER BY SEQ_IN_INDEX"
+                    )
+                    assert tuple(row[0] for row in await cur.fetchall()) == (
+                        "user_id", "purpose", "expected_token_version", "expected_mfa_version", "state", "expires_at",
+                    )
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED') OR 1=1)")
+                    with pytest.raises(RuntimeError, match="challenge state is incompatible"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED'))")
                     await cur.execute("ALTER TABLE office_mfa_security_event DROP FOREIGN KEY fk_office_mfa_security_event_challenge_subject")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX uq_office_mfa_challenge_subject")
                     await cur.execute("ALTER TABLE office_mfa_challenge DROP COLUMN challenge_id")

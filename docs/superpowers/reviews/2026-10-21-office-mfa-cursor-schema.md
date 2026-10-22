@@ -1,0 +1,9 @@
+# MFA3A2 schema prerequisite · OP345
+
+2026-10-21 · Codex. This is the bounded schema prerequisite for the cursor boundary; no proof writer, HTTP route, account, JWT or MFA activation is supplied here. Baseline3A1 approvedec09e22. Binding ruling/spec:2026-10-21-office-mfa-cursor-boundary.md, following read-only Sol delivery_path.
+
+Version5 permits ACTIVE credentials to retain their old secret with a complete pending bundle, adds INVALIDATED challenge history, installs the six-column challenge-budget lookup index, and refines ledger truth to real purpose/principal/actor relationships including recovery regeneration and self-disable. Current and known predecessor CHECK clauses use measured exact metadata; known v4 evidence is preflighted against new strict truth before replacing its ledger checks. Incompatible history fails without rewriting evidence. Readiness advances only after the schema/fence checks.
+
+Root precheck required and obtained three corrections before checkpoint: actual row preflight before old ledger-check removal; exact challenge-state CHECK rather than keyword presence; explicit known-v4 index upgrade and column attestation instead of fresh-DDL-only change. Real SQL tests cover principal/state positives/negatives, ACTIVE pending bundle, invalidated state, fresh/idempotent/legacy challenge upgrade, permissive CHECK rejection, old index upgrade and EXPLAIN indexed budget lookup. Parent independently reruns22focused migration/event/runtime tests on disposable33991. Existing MFA service remains deliberately unapproved old code until the following cohesive cursor implementation replaces it.
+
+No production3308, live identities, provider, email, auth/JWT/routes/frontend or service changes. This checkpoint is partial3A2 progress, not a completion verdict. The final3A2 gate must review schema plus actual private verifier/caller-cursor implementation before3B consumes it.
