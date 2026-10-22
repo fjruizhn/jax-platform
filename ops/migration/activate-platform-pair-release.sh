@@ -6,7 +6,7 @@ ROOT=/opt/jax-platform-pair RELEASE= EXPECTED= PREVIOUS= SELECTION=/etc/jax/plat
 while [[ $# -gt 0 ]]; do
  case "$1" in
   --release) RELEASE=${2:?}; shift;; --expected-manifest-sha256) EXPECTED=${2:?}; shift;; --previous-manifest-sha256) PREVIOUS=${2:?}; shift;; --root) ROOT=${2:?}; shift;;
-  -h|--help) echo 'usage: activate-platform-pair-release.sh --release /opt/jax-platform-pair/releases/JXP-JAX --expected-manifest-sha256 SHA [--previous-manifest-sha256 SHA]'; exit 0;; *) exit 2;; esac; shift
+  -h|--help) echo 'usage: activate-platform-pair-release.sh --release /opt/jax-platform-pair/releases/JXP-JAX --expected-manifest-sha256 SHA --previous-manifest-sha256 SHA'; exit 0;; *) exit 2;; esac; shift
 done
 if [[ $ROOT != /opt/jax-platform-pair ]]; then
   [[ ${JAX_PAIR_TEST_MODE:-} == 1 && $(/usr/bin/id -u) == 0 && $ROOT == /tmp/* ]] || { echo 'test root rejected' >&2; exit 2; }
@@ -14,7 +14,7 @@ if [[ $ROOT != /opt/jax-platform-pair ]]; then
   [[ -n ${JAX_PAIR_SYSTEMCTL_BIN:-} && -x ${JAX_PAIR_SYSTEMCTL_BIN} ]] || { echo 'test systemctl rejected' >&2; exit 2; }
   SYSTEMCTL=$JAX_PAIR_SYSTEMCTL_BIN
 fi
-[[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ ]] || exit 2
+[[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ && $PREVIOUS =~ ^[0-9a-f]{64}$ ]] || { echo 'external target and predecessor manifest digests required' >&2; exit 2; }
 exec 9>"$ROOT/.activation.lock"; /usr/bin/flock -n 9 || { echo 'pair activation already in progress' >&2; exit 1; }
 if [[ ! -e $ROOT/.runtime.lock ]]; then
   # The activation lock serializes creators.  Never replace an existing lock:
@@ -28,10 +28,8 @@ release_real=$(/usr/bin/realpath -e -- "$RELEASE") || { echo 'unsafe release' >&
 RELEASE=$release_real
 actual=$(/usr/bin/sha256sum "$RELEASE/pair-manifest.json" | /usr/bin/cut -d' ' -f1); [[ $actual == "$EXPECTED" ]] || { echo 'unexpected manifest digest' >&2; exit 1; }
 /usr/bin/python3 -Es "$HELPER" "$RELEASE" || exit 1
-if [[ -n $PREVIOUS ]]; then
- current=$(/usr/bin/realpath -e "$ROOT/current" 2>/dev/null || true)
- [[ -n $current && $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'predecessor digest mismatch' >&2; exit 1; }
-fi
+current=$(/usr/bin/realpath -e "$ROOT/current" 2>/dev/null || true)
+[[ -n $current && $(/usr/bin/sha256sum "$current/pair-manifest.json" | /usr/bin/cut -d' ' -f1) == "$PREVIOUS" ]] || { echo 'predecessor digest mismatch' >&2; exit 1; }
 # A live web launcher owns LOCK_SH for its full lifetime.  Stop it before
 # waiting for LOCK_EX, otherwise systemctl and the activator wait forever.
 $SYSTEMCTL stop jax-platform.service

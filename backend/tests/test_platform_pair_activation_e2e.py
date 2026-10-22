@@ -25,6 +25,19 @@ def _sudo_available() -> bool:
     return subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False).returncode == 0
 
 
+def test_legacy_pair_installer_is_disabled_before_it_can_create_a_release(tmp_path: Path) -> None:
+    root = tmp_path / "pair-root"
+    result = subprocess.run(
+        [str(MIGRATION / "install-platform-pair-release.sh"), "--root", str(root)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 64
+    assert "is disabled" in result.stderr
+    assert not root.exists()
+
+
 @pytest.mark.skipif(not _sudo_available(), reason="requires passwordless sudo only for a temporary root-owned release")
 def test_root_temporary_activation_serializes_selection_and_scrubs_environment(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     root = tmp_path / "pair-root"
@@ -86,8 +99,16 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         encoding="utf-8",
     )
     fake_systemctl.chmod(0o755)
-    subprocess.run(["sudo", "-n", "chown", "-R", "root:root", str(root)], check=True)
     digest = hashlib.sha256((release / readiness.MANIFEST).read_bytes()).hexdigest()
+    predecessor = root / "releases" / ("c" * 40 + "-" + "d" * 40)
+    shutil.copytree(release, predecessor)
+    predecessor_manifest = json.loads((predecessor / readiness.MANIFEST).read_text(encoding="utf-8"))
+    predecessor_manifest["jax_platform_revision"] = "c" * 40
+    predecessor_manifest["jax_revision"] = "d" * 40
+    (predecessor / readiness.MANIFEST).write_text(json.dumps(predecessor_manifest), encoding="utf-8")
+    (root / "current").symlink_to("releases/" + predecessor.name)
+    previous_digest = hashlib.sha256((predecessor / readiness.MANIFEST).read_bytes()).hexdigest()
+    subprocess.run(["sudo", "-n", "chown", "-R", "root:root", str(root)], check=True)
     base_env = {
         "JAX_PAIR_TEST_MODE": "1",
         "JAX_PAIR_TEST_ROOT": str(root),
@@ -95,7 +116,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_TEST_CALLS": str(calls),
         "JAX_PAIR_TEST_LAUNCHER": str(test_launcher),
     }
-    command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest]
+    command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest]
     first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.monotonic() + 5
     while not calls.exists() and time.monotonic() < deadline:
@@ -127,10 +148,10 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     ]
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
     lock_inode = (root / ".runtime.lock").stat().st_ino
-    repeat = subprocess.run(command, text=True, capture_output=True, check=False)
+    repeat = subprocess.run(command[:-1] + [digest], text=True, capture_output=True, check=False)
     assert repeat.returncode == 0, repeat.stderr
     assert (root / ".runtime.lock").stat().st_ino == lock_inode
-    escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest], text=True, capture_output=True, check=False)
+    escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", digest], text=True, capture_output=True, check=False)
     assert escaped.returncode != 0
     assert "unsafe release" in escaped.stderr
     bash_env = tmp_path / "bash-env"; bash_env.write_text(f"touch {tmp_path / 'bash-env-ran'}\n", encoding="utf-8")
