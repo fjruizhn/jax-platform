@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Root supervisor for a jaxbuild pair build. Root never opens Git objects."""
 from __future__ import annotations
-import argparse, hashlib, json, os, pwd, stat, subprocess
+import argparse, hashlib, json, os, pwd, stat, subprocess, uuid
 from pathlib import Path
 
 def die(message:str)->None: raise SystemExit('pair-build-supervisor: '+message)
@@ -18,6 +18,24 @@ def require_quiescent_jaxbuild() -> None:
  try: account=pwd.getpwnam('jaxbuild')
  except KeyError: die('jaxbuild account absent')
  if not account.pw_shell.endswith('nologin') or account.pw_uid in process_uids(): die('jaxbuild is not a stopped nologin account')
+def private_cgroup() -> Path:
+ root=Path('/sys/fs/cgroup')
+ if not (root/'cgroup.controllers').is_file(): die('cgroup v2 unavailable')
+ group=root/f'axioma-pair-build-{uuid.uuid4().hex}'
+ try: group.mkdir(mode=0o755)
+ except OSError as exc: die(f'private cgroup unavailable: {exc}')
+ return group
+def cgroup_preexec(group: Path):
+ def move() -> None:
+  try: (group/'cgroup.procs').write_text(str(os.getpid()),encoding='ascii')
+  except OSError as exc: os.write(2,f'pair-build-supervisor: cgroup attach failed: {exc}\n'.encode()); os._exit(126)
+ return move
+def empty_cgroup(group: Path) -> None:
+ try:
+  if (group/'cgroup.procs').read_text(encoding='ascii').strip(): die('builder cgroup not empty')
+ finally:
+  try: group.rmdir()
+  except OSError: pass
 def regular(path:Path, mode:int|None=None)->bytes:
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
  try:
@@ -49,8 +67,19 @@ def main()->None:
  args=['/usr/sbin/runuser','-u','jaxbuild','--','/usr/bin/python3','-I','-S',str(a.builder),'--platform',r['platform'],'--platform-commit',r['platform_commit'],'--jax',r['jax'],'--jax-commit',r['jax_commit'],'--out',r['out'],'--inputs',r['inputs'],'--wheelhouse-sha256',r['wheelhouse_sha256'],'--lock-sha256',r['lock_sha256'],'--request-nonce',r['nonce'],'--receipt-fd',str(write_fd),'--python',r['python']]
  if r['bootstrap_predecessor']: args.append('--bootstrap-predecessor')
  else: args += ['--platform-predecessor',r['platform_predecessor'],'--jax-predecessor',r['jax_predecessor']]
- child=subprocess.Popen(args,pass_fds=(write_fd,),stdin=subprocess.DEVNULL);os.close(write_fd); raw=os.read(read_fd,65536);os.close(read_fd)
- if child.wait()!=0: die('builder failed')
+ group=private_cgroup()
+ try:
+  child=subprocess.Popen(args,pass_fds=(write_fd,),stdin=subprocess.DEVNULL,preexec_fn=cgroup_preexec(group));os.close(write_fd); raw=os.read(read_fd,65536);os.close(read_fd)
+  if child.wait()!=0: die('builder failed')
+  empty_cgroup(group)
+ except BaseException:
+  try: os.close(write_fd)
+  except OSError: pass
+  try: os.close(read_fd)
+  except OSError: pass
+  try: empty_cgroup(group)
+  except SystemExit: pass
+  raise
  require_quiescent_jaxbuild()
  try: receipt=json.loads(raw)
  except (UnicodeDecodeError, json.JSONDecodeError) as exc:

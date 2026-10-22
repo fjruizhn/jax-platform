@@ -6,6 +6,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 docker run --rm --pull=missing -i \
+  --privileged --cgroupns=private \
   -v "$repo_root:/workspace:ro" \
   python:3.14-bookworm /bin/bash -se <<'CONTAINER'
 set -euo pipefail
@@ -18,6 +19,14 @@ apt-get install -y --no-install-recommends git util-linux >/dev/null
 # only inside this disposable container.
 ln -sfn /usr/local/bin/python3.14 /usr/bin/python3
 useradd --system --home-dir /opt/pair-e2e/jaxbuild --create-home --shell /usr/sbin/nologin jaxbuild
+mkdir /sys/fs/cgroup/axioma-pair-e2e-escape
+runuser -u jaxbuild -- sleep 30 & escape_pid=$!
+echo "$escape_pid" >/sys/fs/cgroup/axioma-pair-e2e-escape/cgroup.procs
+if runuser -u jaxbuild -- sh -c 'echo $$ >/sys/fs/cgroup/cgroup.procs' 2>/dev/null; then
+  echo 'jaxbuild escaped its private cgroup' >&2; exit 1
+fi
+kill "$escape_pid"; wait "$escape_pid" || true
+rmdir /sys/fs/cgroup/axioma-pair-e2e-escape
 install -d -o root -g root -m 0755 /usr/local/libexec /opt/pair-e2e/root /opt/pair-e2e/evidence /opt/pair-e2e/inputs/wheelhouse
 install -m 0755 -o root -g root /workspace/ops/migration/build-pair-jaxbuild.py /usr/local/libexec/build-pair-jaxbuild.py
 install -m 0755 -o root -g root /workspace/ops/migration/pair-build-supervisor.py /usr/local/libexec/pair-build-supervisor.py
