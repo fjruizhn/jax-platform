@@ -395,6 +395,34 @@ def test_recovery_compound_mutation_boundaries_roll_back(client, boundary):
     client.portal.call(scenario)
 
 
+@pytest.mark.parametrize(("needle", "occurrence"), (
+    ("INSERT INTO office_mfa_challenge", 1),  # RECOVERY challenge
+    ("INSERT INTO office_mfa_challenge", 2),  # ENROLLMENT challenge
+    ("UPDATE office_mfa_challenge SET state='CONSUMED'", 1),
+    ("INSERT INTO office_mfa_security_event", 1),  # proof append
+    ("INSERT INTO office_mfa_security_event", 2),  # state append
+))
+def test_recovery_ordered_mutation_boundaries_roll_back(client, needle, occurrence):
+    async def scenario():
+        await _migrate(); user_id, _, enrolled = await _active_user(); code = enrolled.recovery_codes[0]
+        before = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)
+        class FaultCursor:
+            def __init__(self, delegate): self._delegate, self.seen = delegate, 0
+            async def execute(self, statement, *args):
+                if needle in statement:
+                    self.seen += 1
+                    if self.seen == occurrence: raise RuntimeError("injected ordered recovery boundary")
+                return await self._delegate.execute(statement, *args)
+            def __getattr__(self, name): return getattr(self._delegate, name)
+        with pytest.raises(RuntimeError, match="injected ordered recovery boundary"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await recover_to_pending_enrollment_in_cursor(FaultCursor(cur), recovery_code=code, config=CONFIG, server_correlation_id=b"O" * 16)
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == before
+        assert await sql("SELECT used_at FROM office_mfa_recovery_code WHERE code_hash=UNHEX(SHA2(%s,256))", (code,), True) == ((None,),)
+        assert await sql("SELECT COUNT(*) FROM office_mfa_recovery_receipt WHERE user_id=%s", (user_id,), True) == ((0,),)
+    client.portal.call(scenario)
+
+
 @pytest.mark.parametrize("zone", ("-06:00", "+05:30"))
 def test_recovery_one_hop_uses_utc_under_hostile_session_timezone(client, zone):
     async def scenario():
