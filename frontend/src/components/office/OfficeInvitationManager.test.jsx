@@ -3,112 +3,90 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import '@testing-library/jest-dom'
 import { I18nProvider } from '../../i18n/index.jsx'
 
-const invitations = vi.hoisted(() => ({ issue: vi.fn(), revoke: vi.fn() }))
+const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
 vi.mock('../../api/virtualOffice', () => ({ officeInvitationsApi: invitations }))
 
 import OfficeInvitationManager from './OfficeInvitationManager'
 
+const firstPage = { data: { invitations: [{ id: 44, version: 3, email: 'ana@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-23T12:00:00Z' }], next_cursor: null } }
+
 beforeEach(() => {
   vi.clearAllMocks()
+  invitations.list.mockResolvedValue(firstPage)
   invitations.issue.mockResolvedValue({ data: {} })
   invitations.revoke.mockResolvedValue({ data: {} })
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'fixed-uuid') })
 })
 
 function show(props = {}) {
-  return render(<I18nProvider><OfficeInvitationManager projectId={12} invitations={[{ id: 44, version: 3, email: 'ana@example.test' }]} enabled onChanged={vi.fn()} {...props} /></I18nProvider>)
+  return render(<I18nProvider><OfficeInvitationManager projectId={12} onForbidden={vi.fn()} {...props} /></I18nProvider>)
 }
 
 describe('OfficeInvitationManager', () => {
-  it('stays absent while the backend contract is not wired', () => {
-    show({ enabled: false })
-    expect(screen.queryByRole('button', { name: 'Gestionar invitaciones' })).not.toBeInTheDocument()
+  it('loads only the server list with its opaque cursor and shows the active invitation', async () => {
+    show()
+    await waitFor(() => expect(invitations.list).toHaveBeenCalledWith(12, { limit: 25, cursor: null }))
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    expect(await screen.findByText('ana@example.test')).toBeInTheDocument()
+    expect(screen.getByText('Estado: ISSUED')).toBeInTheDocument()
   })
 
-  it('issues the typed audience with a UUID idempotency key', async () => {
+  it('keeps the cursor opaque and appends only the page returned by the server', async () => {
+    invitations.list.mockResolvedValueOnce({ data: { invitations: [], next_cursor: 'opaque-next' } }).mockResolvedValueOnce({ data: { invitations: [{ id: 45, version: 1, email: 'bea@example.test', audience: 'INTERNAL', status: 'ISSUED', expires_at: '2026-10-24T12:00:00Z' }], next_cursor: null } })
+    show()
+    fireEvent.click(await screen.findByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cargar más invitaciones' }))
+    await waitFor(() => expect(invitations.list).toHaveBeenLastCalledWith(12, { limit: 25, cursor: 'opaque-next' }))
+    expect(await screen.findByText('bea@example.test')).toBeInTheDocument()
+  })
+
+  it('issues with a UUID and refetches the authoritative first page', async () => {
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
     fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
     fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
     await waitFor(() => expect(invitations.issue).toHaveBeenCalledWith(12, { email: 'ana@example.test', audience: 'INTERNAL' }, 'fixed-uuid'))
+    await waitFor(() => expect(invitations.list).toHaveBeenCalledTimes(2))
+    expect(invitations.list).toHaveBeenLastCalledWith(12, { limit: 25, cursor: null })
   })
 
-  it('retries the same failed invitation intent with its original idempotency key', async () => {
-    invitations.issue.mockRejectedValueOnce(new Error('lost')).mockResolvedValueOnce({ data: {} })
-    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('key-a').mockReturnValueOnce('key-b') })
+  it('requires confirmation, sends the exact displayed id and version, then refetches', async () => {
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo completar la operación de invitación.')
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    await waitFor(() => expect(invitations.issue).toHaveBeenNthCalledWith(2, 12, { email: 'ana@example.test', audience: 'INTERNAL' }, 'key-a'))
-  })
-
-  it('uses a new idempotency key when a failed invitation payload changes', async () => {
-    invitations.issue.mockRejectedValueOnce(new Error('lost')).mockResolvedValueOnce({ data: {} })
-    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('key-a').mockReturnValueOnce('key-b') })
-    show()
-    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    await screen.findByRole('alert')
-    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'bea@example.test' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    await waitFor(() => expect(invitations.issue).toHaveBeenNthCalledWith(2, 12, { email: 'bea@example.test', audience: 'INTERNAL' }, 'key-b'))
-  })
-
-  it('does not allow the invitation payload to be edited while it is in flight', async () => {
-    let resolve
-    invitations.issue.mockReturnValue(new Promise((done) => { resolve = done }))
-    show()
-    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    expect(screen.getByLabelText('Correo electrónico')).toBeDisabled()
-    expect(screen.getByLabelText('Audiencia')).toBeDisabled()
-    resolve({ data: {} })
-  })
-
-  it('requires an explicit modal confirmation before revoking the version displayed', async () => {
-    show()
-    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
-    expect(screen.getByRole('dialog', { name: 'Revocar invitación' })).toBeInTheDocument()
-    expect(invitations.revoke).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Revocar invitación para ana@example.test' }))
+    const dialog = screen.getByRole('dialog', { name: 'Revocar invitación' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revocar invitación' }))
     await waitFor(() => expect(invitations.revoke).toHaveBeenCalledWith(12, 44, 3, 'fixed-uuid'))
+    await waitFor(() => expect(invitations.list).toHaveBeenCalledTimes(2))
   })
 
-  it('makes the parent dialog inert and Escape closes only the top revoke confirmation', () => {
+  it('closes and revalidates authority after a forbidden list response', async () => {
+    const onForbidden = vi.fn().mockResolvedValue(undefined)
+    invitations.list.mockRejectedValue({ response: { status: 403 } })
+    show({ onForbidden })
+    await waitFor(() => expect(onForbidden).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Gestionar invitaciones' })).toBeInTheDocument()
+  })
+
+  it.each([[409, 'La invitación cambió antes de completar la operación. Se actualizó la lista.'], [503, 'El servicio de invitaciones no está disponible. Se actualizó la lista.']])('does not change local state on %i and refetches', async (status, message) => {
+    invitations.issue.mockRejectedValueOnce({ response: { status } })
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    await waitFor(() => expect(invitations.list).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('ana@example.test')).toBeInTheDocument()
+  })
+
+  it('makes the parent dialog inert and Escape closes only the top revoke confirmation', async () => {
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Revocar invitación para ana@example.test' }))
     const manager = screen.getByRole('dialog', { name: 'Gestionar invitaciones' })
     expect(manager.querySelector('[data-office-invitation-content]')).toHaveAttribute('inert')
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: 'Revocar invitación' })).not.toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: 'Gestionar invitaciones' })).toBeInTheDocument()
-  })
-
-  it('reports a refresh failure separately after a committed invitation mutation', async () => {
-    const onChanged = vi.fn().mockRejectedValue(new Error('refresh failed'))
-    show({ onChanged })
-    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('La invitación se guardó, pero no se pudo actualizar la lista.')
-    expect(screen.queryByText('No se pudo completar la operación de invitación.')).not.toBeInTheDocument()
-  })
-
-  it('renders a revoke mutation failure inside the still-active top confirmation', async () => {
-    invitations.revoke.mockRejectedValue(new Error('rejected'))
-    show()
-    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
-    const confirm = screen.getByRole('dialog', { name: 'Revocar invitación' })
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Revocar invitación' }))
-    expect(await within(confirm).findByRole('alert')).toHaveTextContent('No se pudo completar la operación de invitación.')
-    expect(screen.getByRole('dialog', { name: 'Gestionar invitaciones' }).querySelector('[data-office-invitation-content]')).toHaveAttribute('inert')
   })
 })

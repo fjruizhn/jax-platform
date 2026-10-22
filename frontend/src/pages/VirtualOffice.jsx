@@ -4,6 +4,7 @@ import { useJaxStore } from '../store/useJaxStore'
 import Dialogo from '../components/Dialogo'
 import { TAMANO_BOTON_ACCION, TAMANO_BOTON_44 } from '../tema/botones'
 import { officeProjectsApi } from '../api/virtualOffice'
+import OfficeInvitationManager from '../components/office/OfficeInvitationManager'
 
 const PAGE_SIZE = 25
 const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
@@ -69,6 +70,26 @@ export default function VirtualOffice({ onOfficeDenied }) {
     }
   }
 
+  async function revalidateDetail(projectId) {
+    const request = ++detailGeneration.current
+    // A 403 invalidates the capability immediately.  The following detail
+    // request is the only authority that can restore it.
+    setDetail((current) => current && !current.loading && !current.failed
+      ? { ...current, capabilities: { ...(current.capabilities || {}), manage_invitations: false } }
+      : current)
+    try {
+      const { data } = await officeProjectsApi.detail(projectId)
+      if (request !== detailGeneration.current) return
+      if (!validDetail(data)) throw new Error('invalid office project detail')
+      setDetail(data)
+    } catch (err) {
+      if (request !== detailGeneration.current) return
+      if (err?.response?.status === 403) onOfficeDenied?.()
+      setDetailError(true)
+      setDetail({ failed: true })
+    }
+  }
+
   return (
     <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
       <section className="mx-auto max-w-3xl space-y-5">
@@ -101,7 +122,10 @@ export default function VirtualOffice({ onOfficeDenied }) {
         <div className="min-h-0 overflow-y-auto break-words pr-1">
           {detail.loading && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {detailError && <p role="alert" className="text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
-          {!detail.loading && !detail.failed && <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>}
+          {!detail.loading && !detail.failed && <>
+            <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>
+            {detail.capabilities?.manage_invitations === true && <OfficeInvitationManager projectId={detail.id} onForbidden={() => revalidateDetail(detail.id)} />}
+          </>}
         </div>
         <div className="mt-5 flex justify-end"><button type="button" onClick={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }} className={`${TAMANO_BOTON_44} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>
       </Dialogo>}

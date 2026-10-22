@@ -1698,6 +1698,7 @@ export default {
     manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
     send: 'Send invitation', revoke: 'Revoke invitation', revokeFor: (email) => `Revoke invitation for ${email}`,
     revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.', refreshError: 'The invitation was saved, but the list could not be refreshed.',
+    loading: 'Loading invitations…', empty: 'There are no active invitations.', more: 'Load more invitations', listError: 'Invitations could not be loaded.', conflict: 'The invitation changed before the operation completed. The list was refreshed.', unavailable: 'The invitation service is unavailable. The list was refreshed.', expiresAt: 'Expires', status: 'Status',
   },
   mfa: {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',

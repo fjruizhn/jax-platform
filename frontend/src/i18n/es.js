@@ -1794,6 +1794,7 @@ export default {
     manage: 'Gestionar invitaciones', email: 'Correo electrónico', audience: 'Audiencia', audiences: { INTERNAL: 'Equipo interno', CLIENT_PUBLISHED: 'Cliente publicado' },
     send: 'Enviar invitación', revoke: 'Revocar invitación', revokeFor: (email) => `Revocar invitación para ${email}`,
     revokePrompt: (email) => `¿Querés revocar la invitación para ${email}?`, cancel: 'Cancelar', managerError: 'No se pudo completar la operación de invitación.', refreshError: 'La invitación se guardó, pero no se pudo actualizar la lista.',
+    loading: 'Cargando invitaciones…', empty: 'No hay invitaciones activas.', more: 'Cargar más invitaciones', listError: 'No se pudieron cargar las invitaciones.', conflict: 'La invitación cambió antes de completar la operación. Se actualizó la lista.', unavailable: 'El servicio de invitaciones no está disponible. Se actualizó la lista.', expiresAt: 'Vence', status: 'Estado',
   },
   mfa: {
     title: 'Verificación en dos pasos', otpLabel: 'Código de autenticación', verify: 'Verificar', verifying: 'Verificando…',
