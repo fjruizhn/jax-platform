@@ -179,6 +179,7 @@ def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
 
 async def _seed_pending_invitation(
     cur, *, issuer: int, proof_event_id: int, serial: str, target_user_id: int | None = None,
+    expired: bool = False,
 ):
     """Insert the lawful issued state used to exercise DB lifecycle fences."""
     await cur.execute(
@@ -205,9 +206,12 @@ async def _seed_pending_invitation(
     issuance_id = str(uuid.uuid4())
     invitation_id = str(uuid.uuid4())
     outbox_id = str(uuid.uuid4())
+    issued_at_sql = "DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 2 DAY)" if expired else "UTC_TIMESTAMP(6)"
+    expires_at_sql = "DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY)" if expired else "DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY)"
     await cur.execute(
         "INSERT INTO office_invitation_issuance (issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
-        "VALUES (%s,UNHEX(SHA2(%s,256)),CONCAT(%s,'@example.invalid'),1,%s,NULL,%s,'OFFICE_INTERNAL','COLLABORATOR','INTERNAL',%s,1,1,%s,1,UTC_TIMESTAMP(6),%s,UNHEX(REPEAT('cd',32)),UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY))",
+        "VALUES (%s,UNHEX(SHA2(%s,256)),CONCAT(%s,'@example.invalid'),1,%s,NULL,%s,'OFFICE_INTERNAL','COLLABORATOR','INTERNAL',%s,1,1,%s,1,UTC_TIMESTAMP(6),%s,UNHEX(REPEAT('cd',32)),UNHEX(REPEAT('ef',16)),"
+        + issued_at_sql + "," + expires_at_sql + ")",
         (issuance_id, issuance_id, serial, project_id, target_user_id, issuer, proof_event_id, authorization_event_id),
     )
     await cur.execute(
@@ -243,12 +247,19 @@ def test_revocation_and_expiry_stop_queued_or_claimed_outbox_and_erase_ciphertex
                 )
                 revoked_id, queued_outbox, revoked_issued, revoked_issuance = await _seed_pending_invitation(
                     cur, issuer=issuer, proof_event_id=proof.event_id, serial=f"revoke-{uuid.uuid4().hex}")
-                expired_id, claimed_outbox, expired_issued, _ = await _seed_pending_invitation(
-                    cur, issuer=issuer, proof_event_id=proof.event_id, serial=f"expire-{uuid.uuid4().hex}", target_user_id=issuer)
+                expired_id, claimed_outbox, expired_issued, expired_issuance = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id, serial=f"expire-{uuid.uuid4().hex}", target_user_id=issuer,
+                    expired=True)
                 await cur.execute(
                     "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s",
                     (str(uuid.uuid4()), claimed_outbox),
                 )
+                with pytest.raises(aiomysql.OperationalError, match='expiry evidence denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,correlation_id,occurred_at) "
+                        "VALUES (%s,'EXPIRED',%s,UNHEX(REPEAT('aa',16)),UTC_TIMESTAMP(6))",
+                        (revoked_id, revoked_issued),
+                    )
                 with pytest.raises(aiomysql.OperationalError, match='causal evidence denied'):
                     await cur.execute(
                         "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,correlation_id,occurred_at) "
@@ -266,6 +277,18 @@ def test_revocation_and_expiry_stop_queued_or_claimed_outbox_and_erase_ciphertex
                     "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('ae',16)),UTC_TIMESTAMP(6))",
                     (revoked_id, revoked_issued, revoked_issuance),
                 )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
+                    "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('a9',16)),UTC_TIMESTAMP(6))",
+                    (expired_id, expired_issued, expired_issuance),
+                )
+                expired_bearer = cur.lastrowid
+                with pytest.raises(aiomysql.OperationalError, match='acceptance event denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,observed_outbox_state,correlation_id,occurred_at) "
+                        "VALUES (%s,'ACCEPTED',%s,%s,'CLAIMED',UNHEX(REPEAT('a9',16)),UTC_TIMESTAMP(6))",
+                        (expired_id, expired_bearer, issuer),
+                    )
                 with pytest.raises(aiomysql.IntegrityError):
                     await cur.execute(
                         "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
@@ -427,6 +450,13 @@ def test_acceptance_stops_delivery_without_forging_transport_history(client):
                 )
                 state, cancel_requested, ciphertext, attempt_id = await cur.fetchone()
                 assert (state, cancel_requested, ciphertext) == ('CLAIMED', 1, None)
+                with pytest.raises(aiomysql.OperationalError, match='outbox terminal denied'):
+                    await cur.execute(
+                        "UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',cancel_requested=FALSE,payload_ciphertext=NULL,"
+                        "message_id='forged-reset',result_code='250',finished_at=UTC_TIMESTAMP(6),"
+                        "updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s AND attempt_id=%s",
+                        (claimed_outbox, attempt_id),
+                    )
                 await cur.execute(
                     "UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='accepted-after-cancel',"
                     "result_code='250',finished_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) "

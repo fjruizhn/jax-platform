@@ -135,6 +135,70 @@ OFFICE_INVITATION_DDL = (
     "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update BEFORE UPDATE ON office_invitation_outbox FOR EACH ROW BEGIN IF NEW.outbox_id<>OLD.outbox_id OR NEW.invitation_id<>OLD.invitation_id OR NEW.created_at<>OLD.created_at OR NEW.updated_at<=OLD.updated_at THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox identity denied'; END IF; IF OLD.state='QUEUED' AND NOT ((NEW.state='CANCELLED' AND NEW.attempt_id IS NULL AND NEW.attempt_count=0 AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NOT NULL AND NEW.claimed_at IS NULL AND NEW.finished_at IS NOT NULL) OR (NEW.state='CLAIMED' AND NEW.attempt_id IS NOT NULL AND NEW.attempt_count=1 AND NEW.cancel_requested=FALSE AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at IS NOT NULL AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox claim denied'; END IF; IF OLD.state='CLAIMED' AND NOT ((NEW.state='CLAIMED' AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NOT NULL) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=TRUE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NOT NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal denied'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; END",
 )
 
+
+def _replace_invitation_guard(statement_prefix: str, *edits: tuple[str, str]) -> None:
+    """Apply a narrowly attested lifecycle amendment to one DDL guard."""
+    global OFFICE_INVITATION_DDL
+    statements = list(OFFICE_INVITATION_DDL)
+    index = next(i for i, statement in enumerate(statements) if statement.startswith(statement_prefix))
+    amended = statements[index]
+    for old, new in edits:
+        if amended.count(old) != 1:
+            raise RuntimeError("Office invitation guard source is not the expected predecessor")
+        amended = amended.replace(old, new)
+    statements[index] = amended
+    OFFICE_INVITATION_DDL = tuple(statements)
+
+
+_replace_invitation_guard(
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_update",
+    (
+        "JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id WHERE accepted.invitation_id",
+        "JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id JOIN office_invitation_outbox o ON o.invitation_id=OLD.invitation_id WHERE accepted.invitation_id",
+    ),
+    (
+        "accepted.actor_user_id=NEW.accepted_user_id AND bearer.invitation_id",
+        "accepted.actor_user_id=NEW.accepted_user_id AND accepted.observed_outbox_state=o.state AND UTC_TIMESTAMP(6)<s.expires_at AND bearer.invitation_id",
+    ),
+    (
+        "JOIN office_invitation_event issued ON issued.event_id=e.causation_event_id WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='EXPIRED' AND issued.invitation_id=OLD.invitation_id AND issued.event_kind='ISSUED'",
+        "JOIN office_invitation_event issued ON issued.event_id=e.causation_event_id JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='EXPIRED' AND issued.invitation_id=OLD.invitation_id AND issued.event_kind='ISSUED' AND UTC_TIMESTAMP(6)>=s.expires_at",
+    ),
+)
+_replace_invitation_guard(
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_event_insert",
+    (
+        "JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND (i.target_user_id",
+        "JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND (i.target_user_id",
+    ),
+    (
+        "NEW.correlation_id=bearer.correlation_id AND o.state=NEW.observed_outbox_state",
+        "NEW.correlation_id=bearer.correlation_id AND o.state=NEW.observed_outbox_state AND UTC_TIMESTAMP(6)<s.expires_at",
+    ),
+    (
+        "JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED'",
+        "JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED' AND UTC_TIMESTAMP(6)>=s.expires_at",
+    ),
+)
+_replace_invitation_guard(
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update",
+    (
+        "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext",
+        "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=OLD.cancel_requested AND NEW.payload_ciphertext",
+    ),
+    (
+        "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=TRUE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext",
+        "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=TRUE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=OLD.cancel_requested AND NEW.payload_ciphertext",
+    ),
+)
+_replace_invitation_guard(
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_event_insert",
+    (
+        "IF NEW.event_kind IN ('REVOKED','EXPIRED') AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED' AND UTC_TIMESTAMP(6)>=s.expires_at) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation causal evidence denied'; END IF",
+        "IF NEW.event_kind='REVOKED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation causal evidence denied'; END IF; IF NEW.event_kind='EXPIRED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED' AND UTC_TIMESTAMP(6)>=s.expires_at) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation expiry evidence denied'; END IF",
+    ),
+)
+
 # These records are the Office half of an already immutable JAX namespace
 # mutation.  They deliberately have their own receipt key: the JAX request is
 # re-authorized by the core before it can be read, and this FK makes a partial
@@ -356,6 +420,20 @@ _INVITATION_OUTBOX_TRIGGERS = {
             "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update"
         )).split(" FOR EACH ROW ", 1)[1],
     ),
+}
+
+_B44_INVITATION_GUARD_DIGESTS = {
+    "guard_office_invitation_insert": "ac75e051a9191b3d4dc8b91f245678490c8abde52d3e11a092871be37345beea",
+    "guard_office_invitation_update": "392b6ff3b6ec0f08e6cc3b8df48854f2fb063d9e7e071d40f97d3af331bc96cf",
+    "guard_office_invitation_event_insert": "8ac242476382ad3de77789f03a84325e5eb7c42768f62f78525cd677445f87d2",
+    "guard_office_invitation_outbox_update": "107925d73d6bd9f0854e9e5798b15e41cd8b5592f9075a55e16546ca76b6a214",
+}
+_3978115_INVITATION_GUARD_DIGESTS = {
+    "guard_office_invitation_insert": "ac75e051a9191b3d4dc8b91f245678490c8abde52d3e11a092871be37345beea",
+    "guard_office_invitation_update": "d9623e625f96f6bd6c6662b837414de4b3af6cb4a480ba3308126c022a26f3dc",
+    "guard_office_invitation_event_insert": "14bb22aab2983ace0caf7ba2e3731f36f11d9e7868b523e22936499b316117b1",
+    "guard_office_invitation_outbox_insert": "71f9948829a2480dba24787de96df65210c59243c871e97933178efdc328caee",
+    "guard_office_invitation_outbox_update": "e3055bbada2bb011d4ff9e78cbe6057d7e47640eada0660307657c5a614eaf9c",
 }
 
 _INVITATION_FOREIGN_KEYS = {
@@ -593,6 +671,41 @@ async def _prepare_invitation_schema(cur) -> None:
         await cur.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in tables:
         await cur.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+async def _upgrade_invitation_guards(cur) -> None:
+    """Replace only the attested b44 guard set; unknown history fails closed."""
+    names = {
+        name for name in (
+            set(_INVITATION_STATE_TRIGGERS) | set(_INVITATION_EVENT_TRIGGERS) | set(_INVITATION_OUTBOX_TRIGGERS)
+        ) if name.startswith("guard_")
+    }
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+        "AND TRIGGER_NAME IN (" + ",".join("%s" for _ in names) + ")",
+        tuple(names),
+    )
+    found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    if not found:
+        return
+    all_expected = {**_INVITATION_STATE_TRIGGERS, **_INVITATION_EVENT_TRIGGERS, **_INVITATION_OUTBOX_TRIGGERS}
+    expected = {name: all_expected[name] for name in names}
+    if found == expected:
+        return
+    predecessors = (_B44_INVITATION_GUARD_DIGESTS, _3978115_INVITATION_GUARD_DIGESTS)
+    predecessor = next((candidate for candidate in predecessors if set(found) == set(candidate)), None)
+    if predecessor is None:
+        raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
+    for name, metadata in found.items():
+        table, timing, event, orientation, action = metadata
+        expected_table = "office_invitation_outbox" if "outbox" in name else (
+            "office_invitation_event" if "event" in name else "office_invitation"
+        )
+        if (table, timing, event, orientation) != (expected_table, "BEFORE", "UPDATE" if name.endswith("update") else "INSERT", "ROW") or hashlib.sha256(str(action).encode("utf-8")).hexdigest() != predecessor[name]:
+            raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
+    for name in found:
+        await cur.execute(f"DROP TRIGGER {name}")
 
 
 async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False,
@@ -1369,15 +1482,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute(statement)
     await assert_bootstrap_runtime_metadata(cursor)
     await _prepare_invitation_schema(cursor)
-    # These mutable-state guards deliberately evolve with the lifecycle.  They
-    # contain no durable evidence themselves, so replacing the known guards is
-    # the resumable upgrade path; immutable evidence triggers stay attested.
-    for trigger in (
-        "guard_office_invitation_insert", "guard_office_invitation_update",
-        "guard_office_invitation_event_insert", "guard_office_invitation_outbox_insert",
-        "guard_office_invitation_outbox_update",
-    ):
-        await cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    await _upgrade_invitation_guards(cursor)
     for statement in OFFICE_INVITATION_DDL:
         await cursor.execute(statement)
     await assert_invitation_runtime_metadata(cursor)
