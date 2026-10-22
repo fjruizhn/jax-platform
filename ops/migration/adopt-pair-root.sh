@@ -41,19 +41,42 @@ def _relative(value: object) -> str:
 
 
 class Contract:
-    def __init__(self, files: dict[str, tuple[int, str, int]], links: dict[str, str], manifest_size: int, manifest_digest: str) -> None:
+    def __init__(self, files: dict[str, tuple[int, str, int]], links: dict[str, str], manifest_bytes: bytes, manifest_digest: str) -> None:
         self.files = files
         self.links = links
-        self.manifest_size = manifest_size
+        self.manifest_bytes = manifest_bytes
         self.manifest_digest = manifest_digest
+
+
+def _read_regular_once(path: Path) -> tuple[bytes, os.stat_result]:
+    """Return exactly the bytes from one non-symlink inode, never a pathname reread."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        fail(f"cannot open manifest: {error}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            fail("invalid manifest metadata")
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    value = b"".join(chunks)
+    if (before.st_dev, before.st_ino, before.st_size) != (after.st_dev, after.st_ino, after.st_size) or len(value) != before.st_size:
+        fail("manifest changed during read")
+    return value, before
 
 
 def _load_contract(root: Path, expected_manifest: str) -> Contract:
     manifest_path = root / "pair-manifest.json"
-    if not manifest_path.is_file() or _sha256(manifest_path) != expected_manifest:
+    manifest_bytes, manifest_stat = _read_regular_once(manifest_path)
+    if hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest:
         fail("unexpected manifest digest")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
         attestation = json.loads((root / "build-attestation.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         fail("invalid build contract")
@@ -106,10 +129,9 @@ def _load_contract(root: Path, expected_manifest: str) -> Contract:
         sealed_links[name] = item["target"]
     if links != sealed_links or "pair-manifest.json" in files or "pair-manifest.json" in links:
         fail("jax link inventory mismatch")
-    manifest_stat = manifest_path.lstat()
-    if not stat.S_ISREG(manifest_stat.st_mode) or stat.S_IMODE(manifest_stat.st_mode) != 0o644:
+    if stat.S_IMODE(manifest_stat.st_mode) != 0o644:
         fail("invalid manifest metadata")
-    return Contract(files, links, manifest_stat.st_size, expected_manifest)
+    return Contract(files, links, manifest_bytes, expected_manifest)
 
 
 def descendants(root: Path, allowed_links: dict[str, str]):
@@ -250,6 +272,22 @@ def _copy_regular(source_root_fd: int, destination_root_fd: int, name: str, expe
     return before.st_dev, before.st_ino
 
 
+def _copy_literal(destination_root_fd: int, name: str, value: bytes, *, owner_uid: int, owner_gid: int) -> None:
+    """Write contract bytes once; unlike source files this has no second pathname read."""
+    parent, leaf = _open_parent_at(destination_root_fd, name, create=True)
+    try:
+        descriptor = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644, dir_fd=parent)
+        try:
+            view = memoryview(value)
+            while view:
+                view = view[os.write(descriptor, view):]
+            os.fsync(descriptor); os.fchown(descriptor, owner_uid, owner_gid); os.fchmod(descriptor, 0o644)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent)
+
+
 def _fsync_tree(root: Path, allowed_links: dict[str, str]) -> None:
     for path, metadata in descendants(root, allowed_links):
         if stat.S_ISREG(metadata.st_mode):
@@ -281,7 +319,7 @@ def copy_and_seal(source: Path, destination: Path, contract: Contract, *, owner_
         source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
         stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            _copy_regular(source_fd, stage_fd, "pair-manifest.json", (contract.manifest_size, contract.manifest_digest, 0o644), owner_uid=owner_uid, owner_gid=owner_gid)
+            _copy_literal(stage_fd, "pair-manifest.json", contract.manifest_bytes, owner_uid=owner_uid, owner_gid=owner_gid)
             for name in sorted(contract.files, key=os.fsencode):
                 _copy_regular(source_fd, stage_fd, name, contract.files[name], owner_uid=owner_uid, owner_gid=owner_gid)
         finally:
@@ -297,7 +335,8 @@ def copy_and_seal(source: Path, destination: Path, contract: Contract, *, owner_
             if stat.S_ISDIR(metadata.st_mode): os.chown(path, owner_uid, owner_gid, follow_symlinks=False); os.chmod(path, 0o755, follow_symlinks=False)
         copied_files, copied_links = _tree_entries(stage, contract.links, owner_uid=owner_uid, owner_gid=owner_gid)
         if set(copied_files) != set(contract.files) or copied_links != contract.links: fail("sealed artifact inventory mismatch")
-        if _sha256(stage / "pair-manifest.json") != contract.manifest_digest: fail("sealed manifest mismatch")
+        sealed_manifest, _ = _read_regular_once(stage / "pair-manifest.json")
+        if sealed_manifest != contract.manifest_bytes or hashlib.sha256(sealed_manifest).hexdigest() != contract.manifest_digest: fail("sealed manifest mismatch")
         for name, expected in contract.files.items():
             metadata = copied_files[name]
             if metadata.st_size != expected[0] or stat.S_IMODE(metadata.st_mode) != expected[2] or _sha256(stage / name) != expected[1]: fail("sealed artifact inventory mismatch")

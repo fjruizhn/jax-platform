@@ -230,6 +230,27 @@ def test_copy_and_seal_rechecks_builder_processes_before_publish(tmp_path: Path,
     assert not destination.exists()
 
 
+def test_manifest_replacement_after_read_copies_the_external_digest_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "build"; _adoptable_tree(source)
+    manifest_path = source / "pair-manifest.json"; first = manifest_path.read_bytes()
+    replacement = tmp_path / "replacement-manifest.json"; replacement.write_bytes(first + b" \n")
+    replacement.chmod(0o644)
+    manifest_inode = manifest_path.stat().st_ino; original_read = adoption.os.read; swapped = False
+    def replace_after_read(fd: int, count: int) -> bytes:
+        nonlocal swapped
+        value = original_read(fd, count)
+        if not swapped and value and os.fstat(fd).st_ino == manifest_inode:
+            os.replace(replacement, manifest_path); swapped = True
+        return value
+    monkeypatch.setattr(adoption.os, "read", replace_after_read)
+    contract = adoption.validate_builder_tree(source, os.getuid(), hashlib.sha256(first).hexdigest())
+    destination = tmp_path / "sealed"
+    adoption.copy_and_seal(source, destination, contract, owner_uid=os.getuid(), owner_gid=os.getgid())
+    assert swapped
+    assert manifest_path.read_bytes() != first
+    assert (destination / "pair-manifest.json").read_bytes() == first
+
+
 def test_copy_and_seal_rejects_source_mutation_during_stream_and_never_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "build"; _adoptable_tree(source)
     large = source / "jax-platform" / "backend" / ".venv" / "bin" / "python"
