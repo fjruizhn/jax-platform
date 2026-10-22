@@ -139,3 +139,29 @@ def test_mariadb_rejects_malformed_existing_release_head_before_candidate_replay
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
             conn.close()
     client.portal.call(scenario)
+
+
+def test_mariadb_rejects_malformed_existing_release_head_before_candidate_replay(client) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_publication_bad_{uuid.uuid4().hex[:16]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await cur.execute("CREATE TABLE office_module_release (candidate_id BIGINT UNSIGNED NOT NULL,head_version BIGINT UNSIGNED NOT NULL,release_event_id BIGINT UNSIGNED NOT NULL,status VARCHAR(24) NOT NULL,PRIMARY KEY(candidate_id)) ENGINE=InnoDB")
+                with pytest.raises(RuntimeError, match="explicit data-preserving migration"):
+                    await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("DROP TABLE office_module_release")
+                await cur.execute("CREATE TABLE jax_users (user_id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("CREATE TABLE office_module_release (candidate_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,head_version BIGINT UNSIGNED NOT NULL,release_event_id BIGINT UNSIGNED NOT NULL,candidate_revision_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,artifact_set_digest BINARY(32) NOT NULL,status VARCHAR(24) NOT NULL) ENGINE=InnoDB")
+                with pytest.raises(RuntimeError, match="columns|indexes|foreign keys|checks"):
+                    await migrations.apply_module_publication_staging_migrations(cur)
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
