@@ -1,9 +1,10 @@
 """Import a sealed runtime surface as data, with an all-or-recovery outcome.
 
-This module deliberately has no subprocess calls. The bootstrap program which
-imports a package is installed separately from the package it consumes; systemd
-reload and D-Bus verification are supplied as callbacks after every byte has
-been staged. Consequently a package cannot replace the program interpreting it.
+The transaction core deliberately has no subprocess calls. The bootstrap program
+which imports a package is installed separately from the package it consumes;
+systemd reload and D-Bus verification are supplied as callbacks after every byte
+has been staged. Consequently a package cannot replace the program interpreting
+it.
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -157,7 +160,11 @@ def _write_file(path: Path, contents: bytes, *, mode: int, uid: int, gid: int) -
 
 def snapshot(paths: dict[str, Path], backup: Path) -> None:
     """Capture bytes, owner and mode, including explicit ABSENT state."""
-    backup.mkdir(mode=0o700)
+    try:
+        backup.mkdir(mode=0o700)
+    except FileExistsError:
+        if not backup.is_dir() or any(backup.iterdir()):
+            raise PackageError("unsafe backup directory")
     records: dict[str, dict[str, object]] = {}
     for name, path in sorted(paths.items()):
         record = backup / "files" / name
@@ -249,3 +256,48 @@ def import_package(bundle: Path, digest: str, destination_root: Path, backup: Pa
         except BaseException as rollback_error:
             raise PackageError("RECOVERY_REQUIRED") from rollback_error
         raise original
+
+
+def _trusted_program(path: Path, digest: str) -> Path:
+    if not path.is_absolute() or not _HEX.fullmatch(digest):
+        raise PackageError("invalid bootstrap dependency")
+    value = _safe_node(path)
+    if stat.S_IMODE(value.st_mode) not in {0o700, 0o750, 0o755} or _sha(path) != digest:
+        raise PackageError("untrusted bootstrap dependency")
+    return path
+
+
+def _run_checked(command: list[str]) -> None:
+    try:
+        subprocess.run(command, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PackageError("effective runtime contract rejected") from exc
+
+
+def main(argv: list[str]) -> int:
+    """Entry point for a separately installed root-owned bootstrap program."""
+    if (len(argv) != 12 or argv[1] != "import" or argv[2] != "--package"
+            or argv[4] != "--expected-package-digest" or argv[6] != "--backup"
+            or argv[8] != "--effective-validator" or argv[10] != "--effective-validator-sha256"):
+        return 2
+    package, digest, backup = Path(argv[3]), argv[5], Path(argv[7])
+    validator, validator_digest = Path(argv[9]), argv[11]
+    try:
+        validator = _trusted_program(validator, validator_digest)
+        if not package.is_absolute() or not backup.is_absolute() or not backup.is_dir():
+            raise PackageError("invalid runtime transaction path")
+
+        def verify() -> None:
+            _run_checked(["/usr/bin/systemctl", "daemon-reload"])
+            _run_checked(["/usr/bin/systemd-analyze", "verify", "/etc/systemd/system/jax-platform.service", "/etc/systemd/system/jax-platform-migrate.service"])
+            _run_checked([str(validator)])
+
+        import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
+    except PackageError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
