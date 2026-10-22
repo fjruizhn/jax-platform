@@ -49,7 +49,7 @@ if [[ -f $backup/new-vhost-sha256 ]]; then
   if [[ -L $vhost ]]; then
     die 'activated vhost is a symlink'
   elif [[ ! -e $vhost ]]; then
-    (( recover_incomplete )) && [[ -f $backup/VHOST_ABSENT ]] || die 'activated vhost disappeared'
+    (( recover_incomplete || recover_rollback )) && [[ -f $backup/VHOST_ABSENT ]] || die 'activated vhost disappeared'
   elif [[ ! -f $vhost ]]; then
     die 'activated vhost is not a regular file'
   else

@@ -182,6 +182,11 @@ reversión con `--recover-incomplete` y esa ruta; el ejecutable exige el
 marcador y los bytes previo/nuevo exactos. Conservar `RECOVERY_REQUIRED` si
 ella falla.
 
+Si una reversión queda interrumpida, el mismo directorio conserva
+`ROLLBACK_IN_PROGRESS`. No volver a activar: reanudar exactamente esa
+instantánea con `--recover-rollback`, que sólo admite la combinación de vhost
+y `current` previo/nuevo registrada por ella.
+
 ## Comprobación sin DNS
 
 Una vez que el vhost esté cargado y antes de crear el registro DNS, sustituir

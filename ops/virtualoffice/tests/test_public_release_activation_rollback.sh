@@ -130,4 +130,21 @@ if "$fixture/bin/rollback-public-release.sh" --recover-rollback --site-root "$fi
 rm "$fixture/site/current"; ln -s "$fixture/site/releases/$new" "$fixture/site/current"
 "$fixture/bin/rollback-public-release.sh" --recover-rollback --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$rollback_snapshot" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"; [[ ! -f $rollback_snapshot/ROLLBACK_IN_PROGRESS ]]
+
+# First deploy has no prior vhost: killing rollback after removal still resumes.
+rm "$fixture/site/current" "$fixture/vhosts/office.conf"
+printf 'new-vhost\n' > "$fixture/template.conf"; chown root:root "$fixture/template.conf"; chmod 644 "$fixture/template.conf"
+first_output=$("$fixture/bin/activate" "${args[@]}")
+first_rollback=$(awk '/activation snapshot/{print $NF}' <<<"$first_output")
+cat > "$fixture/kill-bin/rm" <<'SH'
+#!/usr/bin/env bash
+/bin/rm "$@"
+target=${@: -1}
+[[ $target == *office.conf ]] && kill -KILL "$PPID"
+SH
+chmod 755 "$fixture/kill-bin/rm"
+if PATH="$fixture/kill-bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first_rollback" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'first rollback unexpectedly survived SIGKILL hook' >&2; exit 1; fi
+[[ -f $first_rollback/ROLLBACK_IN_PROGRESS && ! -e $fixture/vhosts/office.conf && -L $fixture/site/current ]]
+PATH="$fixture/bin:$PATH" "$fixture/bin/rollback-public-release.sh" --recover-rollback --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first_rollback" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
+[[ ! -e $fixture/site/current && ! -e $fixture/vhosts/office.conf && ! -f $first_rollback/ROLLBACK_IN_PROGRESS ]]
 echo 'public release activation/rollback fixtures passed'
