@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision the least-privileged OS and database principal for invitation mail.
-# Run only after the Office migration, using the established root-only MariaDB
-# admin transport.  It does not issue invitations and never starts the timer.
+# Run before and after the Office migration: the locked definer must exist
+# before CREATE PROCEDURE; a second idempotent run grants EXECUTE afterwards.  It does not issue invitations and never starts the timer.
 set -euo pipefail
 umask 077
 
@@ -89,27 +89,20 @@ if [[ "$exists" == 1 ]]; then
 else
   printf "CREATE USER %s IDENTIFIED BY %s;\n" "$principal" "$(quote "$password")" | admin_sql >/dev/null
 fi
+owner_principal="'jaxoffice_invitation_owner'@'localhost'"
+printf "CREATE USER IF NOT EXISTS %s ACCOUNT LOCK;\nREVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$owner_principal" "$owner_principal" | admin_sql >/dev/null
+# The definer owns only the three authority transitions.  It has enough table
+# privilege for the trigger-guarded statements inside them, never login.
+printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_issuance\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_outbox\` TO %s;\nGRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT UPDATE (status,version) ON \`%s\`.\`office_invitation\` TO %s;\nGRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" | admin_sql >/dev/null
 printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$principal" | admin_sql >/dev/null || true
-for table in axioma_config office_invitation office_invitation_issuance office_invitation_outbox office_invitation_event; do
-  printf "GRANT SELECT ON \`%s\`.\`%s\` TO %s;\n" "$db" "$table" "$principal" | admin_sql >/dev/null
-done
-for table in office_invitation office_invitation_outbox; do
-  printf "GRANT UPDATE ON \`%s\`.\`%s\` TO %s;\n" "$db" "$table" "$principal" | admin_sql >/dev/null
-done
-printf "GRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\n" "$db" "$principal" | admin_sql >/dev/null
-grants=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
-expected_grants=(
-  "GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'"
-  "GRANT SELECT ON '$db'.'axioma_config' TO '$WORKER_DB_USER'@'$host'"
-  "GRANT SELECT, UPDATE ON '$db'.'office_invitation' TO '$WORKER_DB_USER'@'$host'"
-  "GRANT SELECT ON '$db'.'office_invitation_issuance' TO '$WORKER_DB_USER'@'$host'"
-  "GRANT SELECT, INSERT ON '$db'.'office_invitation_event' TO '$WORKER_DB_USER'@'$host'"
-  "GRANT SELECT, UPDATE ON '$db'.'office_invitation_outbox' TO '$WORKER_DB_USER'@'$host'"
-)
-for grant in "${expected_grants[@]}"; do printf '%s\n' "$grants" | grep -Fqx "$grant" || { printf '%s\n' 'worker database grants are not exact' >&2; exit 1; }; done
-[[ $(printf '%s\n' "$grants" | grep -c '^GRANT ') == ${#expected_grants[@]} ]] || {
-  printf '%s\n' 'worker database principal has an extra grant, role, routine, or column privilege' >&2; exit 1;
-}
+printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$principal" "$db" "$principal" | admin_sql >/dev/null
+routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
+[[ "$routine_count" =~ ^[0-3]$ ]] || { printf '%s\n' 'ambiguous invitation delivery routine lookup' >&2; exit 1; }
+if [[ "$routine_count" == 3 ]]; then
+  for routine in office_invitation_claim_next_v1 office_invitation_expire_due_v1 office_invitation_settle_delivery_v1; do printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$db" "$routine" "$principal" | admin_sql >/dev/null; done
+fi
+# A pre-migration run deliberately has no EXECUTE yet; a post-migration rerun
+# is required and checked by readiness before the timer can be enabled.
 client_tmp=$(mktemp "$SECRET_DIR/$WORKER_DB_USER.client.XXXXXX")
 printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' "$WORKER_DB_USER" "$password" "${cfg[JAX_DB_HOST]}" "${cfg[JAX_DB_PORT]}" > "$client_tmp"
 chmod 600 "$client_tmp"

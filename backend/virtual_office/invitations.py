@@ -15,6 +15,7 @@ import hmac
 import json
 import secrets
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -1104,6 +1105,135 @@ async def expire_stale_invitations_in_cursor(cur, *, config: InvitationConfig) -
     return expired
 
 
+@asynccontextmanager
+async def _delivery_authority_cursor():
+    """Autocommit cursor for procedures that own their complete transaction."""
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as connection:
+        async with connection.cursor() as cursor:
+            yield cursor
+
+
+async def _routine_result(cur, call: str, variables: tuple[str, ...]):
+    """Run one delivery authority routine and read its OUT values.
+
+    The dedicated account receives EXECUTE only; it never reconstructs a
+    lifecycle or evidence write in Python.
+    """
+    await cur.execute(call)
+    # MariaDB leaves an empty result set after CALL.  Drain it before SELECT
+    # so pooled connections cannot leak protocol state into another request.
+    while await cur.nextset():
+        pass
+    await cur.execute("SELECT " + ",".join(variables))
+    return await cur.fetchone()
+
+
+async def claim_next_invitation_delivery_v1_in_cursor(cur) -> tuple[str, ClaimedInvitationDelivery | None]:
+    """Claim through office-invitation-delivery-v1, never direct table DML."""
+    row = await _routine_result(
+        cur,
+        "CALL office_invitation_claim_next_v1(@disposition,@oid,@aid,@iid,@payload)",
+        ("@disposition", "@oid", "@aid", "@iid", "@payload"),
+    )
+    if row is None:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    disposition, outbox_id, attempt_id, invitation_id, ciphertext = row
+    if disposition in ("EMPTY", "RETRY", "DUE"):
+        if any(value is not None for value in (outbox_id, attempt_id, invitation_id, ciphertext)):
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        return str(disposition), None
+    if disposition != "CLAIMED" or not all((outbox_id, attempt_id, invitation_id, ciphertext is not None)):
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    recipient, token, expires_at = _decode_outbox_payload(ciphertext)
+    return "CLAIMED", ClaimedInvitationDelivery(
+        str(outbox_id), str(attempt_id), str(invitation_id), recipient, token, expires_at,
+    )
+
+
+async def expire_due_invitation_deliveries_v1_in_cursor(cur, *, limit: int) -> int:
+    # Keep parameters bound: CALL has one input and one OUT variable.
+    await cur.execute("CALL office_invitation_expire_due_v1(%s,@expired)", (limit,))
+    while await cur.nextset():
+        pass
+    await cur.execute("SELECT @expired")
+    result = await cur.fetchone()
+    if result is None or not isinstance(result[0], int) or result[0] < 0:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    return int(result[0])
+
+
+async def settle_invitation_delivery_v1_in_cursor(
+    cur, *, outbox_id: str, attempt_id: str, relay_accepted: bool,
+    message_id: str | None = None, result_code: str | None = None,
+) -> str:
+    result = "SMTP_ACCEPTED" if relay_accepted else (result_code or "SMTP_UNKNOWN")
+    await cur.execute(
+        "CALL office_invitation_settle_delivery_v1(%s,%s,%s,%s,@disposition)",
+        (outbox_id, attempt_id, result, message_id if relay_accepted else None),
+    )
+    while await cur.nextset():
+        pass
+    await cur.execute("SELECT @disposition")
+    row = await cur.fetchone()
+    if row is None or row[0] not in ("APPLIED", "REPLAYED", "FENCED"):
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    return str(row[0])
+
+async def settle_stale_invitation_claims_v1_in_cursor(cur, *, config: InvitationConfig) -> int:
+    """Use SELECT-only stale discovery and the fenced settle authority."""
+    await cur.execute(
+        "SELECT outbox_id,attempt_id FROM office_invitation_outbox WHERE state='CLAIMED' "
+        "AND claimed_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL %s SECOND) "
+        "ORDER BY claimed_at,outbox_id LIMIT %s",
+        (config.claim_timeout_seconds, config.stale_claim_batch_limit),
+    )
+    stale = await cur.fetchall()
+    settled = 0
+    for outbox_id, attempt_id in stale:
+        disposition = await settle_invitation_delivery_v1_in_cursor(
+            cur, outbox_id=str(outbox_id), attempt_id=str(attempt_id),
+            relay_accepted=False, result_code="SMTP_STALE",
+        )
+        if disposition == "APPLIED":
+            settled += 1
+    return settled
+
+
+async def deliver_one_invitation_worker(*, config: InvitationConfig, smtp_settings) -> bool:
+    """Dedicated-account delivery path backed only by delivery-v1 routines."""
+    import smtp_config
+
+    for _ in range(2):
+        async with _delivery_authority_cursor() as cur:
+            disposition, delivery = await claim_next_invitation_delivery_v1_in_cursor(cur)
+            if disposition == "DUE":
+                await expire_due_invitation_deliveries_v1_in_cursor(cur, limit=1)
+                continue
+        if disposition in ("EMPTY", "RETRY"):
+            return False
+        if delivery is None:
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        try:
+            subject, text, body_html = _invitation_email(config, delivery)
+            message = smtp_config.construir_mensaje(smtp_settings, delivery.recipient, subject, text, body_html)
+            message_id = str(message["Message-ID"])
+            await asyncio.to_thread(smtp_config.enviar, smtp_settings, message)
+        except BaseException:
+            async with _delivery_authority_cursor() as cur:
+                await settle_invitation_delivery_v1_in_cursor(
+                    cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
+                    relay_accepted=False, result_code="SMTP_UNKNOWN")
+            raise
+        async with _delivery_authority_cursor() as cur:
+            await settle_invitation_delivery_v1_in_cursor(
+                cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
+                relay_accepted=True, message_id=message_id)
+        return True
+    return False
+
+
 async def deliver_one_invitation(*, config: InvitationConfig | None = None, smtp_settings=None,
                                  maintain: bool = True) -> bool:
     """Run one delivery outside database locks and settle its fenced result.
@@ -1189,9 +1319,9 @@ async def drain_invitation_deliveries() -> InvitationDeliveryRun:
     # Read validated settings before claiming *any* row.  This is intentionally
     # outside the transaction: smtp_config owns its own short read transaction.
     settings = await smtp_config.cargar_settings()
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        expired = await expire_stale_invitations_in_cursor(cur, config=config)
-        stale_settled = await settle_stale_invitation_claims_in_cursor(cur, config=config)
+    async with _delivery_authority_cursor() as cur:
+        expired = await expire_due_invitation_deliveries_v1_in_cursor(cur, limit=config.expiry_sweep_batch_limit)
+        stale_settled = await settle_stale_invitation_claims_v1_in_cursor(cur, config=config)
     # The transaction above has committed by the time this is raised.  Stop
     # here so an operator/alert sees the abandoned attempt before a later
     # queued bearer is claimed by this same oneshot execution.
@@ -1199,7 +1329,7 @@ async def drain_invitation_deliveries() -> InvitationDeliveryRun:
         raise InvitationDeliveryMaintenanceFailure()
     delivered = 0
     for _ in range(config.delivery_batch_limit):
-        if not await deliver_one_invitation(config=config, smtp_settings=settings, maintain=False):
+        if not await deliver_one_invitation_worker(config=config, smtp_settings=settings):
             break
         delivered += 1
     return InvitationDeliveryRun(delivered=delivered, expired=expired, stale_settled=stale_settled)
