@@ -1,0 +1,35 @@
+# Inert deployment contract only — not an installable systemd unit.
+# A future approved activation contract may derive a unit from this text.
+[Unit]
+Description=Axioma Office critic trust guard (private evidence verifier)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jaxcriticguard
+Group=jaxoffice
+EnvironmentFile=/etc/jax/office-critic-trust-guard.env
+WorkingDirectory=/srv/jax-prod/jax-platform/backend
+ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -m virtual_office.critic_trust_guard
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=jax/office-critic-trust-guard
+RuntimeDirectoryMode=0750
+UMask=0007
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/jax/office-critic-trust-guard
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
