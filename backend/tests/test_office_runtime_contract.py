@@ -82,6 +82,11 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
     assert [table for table, _ in rows] == sorted(table for table, _ in rows)
     assert re.fullmatch(r"[0-9a-f]{64}", runtime_table_privilege_digest())
     grants = runtime_table_privilege_map()
+    for classic_insert in (
+        "axioma_usage", "capability_motor", "credential_audit",
+        "jax_tenants", "pipeline_aviso_enviado",
+    ):
+        assert grants[classic_insert] == frozenset(("INSERT",))
     for protected in (
         "office_schema_revision", "office_module_candidate",
         "office_module_candidate_revision", "office_module_candidate_evidence",

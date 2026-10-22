@@ -262,16 +262,21 @@ runtime_grant_state() {
     [ "$prefix_count" -eq "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_count" ] || { printf 'new-prefix:%s' "$prefix_count"; return; }
     printf new; return
   }
-  # Verify an exact full v1 state before adding v2's per-table INSERT grants.
-  if [ "$actual_count" -eq "$((2 + ${#V1_RUNTIME_TABLES[@]}))" ]; then
-    for table in "${V1_RUNTIME_TABLES[@]}"; do
+  # v1 can have been interrupted after any ordered old-table grant.  Verify
+  # that exact prefix before adding v2's named INSERT grants; arbitrary table
+  # grants still fail closed.
+  prefix_count=$((actual_count - 2))
+  if [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#V1_RUNTIME_TABLES[@]}" ]; then
+    index=0
+    for ((index=0; index<prefix_count; index++)); do
+      table=${V1_RUNTIME_TABLES[$index]}
       privileges=${V1_RUNTIME_TABLE_PRIVILEGES[$table]}
       line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
       [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || break
       actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
       [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || break
     done
-    [ "$table" = "${V1_RUNTIME_TABLES[-1]}" ] && [ "$(normalize_set "$actual_set")" = "$(normalize_set "${V1_RUNTIME_TABLE_PRIVILEGES[$table]}")" ] && { printf v1; return; }
+    [ "$index" -eq "$prefix_count" ] && { printf 'v1-prefix:%s' "$prefix_count"; return; }
   fi
   # A v2 creation can be interrupted after schema SELECT or any ordered table
   # grant; only that exact prefix is resumable.
@@ -340,7 +345,11 @@ case "$runtime_state" in
       done
       printf 'REVOKE INSERT, UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"
       ;;
-    v1)
+    v1-prefix:*)
+      prefix_count=${runtime_state#v1-prefix:}
+      [[ "$prefix_count" =~ ^[0-9]+$ ]] || die "v1 runtime principal transitional state is malformed"
+      # GRANT merges an existing v1 UPDATE/DELETE row with v2's INSERT
+      # without ever removing the old ability before the replacement exists.
       for table in "${RUNTIME_TABLES[@]}"; do
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge v1 runtime table privileges"
       done
