@@ -146,6 +146,18 @@ chmod 600 "$ENV_FILE"
 run_helper
 ROUTINE_COUNT_BEFORE=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin)
 [[ $ROUTINE_COUNT_BEFORE == 0 ]] || { echo 'fresh routine component proof did not start empty' >&2; exit 1; }
+# Three same-named but structurally altered procedures must fail before either
+# locked owner or worker gains durable EXECUTE authority.
+printf "USE \`%s\`; CREATE PROCEDURE office_invitation_claim_next_v1() SELECT 1; CREATE PROCEDURE office_invitation_expire_due_v1() SELECT 1; CREATE PROCEDURE office_invitation_settle_delivery_v1() SELECT 1;\n" "$DB" | admin
+if "$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR" >/dev/null 2>&1; then
+  echo 'altered complete routine component was accepted' >&2; exit 1
+fi
+for principal in "'jaxoffice_invitation_owner'@'localhost'" "'$USER_NAME'@'$HOST'"; do
+  if printf "SHOW GRANTS FOR %s;\n" "$principal" | admin | grep -q 'EXECUTE ON PROCEDURE'; then
+    echo 'rejected altered component received execute authority' >&2; exit 1
+  fi
+done
+printf "USE \`%s\`; DROP PROCEDURE office_invitation_claim_next_v1; DROP PROCEDURE office_invitation_expire_due_v1; DROP PROCEDURE office_invitation_settle_delivery_v1;\n" "$DB" | admin
 BAD_SQL="$TEMP/office-invitation-delivery-v1-tampered.sql"
 cp "$SQL_FILE" "$BAD_SQL"
 printf '\n' >> "$BAD_SQL"
