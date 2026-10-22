@@ -141,6 +141,19 @@ def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[
     return tree, links
 
 
+def canonical_jax_links(links: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Map JAX-tree-relative Git links into the pair artifact namespace.
+
+    ``extract`` reports names relative to the Git tree.  The sealed pair puts
+    that tree below ``jax/``, so both the link name and its resolved target must
+    carry the same prefix before the artifact inventory can attest them.
+    """
+    return [
+        {**link, "path": f"jax/{link['path']}", "target_path": f"jax/{link['target_path']}"}
+        for link in links
+    ]
+
+
 def wheelhouse_digest(wheelhouse: Path) -> str:
     """Bind relative filenames and bytes for every wheelhouse file."""
     entries: list[bytes] = []
@@ -211,6 +224,7 @@ def main() -> None:
     if platform_links:
         die("platform source symlinks forbidden")
     jax_tree, jax_links = extract(arguments.jax, arguments.jax_commit, jax_output)
+    jax_links = canonical_jax_links(jax_links)
     venv = platform_output / "backend" / ".venv"
     subprocess.run([arguments.python, "-m", "venv", "--copies", str(venv)], check=True, env=SAFE_ENV)
     pip_env = SAFE_ENV | {"PIP_CONFIG_FILE": "/dev/null", "PYTHONNOUSERSITE": "1"}

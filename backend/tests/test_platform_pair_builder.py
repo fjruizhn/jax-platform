@@ -78,6 +78,15 @@ def test_rejects_symlink_git_entry_before_writing_any_source_bytes(tmp_path: Pat
     assert (target / "linked.py").is_symlink()
 
 
+def test_canonical_jax_links_match_the_pair_artifact_namespace(tmp_path: Path) -> None:
+    source, commit = _repository(tmp_path, symlink=True)
+    _, links = builder.extract(source, commit, tmp_path / "target")
+
+    canonical = builder.canonical_jax_links(links)
+
+    assert canonical == [{**links[0], "path": "jax/linked.py", "target_path": "jax/backend/main.py"}]
+
+
 def test_rejects_alternate_object_database_and_dirty_checkout(tmp_path: Path) -> None:
     source, commit = _repository(tmp_path)
     alternate = source / ".git" / "objects" / "info" / "alternates"
@@ -319,7 +328,9 @@ def test_real_jax_commit_extracts_all_internal_links_in_disposable_clone(tmp_pat
     tree, links = builder.extract(clone, "8da1473939af2c8178b8b632e2d77b9120556cab", target)
     assert tree == "5a04d2ca83d6eda75d1b1b8b32d0b4f4942fb9fb"
     assert len(links) == 16
-    assert hashlib.sha256(json.dumps(links, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == "e7d41bda5d31363daac6fd8be2a76512b6f49fbd0c9d0940d43a347c4559b767"
+    canonical = builder.canonical_jax_links(links)
+    assert hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == "b794e47404b5615509a6b7bf14bde1c68dd06b6c89185b4c9431b3ebdfd88d0f"
+    assert all(link["path"].startswith("jax/") and link["target_path"].startswith("jax/") for link in canonical)
     assert all((target / link["path"]).is_symlink() for link in links)
     assert (target / "las_manos" / "jacobs").is_dir()
 

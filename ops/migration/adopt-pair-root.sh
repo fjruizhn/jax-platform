@@ -120,7 +120,8 @@ def _load_contract(root: Path, expected_manifest: str) -> Contract:
         if (not isinstance(item, dict) or set(item) != {"path", "mode", "blob_oid", "target", "target_path", "target_mode", "target_oid"}
                 or not isinstance(item.get("path"), str) or not item["path"].startswith("jax/")
                 or item.get("mode") != "120000" or not isinstance(item.get("target"), str) or not item["target"] or item["target"].startswith("/")
-                or "\x00" in item["target"] or item.get("target_mode") not in {"100644", "100755", "040000"}
+                or "\x00" in item["target"] or not isinstance(item.get("target_path"), str) or not item["target_path"].startswith("jax/")
+                or item.get("target_mode") not in {"100644", "100755", "040000"}
                 or not _hex(item.get("blob_oid"), 40) or not _hex(item.get("target_oid"), 40)):
             fail("invalid jax link attestation")
         name = _relative(item["path"])
