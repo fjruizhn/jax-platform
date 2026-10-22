@@ -48,6 +48,19 @@ async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
         )
 
 
+async def _grant_bootstrap_probe_acl(cur, database: str, user: str) -> None:
+    """Grant only the v2 rows used by the isolated bootstrap probe fixture."""
+    grants = runtime_table_privilege_map()
+    required = (
+        "jax_tenants", "jax_users", "user_admin_audit", "office_mfa_challenge",
+        "office_mfa_security_event", "office_bootstrap_state",
+    )
+    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
+    for table in required:
+        assert grants[table] == frozenset(("INSERT",)), table
+        await cur.execute(f"GRANT INSERT ON `{database}`.`{table}` TO `{user}`@'%'")
+
+
 async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) -> None:
     """Exercise every manifest grant with a zero-row statement.
 
@@ -687,9 +700,9 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                # This empty-tenant path must use the exact v2 ACL: the
-                # bootstrap probe creates and rolls back jax_tenants itself.
-                await _grant_exact_runtime_acl(cur, schema, user)
+                # This empty-tenant path has only the fixture tables, so it
+                # receives its exact v2 subset, including jax_tenants INSERT.
+                await _grant_bootstrap_probe_acl(cur, schema, user)
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:

@@ -217,7 +217,7 @@ verify_migrator_grants() {
 }
 
 runtime_grant_state() {
-  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index
+  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index mixed_prefix expected_mixed_count expected_privileges matches remaining
   grants=$(show_grants "$RUNTIME_USER") || die "could not inspect runtime grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$RUNTIME_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$" || true)
@@ -267,6 +267,33 @@ runtime_grant_state() {
       # still a transition: reporting it as `new` would leave broad INSERT.
       printf 'new-schema-insert'; return
     fi
+    # A v11/v1 principal begins with all v1 UPDATE/DELETE rows and schema
+    # INSERT.  A v2 GRANT may merge an existing row without increasing the
+    # SHOW GRANTS count (axioma_config is the first such row).  Recognize
+    # every exact durable v2 prefix against the remaining v1 rows instead of
+    # inferring progress from row count alone.
+    mixed_prefix=0; expected_mixed_count=2; matches=1; remaining=0
+    for ((index=0; index<${#RUNTIME_TABLES[@]}; index++)); do
+      table=${RUNTIME_TABLES[$index]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      if [ "$remaining" = 0 ] && [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ]; then
+        actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+        if [ "$(normalize_set "$actual_set")" = "$(normalize_set "${RUNTIME_TABLE_PRIVILEGES[$table]}")" ]; then
+          mixed_prefix=$((index + 1)); expected_mixed_count=$((expected_mixed_count + 1)); continue
+        fi
+      fi
+      remaining=1
+      if [[ -v "V1_RUNTIME_TABLE_PRIVILEGES[$table]" ]]; then
+        expected_privileges=${V1_RUNTIME_TABLE_PRIVILEGES[$table]}
+        [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { matches=0; break; }
+        actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+        [ "$(normalize_set "$actual_set")" = "$(normalize_set "$expected_privileges")" ] || { matches=0; break; }
+        expected_mixed_count=$((expected_mixed_count + 1))
+      else
+        [ -z "$line" ] || { matches=0; break; }
+      fi
+    done
+    [ "$matches" = 1 ] && [ "$mixed_prefix" -lt "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_mixed_count" ] && { printf 'v1-v2-prefix:%s' "$mixed_prefix"; return; }
   elif [ "$actual_set" = "SELECT" ]; then
     prefix_count=$((actual_count - 2))
     [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
@@ -379,6 +406,15 @@ case "$runtime_state" in
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge v1 runtime table privileges"
       done
       printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke v1 runtime schema INSERT"
+      ;;
+    v1-v2-prefix:*)
+      prefix_count=${runtime_state#v1-v2-prefix:}
+      [[ "$prefix_count" =~ ^[0-9]+$ && "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ]] || die "v1/v2 runtime principal transitional state is malformed"
+      for ((index=prefix_count; index<${#RUNTIME_TABLES[@]}; index++)); do
+        table=${RUNTIME_TABLES[$index]}
+        printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge mixed v1/v2 runtime table privileges"
+      done
+      printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke mixed v1/v2 runtime schema INSERT"
       ;;
     *) die "runtime principal is neither the exact legacy nor new grant state" ;;
 esac
