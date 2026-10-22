@@ -275,3 +275,128 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     await cur.execute(f"USE `{source}`")
                     await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)
+
+
+def test_mfa_schema_upgrade_resumes_only_attested_ddl_interruptions(client):
+    """DDL commits implicitly, so each resumable interruption needs a durable attestation."""
+    async def scenario():
+        from db.connection import get_pool
+
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_mfa_resume_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+
+                    # Simulate a crash after a deliberate CHECK drop.  The
+                    # journal makes this one missing constraint distinguishable
+                    # from arbitrary tampering, and lets the runner resume.
+                    await cur.execute(
+                        "INSERT INTO office_mfa_schema_transition "
+                        "(transition_name,expected_digest,started_at) VALUES "
+                        "('credential-shape-v5','62aabe4d405a17df1389ad19c54d2380074d85346a1a9e09bc905e296e96e01c',NOW(6))"
+                    )
+                    await cur.execute("ALTER TABLE office_mfa_credential DROP CONSTRAINT chk_office_mfa_credential_shape")
+                    await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='credential-shape-v5'")
+                    assert await cur.fetchone() is None
+
+                    # The other crash boundary is after the journal write but
+                    # before ALTER starts: canonical DDL plus its old-digest
+                    # attestation is a completed no-op, not a lingering seal.
+                    await cur.execute(
+                        "INSERT INTO office_mfa_schema_transition "
+                        "(transition_name,expected_digest,started_at) VALUES "
+                        "('credential-shape-v5','62aabe4d405a17df1389ad19c54d2380074d85346a1a9e09bc905e296e96e01c',NOW(6))"
+                    )
+                    await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='credential-shape-v5'")
+                    assert await cur.fetchone() is None
+
+                    # A challenge CHECK has the same recovery states.  Here
+                    # the interruption lands after DROP, before ADD.
+                    await cur.execute(
+                        "INSERT INTO office_mfa_schema_transition "
+                        "(transition_name,expected_digest,started_at) VALUES "
+                        "('challenge-state-v5','873de927db998ad7d6664ee6e849c3b09f6f3ec57afd20f1316fc90d8784eb9a',NOW(6))"
+                    )
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
+                    await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_mfa_schema_transition WHERE transition_name='challenge-state-v5'")
+                    assert await cur.fetchone() is None
+
+                    # An interruption after creating the temporary v5 index
+                    # keeps the old v4 index and is atomically swapped.
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY legacy_budget (user_id,state,expires_at)")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                    await cur.execute("ALTER TABLE office_mfa_challenge RENAME INDEX legacy_budget TO idx_office_mfa_challenge_user")
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_budget_v5 (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
+                    await apply_office_migrations(cur)
+
+                    # The previous non-atomic implementation could also leave
+                    # only the measured temporary index.  Resume its known
+                    # legacy state without reconstructing any rows.
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_budget_v5 (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                    await apply_office_migrations(cur)
+
+                    # A missing CHECK without its transition attestation is
+                    # indistinguishable from tampering and must never stamp
+                    # readiness or silently repair the contract.
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
+                    with pytest.raises(RuntimeError, match="challenge state is incompatible"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
+def test_mfa_v4_incompatible_evidence_fails_preflight_without_rewrite_or_readiness(client):
+    async def scenario():
+        from db.connection import get_pool
+
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_mfa_preflight_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("SET SESSION check_constraint_checks=OFF")
+                    await cur.execute("SET SESSION FOREIGN_KEY_CHECKS=0")
+                    await cur.execute(
+                        "INSERT INTO office_mfa_challenge "
+                        "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                        "VALUES (UNHEX(REPLACE(UUID(),'-','')),1,'LOGIN',0,0,1,NOW(6),'INVALIDATED',NOW(6))"
+                    )
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state")
+                    await cur.execute("ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED'))")
+                    await cur.execute("SET SESSION check_constraint_checks=ON")
+                    await cur.execute("SET SESSION FOREIGN_KEY_CHECKS=1")
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    with pytest.raises(RuntimeError, match="office_mfa_challenge rows are incompatible"):
+                        await apply_office_migrations(cur)
+                    await cur.execute("SELECT state FROM office_mfa_challenge")
+                    assert await cur.fetchone() == ("INVALIDATED",)
+                    await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                    assert await cur.fetchone() is None
+                finally:
+                    await cur.execute("SET SESSION check_constraint_checks=ON")
+                    await cur.execute("SET SESSION FOREIGN_KEY_CHECKS=1")
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)

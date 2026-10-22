@@ -11,6 +11,7 @@ import pytest
 from virtual_office.migrations import (
     _is_canonical_mfa_check,
     apply_office_migrations,
+    assert_mfa_ledger_runtime_metadata,
 )
 from tests.identidades import crear_usuario
 
@@ -95,6 +96,104 @@ def test_mfa_ledger_v5_principal_and_state_purpose_shapes(client):
                         (user_id, user_id, proof_id),
                     )
                 assert error.value.args[0] == 4025
+    client.portal.call(scenario)
+
+
+def test_mfa_credential_pending_bundle_and_invalidated_challenge_are_enforced_by_sql(client):
+    """v5 permits an ACTIVE old factor plus only a complete pending bundle."""
+    async def scenario():
+        from db.connection import get_pool
+
+        active_user, _ = await crear_usuario()
+        partial_users = [await crear_usuario() for _ in range(3)]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "INSERT INTO office_mfa_credential "
+                    "(user_id,state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at,created_at,updated_at) "
+                    "VALUES (%s,'ACTIVE','old-factor','new-factor',UNHEX(REPLACE(UUID(),'-','')),DATE_ADD(NOW(6),INTERVAL 5 MINUTE),NOW(6),NOW(6))",
+                    (active_user,),
+                )
+                for index, (user_id, _) in enumerate(partial_users):
+                    pending_secret = "'new-factor'" if index != 1 else "NULL"
+                    pending_id = "UNHEX(REPLACE(UUID(),'-',''))" if index != 2 else "NULL"
+                    pending_expiry = "DATE_ADD(NOW(6),INTERVAL 5 MINUTE)" if index != 0 else "NULL"
+                    with pytest.raises(aiomysql.OperationalError) as error:
+                        await cur.execute(
+                            "INSERT INTO office_mfa_credential "
+                            "(user_id,state,secret_ciphertext,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at,created_at,updated_at) "
+                            f"VALUES (%s,'ACTIVE','old-factor',{pending_secret},{pending_id},{pending_expiry},NOW(6),NOW(6))",
+                            (user_id,),
+                        )
+                    assert error.value.args[0] == 4025
+                await cur.execute(
+                    "INSERT INTO office_mfa_challenge "
+                    "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+                    "VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, 'RECOVERY', 0, 0, 3, NOW(6), 'INVALIDATED', NOW(6))",
+                    (active_user,),
+                )
+    client.portal.call(scenario)
+
+
+def test_runtime_metadata_rejects_permissive_checks_and_budget_index_tampering(client):
+    async def scenario():
+        from db.connection import get_pool
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                # The challenge FK needs a left-prefix user_id index while we
+                # replace the budget index with deliberately bad variants.
+                await cur.execute("ALTER TABLE office_mfa_challenge ADD KEY IF NOT EXISTS idx_office_mfa_challenge_test_fk_support (user_id)")
+
+                async def restore_budget_index():
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                    await cur.execute(
+                        "ALTER TABLE office_mfa_challenge ADD KEY idx_office_mfa_challenge_user "
+                        "(user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at)"
+                    )
+
+                for table, name, error in (
+                    ("office_mfa_credential", "chk_office_mfa_credential_shape", "credential shape"),
+                    ("office_mfa_challenge", "chk_office_mfa_challenge_state", "challenge state"),
+                ):
+                    await cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT {name}")
+                    await cur.execute(f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK (1=1)")
+                    with pytest.raises(RuntimeError, match=error):
+                        await assert_mfa_ledger_runtime_metadata(cur)
+                    await cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT {name}")
+                    if table == "office_mfa_credential":
+                        await cur.execute(
+                            "ALTER TABLE office_mfa_credential ADD CONSTRAINT chk_office_mfa_credential_shape "
+                            "CHECK ((state='PENDING' AND secret_ciphertext IS NULL AND pending_secret_ciphertext IS NOT NULL AND pending_enrollment_id IS NOT NULL AND pending_expires_at IS NOT NULL) OR (state='ACTIVE' AND secret_ciphertext IS NOT NULL AND ((pending_secret_ciphertext IS NULL AND pending_enrollment_id IS NULL AND pending_expires_at IS NULL) OR (pending_secret_ciphertext IS NOT NULL AND pending_enrollment_id IS NOT NULL AND pending_expires_at IS NOT NULL))) OR (state IN ('RECOVERY_REQUIRED','DISABLED') AND secret_ciphertext IS NULL AND pending_secret_ciphertext IS NULL AND pending_enrollment_id IS NULL AND pending_expires_at IS NULL))"
+                        )
+                    else:
+                        await cur.execute(
+                            "ALTER TABLE office_mfa_challenge ADD CONSTRAINT chk_office_mfa_challenge_state "
+                            "CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED'))"
+                        )
+
+                for definition in (
+                    "UNIQUE KEY idx_office_mfa_challenge_user (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at,token_hash)",
+                    "KEY idx_office_mfa_challenge_user (user_id,purpose(3),expected_token_version,expected_mfa_version,state,expires_at)",
+                ):
+                    await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_user")
+                    await cur.execute(f"ALTER TABLE office_mfa_challenge ADD {definition}")
+                    with pytest.raises(RuntimeError, match="budget index is incompatible"):
+                        await assert_mfa_ledger_runtime_metadata(cur)
+                    await restore_budget_index()
+
+                await cur.execute("ALTER TABLE office_mfa_challenge ALTER INDEX idx_office_mfa_challenge_user IGNORED")
+                try:
+                    with pytest.raises(RuntimeError, match="budget index is incompatible"):
+                        await assert_mfa_ledger_runtime_metadata(cur)
+                finally:
+                    await cur.execute("ALTER TABLE office_mfa_challenge ALTER INDEX idx_office_mfa_challenge_user NOT IGNORED")
+                await assert_mfa_ledger_runtime_metadata(cur)
+                await cur.execute("ALTER TABLE office_mfa_challenge DROP INDEX idx_office_mfa_challenge_test_fk_support")
     client.portal.call(scenario)
 
 
@@ -291,7 +390,16 @@ def test_migration_rejects_each_missing_or_homonymous_mfa_foreign_key(client):
                             await apply_office_migrations(cur)
                         await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definition}")
                         await cur.execute(f"ALTER TABLE office_mfa_security_event DROP FOREIGN KEY {name}")
-                        await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {wrong[name]}")
+                        # The shared disposable DB can now contain real
+                        # proof_event_id evidence from the frozen service.
+                        # Disable checks only for this DDL shape probe, then
+                        # restore them before exercising the migrator; no row
+                        # is deleted or rewritten.
+                        await cur.execute("SET FOREIGN_KEY_CHECKS=0")
+                        try:
+                            await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {wrong[name]}")
+                        finally:
+                            await cur.execute("SET FOREIGN_KEY_CHECKS=1")
                         with pytest.raises(RuntimeError, match=name):
                             await apply_office_migrations(cur)
                         await restore_canonical(name)
