@@ -102,6 +102,11 @@ if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$
 rm "$fixture/site/current"; ln -s "$fixture/site/releases/$old" "$fixture/site/current"
 rm "$fixture/vhosts/office.conf"
 if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted missing prior vhost' >&2; exit 1; fi
+ln -s "$fixture/vhosts/missing" "$fixture/vhosts/office.conf"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted dangling vhost' >&2; exit 1; fi
+rm "$fixture/vhosts/office.conf"; ln -s "$fixture/exact-new-vhost" "$fixture/vhosts/office.conf"
+if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery accepted matching symlink vhost' >&2; exit 1; fi
+rm "$fixture/vhosts/office.conf"
 cp "$fixture/exact-new-vhost" "$fixture/vhosts/office.conf"
 printf 'foreign-vhost\n' > "$fixture/vhosts/office.conf"
 if "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'recovery overwrote foreign vhost' >&2; exit 1; fi

@@ -44,8 +44,12 @@ if [[ $current_target != "$new_release" ]]; then
   if [[ -f $backup/current-target ]]; then [[ $current_target == "$(cat "$backup/current-target")" ]] || die 'current changed before activation rollback'; else [[ $current_target == ABSENT ]] || die 'current changed before activation rollback'; fi
 fi
 if [[ -f $backup/new-vhost-sha256 ]]; then
-  if [[ ! -e $vhost ]]; then
+  if [[ -L $vhost ]]; then
+    die 'activated vhost is a symlink'
+  elif [[ ! -e $vhost ]]; then
     (( recover_incomplete )) && [[ -f $backup/VHOST_ABSENT ]] || die 'activated vhost disappeared'
+  elif [[ ! -f $vhost ]]; then
+    die 'activated vhost is not a regular file'
   else
     current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
     if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then
