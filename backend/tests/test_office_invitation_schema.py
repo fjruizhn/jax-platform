@@ -177,6 +177,41 @@ def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
         assert immutable not in grants
 
 
+def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_rows(client):
+    """A crash between guarded-trigger DDL statements resumes from a subset."""
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"U" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                invitation_id, outbox_id, _, _ = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"resume-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                await cur.execute("DROP TRIGGER guard_office_invitation_outbox_update")
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
+                assert await cur.fetchone() == (invitation_id, 'ISSUED')
+                await cur.execute(
+                    "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
+                row = await cur.fetchone()
+                assert row[:2] == (outbox_id, 'QUEUED') and row[2] is not None
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                    "AND TRIGGER_NAME IN ('guard_office_invitation_insert','guard_office_invitation_update',"
+                    "'guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
+                )
+                assert (await cur.fetchone())[0] == 5
+    client.portal.call(scenario)
+
+
 async def _seed_pending_invitation(
     cur, *, issuer: int, proof_event_id: int, serial: str, target_user_id: int | None = None,
     expired: bool = False,

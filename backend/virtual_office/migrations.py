@@ -694,15 +694,14 @@ async def _upgrade_invitation_guards(cur) -> None:
     if found == expected:
         return
     predecessors = (_B44_INVITATION_GUARD_DIGESTS, _3978115_INVITATION_GUARD_DIGESTS)
-    predecessor = next((candidate for candidate in predecessors if set(found) == set(candidate)), None)
-    if predecessor is None:
-        raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
     for name, metadata in found.items():
         table, timing, event, orientation, action = metadata
         expected_table = "office_invitation_outbox" if "outbox" in name else (
             "office_invitation_event" if "event" in name else "office_invitation"
         )
-        if (table, timing, event, orientation) != (expected_table, "BEFORE", "UPDATE" if name.endswith("update") else "INSERT", "ROW") or hashlib.sha256(str(action).encode("utf-8")).hexdigest() != predecessor[name]:
+        allowed = {hashlib.sha256(str(expected[name][-1]).encode("utf-8")).hexdigest()}
+        allowed.update(predecessor[name] for predecessor in predecessors if name in predecessor)
+        if (table, timing, event, orientation) != (expected_table, "BEFORE", "UPDATE" if name.endswith("update") else "INSERT", "ROW") or hashlib.sha256(str(action).encode("utf-8")).hexdigest() not in allowed:
             raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
     for name in found:
         await cur.execute(f"DROP TRIGGER {name}")
