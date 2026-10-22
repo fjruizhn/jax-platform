@@ -103,7 +103,7 @@ def _open_store(store_path: Path) -> tuple[int, int]:
         if "store_fd" in locals() and store_fd is not None:
             try:
                 os.close(store_fd)
-            except OSError:
+            except OSError:  # fail-soft: preserve the original acquisition failure during descriptor cleanup
                 pass
         os.close(parent_fd)
         raise
@@ -277,7 +277,7 @@ def _remove_tree(parent_fd: int, name: str) -> None:
                 os.unlink(child, dir_fd=fd)
         try:
             os.fsync(fd)
-        except OSError:
+        except OSError:  # fail-soft: cleanup follows a prior sealing failure
             # Cleanup follows a prior failure.  Preserve the original failure
             # and still remove the private staging entry.
             pass
@@ -286,7 +286,7 @@ def _remove_tree(parent_fd: int, name: str) -> None:
     os.rmdir(name, dir_fd=parent_fd)
     try:
         os.fsync(parent_fd)
-    except OSError:
+    except OSError:  # fail-soft: preserve the original sealing failure after staging removal
         pass
 
 

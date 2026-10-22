@@ -55,7 +55,8 @@ def test_concurrent_identical_seals_converge_on_one_snapshot(tmp_path):
     def run():
         try:
             barrier.wait(); receipts.append(seal.seal_artifact_set(source, store))
-        except BaseException as error: errors.append(error)
+        except BaseException as error:  # fail-soft: report worker failure to the asserting test thread
+            errors.append(error)
     threads = [threading.Thread(target=run) for _ in range(2)]
     for thread in threads: thread.start()
     for thread in threads: thread.join()
