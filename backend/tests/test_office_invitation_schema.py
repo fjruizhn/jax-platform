@@ -177,5 +177,11 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                 finally:
                     if runtime is not None:
                         runtime.close(); await runtime.wait_closed()
+                    await cur.execute(
+                        "SELECT ID FROM information_schema.PROCESSLIST WHERE USER=%s",
+                        (runtime_user,),
+                    )
+                    for (connection_id,) in await cur.fetchall():
+                        await cur.execute(f"KILL CONNECTION {int(connection_id)}")
                     await cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
     client.portal.call(scenario)
