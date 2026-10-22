@@ -1227,9 +1227,15 @@ async def deliver_one_invitation_worker(*, config: InvitationConfig, smtp_settin
                     relay_accepted=False, result_code="SMTP_UNKNOWN")
             raise
         async with _delivery_authority_cursor() as cur:
-            await settle_invitation_delivery_v1_in_cursor(
+            settled = await settle_invitation_delivery_v1_in_cursor(
                 cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
                 relay_accepted=True, message_id=message_id)
+        # SMTP acceptance is only transport evidence.  Do not count it as a
+        # completed delivery until the same claimed attempt was durably settled.
+        # A FENCED result means another actor changed the lifecycle; stop the
+        # oneshot so OnFailure alerts without claiming a second bearer.
+        if settled not in ("APPLIED", "REPLAYED"):
+            raise InvitationError("office_invitation_delivery_fenced", status_code=503)
         return True
     return False
 

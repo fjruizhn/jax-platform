@@ -36,6 +36,16 @@ def test_invitation_config_requires_canonical_bounded_integer(monkeypatch):
         expiry_sweep_batch_limit=50, public_base_url="https://virtualoffice.example.test", delivery_batch_limit=25)
 
 
+def test_invitation_config_rejects_expiry_batch_above_stored_procedure_limit(monkeypatch):
+    monkeypatch.setenv("OFFICE_INVITATION_LIFETIME_SECONDS", "60")
+    monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "101")
+    monkeypatch.setenv("OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "25")
+    monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", "https://virtualoffice.example.test")
+    assert load_invitation_config_from_environment() is None
+
+
 def test_invitation_config_requires_https_origin(monkeypatch):
     for url in ("http://virtualoffice.example.test",
                 "https://virtualoffice.example.test/office",

@@ -22,7 +22,10 @@ class InvitationConfig:
             raise ValueError("invitation claim timeout is outside the supported range")
         if type(self.stale_claim_batch_limit) is not int or not 1 <= self.stale_claim_batch_limit <= 1_000:
             raise ValueError("invitation stale claim batch limit is outside the supported range")
-        if type(self.expiry_sweep_batch_limit) is not int or not 1 <= self.expiry_sweep_batch_limit <= 1_000:
+        # The SQL SECURITY DEFINER routine rejects values above 100.  Keep the
+        # runtime contract identical, so a valid config can never make each
+        # worker one-shot fail at privilege-protected procedure input.
+        if type(self.expiry_sweep_batch_limit) is not int or not 1 <= self.expiry_sweep_batch_limit <= 100:
             raise ValueError("invitation expiry sweep batch limit is outside the supported range")
         # SMTP timeouts apply to individual protocol exchanges.  Keep this
         # bound deliberately small under the systemd one-shot deadline.

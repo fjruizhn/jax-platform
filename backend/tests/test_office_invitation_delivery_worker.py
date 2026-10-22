@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from email.message import EmailMessage
 
 import pytest
 
@@ -108,3 +110,36 @@ def test_oneshot_closes_the_database_pool_after_a_delivery_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="delivery failure"):
         asyncio.run(invitation_delivery_worker.run_once())
     assert closed == [True]
+
+
+def test_fenced_post_smtp_settlement_fails_before_worker_counts_delivery(monkeypatch):
+    """Relay acceptance is not a durable delivery if its claim was fenced."""
+    import smtp_config
+
+    delivery = invitations.ClaimedInvitationDelivery(
+        outbox_id="outbox", attempt_id="attempt", invitation_id="invitation",
+        recipient="recipient@example.test", bearer_token="bearer", expires_at="2030-01-01T00:00:00Z")
+
+    @asynccontextmanager
+    async def cursor():
+        yield object()
+
+    async def claim(_cur):
+        return "CLAIMED", delivery
+
+    async def settle(_cur, **_kwargs):
+        return "FENCED"
+
+    def message(*_args):
+        value = EmailMessage()
+        value["Message-ID"] = "<fixture@example.test>"
+        return value
+
+    monkeypatch.setattr(invitations, "_delivery_authority_cursor", cursor)
+    monkeypatch.setattr(invitations, "claim_next_invitation_delivery_v1_in_cursor", claim)
+    monkeypatch.setattr(invitations, "settle_invitation_delivery_v1_in_cursor", settle)
+    monkeypatch.setattr(invitations, "_invitation_email", lambda *_args: ("subject", "text", "html"))
+    monkeypatch.setattr(smtp_config, "construir_mensaje", message)
+    monkeypatch.setattr(smtp_config, "enviar", lambda *_args: None)
+    with pytest.raises(invitations.InvitationError, match="office_invitation_delivery_fenced"):
+        asyncio.run(invitations.deliver_one_invitation_worker(config=_CONFIG, smtp_settings=object()))

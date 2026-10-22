@@ -10,6 +10,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/virtualoffice/provision-invitation-worker.sh"
 RELEASE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-worker-release.sh"
 ROUTINE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-delivery-routines.sh"
+ROUTINE_ATTESTOR="$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh"
 [[ $(id -u) == 0 ]] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
 docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
@@ -47,6 +48,10 @@ OWNED=1
 SQL_FILE="$TEMP/office-invitation-delivery-v1.sql"
 cp "$ROOT_DIR/ops/virtualoffice/office-invitation-delivery-v1.sql" "$SQL_FILE"
 chown root:root "$SQL_FILE"; chmod 644 "$SQL_FILE"
+INSTALLED_ATTESTOR="$TEMP/installed/axioma-office-invitation-delivery-attest"
+mkdir -p "$TEMP/installed"
+cp "$ROUTINE_ATTESTOR" "$INSTALLED_ATTESTOR"
+chown root:root "$INSTALLED_ATTESTOR"; chmod 750 "$INSTALLED_ATTESTOR"
 ENV_FILE="$TEMP/runtime.env"
 cat > "$ENV_FILE" <<EOF
 JAX_DB_HOST=127.0.0.1
@@ -74,9 +79,19 @@ chmod 666 "$ENV_FILE"
 if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2; exit 1; fi
 chmod 600 "$ENV_FILE"
 run_helper
-"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE"
+ROUTINE_COUNT_BEFORE=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin)
+BAD_SQL="$TEMP/office-invitation-delivery-v1-tampered.sql"
+cp "$SQL_FILE" "$BAD_SQL"
+printf '\n' >> "$BAD_SQL"
+chown root:root "$BAD_SQL"; chmod 644 "$BAD_SQL"
+if "$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$BAD_SQL" --attestor "$INSTALLED_ATTESTOR" >/dev/null 2>&1; then
+  echo 'tampered root-owned routine SQL was accepted' >&2; exit 1
+fi
+[[ $(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin) == "$ROUTINE_COUNT_BEFORE" ]] || {
+  echo 'rejected SQL changed the routine component' >&2; exit 1;
+}
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR"
 run_helper
-JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
 ln -s "$TEMP/state/invitation-worker.env" "$TEMP/invitation-worker-link.env"
@@ -106,14 +121,14 @@ done
 # reject it, and idempotent provisioning must restore exactly the contract.
 printf "USE \`%s\`; CREATE PROCEDURE \`office_invitation_fixture_forbidden_v1\`() SELECT 1; GRANT EXECUTE ON PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\` TO 'jaxoffice_invitation_owner'@'localhost';\n" "$DB" "$DB" | admin
 FIXTURE_PROCEDURE=1
-if JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST" >/dev/null 2>&1; then
+if JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$INSTALLED_ATTESTOR" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST" >/dev/null 2>&1; then
   echo 'attestation accepted widened definer routine authority' >&2; exit 1
 fi
 run_helper
-JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
+JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$INSTALLED_ATTESTOR" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
 printf "DROP PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\`;\n" "$DB" | admin
 FIXTURE_PROCEDURE=0
-"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE"
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR"
 # Valid lifecycle SQL must fail at privilege resolution (1142), not merely
 # because a made-up column was used.
 if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e "UPDATE office_invitation SET status='EXPIRED' WHERE invitation_id='00000000-0000-4000-8000-000000000000'" 2>"$TEMP/denied"; then

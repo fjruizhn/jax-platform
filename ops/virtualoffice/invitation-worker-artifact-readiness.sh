@@ -8,8 +8,12 @@ timer="$root/ops/virtualoffice/invitation-worker.timer"
 readiness="$root/ops/virtualoffice/invitation-worker-runtime-readiness.sh"
 provision="$root/ops/virtualoffice/provision-invitation-worker.sh"
 installer="$root/ops/virtualoffice/install-invitation-worker-release.sh"
-for path in "$service" "$timer" "$readiness" "$provision" "$installer"; do [[ -f "$path" ]] || { printf '%s\n' "missing $path" >&2; exit 1; }; done
-[[ -x "$readiness" && -x "$provision" && -x "$installer" ]] || { printf '%s\n' 'worker helper is not executable' >&2; exit 1; }
+routine_installer="$root/ops/virtualoffice/install-invitation-delivery-routines.sh"
+routine_attestor="$root/ops/virtualoffice/attest-invitation-delivery-routines.sh"
+routine_sql="$root/ops/virtualoffice/office-invitation-delivery-v1.sql"
+for path in "$service" "$timer" "$readiness" "$provision" "$installer" "$routine_installer" "$routine_attestor" "$routine_sql"; do [[ -f "$path" ]] || { printf '%s\n' "missing $path" >&2; exit 1; }; done
+[[ -x "$readiness" && -x "$provision" && -x "$installer" && -x "$routine_installer" && -x "$routine_attestor" ]] || { printf '%s\n' 'worker helper is not executable' >&2; exit 1; }
+[[ $(sha256sum "$routine_sql" | awk '{print $1}') == 39ebe406f1a42e8daac93fde3bd6427cbaaee1bcbbad1ac0ff2cd0438710c32d ]] || { printf '%s\n' 'worker routine SQL digest drift' >&2; exit 1; }
 grep -Fqx 'User=jaxinvite' "$service"
 grep -Fqx 'EnvironmentFile=/etc/jax/invitation-worker.env' "$service"
 grep -Fqx 'WorkingDirectory=/opt/axioma-office-invitation-worker/backend' "$service"

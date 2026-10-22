@@ -39,3 +39,13 @@ def test_systemd_unit_uses_the_immutable_worker_release():
     runbook = (ROOT / "docs" / "runbooks" / "invitation-delivery-worker.md").read_text(encoding="utf-8")
     assert "--working-directory=/opt/axioma-office-invitation-worker/backend" in runbook
     assert 'git -C "$SOURCE" archive "$SHA"' in runbook
+    assert 'checkout --detach --force "$SHA"' in runbook
+    assert "--attestor /usr/local/libexec/axioma-office-invitation-delivery-attest" in runbook
+
+
+def test_routine_installer_requires_fixed_sql_and_installed_attestor():
+    installer = ROOT / "ops" / "virtualoffice" / "install-invitation-delivery-routines.sh"
+    source = installer.read_text(encoding="utf-8")
+    assert "39ebe406f1a42e8daac93fde3bd6427cbaaee1bcbbad1ac0ff2cd0438710c32d" in source
+    assert '"$ATTESTOR"' in source
+    assert '"$ROOT/ops/' not in source
