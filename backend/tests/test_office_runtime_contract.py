@@ -20,6 +20,39 @@ from db.runtime_privileges import (
 from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
 
 
+def test_critic_trust_drift_refuses_runtime_stamp(client) -> None:
+    """The platform migrator clears readiness before strict v13 attestation."""
+    async def scenario() -> None:
+        from db.connection import get_pool
+        from db.migrations import run_migrations
+
+        await run_migrations()
+        pool = await get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("DROP TRIGGER no_update_office_trusted_critic_key")
+            with pytest.raises(RuntimeError, match="Office critic trust triggers are invalid"):
+                await run_migrations()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT revision FROM office_schema_revision WHERE component='virtual-office'"
+                    )
+                    assert await cur.fetchone() is None
+        finally:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "CREATE TRIGGER IF NOT EXISTS no_update_office_trusted_critic_key "
+                        "BEFORE UPDATE ON office_trusted_critic_key FOR EACH ROW "
+                        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = "
+                        "'office_trusted_critic_key append-only'"
+                    )
+            await run_migrations()
+    client.portal.call(scenario)
+
+
 async def _runtime_pool(user: str, password: str, database: str | None = None):
     return await aiomysql.create_pool(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=user, password=password, db=database or os.environ["JAX_DB_NAME"], charset="utf8mb4", autocommit=True, connect_timeout=10)
 
@@ -116,6 +149,12 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
         assert protected not in grants
     assert "INSERT" in grants["office_authorization_event"]
     assert "INSERT" in grants["office_invitation_event"]
+
+
+def test_runtime_contract_does_not_claim_critic_trust_metadata_attestation():
+    import db.runtime_contract as runtime_contract
+
+    assert not hasattr(runtime_contract, "_critic_trust_anchor_metadata")
 
 
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):

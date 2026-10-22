@@ -1,7 +1,11 @@
 """Fail-closed trust-anchor lookup for independently signed critic receipts.
 
 The registry is intentionally read-only here.  Key enrollment and revocation
-authority are separate contracts; an empty registry trusts no critic.
+authority are separate contracts; an empty registry trusts no critic.  The
+migrator fully attests this schema before it stamps v13.  The restricted web
+principal deliberately performs no post-stamp metadata attestation: MariaDB
+redacts parts of that metadata, and a live guard broker is required before
+receipt verification can be activated.
 """
 from __future__ import annotations
 
@@ -16,11 +20,11 @@ _KEY_DDL = (
     "principal_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "purpose VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "algorithm VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-    "public_key BINARY(32) NOT NULL,not_before DATETIME(6) NOT NULL,not_after DATETIME(6) NOT NULL,"
+    "public_key BINARY(32) NOT NULL,not_before DATETIME(6) NOT NULL,not_after DATETIME(6) NULL,"
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_trusted_critic_key_public_key (public_key),"
     "KEY idx_office_trusted_critic_key_lookup (principal_ref,purpose,algorithm,not_before,not_after,key_id),"
-    "CONSTRAINT chk_office_trusted_critic_key_shape CHECK (key_id<>'' AND principal_ref<>'' AND purpose='rights.review' AND algorithm='Ed25519' AND not_before<not_after)"
+    "CONSTRAINT chk_office_trusted_critic_key_shape CHECK (key_id<>'' AND principal_ref<>'' AND purpose='rights.review' AND algorithm='Ed25519' AND (not_after IS NULL OR not_before<not_after))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_trusted_critic_key_revocation ("
     "key_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
@@ -35,7 +39,7 @@ _TABLE_COLUMNS = {
         ("key_id", "varchar(128)", "NO"), ("principal_ref", "varchar(128)", "NO"),
         ("purpose", "varchar(32)", "NO"), ("algorithm", "varchar(16)", "NO"),
         ("public_key", "binary(32)", "NO"), ("not_before", "datetime(6)", "NO"),
-        ("not_after", "datetime(6)", "NO"), ("created_at", "datetime(6)", "NO"),
+        ("not_after", "datetime(6)", "YES"), ("created_at", "datetime(6)", "NO"),
     ),
     "office_trusted_critic_key_revocation": (
         ("key_id", "varchar(128)", "NO"), ("revoked_at", "datetime(6)", "NO"),
@@ -54,7 +58,7 @@ _CHECKS = {
 }
 _WS = re.compile(r"\s+")
 _CHECK_CLAUSES = {
-    "chk_office_trusted_critic_key_shape": "key_id<>''andprincipal_ref<>''andpurpose='rights.review'andalgorithm='ed25519'andnot_before<not_after",
+    "chk_office_trusted_critic_key_shape": "key_id<>''andprincipal_ref<>''andpurpose='rights.review'andalgorithm='ed25519'and(not_afterisnullornot_before<not_after)",
     "chk_office_trusted_critic_key_revocation_shape": "revoked_at<=recorded_at",
 }
 
@@ -65,6 +69,15 @@ def _normalize_check(value: object) -> str:
 
 async def apply_critic_trust_anchor_migrations(cur) -> None:
     """Create the empty, append-only critic trust registry and attest it."""
+    existing = tuple([await _table_exists(cur, table) for table in _APPEND_ONLY])
+    if any(existing):
+        if not all(existing):
+            raise RuntimeError("Office critic trust key history is incompatible")
+        await _upgrade_not_after_nullable(cur)
+        # A durable trust registry never receives self-healing DDL: repairing
+        # a missing guard would erase evidence of drift before the v13 stamp.
+        await assert_critic_trust_anchor_metadata(cur)
+        return
     for statement in _KEY_DDL:
         await cur.execute(statement)
     for table in _APPEND_ONLY:
@@ -76,7 +89,34 @@ async def apply_critic_trust_anchor_migrations(cur) -> None:
     await assert_critic_trust_anchor_metadata(cur)
 
 
-async def assert_critic_trust_anchor_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+async def _table_exists(cur, table: str) -> bool:
+    await cur.execute(
+        "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,)
+    )
+    return await cur.fetchone() is not None
+
+
+async def _upgrade_not_after_nullable(cur) -> None:
+    """Relax only the measured v1 predecessor; unknown shape stays closed."""
+    table = "office_trusted_critic_key"
+    await cur.execute(
+        "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,)
+    )
+    found = tuple(await cur.fetchall())
+    expected = _TABLE_COLUMNS[table]
+    predecessor = tuple(
+        (*column[:2], "NO") if column[0] == "not_after" else column
+        for column in expected
+    )
+    if found == expected:
+        return
+    if found != predecessor:
+        raise RuntimeError("Office critic trust key history is incompatible")
+    await cur.execute("ALTER TABLE office_trusted_critic_key MODIFY not_after DATETIME(6) NULL")
+
+
+async def assert_critic_trust_anchor_metadata(cur) -> None:
     """Reject substituted trust-anchor schema before the runtime can be ready."""
     for table, expected in _TABLE_COLUMNS.items():
         await cur.execute(
@@ -106,11 +146,6 @@ async def assert_critic_trust_anchor_metadata(cur, *, allow_redacted_trigger_bod
         "AND tc.CONSTRAINT_TYPE='CHECK'"
     )
     checks = await cur.fetchall()
-    # The web principal can SELECT tables but MariaDB deliberately redacts
-    # CHECK/FK/trigger metadata from it.  The migrator attests those details
-    # before stamping v13; runtime still verifies all visible structure.
-    if allow_redacted_trigger_body and not checks:
-        return
     if {row[1]: row[0] for row in checks} != _CHECKS:
         raise RuntimeError("Office critic trust checks are invalid")
     clauses = {row[1]: _normalize_check(row[2]) for row in checks}
@@ -136,8 +171,6 @@ async def assert_critic_trust_anchor_metadata(cur, *, allow_redacted_trigger_bod
             f"no_update_{table}": (table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"),
             f"no_delete_{table}": (table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"),
         }
-        if allow_redacted_trigger_body:
-            expected = {name: (*value[:-1], None if found.get(name, (None,))[-1] is None else value[-1]) for name, value in expected.items()}
         if found != expected:
             raise RuntimeError(f"Office critic trust triggers are invalid for {table}")
 
@@ -150,7 +183,7 @@ class TrustedCriticKey:
     algorithm: str
     public_key: bytes
     not_before: datetime
-    not_after: datetime
+    not_after: datetime | None
     revoked_at: datetime | None
 
 
@@ -176,7 +209,7 @@ def _valid_key(key: TrustedCriticKey) -> bool:
         and key.purpose == "rights.review" and key.algorithm == "Ed25519"
         and isinstance(key.public_key, bytes) and len(key.public_key) == 32
         and (not_before := _utc(key.not_before)) is not None
-        and (not_after := _utc(key.not_after)) is not None and not_before < not_after
+        and (key.not_after is None or ((not_after := _utc(key.not_after)) is not None and not_before < not_after))
         and (key.revoked_at is None or _utc(key.revoked_at) is not None)
     )
 

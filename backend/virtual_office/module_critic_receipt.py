@@ -135,10 +135,14 @@ def verify_critic_receipt(receipt: object, resolve_trusted_key: Callable[[str], 
         or trusted_key.algorithm != "Ed25519"
         or not isinstance(trusted_key.public_key, bytes) or len(trusted_key.public_key) != 32
         or trusted_key.revoked_at is not None
-        or not isinstance(trusted_key.not_before, datetime) or not isinstance(trusted_key.not_after, datetime)
-        or trusted_key.not_before.tzinfo is None or trusted_key.not_after.tzinfo is None
-        or trusted_key.not_before.utcoffset() != timedelta(0) or trusted_key.not_after.utcoffset() != timedelta(0)
-        or issued_at < trusted_key.not_before or expires_at > trusted_key.not_after
+        or not isinstance(trusted_key.not_before, datetime)
+        or trusted_key.not_before.tzinfo is None or trusted_key.not_before.utcoffset() != timedelta(0)
+        or (trusted_key.not_after is not None and (
+            not isinstance(trusted_key.not_after, datetime)
+            or trusted_key.not_after.tzinfo is None or trusted_key.not_after.utcoffset() != timedelta(0)
+            or trusted_key.not_before >= trusted_key.not_after or expires_at > trusted_key.not_after
+        ))
+        or issued_at < trusted_key.not_before
     ):
         _reject("critic receipt signing key is untrusted")
     canonical = _canonical(unsigned)

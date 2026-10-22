@@ -20,12 +20,12 @@ def _resolver(private):
 
 
 def _trusted_resolver(private, *, principal="agent:critic", purpose="rights.review", algorithm="Ed25519",
-                      revoked_at=None, not_before=None, not_after=None):
+                      revoked_at=None, not_before=None, not_after=None, nonexpiring=False):
     key = TrustedCriticKey(
         key_id="critic-test-v1", principal_ref=principal, purpose=purpose, algorithm=algorithm,
         public_key=private.public_key().public_bytes_raw(),
         not_before=not_before or datetime(2026, 10, 22, 11, 55, tzinfo=timezone.utc),
-        not_after=not_after or datetime(2026, 10, 22, 12, 10, tzinfo=timezone.utc),
+        not_after=None if nonexpiring else (not_after or datetime(2026, 10, 22, 12, 10, tzinfo=timezone.utc)),
         revoked_at=revoked_at,
     )
     return lambda requested_key_id: key if requested_key_id == key.key_id else None
@@ -43,6 +43,14 @@ def test_trusted_receipt_requires_expected_principal_and_records_it() -> None:
     private = Ed25519PrivateKey.generate(); receipt, now = _receipt(private)
     verified = verify_critic_receipt(
         receipt, _trusted_resolver(private), expected_principal="agent:critic", now=now,
+    )
+    assert verified.critic_principal == "agent:critic"
+
+
+def test_trusted_receipt_can_use_a_nonexpiring_anchor() -> None:
+    private = Ed25519PrivateKey.generate(); receipt, now = _receipt(private)
+    verified = verify_critic_receipt(
+        receipt, _trusted_resolver(private, nonexpiring=True), expected_principal="agent:critic", now=now,
     )
     assert verified.critic_principal == "agent:critic"
 
