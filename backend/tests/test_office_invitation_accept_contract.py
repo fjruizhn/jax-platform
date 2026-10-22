@@ -14,7 +14,7 @@ from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office.invitation_config import InvitationConfig
 from virtual_office.invitations import (
     InvitationError, _decode_outbox_payload, _proof_digest, accept_invitation_in_cursor,
-    issue_invitation_in_cursor, revoke_invitation_in_cursor,
+    invitation_bearer_preflight, issue_invitation_in_cursor, revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
 import virtual_office.invitations as invitation_service
@@ -443,3 +443,32 @@ def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_roll
         assert invitation == (("ISSUED", None),)
         assert identities == ((0,),)
         assert grants == ((0,),)
+
+
+def test_bearer_preflight_cannot_authorize_a_raced_revocation(client):
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-preflight-race-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitation = await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                email="preflight-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                invitation_config=InvitationConfig(lifetime_seconds=3600, claim_timeout_seconds=30), idempotency_key=str(uuid.uuid4()))
+        cipher = (await sql("SELECT payload_ciphertext FROM office_invitation_outbox WHERE invitation_id=%s", (invitation.invitation_id,), True))[0][0]
+        bearer = _decode_outbox_payload(cipher)[1]
+        assert await invitation_bearer_preflight(bearer) is True
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
+                mfa_config=MFAConfig(120, 3, 300, 300, 3), idempotency_key=str(uuid.uuid4())) == (2, False)
+        with pytest.raises(InvitationError, match="office_invitation_invalid"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
+                                                  new_password_hash=_hash("race-password"), bearer_token=bearer)
+        return await sql("SELECT status,accepted_user_id FROM office_invitation WHERE invitation_id=%s", (invitation.invitation_id,), True)
+
+    assert client.portal.call(scenario) == (("REVOKED", None),)
