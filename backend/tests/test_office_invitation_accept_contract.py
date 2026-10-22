@@ -17,6 +17,7 @@ from virtual_office.invitations import (
     issue_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
+import virtual_office.invitations as invitation_service
 
 
 def test_accept_request_exposes_only_token_and_optional_password():
@@ -104,6 +105,97 @@ def test_issue_idempotency_replays_exact_intent_and_rejects_payload_drift(client
         return receipts
 
     assert client.portal.call(scenario) == ((1,),)
+
+
+def test_concurrent_same_issue_key_commits_one_invitation_and_one_receipt(client):
+    issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("invitation-race-" + uuid.uuid4().hex,))
+        await sql(
+            "INSERT INTO jax_project_scope "
+            "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (project_id,))
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+            (project_id, issuer, issuer))
+        kwargs = dict(actor_user_id=issuer, project_id=project_id,
+                      email="race-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                      proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                      invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                      idempotency_key=str(uuid.uuid4()))
+
+        async def issue_once():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await issue_invitation_in_cursor(cur, **kwargs)
+
+        first, second = await asyncio.gather(issue_once(), issue_once())
+        assert first.invitation_id == second.invitation_id
+        assert sorted((first.replayed, second.replayed)) == [False, True]
+        invitations = await sql("SELECT COUNT(*) FROM office_invitation WHERE project_id=%s", (project_id,), True)
+        receipts = await sql("SELECT COUNT(*) FROM office_invitation_mutation_receipt WHERE idempotency_key=%s",
+                             (kwargs["idempotency_key"],), True)
+        return invitations, receipts
+
+    assert client.portal.call(scenario) == (((1,),), ((1,),))
+
+
+def test_cross_actor_key_collision_creates_no_second_invitation(client):
+    first, _first_tv, _first_mv, first_proof = client.portal.call(_office_root_with_current_proof)
+    second, _tv, _mv, second_proof = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-collision-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s),(%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+                  (project_id, first, first, project_id, second, first))
+        key = str(uuid.uuid4())
+        config = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            winner = await issue_invitation_in_cursor(cur, actor_user_id=first, project_id=project_id,
+                email="winner-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=first_proof, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                invitation_config=config, idempotency_key=key)
+        with pytest.raises(InvitationError, match="office_invitation_idempotency_conflict"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await issue_invitation_in_cursor(cur, actor_user_id=second, project_id=project_id,
+                    email="loser-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                    proof_event_id=second_proof, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                    invitation_config=config, idempotency_key=key)
+        count = await sql("SELECT COUNT(*) FROM office_invitation WHERE project_id=%s", (project_id,), True)
+        return winner.invitation_id, count
+    invitation_id, count = client.portal.call(scenario)
+    assert invitation_id and count == ((1,),)
+
+
+def test_receipt_write_failure_rolls_back_issue_companions(client, monkeypatch):
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def fail_receipt(*_args, **_kwargs):
+        raise RuntimeError("receipt storage unavailable")
+
+    monkeypatch.setattr(invitation_service, "_write_mutation_receipt", fail_receipt)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-receipt-rollback-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+        with pytest.raises(RuntimeError, match="receipt storage unavailable"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await issue_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                    email="rollback-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                    proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                    invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                    idempotency_key=str(uuid.uuid4()))
+        return await sql("SELECT COUNT(*) FROM office_invitation WHERE project_id=%s", (project_id,), True)
+
+    assert client.portal.call(scenario) == ((0,),)
 
 
 def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch):

@@ -136,17 +136,21 @@ OFFICE_INVITATION_DDL = (
     "CREATE TABLE IF NOT EXISTS office_invitation_mutation_receipt ("
     "idempotency_key CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,request_digest BINARY(32) NOT NULL,"
     "operation VARCHAR(16) NOT NULL,actor_user_id INT NOT NULL,project_id INT NOT NULL,"
-    "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,response_version BIGINT NOT NULL,"
+    "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,expected_version BIGINT NOT NULL,response_version BIGINT NOT NULL,"
+    "result_event_id BIGINT UNSIGNED NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,response_contract VARCHAR(48) NOT NULL,"
     "expires_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL,"
     "UNIQUE KEY uq_office_invitation_mutation_receipt_invitation_operation (invitation_id,operation),"
     "KEY idx_office_invitation_mutation_receipt_actor (actor_user_id,created_at,idempotency_key),"
     "CONSTRAINT fk_office_invitation_mutation_receipt_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_invitation_mutation_receipt_project FOREIGN KEY (project_id) REFERENCES projects(id),"
     "CONSTRAINT fk_office_invitation_mutation_receipt_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
-    "CONSTRAINT chk_office_invitation_mutation_receipt_shape CHECK (request_digest <> 0x00 AND "
-    "((operation='ISSUE' AND response_version=1 AND expires_at IS NOT NULL) OR "
-    "(operation='REVOKE' AND response_version>=2 AND expires_at IS NULL)))"
+    "CONSTRAINT fk_office_invitation_mutation_receipt_event FOREIGN KEY (result_event_id) REFERENCES office_invitation_event(event_id),"
+    "CONSTRAINT fk_office_invitation_mutation_receipt_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),"
+    "CONSTRAINT chk_office_invitation_mutation_receipt_shape CHECK (request_digest <> 0x00 AND response_contract='office-invitation-mutation-response/v1' AND "
+    "((operation='ISSUE' AND expected_version=0 AND response_version=1 AND expires_at IS NOT NULL) OR "
+    "(operation='REVOKE' AND expected_version>=1 AND response_version=expected_version+1 AND expires_at IS NULL)))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF (NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.invitation_id=i.invitation_id AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id)) OR (NEW.operation='REVOKE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_mutation_receipt BEFORE UPDATE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_mutation_receipt BEFORE DELETE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
 )
@@ -539,7 +543,9 @@ _INVITATION_MUTATION_RECEIPT_COLUMNS = (
     ("idempotency_key", "char", "char(36)"), ("request_digest", "binary", "binary(32)"),
     ("operation", "varchar", "varchar(16)"), ("actor_user_id", "int", "int(11)"),
     ("project_id", "int", "int(11)"), ("invitation_id", "char", "char(36)"),
-    ("response_version", "bigint", "bigint(20)"), ("expires_at", "datetime", "datetime(6)"),
+    ("expected_version", "bigint", "bigint(20)"), ("response_version", "bigint", "bigint(20)"),
+    ("result_event_id", "bigint", "bigint(20) unsigned"), ("authorization_event_id", "bigint", "bigint(20) unsigned"),
+    ("response_contract", "varchar", "varchar(48)"), ("expires_at", "datetime", "datetime(6)"),
     ("created_at", "datetime", "datetime(6)"),
 )
 _INVITATION_MUTATION_RECEIPT_INDEXES = {
@@ -552,6 +558,8 @@ _INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS = {
     "fk_office_invitation_mutation_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
     "fk_office_invitation_mutation_receipt_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"),
     "fk_office_invitation_mutation_receipt_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_invitation_mutation_receipt_event": (("result_event_id",), "office_invitation_event", ("event_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_invitation_mutation_receipt_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
 }
 _INVITATION_MUTATION_RECEIPT_TRIGGERS = {
     "no_update_office_invitation_mutation_receipt": (
@@ -560,6 +568,11 @@ _INVITATION_MUTATION_RECEIPT_TRIGGERS = {
     "no_delete_office_invitation_mutation_receipt": (
         "office_invitation_mutation_receipt", "BEFORE", "DELETE", "ROW",
         "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'"),
+    "guard_office_invitation_mutation_receipt_insert": (
+        "office_invitation_mutation_receipt", "BEFORE", "INSERT", "ROW",
+        next(statement for statement in OFFICE_INVITATION_DDL if statement.startswith(
+            "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert"
+        )).split(" FOR EACH ROW ", 1)[1]),
 }
 
 

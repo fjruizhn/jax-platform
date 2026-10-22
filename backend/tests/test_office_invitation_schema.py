@@ -84,7 +84,8 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                     "AND TABLE_NAME='office_invitation_mutation_receipt' ORDER BY ORDINAL_POSITION")
                 assert tuple(row[0] for row in await cur.fetchall()) == (
                     'idempotency_key', 'request_digest', 'operation', 'actor_user_id', 'project_id',
-                    'invitation_id', 'response_version', 'expires_at', 'created_at')
+                    'invitation_id', 'expected_version', 'response_version', 'result_event_id',
+                    'authorization_event_id', 'response_contract', 'expires_at', 'created_at')
     client.portal.call(scenario)
 
 
