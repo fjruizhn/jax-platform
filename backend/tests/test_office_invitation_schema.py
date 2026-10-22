@@ -41,9 +41,10 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                 await cur.execute(
                     "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
                     "AND TRIGGER_NAME IN ('no_update_office_invitation_issuance','no_delete_office_invitation_issuance',"
-                    "'no_update_office_invitation_event','no_delete_office_invitation_event')"
+                    "'no_update_office_invitation_event','no_delete_office_invitation_event','guard_office_invitation_update',"
+                    "'guard_office_invitation_event_insert','guard_office_invitation_outbox_update')"
                 )
-                assert (await cur.fetchone())[0] == 4
+                assert (await cur.fetchone())[0] == 7
     client.portal.call(scenario)
 
 
@@ -99,3 +100,58 @@ def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     assert grants['office_invitation_outbox'] == frozenset({'UPDATE'})
     for immutable in ('office_invitation_issuance', 'office_invitation_event'):
         assert immutable not in grants
+
+
+def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
+    """The normal web principal may UPDATE state, never invent its history."""
+    async def scenario():
+        pool = await get_pool()
+        issuance = str(uuid.uuid4())
+        invitation = str(uuid.uuid4())
+        outbox = str(uuid.uuid4())
+        attempt = str(uuid.uuid4())
+        accepted_user = 987654321
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("SET foreign_key_checks=0")
+                try:
+                    await cur.execute(
+                        "INSERT INTO office_invitation_issuance (issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
+                        "VALUES (%s,UNHEX(SHA2(%s,256)),CONCAT(%s,'@example.invalid'),1,1,NULL,'OFFICE_INTERNAL','COLLABORATOR','INTERNAL',1,1,1,1,1,UTC_TIMESTAMP(6),1,UNHEX(REPEAT('cd',32)),UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY))",
+                        (issuance, issuance, issuance),
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized) VALUES (%s,%s,'ISSUED',1,1,CONCAT(%s,'@example.invalid'))",
+                        (invitation, issuance, issuance),
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_count,cancel_requested,payload_ciphertext,created_at,updated_at) VALUES (%s,%s,'QUEUED',0,FALSE,X'01',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                        (outbox, invitation),
+                    )
+                    with pytest.raises(aiomysql.OperationalError, match='outbox claim denied'):
+                        await cur.execute("UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='fake',result_code='fake',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (outbox,))
+                    with pytest.raises(aiomysql.OperationalError, match='outbox claim denied'):
+                        await cur.execute("UPDATE office_invitation_outbox SET payload_ciphertext=X'02' WHERE outbox_id=%s", (outbox,))
+                    await cur.execute("UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (attempt, outbox))
+                    with pytest.raises(aiomysql.OperationalError, match='outbox terminal denied'):
+                        await cur.execute("UPDATE office_invitation_outbox SET state='UNKNOWN',attempt_id=%s,payload_ciphertext=NULL,result_code='uncertain',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (str(uuid.uuid4()), outbox))
+                    await cur.execute("UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='smtp-message',result_code='250',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (outbox,))
+                    with pytest.raises(aiomysql.OperationalError, match='terminal immutable'):
+                        await cur.execute("UPDATE office_invitation_outbox SET result_code='changed' WHERE outbox_id=%s", (outbox,))
+                    with pytest.raises(aiomysql.OperationalError, match='acceptance evidence missing'):
+                        await cur.execute("UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s", (accepted_user, invitation))
+                    with pytest.raises(aiomysql.OperationalError, match='bearer evidence denied'):
+                        await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',UNHEX(REPEAT('00',32)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation,))
+                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',UNHEX(SHA2(%s,256)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, issuance))
+                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,'SMTP_ACCEPTED',UNHEX(REPEAT('02',16)),UTC_TIMESTAMP(6))", (invitation, accepted_user))
+                    await cur.execute("UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s", (accepted_user, invitation))
+                    with pytest.raises(aiomysql.OperationalError, match='transition denied'):
+                        await cur.execute("UPDATE office_invitation SET status='REVOKED',version=3,accepted_user_id=NULL,accepted_at=NULL,revoked_by_user_id=1,revoked_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s", (invitation,))
+                    with pytest.raises(aiomysql.OperationalError):
+                        await cur.execute("UPDATE office_invitation_issuance SET issuer_grant_version=2 WHERE issuance_id=%s", (issuance,))
+                    with pytest.raises(aiomysql.OperationalError):
+                        await cur.execute("UPDATE office_invitation_event SET event_kind='EXPIRED' WHERE invitation_id=%s", (invitation,))
+                finally:
+                    await cur.execute("SET foreign_key_checks=1")
+    client.portal.call(scenario)
