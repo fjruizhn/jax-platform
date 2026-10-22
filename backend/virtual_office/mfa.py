@@ -700,14 +700,14 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         )
         challenge = await cur.fetchone()
         await cur.execute(
-            "SELECT state,pending_enrollment_id,pending_expires_at FROM office_mfa_credential WHERE user_id=%s FOR UPDATE",
+            "SELECT state,pending_secret_ciphertext,pending_enrollment_id,pending_expires_at FROM office_mfa_credential WHERE user_id=%s FOR UPDATE",
             (user_id,),
         )
         credential = await cur.fetchone()
         if (not challenge or challenge[0] != "ENROLLMENT" or challenge[3] != "ISSUED" or challenge[4] < now
                 or (int(challenge[1]), int(challenge[2])) != versions or not credential
-                or credential[0] != "PENDING" or not hmac.compare_digest(bytes(credential[1] or b""), bytes(output_hash))
-                or credential[2] is None or credential[2] < now):
+                or credential[0] != "PENDING" or not hmac.compare_digest(bytes(credential[2] or b""), bytes(output_hash))
+                or credential[3] is None or credential[3] < now):
             await cur.execute(
                 "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
                 "response_digest=NULL,updated_at=UTC_TIMESTAMP(6) WHERE source_code_hash=%s AND state='REPLAYABLE'",
@@ -720,7 +720,7 @@ async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, co
         if (replay is None or not hmac.compare_digest(_hash(replay.enrollment_id), bytes(output_hash))
                 or not hmac.compare_digest(replay.secret, pending_secret)
                 or replay.expires_at != _utc(replay_until) or replay.expires_at != _utc(challenge[4])
-                or replay.expires_at != _utc(credential[2])):
+                or replay.expires_at != _utc(credential[3])):
             raise MFAError("recovery_receipt_unavailable")
         return replay
 
