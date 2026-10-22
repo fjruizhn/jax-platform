@@ -35,6 +35,31 @@ su respuesta cerrada sin capturar los demás dominios existentes.
    de `root`. El directorio de release se llama exactamente como
    `manifest.json.source_sha`; no se genera ni reescribe un manifiesto en el
    ingreso.
+
+   El instalador prepara esa carpeta sin cambiar `current`, nginx ni DNS. El
+   SHA esperado se escribe desde el veredicto de auditoría, nunca desde el
+   artefacto que se está instalando. Primero se construye fuera del árbol que
+   sirve nginx y luego se instala como root:
+
+```bash
+SHA=SHA_COMPLETO_AUDITADO
+BUILD_ROOT=$(mktemp -d)
+python3 ops/frontend/build.py --repo /RUTA/AL/REPO --releases "$BUILD_ROOT" --revision "$SHA"
+sudo ops/virtualoffice/install-public-release.sh \
+  --built-release "$BUILD_ROOT/$SHA" \
+  --site-root /www/wwwroot/virtualoffice.axioma-ia.io \
+  --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
+  --config /RUTA/AL/virtualoffice.axioma-ia.io.conf \
+  --expected-source-sha "$SHA" --nginx-user www
+rm -rf -- "$BUILD_ROOT"
+```
+
+El instalador rechaza un SHA, manifiesto, árbol o enlace que no sea el
+artefacto auditado. Copia a `releases/.SHA.new`, fija `root:root`, directorios
+0755 y archivos 0644, y sólo entonces renombra el directorio. También ejecuta
+la atestación `offline` sobre los bytes ya instalados. Si la atestación falla,
+no se cambia `current`; investigar el release conservado antes de intentar otra
+instalación.
 2. Instalar la plantilla como un nuevo archivo de vhost de aaPanel, sin editar
    el vhost de `axioma-ia.io`. Ajustar sólo rutas físicas que difieran de la
    plantilla y registrar el diff.
