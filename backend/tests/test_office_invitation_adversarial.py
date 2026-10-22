@@ -25,7 +25,7 @@ from virtual_office.invitations import (
 )
 from virtual_office.mfa import MFAConfig
 
-InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test", email_locale="es")
+InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test")
 
 
 _MFA = MFAConfig(120, 3, 300, 300, 3)

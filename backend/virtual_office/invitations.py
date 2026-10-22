@@ -10,7 +10,6 @@ import asyncio
 import base64
 import binascii
 import datetime as dt
-import html
 import hashlib
 import hmac
 import json
@@ -27,6 +26,7 @@ from .audit import record_authorization_event
 from .authority import authorize_invitation_issuer_in_cursor, authorize_office_in_cursor
 from .capabilities import OfficeOperation
 from .invitation_config import InvitationConfig
+from .invitation_email_i18n import render_invitation_email
 from .membership_receipts import invitation_acceptance_digest, write_invitation_acceptance_receipt
 from .mfa import MFADenied, MFAConfig, load_mfa_config_from_environment, reload_current_self_mfa_proof_in_cursor
 
@@ -133,11 +133,13 @@ def decode_invitation_list_cursor(cursor: str, *, project_id: int) -> tuple[dt.d
         raise InvitationError("office_invitation_cursor_invalid", status_code=422)
     try:
         expires_at = dt.datetime.fromisoformat(value["expires_at"])
-    except (TypeError, ValueError) as error:
+        parsed_invitation_id = uuid.UUID(invitation_id)
+        if str(parsed_invitation_id) != invitation_id or expires_at.tzinfo is None:
+            raise ValueError("cursor fields are not canonical")
+        normalized_expiry = expires_at.astimezone(dt.timezone.utc)
+    except (TypeError, ValueError, OverflowError) as error:
         raise InvitationError("office_invitation_cursor_invalid", status_code=422) from error
-    if expires_at.tzinfo is None:
-        raise InvitationError("office_invitation_cursor_invalid", status_code=422)
-    return expires_at.astimezone(dt.timezone.utc), invitation_id
+    return normalized_expiry, str(parsed_invitation_id)
 
 
 def _normalize_email(value: str) -> str:
@@ -585,7 +587,7 @@ async def revoke_invitation_in_cursor(
             expected_version=expected_version, response_version=response_version,
             result_event_id=revoked_event_id, authorization_event_id=authorization_event_id, expires_at=None,
         )
-    except Exception as error:
+    except (IntegrityError, OperationalError) as error:
         if not (getattr(error, "args", ()) and error.args[0] == 1062):
             raise
         await cur.execute("ROLLBACK TO SAVEPOINT office_invitation_revoke")
@@ -1135,20 +1137,6 @@ async def deliver_one_invitation() -> bool:
     return True
 
 
-_INVITATION_EMAIL_TEMPLATES = {
-    "es": {
-        "subject": "Axioma — Invitación a Oficina Virtual",
-        "text": "Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:\n\n{url}\n\nVence: {expires_at}",
-        "html": "<p>Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:</p><p><a href=\"{url}\">Aceptar invitación</a></p><p>Vence: {expires_at}</p>",
-    },
-    "en": {
-        "subject": "Axioma — Virtual Office invitation",
-        "text": "Open this secure link to accept the Virtual Office invitation:\n\n{url}\n\nExpires: {expires_at}",
-        "html": "<p>Open this secure link to accept the Virtual Office invitation:</p><p><a href=\"{url}\">Accept invitation</a></p><p>Expires: {expires_at}</p>",
-    },
-}
-
-
 def _invitation_acceptance_url(config: InvitationConfig, bearer_token: str) -> str:
     """Keep the bearer in the fragment so it never reaches the web server."""
     _token_hash(bearer_token)
@@ -1156,13 +1144,7 @@ def _invitation_acceptance_url(config: InvitationConfig, bearer_token: str) -> s
 
 
 def _invitation_email(config: InvitationConfig, delivery: ClaimedInvitationDelivery) -> tuple[str, str, str]:
-    """Render the configured localized mail without exposing a raw bearer code."""
-    template = _INVITATION_EMAIL_TEMPLATES[config.email_locale]
+    """Render through the recipient catalog without exposing a raw bearer code."""
     url = _invitation_acceptance_url(config, delivery.bearer_token)
-    html_url = html.escape(url, quote=True)
-    expiry = html.escape(delivery.expires_at, quote=False)
-    return (
-        template["subject"],
-        template["text"].format(url=url, expires_at=delivery.expires_at),
-        template["html"].format(url=html_url, expires_at=expiry),
-    )
+    # The invitation has no account or stored recipient preference yet.
+    return render_invitation_email(recipient_locale=None, url=url, expires_at=delivery.expires_at)

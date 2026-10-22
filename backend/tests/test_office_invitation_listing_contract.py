@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -34,6 +36,11 @@ def _user() -> AuthUser:
                     mfa_proof_event_id=9)
 
 
+def _opaque_cursor(payload: dict[str, object]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
 def test_list_cursor_has_domain_project_and_total_order_binding():
     expiry = dt.datetime(2026, 10, 22, 12, tzinfo=dt.timezone.utc)
     encoded = encode_invitation_list_cursor(
@@ -45,6 +52,24 @@ def test_list_cursor_has_domain_project_and_total_order_binding():
     )
     with pytest.raises(InvitationError) as rejected:
         decode_invitation_list_cursor(encoded, project_id=13)
+    assert rejected.value.status_code == 422
+
+
+@pytest.mark.parametrize("cursor", [
+    _opaque_cursor({
+        "domain": "office-invitation-list/v1", "project_id": 12,
+        "expires_at": "2026-10-22T12:00:00+00:00",
+        "invitation_id": "12345678-1234-4123-8123-123456789ABC",
+    }),
+    _opaque_cursor({
+        "domain": "office-invitation-list/v1", "project_id": 12,
+        "expires_at": "9999-12-31T23:59:59-14:00",
+        "invitation_id": "12345678-1234-4123-8123-123456789abc",
+    }),
+])
+def test_list_cursor_rejects_noncanonical_uuid_and_unrepresentable_utc(cursor):
+    with pytest.raises(InvitationError) as rejected:
+        decode_invitation_list_cursor(cursor, project_id=12)
     assert rejected.value.status_code == 422
 
 
@@ -132,3 +157,26 @@ def test_http_list_sets_no_store_and_authorization_vary(monkeypatch):
     assert payload == {"invitations": [], "next_cursor": None}
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Vary"] == "Authorization"
+
+
+def test_http_list_rejects_malformed_cursor_before_confidential_query(monkeypatch):
+    @asynccontextmanager
+    async def transaction_stub(*_args):
+        yield _Cursor()
+
+    async def allowed(*_args, **_kwargs):
+        return object(), object(), 1, 1
+
+    cursor = _opaque_cursor({
+        "domain": "office-invitation-list/v1", "project_id": 12,
+        "expires_at": "9999-12-31T23:59:59-14:00",
+        "invitation_id": "12345678-1234-4123-8123-123456789abc",
+    })
+    monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
+    monkeypatch.setattr(invitation_api, "load_mfa_config_from_environment", lambda: object())
+    monkeypatch.setattr("virtual_office.invitations._issuer_snapshot", allowed)
+    from starlette.responses import Response
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(invitation_api.list_invitations(12, Response(), 25, cursor, _user()))
+    assert rejected.value.status_code == 422
+    assert rejected.value.detail == "office_invitation_cursor_invalid"

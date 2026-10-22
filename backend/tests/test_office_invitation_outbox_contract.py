@@ -12,6 +12,9 @@ from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office.invitation_config import InvitationConfig as _InvitationConfig
+from virtual_office.invitation_email_i18n import (
+    DEFAULT_INVITATION_EMAIL_LOCALE, render_invitation_email,
+)
 from virtual_office import invitations as invitation_service
 from virtual_office.invitations import (
     ClaimedInvitationDelivery,
@@ -25,7 +28,7 @@ from virtual_office.invitations import (
 )
 from virtual_office.mfa import MFAConfig
 
-InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test", email_locale="es")
+InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test")
 
 
 _MFA_CONFIG = MFAConfig(120, 3, 300, 300, 3)
@@ -39,7 +42,7 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
     config = _InvitationConfig(
         lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50,
         expiry_sweep_batch_limit=50, public_base_url="https://virtualoffice.example.test",
-        email_locale="es")
+        )
     captured = {}
 
     async def fake_settings():
@@ -62,7 +65,6 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
     monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", config.public_base_url)
-    monkeypatch.setenv("OFFICE_INVITATION_EMAIL_LOCALE", config.email_locale)
 
     async def scenario():
         project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
@@ -108,14 +110,20 @@ def test_delivery_uses_configured_https_fragment_link_and_localized_templates(cl
         (invitation.invitation_id,), True) == (("SMTP_ACCEPTED",),)
 
 
-def test_email_templates_cover_english_and_percent_encode_fragment_tokens():
+def test_email_catalog_uses_recipient_locale_or_documented_default_and_percent_encodes_tokens():
     bearer = "a" * 42 + "+"
     delivery = ClaimedInvitationDelivery("outbox", "attempt", "invitation", "ana@example.test", bearer, "2026-10-22T12:00:00+00:00")
-    subject, text, body_html = _invitation_email(
-        _InvitationConfig(60, 30, 50, 50, "https://virtualoffice.example.test", "en"), delivery)
+    url = invitation_service._invitation_acceptance_url(
+        _InvitationConfig(60, 30, 50, 50, "https://virtualoffice.example.test"), delivery.bearer_token)
+    subject, text, body_html = render_invitation_email(
+        recipient_locale="en", url=url, expires_at=delivery.expires_at)
     assert subject == "Axioma — Virtual Office invitation"
     assert "Accept invitation" in body_html
     assert "https://virtualoffice.example.test/office/invitation#token=" + "a" * 42 + "%2B" in text
+    default_subject, _default_text, _default_html = render_invitation_email(
+        recipient_locale=None, url=url, expires_at=delivery.expires_at)
+    assert DEFAULT_INVITATION_EMAIL_LOCALE == "es"
+    assert default_subject == "Axioma — Invitación a Oficina Virtual"
 
 
 def test_late_relay_acceptance_remains_observed_after_revocation(client):
@@ -222,7 +230,6 @@ def test_delivery_maintenance_expires_terminal_unknown_without_rewriting_transpo
     monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "1")
     monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", "https://virtualoffice.example.test")
-    monkeypatch.setenv("OFFICE_INVITATION_EMAIL_LOCALE", "es")
 
     async def no_delivery(_cur):
         return None

@@ -13,7 +13,6 @@ class InvitationConfig:
     stale_claim_batch_limit: int
     expiry_sweep_batch_limit: int
     public_base_url: str
-    email_locale: str
 
     def __post_init__(self) -> None:
         if type(self.lifetime_seconds) is not int or not 1 <= self.lifetime_seconds <= 604_800:
@@ -26,8 +25,6 @@ class InvitationConfig:
             raise ValueError("invitation expiry sweep batch limit is outside the supported range")
         if not _is_public_https_origin(self.public_base_url):
             raise ValueError("invitation public base URL must be a canonical HTTPS origin")
-        if self.email_locale not in {"es", "en"}:
-            raise ValueError("invitation email locale is unsupported")
 
 
 def _is_public_https_origin(value: str) -> bool:
@@ -60,9 +57,8 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
     raw_stale_claim_batch_limit = os.getenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT")
     raw_expiry_sweep_batch_limit = os.getenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT")
     public_base_url = os.getenv("OFFICE_INVITATION_PUBLIC_BASE_URL")
-    email_locale = os.getenv("OFFICE_INVITATION_EMAIL_LOCALE")
     if (raw_lifetime is None or raw_claim_timeout is None or raw_stale_claim_batch_limit is None
-            or raw_expiry_sweep_batch_limit is None or public_base_url is None or email_locale is None):
+            or raw_expiry_sweep_batch_limit is None or public_base_url is None):
         return None
     try:
         lifetime = int(raw_lifetime)
@@ -82,7 +78,6 @@ def load_invitation_config_from_environment() -> InvitationConfig | None:
             stale_claim_batch_limit=stale_claim_batch_limit,
             expiry_sweep_batch_limit=expiry_sweep_batch_limit,
             public_base_url=public_base_url,
-            email_locale=email_locale,
         )
     except ValueError:
         return None
