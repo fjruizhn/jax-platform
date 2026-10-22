@@ -807,6 +807,24 @@ async def _preflight_invitation_receipt_causal_history(cur) -> None:
     await cur.execute("SELECT 1 FROM office_invitation_mutation_receipt LIMIT 1")
     if await cur.fetchone() is None:
         return
+    name = "guard_office_invitation_mutation_receipt_insert"
+    await cur.execute(
+        "SELECT EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=%s",
+        (name,),
+    )
+    guard = await cur.fetchone()
+    expected = _INVITATION_MUTATION_RECEIPT_TRIGGERS[name]
+    if guard is None or tuple(guard[:4]) != expected[:4]:
+        raise RuntimeError("Office invitation mutation receipt guard history is incompatible; historic evidence is not rewritten")
+    guard_digest = hashlib.sha256(str(guard[4]).encode("utf-8")).hexdigest()
+    if guard_digest in _INVITATION_MUTATION_RECEIPT_GUARD_PREDECESSOR_DIGESTS:
+        # These guards did not establish the complete receipt companion
+        # invariant.  Existing rows are immutable, so they must be reviewed
+        # outside this automatic migration before the guard can be replaced.
+        raise RuntimeError("Office invitation receipt history uses a predecessor guard; historic evidence is not rewritten")
+    if guard_digest != hashlib.sha256(str(expected[-1]).encode("utf-8")).hexdigest():
+        raise RuntimeError("Office invitation mutation receipt guard history is incompatible; historic evidence is not rewritten")
     if (not await _column_exists(cur, "office_invitation_event", "authorization_event_id")
             or not await _column_exists(cur, "office_invitation_event", "invocation_digest")):
         raise RuntimeError(
@@ -899,15 +917,24 @@ async def _upgrade_invitation_guards(cur) -> None:
         _3978115_INVITATION_GUARD_DIGESTS,
         _JAX_MEMORY_TEST_INVITATION_GUARD_DIGESTS,
     )
+    actual_digests: dict[str, str] = {}
     for name, metadata in found.items():
         table, timing, event, orientation, action = metadata
         expected_table = "office_invitation_outbox" if "outbox" in name else (
             "office_invitation_event" if "event" in name else "office_invitation"
         )
-        allowed = {hashlib.sha256(str(expected[name][-1]).encode("utf-8")).hexdigest()}
-        allowed.update(predecessor[name] for predecessor in predecessors if name in predecessor)
-        if (table, timing, event, orientation) != (expected_table, "BEFORE", "UPDATE" if name.endswith("update") else "INSERT", "ROW") or hashlib.sha256(str(action).encode("utf-8")).hexdigest() not in allowed:
+        if (table, timing, event, orientation) != (expected_table, "BEFORE", "UPDATE" if name.endswith("update") else "INSERT", "ROW"):
             raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
+        actual_digests[name] = hashlib.sha256(str(action).encode("utf-8")).hexdigest()
+    current_digests = {name: hashlib.sha256(str(expected[name][-1]).encode("utf-8")).hexdigest() for name in found}
+    if actual_digests != current_digests and not any(
+        all(actual == current_digests[name] or actual == predecessor.get(name)
+            for name, actual in actual_digests.items())
+        for predecessor in predecessors
+    ):
+        # A known predecessor may be partially replaced by the current set,
+        # but bodies from different predecessor revisions are not attested.
+        raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
     for name in found:
         await cur.execute(f"DROP TRIGGER {name}")
 

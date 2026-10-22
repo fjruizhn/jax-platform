@@ -337,28 +337,43 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
 def test_predecessor_receipt_guard_upgrades_idempotently(client):
     """An empty 2e86051 receipt ledger can advance and retain the index."""
     async def scenario():
-        pool = await get_pool()
+        source = os.environ['JAX_DB_NAME']
+        schema = f"office_invitation_empty_{uuid.uuid4().hex[:16]}"
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await apply_office_migrations(cur)
-                await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
-                await cur.execute(_RECEIPT_GUARD_2E86051)
-                await apply_office_migrations(cur)
-                await cur.execute(
-                    "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-                    "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
-                )
-                action = (await cur.fetchone())[0]
-                assert "e.authorization_event_id=NEW.authorization_event_id" in action
-                assert "e.invocation_digest=NEW.request_digest" in action
-                assert "NEW.expires_at=s.expires_at" in action
-                await cur.execute(
-                    "SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
-                    "AND TABLE_NAME='office_invitation_outbox' AND INDEX_NAME='idx_office_invitation_outbox_stale_claim' "
-                    "ORDER BY SEQ_IN_INDEX"
-                )
-                assert tuple(row[0] for row in await cur.fetchall()) == ('state', 'claimed_at', 'outbox_id')
-                await apply_office_migrations(cur)
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_project_membership', 'jax_project_membership_event',
+                        'jax_namespace_membership_mutation_request',
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
+                    await cur.execute(_RECEIPT_GUARD_2E86051)
+                    await apply_office_migrations(cur)
+                    await cur.execute(
+                        "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                        "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
+                    )
+                    action = (await cur.fetchone())[0]
+                    assert "e.authorization_event_id=NEW.authorization_event_id" in action
+                    assert "e.invocation_digest=NEW.request_digest" in action
+                    assert "NEW.expires_at=s.expires_at" in action
+                    await cur.execute(
+                        "SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+                        "AND TABLE_NAME='office_invitation_outbox' AND INDEX_NAME='idx_office_invitation_outbox_stale_claim' "
+                        "ORDER BY SEQ_IN_INDEX"
+                    )
+                    assert tuple(row[0] for row in await cur.fetchall()) == ('state', 'claimed_at', 'outbox_id')
+                    await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)
 
 
@@ -428,7 +443,7 @@ def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(c
                         "VALUES (%s,UNHEX(REPEAT('ce',32)),'ISSUE',%s,%s,%s,0,1,%s,%s,'office-invitation-mutation-response/v1',%s,UTC_TIMESTAMP(6))",
                         (str(uuid.uuid4()), issuer, project_id, invitation_id, issued_event_id, authorization_event_id, expiry),
                     )
-                    with pytest.raises(RuntimeError, match='receipt history lacks causal event binding'):
+                    with pytest.raises(RuntimeError, match='receipt history uses a predecessor guard'):
                         await apply_office_migrations(cur)
                     await cur.execute(
                         "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
