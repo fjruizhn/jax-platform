@@ -160,19 +160,28 @@ async def apply_inert_release_v2_migrations(cur) -> None:
     """Resumable only for a creation cutpoint; metadata attestation closes drift."""
     await cur.execute("SELECT GET_LOCK(CONCAT('office-release-v2:',DATABASE()),30)")
     if await cur.fetchone() != (1,): raise RuntimeError("inert release v2 migration lock is unavailable")
+    primary_error = None
     try:
         await _apply_inert_release_v2_locked(cur)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
         await cur.execute("SELECT RELEASE_LOCK(CONCAT('office-release-v2:',DATABASE()))")
-        if await cur.fetchone() != (1,): raise RuntimeError("inert release v2 migration lock release failed")
+        if await cur.fetchone() != (1,) and primary_error is None: raise RuntimeError("inert release v2 migration lock release failed")
 
 async def _apply_inert_release_v2_locked(cur) -> None:
     """Advance only exact, empty table-and-trigger prefixes; never normalize drift."""
     await cur.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s,%s,%s,%s,%s,%s)", TABLES)
-    if {row[0] for row in await cur.fetchall()} == set(TABLES):
+    present = {row[0] for row in await cur.fetchall()}
+    await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (STAMP_TABLE,))
+    stamp_exists = await cur.fetchone() is not None
+    if present == set(TABLES):
         await assert_inert_release_v2_metadata(cur)
         await _ensure_release_stamp(cur)
         return
+    if stamp_exists:
+        raise RuntimeError("inert release v2 stamp is premature")
     for index, (table, statement) in enumerate(zip(TABLES, DDL)):
         await _assert_release_prefix(cur, index)
         await cur.execute(statement)
@@ -195,6 +204,10 @@ async def _assert_release_stamp(cur) -> None:
     if await cur.fetchall() != ((_STAMP_COMPONENT, _STAMP_VERSION),): raise RuntimeError("inert release v2 stamp is invalid")
 
 async def _ensure_release_stamp(cur) -> None:
+    await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (STAMP_TABLE,))
+    columns = tuple(row[0] for row in await cur.fetchall())
+    if columns and columns != ("component", "version", "created_at"):
+        raise RuntimeError("inert release v2 stamp columns are invalid")
     await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
     await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version) VALUES (%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION))
     await _assert_release_stamp(cur)

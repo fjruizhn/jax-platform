@@ -47,7 +47,7 @@ def test_receipt_binds_distinct_authorities():
     receipt = module.validate_release_receipt(valid(), module_package_digest="sha256:"+"11"*32, project_id=7, tenant_id=8, human_approval_id=9, critic_rights_id=10, human_principal="human:fernando")
     assert receipt.office_release_signer == "office-release:primary"
 
-@pytest.mark.parametrize("key,value", [("module_package_digest","sha256:"+"00"*32),("office_release_signer","human:fernando"),("office_release_signer","office-release:"),("critic_principal","human:fernando"),("project_id",True),("domain","module-package/v1")])
+@pytest.mark.parametrize("key,value", [("module_package_digest","sha256:"+"00"*32),("office_release_signer","human:fernando"),("office_release_signer","office-release:"),("critic_principal","human:fernando"),("critic_principal","critic:"),("project_id",True),("domain","module-package/v1")])
 def test_receipt_rejects_misbinding(key, value):
     item = valid(); item[key] = value
     with pytest.raises(module.ReleaseReceiptRejected): module.validate_release_receipt(item, module_package_digest="sha256:"+"11"*32, project_id=7, tenant_id=8, human_approval_id=9, critic_rights_id=10, human_principal="human:fernando")
