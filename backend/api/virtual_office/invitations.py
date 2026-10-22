@@ -163,7 +163,9 @@ async def list_invitations(project_id: int, response: Response,
         "invitations": [
             {"id": invitation.invitation_id, "email": invitation.email,
              "audience": invitation.audience, "status": invitation.status,
-             "version": invitation.version, "expires_at": invitation.expires_at.isoformat()}
+             "version": invitation.version, "expires_at": invitation.expires_at.isoformat(),
+             "delivery_state": invitation.delivery_state,
+             "delivery_result_code": invitation.delivery_result_code}
             for invitation in invitations
         ],
         "next_cursor": next_cursor,

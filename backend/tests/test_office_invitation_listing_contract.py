@@ -101,8 +101,8 @@ def test_capability_does_not_downgrade_missing_mfa_configuration_to_false():
 def test_listing_uses_limit_plus_one_live_project_index_keyset(monkeypatch):
     expiry = dt.datetime(2026, 10, 22, 12)
     cursor = _Cursor([
-        ("12345678-1234-4123-8123-123456789abc", "one@example.test", "INTERNAL", "ISSUED", 1, expiry),
-        ("22345678-1234-4123-8123-123456789abc", "two@example.test", "CLIENT_PUBLISHED", "ISSUED", 1, expiry),
+        ("12345678-1234-4123-8123-123456789abc", "one@example.test", "INTERNAL", "ISSUED", 1, expiry, "SMTP_ACCEPTED", "SMTP_ACCEPTED"),
+        ("22345678-1234-4123-8123-123456789abc", "two@example.test", "CLIENT_PUBLISHED", "ISSUED", 1, expiry, "UNKNOWN", "SMTP_UNKNOWN"),
     ])
 
     async def allowed(*_args, **_kwargs):
@@ -114,6 +114,8 @@ def test_listing_uses_limit_plus_one_live_project_index_keyset(monkeypatch):
         mfa_config=object(), limit=1, cursor=None,
     ))
     assert [item.email for item in page] == ["one@example.test"]
+    assert page[0].delivery_state == "SMTP_ACCEPTED"
+    assert page[0].delivery_result_code == "SMTP_ACCEPTED"
     assert next_cursor is not None
     statement, params = cursor.statements[-1]
     assert "i.project_id=%s AND i.status='ISSUED' AND i.expires_at>UTC_TIMESTAMP(6)" in statement
@@ -157,6 +159,36 @@ def test_http_list_sets_no_store_and_authorization_vary(monkeypatch):
     assert payload == {"invitations": [], "next_cursor": None}
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Vary"] == "Authorization"
+
+
+def test_http_list_exposes_terminal_transport_uncertainty_to_project_admin(monkeypatch):
+    """Removing the outbox projection would hide a non-delivery as ISSUED."""
+    @asynccontextmanager
+    async def transaction_stub(*_args):
+        yield object()
+
+    expiry = dt.datetime(2026, 10, 22, 12, tzinfo=dt.timezone.utc)
+
+    async def allowed(*_args, **_kwargs):
+        from virtual_office.invitations import ListedInvitation
+        return [ListedInvitation(
+            invitation_id="12345678-1234-4123-8123-123456789abc",
+            email="delivery-failed@example.test", audience="INTERNAL", status="ISSUED",
+            version=1, expires_at=expiry, delivery_state="UNKNOWN",
+            delivery_result_code="SMTP_UNKNOWN",
+        )], None
+
+    monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
+    monkeypatch.setattr(invitation_api, "load_mfa_config_from_environment", lambda: object())
+    monkeypatch.setattr(invitation_api, "list_active_invitations_in_cursor", allowed)
+    from starlette.responses import Response
+    payload = asyncio.run(invitation_api.list_invitations(12, Response(), 25, None, _user()))
+    assert payload["invitations"] == [{
+        "id": "12345678-1234-4123-8123-123456789abc",
+        "email": "delivery-failed@example.test", "audience": "INTERNAL", "status": "ISSUED",
+        "version": 1, "expires_at": "2026-10-22T12:00:00+00:00",
+        "delivery_state": "UNKNOWN", "delivery_result_code": "SMTP_UNKNOWN",
+    }]
 
 
 def test_http_list_rejects_malformed_cursor_before_confidential_query(monkeypatch):

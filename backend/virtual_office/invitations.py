@@ -95,6 +95,12 @@ class ListedInvitation:
     status: str
     version: int
     expires_at: dt.datetime
+    # The lifecycle remains ISSUED until it is accepted, revoked, or expires.
+    # Delivery is a separate fact: UNKNOWN means the relay outcome cannot be
+    # safely retried, so a project administrator must revoke and issue a new
+    # invitation rather than assume the mail arrived.
+    delivery_state: str
+    delivery_result_code: str | None
 
 
 _LIST_CURSOR_DOMAIN = "office-invitation-list/v1"
@@ -379,8 +385,10 @@ async def list_active_invitations_in_cursor(
         naive_expiry = expires_at.replace(tzinfo=None)
         params += (naive_expiry, naive_expiry, invitation_id)
     await cur.execute(
-        "SELECT i.invitation_id,i.email_normalized,s.audience,i.status,i.version,i.expires_at "
+        "SELECT i.invitation_id,i.email_normalized,s.audience,i.status,i.version,i.expires_at,"
+        "o.state,o.result_code "
         "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id "
         "WHERE i.project_id=%s AND i.status='ISSUED' AND i.expires_at>UTC_TIMESTAMP(6)"
         + predicate + " ORDER BY i.expires_at ASC,i.invitation_id ASC LIMIT %s",
         (*params, limit + 1),
@@ -392,6 +400,8 @@ async def list_active_invitations_in_cursor(
         status=str(row[3]), version=int(row[4]),
         expires_at=row[5].replace(tzinfo=dt.timezone.utc)
         if row[5].tzinfo is None else row[5].astimezone(dt.timezone.utc),
+        delivery_state=str(row[6]),
+        delivery_result_code=None if row[7] is None else str(row[7]),
     ) for row in page]
     next_cursor = None
     if len(rows) > limit and result:

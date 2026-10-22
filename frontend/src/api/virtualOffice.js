@@ -24,6 +24,15 @@ export const officeSessionApi = {
 export const officeProjectsApi = {
   list: ({ limit, after_id }) => api.get('/virtual-office/projects', { params: { limit, after_id } }),
   detail: (projectId) => api.get(`/virtual-office/projects/${projectId}`),
+  create: (payload, idempotencyKey) => api.post('/virtual-office/projects', payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
+}
+
+export const officePeopleApi = {
+  list: ({ limit, after_user_id, tenant_id } = {}) => api.get('/virtual-office/people', { params: { limit, after_user_id, tenant_id } }),
+}
+
+export const officeMembersApi = {
+  grant: (projectId, userId, payload, idempotencyKey) => api.put(`/virtual-office/projects/${projectId}/members/${userId}`, payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
 }
 
 // El token de aceptación sólo llega aquí desde el fragmento del navegador y

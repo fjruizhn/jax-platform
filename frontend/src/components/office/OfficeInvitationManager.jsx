@@ -6,11 +6,14 @@ import { TAMANO_BOTON_ACCION } from '../../tema/botones'
 
 const PAGE_SIZE = 25
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const DELIVERY_STATES = new Set(['QUEUED', 'CLAIMED', 'SMTP_ACCEPTED', 'UNKNOWN', 'CANCELLED'])
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BUTTON = `${TAMANO_BOTON_ACCION} rounded border border-borde px-3 text-texto hover:bg-hundido disabled:opacity-60`
 
 function validInvitation(invitation) {
   return invitation && typeof invitation.id === 'string' && UUID.test(invitation.id) && typeof invitation.email === 'string' && typeof invitation.audience === 'string' && invitation.status === 'ISSUED' && Number.isInteger(invitation.version) && typeof invitation.expires_at === 'string'
+    && (invitation.delivery_state === undefined || DELIVERY_STATES.has(invitation.delivery_state))
+    && (invitation.delivery_result_code === undefined || invitation.delivery_result_code === null || typeof invitation.delivery_result_code === 'string')
 }
 
 function validList(data) {
@@ -122,8 +125,18 @@ export default function OfficeInvitationManager({ projectId, onForbidden }) {
     setNotice(null)
     try {
       await officeInvitationsApi.revoke(projectId, revoke.id, revoke.version, revokeKey.current)
+      const reissue = revoke.delivery_state === 'UNKNOWN'
+      const revoked = revoke
       revokeKey.current = null
       setRevoke(null)
+      if (reissue) {
+        // UNKNOWN means SMTP outcome was not proven. Revoke this bearer before
+        // preparing a distinct, explicitly submitted invitation.
+        issueIntent.current = null
+        setEmail(revoked.email)
+        setAudience(revoked.audience)
+        setNotice(t.officeInvitation.reissueReady)
+      }
       await refreshAfterMutation()
     } catch (err) {
       if (err?.response?.status === 403) await handleForbidden()
@@ -157,7 +170,7 @@ export default function OfficeInvitationManager({ projectId, onForbidden }) {
         {invitations === null && !listError && <p role="status" className="mt-5 text-sm text-texto-suave">{t.officeInvitation.loading}</p>}
         {listError && <div className="mt-5 space-y-3"><p role="alert" className="text-sm text-peligro">{t.officeInvitation.listError}</p><button type="button" disabled={busy} onClick={() => load()} className={BUTTON}>{t.virtualOffice.projects.more}</button></div>}
         {invitations?.length === 0 && <p role="status" className="mt-5 text-sm text-texto-suave">{t.officeInvitation.empty}</p>}
-        {invitations?.length > 0 && <ul className="mt-5 divide-y divide-borde border-y border-borde">{invitations.map((invitation) => <li key={invitation.id} className="flex items-start justify-between gap-3 py-3"><div className="min-w-0 text-sm"><p className="break-all text-texto">{invitation.email}</p><p className="mt-1 text-texto-suave">{t.officeInvitation.status}: {invitation.status}</p><p className="text-texto-suave">{t.officeInvitation.expiresAt}: {invitation.expires_at}</p></div><button type="button" disabled={busy} onClick={() => { revokeKey.current = null; setRevoke(invitation) }} className={`${BUTTON} shrink-0`} aria-label={t.officeInvitation.revokeFor(invitation.email)}>{t.officeInvitation.revoke}</button></li>)}</ul>}
+        {invitations?.length > 0 && <ul className="mt-5 divide-y divide-borde border-y border-borde">{invitations.map((invitation) => <li key={invitation.id} className="flex items-start justify-between gap-3 py-3"><div className="min-w-0 text-sm"><p className="break-all text-texto">{invitation.email}</p><p className="mt-1 text-texto-suave">{t.officeInvitation.status}: {invitation.status}</p>{invitation.delivery_state && <p className="text-texto-suave">{t.officeInvitation.delivery}: {t.officeInvitation.deliveryStates[invitation.delivery_state]}</p>}{invitation.delivery_state === 'UNKNOWN' && <p className="mt-1 text-texto-suave">{t.officeInvitation.deliveryUnknown}</p>}<p className="text-texto-suave">{t.officeInvitation.expiresAt}: {invitation.expires_at}</p></div><button type="button" disabled={busy} onClick={() => { revokeKey.current = null; setRevoke(invitation) }} className={`${BUTTON} shrink-0`} aria-label={t.officeInvitation.revokeFor(invitation.email)}>{t.officeInvitation.revoke}</button></li>)}</ul>}
         {nextCursor !== null && <button type="button" disabled={busy} onClick={() => load(nextCursor, true)} className={`${BUTTON} mt-4`}>{t.officeInvitation.more}</button>}
       </div>
     </Dialogo>}

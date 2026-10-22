@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  validate-public-ingress.sh offline --config FILE --site-root DIR --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA [--nginx-user USER]
+  validate-public-ingress.sh offline --config FILE --site-root DIR --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA --nginx-root DIR [--nginx-user USER]
   validate-public-ingress.sh syntax --nginx NGINX --config COMPLETE_NGINX_CONF
   validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE --expected-asset-sha SHA256
 USAGE
@@ -15,7 +15,7 @@ need() { [[ $# -eq 2 && -n $2 ]] || die "missing value for $1"; }
 has_header() { grep -Eiq "^$2: *$3\\r?$" <<<"$1"; }
 
 cmd=${1:-}; shift || true
-config= release= site_root= releases_root= nginx= nginx_user=www public_ip= expected_index_sha= expected_source_sha= expected_asset_sha= asset_path=
+config= release= site_root= releases_root= nginx= nginx_root= nginx_user=www public_ip= expected_index_sha= expected_source_sha= expected_asset_sha= asset_path=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config) need "$1" "${2:-}"; config=$2; shift 2 ;;
@@ -23,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --site-root) need "$1" "${2:-}"; site_root=$2; shift 2 ;;
     --releases-root) need "$1" "${2:-}"; releases_root=$2; shift 2 ;;
     --nginx) need "$1" "${2:-}"; nginx=$2; shift 2 ;;
+    --nginx-root) need "$1" "${2:-}"; nginx_root=$2; shift 2 ;;
     --nginx-user) need "$1" "${2:-}"; nginx_user=$2; shift 2 ;;
     --public-ip) need "$1" "${2:-}"; public_ip=$2; shift 2 ;;
     --expected-index-sha) need "$1" "${2:-}"; expected_index_sha=$2; shift 2 ;;
@@ -134,8 +135,15 @@ ROUTES
 
 case $cmd in
  offline)
-  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release && -n $releases_root && -n $site_root ]] || die '--site-root, --release and --releases-root are required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
+  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release && -n $releases_root && -n $site_root && -n $nginx_root ]] || die '--site-root, --release, --releases-root and --nginx-root are required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
   site=$(readlink -f -- "$site_root") || die "site root cannot be resolved: $site_root"; [[ -d $site ]] || die "resolved site root is not a directory: $site"
+  nginx_root=$(python3 - "$nginx_root" <<'PY'
+import os
+import sys
+print(os.path.abspath(os.path.normpath(sys.argv[1])))
+PY
+) || die "nginx root cannot be normalized: $nginx_root"
+  [[ $nginx_root == "$site/current/dist" ]] || die 'nginx root must be the site current/dist path'
   root=$(readlink -f -- "$releases_root") || die "releases root cannot be resolved: $releases_root"; [[ -d $root ]] || die "resolved releases root is not a directory: $root"
   case "$root" in "$site"/*) ;; *) die "releases root escapes site root: $root" ;; esac
   verify_managed_chain "$root" "$site" 'managed release ancestor'
@@ -149,6 +157,7 @@ case $cmd in
   verify_release_permissions "$resolved" "$root"
   [[ $(readlink -f -- "$release") == "$resolved" ]] || die 'release target changed during verification'
   grep -Fqx '    server_name virtualoffice.axioma-ia.io;' "$config" || die 'exact public host is absent'
+  grep -Fqx "    root $nginx_root;" "$config" || die 'nginx root is not bound to this site current/dist'
   grep -Fqx '    location ^~ /api/ { return 404; }' "$config" || die 'non-Office API is not denied'
   grep -Fqx '    location ^~ /ws/ { return 404; }' "$config" || die 'websocket namespace is not denied'
   grep -Fqx '        if ($request_method != GET) { return 404; }' "$config" || die 'public appearance route does not deny non-GET methods'

@@ -1684,8 +1684,10 @@ export default {
     accessInfo: 'Access information',
     accessTitle: 'Virtual Office access',
     accessBody: 'The server confirms authorization for every operation. This screen does not grant access or modify permissions.',
-    close: 'Close',
+    close: 'Close', cancel: 'Cancel',
     projects: { title: 'Projects', loading: 'Loading projects…', empty: 'No projects are available.', error: 'Projects could not be loaded.', more: 'Load more', detailTitle: 'Project detail', noDescription: 'No description.' },
+    creator: { open: 'Create project', title: 'Create project', intro: 'Start your first Office project for your current organization.', name: 'Project name', description: 'Description (optional)', create: 'Create project', creating: 'Creating project…', error: 'The project could not be created.', conflict: 'This project request needs to be refreshed before trying again.' },
+    members: { open: 'Add existing person', title: 'Add an existing person', intro: 'Choose an existing Office person to add to this project.', person: 'Person', choose: 'Choose a person', role: 'Project role', roles: { COLLABORATOR: 'Collaborator', PROJECT_ADMIN: 'Project administrator' }, grant: 'Add person', granting: 'Adding person…', error: 'The person could not be added to this project.', conflict: 'The person changed before the operation completed. Refresh and try again.' },
   },
   officeInvitation: {
     title: 'Virtual Office invitation', invalidLink: 'The invitation link is invalid.',
@@ -1700,7 +1702,7 @@ export default {
     manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
     send: 'Send invitation', revoke: 'Revoke invitation', revokeFor: (email) => `Revoke invitation for ${email}`,
     revokePrompt: (email) => `Do you want to revoke the invitation for ${email}?`, cancel: 'Cancel', managerError: 'The invitation operation could not be completed.', refreshError: 'The invitation was saved, but the list could not be refreshed.',
-    loading: 'Loading invitations…', empty: 'There are no active invitations.', more: 'Load more invitations', listError: 'Invitations could not be loaded.', conflict: 'The invitation changed before the operation completed. The list was refreshed.', unavailable: 'The invitation service is unavailable. The list was refreshed.', expiresAt: 'Expires', status: 'Status',
+    loading: 'Loading invitations…', empty: 'There are no active invitations.', more: 'Load more invitations', listError: 'Invitations could not be loaded.', conflict: 'The invitation changed before the operation completed. The list was refreshed.', unavailable: 'The invitation service is unavailable. The list was refreshed.', expiresAt: 'Expires', status: 'Status', delivery: 'Email delivery', deliveryStates: { QUEUED: 'Queued for delivery', CLAIMED: 'Sending in progress', SMTP_ACCEPTED: 'Accepted by the email server', UNKNOWN: 'Delivery could not be confirmed', CANCELLED: 'Cancelled' }, deliveryUnknown: 'The email server did not confirm delivery. Revoke this invitation before sending a new one.', reissueReady: 'The unconfirmed invitation was revoked. Review the address, then send a new invitation.',
   },
   mfa: {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',

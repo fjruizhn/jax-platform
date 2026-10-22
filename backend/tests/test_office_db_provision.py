@@ -13,6 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 HELPER = REPO / "ops" / "migration" / "provision-db-runtime.sh"
+RESTORE = REPO / "ops" / "migration" / "restore-hall9000.sh"
 
 
 def run_helper(tmp_path: Path, env_text: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -62,6 +63,36 @@ def test_plan_rejects_duplicate_or_shell_syntax_env_keys(tmp_path: Path) -> None
 
     assert result.returncode != 0
     assert "duplicate" in result.stderr.lower()
+
+
+def test_fresh_restore_bootstraps_only_migrator_before_office_tables_exist(tmp_path: Path) -> None:
+    result = run_helper(
+        tmp_path,
+        "JAX_DB_HOST=127.0.0.1\n"
+        "JAX_DB_PORT=33994\n"
+        "JAX_DB_NAME=jax_memory\n"
+        "JAX_DB_USER=legacy_las_manos\n"
+        "JAX_DB_PASSWORD=legacy-secret\n"
+        "JAX_DB_GRANTEE_HOST=172.30.5.1\n"
+        "JAX_RUNTIME_DB_USER=jaxweb_runtime\n"
+        "JAX_MIGRATE_DB_USER=jaxmigrate_ddl\n",
+        "--migrator-only",
+        "--measured-grantee-host",
+        "172.30.5.1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "only jaxmigrate_ddl@172.30.5.1" in result.stdout
+    assert "jaxweb_runtime" not in result.stdout
+
+
+def test_restore_migrates_before_provisioning_office_runtime() -> None:
+    source = RESTORE.read_text(encoding="utf-8")
+    bootstrap = source.index('provision-db-runtime.sh" --migrator-only')
+    migrate = source.index("systemctl start jax-platform-migrate.service")
+    runtime = source.index('provision-db-runtime.sh" --env "$ENV_DEST"', migrate)
+
+    assert bootstrap < migrate < runtime
 
 
 def test_units_only_load_dedicated_envs_and_run_migration_before_web() -> None:

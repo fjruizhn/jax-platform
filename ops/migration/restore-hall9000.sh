@@ -282,7 +282,7 @@ if is_dry; then
   would "descifrar $ENV_ENC (openssl AES-256, -pass stdin) → temp umask 077 → install -m600 root:root $ENV_DEST"
   would "  (pediría la passphrase interactiva; hasta 3 intentos; shred+rm del temp al salir)"
   would "verificaría claves críticas (JAX_DB_*, JAX_JWT_SECRET) y avisaría si falta SMTP_*"
-  would "pediría el host grantee medido y ejecutaría provision-db-runtime.sh: dos principales nuevos, exact-grants y envs root:root 0600"
+  would "pediría el host grantee medido y prepararía sólo el principal migrador + migrate.env; el runtime se provisiona después de que la migración cree las tablas Office"
 else
   sudo install -d -m 755 -o root -g root /etc/jax && ok "/etc/jax listo."
 
@@ -325,13 +325,14 @@ else
   # The grantee is the measured source address of the web/migrator client,
   # never the MariaDB server address.  It must equal JAX_DB_GRANTEE_HOST in
   # the parsed deployment env; wildcards are rejected by the helper.
-  if confirm "¿Provisionar los principales DML/DDL dedicados y envs root-only?"; then
+  if confirm "¿Provisionar el principal migrador dedicado y migrate.env root-only?"; then
     printf '%sHost grantee medido desde el cliente de despliegue:%s ' "$c_ylw" "$c_reset" > /dev/tty
     read -r DB_GRANTEE_MEASURED < /dev/tty || die "no se recibió host grantee medido"
-    sudo "$MIG_DIR/provision-db-runtime.sh" --env "$ENV_DEST" \
+    sudo "$MIG_DIR/provision-db-runtime.sh" --migrator-only --env "$ENV_DEST" \
       --measured-grantee-host "$DB_GRANTEE_MEASURED" \
-      || die "falló el aprovisionamiento DB dedicado; no se alteraron principales existentes"
-    ok "principales DB y envs separados verificados."
+      || die "falló el aprovisionamiento del migrador dedicado; no se alteraron principales existentes"
+    ok "principal migrador y migrate.env verificados; el runtime espera la migración."
+    DB_GRANTEE_HOST="$DB_GRANTEE_MEASURED"
   fi
 fi
 checkpoint "Credenciales restauradas. ¿Continuar con los entornos Python?"
@@ -433,6 +434,15 @@ if is_dry; then
   would "NO haría enable ni start de ningún servicio (queda manual — ver checklist)"
 else
   sudo systemctl daemon-reload && ok "systemctl daemon-reload hecho."
+  [ -n "${DB_GRANTEE_HOST:-}" ] || die "falta el host grantee medido: no se puede completar el runtime DB"
+  info "ejecutando la migración dedicada antes de provisionar el runtime Office…"
+  sudo systemctl start jax-platform-migrate.service \
+    || die "falló la migración dedicada; el runtime Office no fue provisionado"
+  ok "migración dedicada terminada."
+  sudo "$MIG_DIR/provision-db-runtime.sh" --env "$ENV_DEST" \
+    --measured-grantee-host "$DB_GRANTEE_HOST" \
+    || die "falló el aprovisionamiento del runtime DB tras la migración"
+  ok "runtime DB dedicado y runtime.env verificados."
   [ -r "$ARTIFACT_READINESS" ] || die "falta helper de verificación de artefacto: $ARTIFACT_READINESS"
   # shellcheck source=artifact-readiness.sh
   source "$ARTIFACT_READINESS"
