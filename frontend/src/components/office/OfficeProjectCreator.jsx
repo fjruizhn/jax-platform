@@ -6,8 +6,20 @@ import { officeProjectsApi } from '../../api/virtualOffice'
 
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BUTTON = `${TAMANO_BOTON_ACCION} rounded border border-borde px-3 text-texto hover:bg-hundido disabled:opacity-60`
+const INTENT_STORAGE_PREFIX = 'axioma.office.project-create.v1'
 
-export default function OfficeProjectCreator({ tenantId, onCreated, onForbidden }) {
+function storedIntentKey(actorUserId, signature) {
+  if (!Number.isInteger(actorUserId) || actorUserId < 1) return null
+  return `${INTENT_STORAGE_PREFIX}:${actorUserId}:${encodeURIComponent(signature)}`
+}
+
+function validIntent(value, signature) {
+  return value && value.signature === signature
+    && typeof value.key === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.key)
+}
+
+export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated, onForbidden }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -15,6 +27,27 @@ export default function OfficeProjectCreator({ tenantId, onCreated, onForbidden 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const intent = useRef(null)
+
+  function persistedIntent(signature) {
+    const key = storedIntentKey(actorUserId, signature)
+    if (!key) return null
+    try {
+      const value = JSON.parse(sessionStorage.getItem(key) || 'null')
+      return validIntent(value, signature) ? value : null
+    } catch { return null }
+  }
+
+  function saveIntent(value) {
+    const key = storedIntentKey(actorUserId, value.signature)
+    if (!key) return
+    try { sessionStorage.setItem(key, JSON.stringify(value)) } catch { /* unavailable storage keeps in-memory retry */ }
+  }
+
+  function clearIntent(value) {
+    const key = value && storedIntentKey(actorUserId, value.signature)
+    if (!key) return
+    try { sessionStorage.removeItem(key) } catch { /* unavailable storage needs no cleanup */ }
+  }
 
   function close() {
     if (busy) return
@@ -28,11 +61,15 @@ export default function OfficeProjectCreator({ tenantId, onCreated, onForbidden 
     if (busy || !trimmedName || !Number.isInteger(tenantId) || tenantId < 1) return
     const payload = { tenant_id: tenantId, name: trimmedName, description: description.trim() || null }
     const signature = JSON.stringify(payload)
-    if (intent.current?.signature !== signature) intent.current = { signature, key: crypto.randomUUID() }
+    if (intent.current?.signature !== signature) {
+      intent.current = persistedIntent(signature) || { signature, key: crypto.randomUUID() }
+      saveIntent(intent.current)
+    }
     setBusy(true); setError(null)
     try {
       const { data } = await officeProjectsApi.create(payload, intent.current.key)
       if (!data || !Number.isInteger(data.id)) throw new Error('invalid project create response')
+      clearIntent(intent.current)
       intent.current = null
       await onCreated?.(data.id)
       setOpen(false); setName(''); setDescription(''); setError(null)

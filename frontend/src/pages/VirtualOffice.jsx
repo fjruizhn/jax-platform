@@ -113,7 +113,7 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
 
         <section className="rounded-xl border border-borde bg-superficie p-5">
           <h2 className="text-base font-semibold">{t.virtualOffice.projects.title}</h2>
-          {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
+          {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} actorUserId={session.identity?.user_id} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
           {projects === null && !error && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {error && <p role="alert" className="mt-3 text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
           {projects?.length === 0 && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.empty}</p>}

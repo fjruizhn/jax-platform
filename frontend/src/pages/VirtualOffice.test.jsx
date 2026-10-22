@@ -17,6 +17,7 @@ function show() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  sessionStorage.clear()
   invitations.list.mockResolvedValue({ data: { invitations: [], next_cursor: null } })
   members.list.mockResolvedValue({ data: { project_id: 25, members: [], next_cursor: null } })
   useJaxStore.setState({ token: 'office-token', user: {
@@ -34,6 +35,27 @@ describe('Virtual Office', () => {
     fireEvent.change(screen.getByLabelText('Nombre del proyecto'), { target: { value: 'Nuevo proyecto' } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Crear proyecto' })[1])
     await waitFor(() => expect(projects.create).toHaveBeenCalledWith({ tenant_id: 4, name: 'Nuevo proyecto', description: null }, expect.any(String)))
+  })
+
+  it('retries a failed project creation after remount with the saved intent key', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
+    projects.create.mockRejectedValueOnce({ response: { status: 503 } }).mockResolvedValueOnce({ data: { id: 31, created: false } })
+    projects.detail.mockResolvedValue({ data: { id: 31, name: 'Nuevo proyecto', description: null, tenant_id: 4, scope_version: 1, audience: 'INTERNAL' } })
+    const officeSession = { identity: { user_id: 7, tenant_id: 4 }, capabilities: { create_project: true } }
+    const first = render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={officeSession} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Crear proyecto' }))
+    fireEvent.change(screen.getByLabelText('Nombre del proyecto'), { target: { value: 'Nuevo proyecto' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Crear proyecto' })[1])
+    await waitFor(() => expect(projects.create).toHaveBeenCalledTimes(1))
+    const firstKey = projects.create.mock.calls[0][1]
+    first.unmount()
+
+    render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={officeSession} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Crear proyecto' }))
+    fireEvent.change(screen.getByLabelText('Nombre del proyecto'), { target: { value: 'Nuevo proyecto' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Crear proyecto' })[1])
+    await waitFor(() => expect(projects.create).toHaveBeenCalledTimes(2))
+    expect(projects.create.mock.calls[1][1]).toBe(firstKey)
   })
 
   it('lets an Office administrator add an existing person to a project', async () => {
@@ -96,14 +118,14 @@ describe('Virtual Office', () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Equipo', description: '', tenant_id: 4 }], next_after_id: null } })
     projects.detail.mockResolvedValue({ data: { id: 25, name: 'Equipo', description: '', tenant_id: 4, scope_version: 1, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })
     people.list.mockResolvedValue({ data: { people: [], next_after_user_id: null } })
-    members.list.mockResolvedValue({ data: { project_id: 25, members: [{ user_id: 209, grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 3 }], next_cursor: null } })
+    members.list.mockResolvedValue({ data: { project_id: 25, members: [{ user_id: 209, email: 'miembro@example.test', grant_role: 'COLLABORATOR', audience: 'INTERNAL', status: 'ACTIVE', version: 3 }], next_cursor: null } })
     members.changeRole.mockResolvedValue({ data: { version: 4 } })
     members.revoke.mockResolvedValue({ data: { version: 5 } })
     render(<I18nProvider><MemoryRouter><VirtualOffice officeSession={{ identity: { global_role: 'OFFICE_SUPERUSER' }, capabilities: { administer_office: true } }} onOfficeDenied={vi.fn()} /></MemoryRouter></I18nProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Equipo' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Agregar persona existente' }))
-    expect(await screen.findByText('Usuario #209')).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Papel de Usuario #209'), { target: { value: 'PROJECT_ADMIN' } })
+    expect(await screen.findByText('miembro@example.test')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Papel de miembro@example.test'), { target: { value: 'PROJECT_ADMIN' } })
     await waitFor(() => expect(members.changeRole).toHaveBeenCalledWith(25, 209, { grant_role: 'PROJECT_ADMIN', expected_version: 3 }, expect.any(String)))
     fireEvent.click(screen.getByRole('button', { name: 'Revocar acceso' }))
     await waitFor(() => expect(members.revoke).toHaveBeenCalledWith(25, 209, 4, expect.any(String)))

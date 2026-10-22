@@ -219,7 +219,6 @@ def test_list_prefilter_keeps_project_admin_rows_without_mfa_once(client):
     user_id, (admin_a, admin_b, collaborator_c) = client.portal.call(scenario)
     page = client.get("/api/virtual-office/projects?limit=3", headers=_headers(user_id)).json()
     assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [admin_a, admin_b, collaborator_c]
-    assert page["next_after_id"] is None
 
 
 
@@ -307,7 +306,9 @@ def test_project_admin_lists_views_and_manages_invitations_without_mfa(client, m
     ):
         monkeypatch.delenv(name)
     headers = _headers(user_id)
-    listed = client.get("/api/virtual-office/projects", headers=headers)
+    # The disposable schema can retain Office rows from preceding tests.  Seek
+    # to this creation instead of assuming it fits on the first root page.
+    listed = client.get(f"/api/virtual-office/projects?after_id={project_id - 1}", headers=headers)
     assert listed.status_code == 200
     assert project_id in [project["id"] for project in listed.json()["projects"]]
     detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
