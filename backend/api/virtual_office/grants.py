@@ -57,7 +57,7 @@ def _membership_receipt_digest(*, operation: str, actor_user_id: int,
 async def _locked_membership_receipt(cur, *, idempotency_key: str):
     await cur.execute(
         "SELECT request_digest,jax_membership_id,jax_event_id,office_grant_version,office_grant_status,"
-        "external_relation_id,external_relation_version,recipient_group_id "
+        "external_relation_id,external_relation_version,recipient_group_id,grant_role,audience "
         "FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' "
         "AND idempotency_key=%s FOR UPDATE", (idempotency_key,))
     return await cur.fetchone()
@@ -160,32 +160,57 @@ async def _lock_grant_identities(cur, *, actor_user_id: int, target_user_id: int
     actor_hint = await cur.fetchone()
     await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
     target_hint = await cur.fetchone()
-    if actor_hint is None or target_hint is None:
-        raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
-    for tenant_id in sorted({int(actor_hint[0]), int(target_hint[0])}):
+    # These are lock-order hints only.  In particular, do not report a target
+    # miss until the actor is locked and has passed the opaque Office identity
+    # gate below; otherwise this mutator becomes a directory oracle.
+    if actor_hint is None:
+        raise HTTPException(status_code=403, detail="office_project_grant_denied")
+    tenant_hints = {int(actor_hint[0])}
+    if target_hint is not None:
+        tenant_hints.add(int(target_hint[0]))
+    tenant_rows: dict[int, str] = {}
+    for tenant_id in sorted(tenant_hints):
         await cur.execute("SELECT tenant_id,status FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
         tenant = await cur.fetchone()
-        if tenant is None or tenant[1] != "active":
-            raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
-    # Actor lock precedes target lock.  Do not ask the project resolver yet:
-    # JAX's in-transaction callback owns the first scope authorization.
+        if tenant is not None:
+            tenant_rows[int(tenant[0])] = str(tenant[1])
+    # Actor lock precedes the target.  Validate a deliberately narrow Office
+    # identity predicate before observing target/profile/project state.  The
+    # trusted JAX callback later performs the operation-specific authority
+    # and recent-MFA checks under the same transaction.
     await cur.execute(
-        "SELECT u.user_id FROM jax_users u LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+        "SELECT u.tenant_id,u.status,u.account_class,t.status,p.status,p.global_role "
+        "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+        "LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
         "WHERE u.user_id=%s FOR UPDATE", (actor_user_id,))
-    if await cur.fetchone() is None:
+    actor = await cur.fetchone()
+    if (actor is None or int(actor[0]) != int(actor_hint[0]) or actor[1] != "active"
+            or actor[3] != "active" or actor[2] not in {"INTERNAL", "OFFICE_INTERNAL"}
+            or actor[4] != "ACTIVE" or actor[5] not in {"COLLABORATOR", "GENERAL_ADMIN", "OFFICE_SUPERUSER"}
+            or tenant_rows.get(int(actor_hint[0])) != "active"):
         raise HTTPException(status_code=403, detail="office_project_grant_denied")
+    if target_hint is None:
+        raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+    target_hint_tenant = int(target_hint[0])
+    # Revocation is cleanup: JAX deliberately accepts a target tenant that
+    # has become inactive, while grant remains active-tenant only.
+    if target_hint_tenant not in tenant_rows or (not cleanup and tenant_rows[target_hint_tenant] != "active"):
+        raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
     await cur.execute(
-        "SELECT u.tenant_id,u.status,u.account_class,t.status,p.status "
+        "SELECT u.tenant_id,u.status,u.account_class,t.status,p.status,p.global_role "
         "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
         "LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s FOR UPDATE",
         (target_user_id,),
     )
     target = await cur.fetchone()
-    expected_classes = ({"INTERNAL", "OFFICE_INTERNAL"} if audience == "INTERNAL" else {"EXTERNAL_CLIENT"})
     if target is None:
         raise HTTPException(status_code=409, detail="office_project_grant_profile_required")
+    if int(target[0]) != target_hint_tenant:
+        raise HTTPException(status_code=409, detail="office_project_grant_target_drift")
+    expected_classes = ({"INTERNAL", "OFFICE_INTERNAL"} if audience == "INTERNAL" else {"EXTERNAL_CLIENT"})
     if not cleanup and (target[1] != "active" or target[3] != "active" or target[4] != "ACTIVE"
-                        or target[2] not in expected_classes):
+                        or target[2] not in expected_classes
+                        or (target[2] == "EXTERNAL_CLIENT" and target[5] != "COLLABORATOR")):
         raise HTTPException(status_code=409, detail="office_project_grant_profile_required")
     return int(target[0])
 
@@ -242,10 +267,6 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             target_tenant_id = await _lock_grant_identities(
                 cur, actor_user_id=actor_user_id, target_user_id=target_user_id, audience=payload.audience)
-            recipient_group_id = (
-                await _lock_active_client_group(cur, project_id=project_id)
-                if payload.audience == "CLIENT_PUBLISHED" else None
-            )
             result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
                 cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
                 project_id=project_id, target_user_id=target_user_id,
@@ -275,6 +296,13 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
                 # A JAX result without its terminal Office receipt is never a
                 # successful replay: serving it would hide a torn companion.
                 raise HTTPException(status_code=503, detail="office_project_grant_retryable")
+            # Scope/request/membership are locked by JAX before the Office
+            # recipient group.  Taking the group earlier forms a cycle with
+            # project provisioning (scope -> JAX request -> group).
+            recipient_group_id = (
+                await _lock_active_client_group(cur, project_id=project_id)
+                if payload.audience == "CLIENT_PUBLISHED" else None
+            )
             await cur.execute(
                 "SELECT grant_role,audience,status,version FROM office_project_grant "
                 "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
@@ -365,13 +393,9 @@ async def revoke_project_member(project_id: int, target_user_id: int,
     )
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            await cur.execute("SELECT grant_role,audience FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
-            existing_grant = await cur.fetchone()
-            if existing_grant is None:
-                raise HTTPException(status_code=404, detail="office_project_grant_not_found")
             target_tenant_id = await _lock_grant_identities(
                 cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
-                audience=str(existing_grant[1]), cleanup=True)
+                audience="INTERNAL", cleanup=True)
             result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).revoke_namespaced_member_in_transaction(
                 cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
                 project_id=project_id, target_user_id=target_user_id,
@@ -379,13 +403,13 @@ async def revoke_project_member(project_id: int, target_user_id: int,
                 authorizer=_OfficeMembershipAuthorizer(
                     proof_event_id=user.mfa_proof_event_id, mfa_config=config, grant_role=None),
             )
-            digest = _membership_receipt_digest(
-                operation="REVOKE_OFFICE_MEMBER", actor_user_id=actor_user_id,
-                target_tenant_id=target_tenant_id, project_id=project_id,
-                target_user_id=target_user_id, expected_version=expected_version,
-                grant_role=str(existing_grant[0]), audience=str(existing_grant[1]))
             receipt = await _locked_membership_receipt(cur, idempotency_key=idempotency_key)
             if receipt is not None:
+                digest = _membership_receipt_digest(
+                    operation="REVOKE_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                    target_tenant_id=target_tenant_id, project_id=project_id,
+                    target_user_id=target_user_id, expected_version=expected_version,
+                    grant_role=str(receipt[8]), audience=str(receipt[9]))
                 if (not result.replayed or str(receipt[0]) != digest
                         or str(receipt[1]) != result.membership_id or str(receipt[2]) != result.event_id):
                     raise HTTPException(status_code=409, detail="office_project_grant_idempotency_conflict")
@@ -397,20 +421,26 @@ async def revoke_project_member(project_id: int, target_user_id: int,
             if result.replayed:
                 raise HTTPException(status_code=503, detail="office_project_grant_retryable")
             await cur.execute(
-                "SELECT status,version FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
+                "SELECT grant_role,audience,status,version FROM office_project_grant WHERE project_id=%s AND user_id=%s FOR UPDATE",
                 (project_id, target_user_id))
             grant = await cur.fetchone()
             if grant is None:
                 raise HTTPException(status_code=404, detail="office_project_grant_not_found")
-            if grant[0] == "REVOKED":
+            grant_role, audience, grant_status, grant_version = grant
+            digest = _membership_receipt_digest(
+                operation="REVOKE_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                target_tenant_id=target_tenant_id, project_id=project_id,
+                target_user_id=target_user_id, expected_version=expected_version,
+                grant_role=str(grant_role), audience=str(audience))
+            if grant_status == "REVOKED":
                 # JAX replay proves this same idempotency request already
                 # revoked canonical membership.  Its Office companion has
                 # therefore advanced exactly once from expected_version.
-                if not result.replayed or int(grant[1]) != expected_version + 1:
+                if not result.replayed or int(grant_version) != expected_version + 1:
                     raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
-                version, replayed = int(grant[1]), True
+                version, replayed = int(grant_version), True
             else:
-                if int(grant[1]) != expected_version:
+                if int(grant_version) != expected_version:
                     raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                 await cur.execute(
                     "UPDATE office_project_grant SET status='REVOKED',version=version+1,updated_at=UTC_TIMESTAMP(6) "
@@ -419,13 +449,13 @@ async def revoke_project_member(project_id: int, target_user_id: int,
                 if cur.rowcount != 1:
                     raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                 version, replayed = expected_version + 1, False
-            if str(existing_grant[1]) == "CLIENT_PUBLISHED":
+            if str(audience) == "CLIENT_PUBLISHED":
                 await cur.execute(
                     "UPDATE office_external_relation SET status='REVOKED',version=version+1 "
                     "WHERE project_id=%s AND user_id=%s AND status='ACTIVE'",
                     (project_id, target_user_id))
             relation = None
-            if str(existing_grant[1]) == "CLIENT_PUBLISHED":
+            if str(audience) == "CLIENT_PUBLISHED":
                 await cur.execute(
                     "SELECT relation_id,version,recipient_group_id FROM office_external_relation "
                     "WHERE project_id=%s AND user_id=%s FOR UPDATE", (project_id, target_user_id))
@@ -442,7 +472,7 @@ async def revoke_project_member(project_id: int, target_user_id: int,
                 operation="REVOKE_OFFICE_MEMBER", actor_user_id=actor_user_id,
                 target_tenant_id=target_tenant_id, project_id=project_id,
                 target_user_id=target_user_id, expected_version=expected_version,
-                grant_role=str(existing_grant[0]), audience=str(existing_grant[1]), result=result,
+                grant_role=str(grant_role), audience=str(audience), result=result,
                 office_grant_version=version, office_grant_status="REVOKED",
                 authorization_event_id=authorization_event_id, relation=relation)
     except HTTPException:

@@ -133,6 +133,44 @@ def test_client_published_grant_requires_active_external_profile_and_tracks_rela
     ) == (("REVOKED", "REVOKED"),)
 
 
+def test_revoke_cleans_up_target_in_a_tenant_that_became_inactive(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+
+    async def scenario():
+        suffix = uuid.uuid4().hex[:12]
+        tenant = await sql("INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (f"office-cleanup-{suffix}",))
+        target = await sql(
+            "INSERT INTO jax_users (tenant_id,email,password_hash,role,status) VALUES (%s,%s,'x','operator','active')",
+            (tenant, f"office-cleanup-{suffix}@example.invalid"),
+        )
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        project = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", (f"office-cleanup-{suffix}",))
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project, tenant),
+        )
+        return int(tenant), int(project), int(target)
+
+    tenant, project, target = client.portal.call(scenario)
+    grant_headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    assert client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}, headers=grant_headers,
+    ).status_code == 200
+    client.portal.call(sql, "UPDATE jax_tenants SET status='inactive' WHERE tenant_id=%s", (tenant,))
+    revoked = client.delete(
+        f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert revoked.status_code == 200
+    assert client.portal.call(
+        sql, "SELECT m.status,g.status FROM jax_project_membership m JOIN office_project_grant g "
+             "ON g.project_id=m.project_id AND g.user_id=m.user_id WHERE m.project_id=%s AND m.user_id=%s",
+        (project, target), True,
+    ) == (("REVOKED", "REVOKED"),)
+
+
 def test_unprofiled_or_revoked_target_never_receives_jax_membership(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
@@ -145,6 +183,25 @@ def test_unprofiled_or_revoked_target_never_receives_jax_membership(client, monk
         headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())})
     assert response.status_code == 409
     assert client.portal.call(sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True) == ()
+
+
+def test_non_office_actor_cannot_probe_member_or_project_target_existence(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def unprofiled_actor():
+        actor, _ = await crear_usuario()
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (actor,), True))[0]
+        return actor, int(versions[0]), int(versions[1])
+
+    actor, tv, mv = client.portal.call(unprofiled_actor)
+    headers = {**_headers(actor, tv, mv, 1), "Idempotency-Key": str(uuid.uuid4())}
+    body = {"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}
+    existing = client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
+    missing = client.put(f"/api/virtual-office/projects/{project}/members/{target + 1000000}", json=body,
+                         headers={**headers, "Idempotency-Key": str(uuid.uuid4())})
+    assert (existing.status_code, existing.json()) == (403, {"detail": "office_project_grant_denied"})
+    assert (missing.status_code, missing.json()) == (403, {"detail": "office_project_grant_denied"})
 
 
 def test_project_admin_cannot_mint_project_admin_or_leave_partial_member(client, monkeypatch):

@@ -71,6 +71,17 @@ async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id:
         await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+    # Hints establish only a deterministic tenant-lock order.  Re-read both
+    # identities while locked so a tenant reassignment cannot turn the later
+    # profile/delegation mutation into cross-tenant authority.
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s FOR UPDATE", (actor_user_id,))
+    actor_locked = await cur.fetchone()
+    if actor_locked is None or int(actor_locked[0]) != int(actor[0]):
+        raise HTTPException(status_code=409, detail="office_delegation_target_drift")
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s FOR UPDATE", (target_user_id,))
+    target_locked = await cur.fetchone()
+    if target_locked is None or int(target_locked[0]) != target_tenant_id:
+        raise HTTPException(status_code=409, detail="office_delegation_target_drift")
     return target_tenant_id
 
 
@@ -189,7 +200,7 @@ async def list_people(
             "SELECT u.user_id,u.tenant_id,u.email,u.account_class,p.global_role,p.status,p.version "
             "FROM office_account_profile p JOIN jax_users u ON u.user_id=p.user_id "
             "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
-            "WHERE u.status='active' AND t.status='active'"
+            "WHERE u.status='active' AND t.status='active' AND p.status='ACTIVE'"
         )
         params: list[object] = []
         if target_tenant_id is not None:
@@ -237,26 +248,30 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
                 raise HTTPException(status_code=404, detail="office_person_not_found")
         decision = await _current_admin(cur, actor_user_id=actor_user_id,
                                         proof_event_id=user.mfa_proof_event_id)
+        if decision.tenant_id != int(actor_hint[0]):
+            raise HTTPException(status_code=409, detail="office_global_role_target_drift")
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_global_role_denied")
         await cur.execute(
-            "SELECT u.tenant_id,u.status,t.status,p.global_role,p.status,p.version "
+            "SELECT u.tenant_id,u.status,u.account_class,t.status,p.global_role,p.status,p.version "
             "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
             "LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
             "WHERE u.user_id=%s FOR UPDATE",
             (target_user_id,),
         )
         target = await cur.fetchone()
-        if (target is None or target[1] != "active" or target[2] != "active"
-                or target[3] is None or target[4] != "ACTIVE"):
+        if (target is None or int(target[0]) != int(target_hint[0]) or target[1] != "active" or target[3] != "active"
+                or target[4] is None or target[5] != "ACTIVE"):
             raise HTTPException(status_code=404, detail="office_person_not_found")
-        if int(target[5]) != payload.expected_version:
+        if target[2] == "EXTERNAL_CLIENT" and payload.global_role != "COLLABORATOR":
+            raise HTTPException(status_code=409, detail="office_external_role_incompatible")
+        if int(target[6]) != payload.expected_version:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
         # Removing an Office root is the separate recovery/continuity
         # ceremony, not an ordinary profile edit.  In particular, two roots
         # must never be able to concurrently demote each other and leave no
         # authority capable of performing the recovery contract.
-        if target[3] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER":
+        if target[4] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
         # Reread current authority after the target profile lock.  A revoked
         # root can never use a decision taken before this write point.

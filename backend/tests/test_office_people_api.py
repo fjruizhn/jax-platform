@@ -99,6 +99,34 @@ def test_global_role_mutation_never_creates_unprofiled_office_binding(client, mo
     assert client.portal.call(sql, "SELECT user_id FROM office_account_profile WHERE user_id=%s", (target,), True) == ()
 
 
+def test_external_client_cannot_receive_administrative_global_role_or_appear_after_revocation(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+
+    async def scenario():
+        target, _ = await crear_usuario()
+        await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (target,))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status,version) VALUES (%s,'COLLABORATOR','ACTIVE',1)", (target,))
+        return target
+
+    target = client.portal.call(scenario)
+    headers = _headers(root, tv, mv, proof)
+    denied = client.put(
+        f"/api/virtual-office/people/{target}/global-role",
+        json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=headers,
+    )
+    assert (denied.status_code, denied.json()) == (409, {"detail": "office_external_role_incompatible"})
+    assert client.portal.call(
+        sql, "SELECT global_role,version FROM office_account_profile WHERE user_id=%s", (target,), True,
+    ) == (("COLLABORATOR", 1),)
+    assert client.delete(
+        f"/api/virtual-office/people/{target}/profile?expected_version=1", headers=headers,
+    ).status_code == 200
+    listed = client.get("/api/virtual-office/people", headers=headers)
+    assert listed.status_code == 200
+    assert target not in {row["user_id"] for row in listed.json()["people"]}
+
+
 def test_root_enables_only_self_controlled_existing_profile_and_never_reactivates_revoked(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
