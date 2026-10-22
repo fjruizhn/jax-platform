@@ -9,6 +9,7 @@ from virtual_office.migrations import assert_mfa_ledger_runtime_metadata
 from virtual_office.migrations import assert_bootstrap_runtime_metadata
 from virtual_office.migrations import assert_membership_receipt_runtime_metadata
 from virtual_office.migrations import assert_profile_revocation_runtime_metadata
+from virtual_office.module_release_ledger import assert_module_candidate_storage_metadata
 from .runtime_privileges import runtime_table_privilege_map
 
 FENCE_KEY = "office-audit-fence-v1"
@@ -100,6 +101,14 @@ async def _profile_revocation_metadata(cur):
         await assert_profile_revocation_runtime_metadata(cur, allow_redacted_trigger_body=True)
     except RuntimeError as error:
         raise RuntimeDbContractError("Office profile revocation metadata is invalid") from error
+
+
+async def _module_candidate_storage_metadata(cur):
+    """A stamped v8 schema must still contain its inert candidate storage."""
+    try:
+        await assert_module_candidate_storage_metadata(cur, allow_redacted_trigger_body=True)
+    except RuntimeError as error:
+        raise RuntimeDbContractError("Office module candidate storage metadata is invalid") from error
 
 
 async def _revision(cur):
@@ -485,6 +494,7 @@ async def assert_runtime_db_contract(pool) -> None:
             await _bootstrap_metadata(cur)
             await _membership_receipt_metadata(cur)
             await _profile_revocation_metadata(cur)
+            await _module_candidate_storage_metadata(cur)
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")
     await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
