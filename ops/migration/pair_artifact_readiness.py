@@ -114,7 +114,7 @@ def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str 
         manifest = json.loads((release / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _reject("invalid manifest") from exc
-    if not isinstance(manifest, dict) or set(manifest) != {"schema", "jax_platform_revision", "jax_revision", "dependency_lock_sha256", "wheelhouse_manifest_sha256", "files"}:
+    if not isinstance(manifest, dict) or set(manifest) != {"schema", "jax_platform_revision", "jax_revision", "dependency_lock_sha256", "wheelhouse_manifest_sha256", "files", "jax_links"}:
         raise _reject("invalid manifest shape")
     if manifest["schema"] != SCHEMA:
         raise _reject("unsupported manifest schema")
@@ -129,6 +129,12 @@ def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str 
         if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
             raise _reject(f"invalid {key}")
     files = manifest["files"]
+    try:
+        attestation = json.loads((release / "build-attestation.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _reject("invalid build attestation") from exc
+    if not isinstance(manifest["jax_links"], list) or not isinstance(attestation, dict) or manifest["jax_links"] != attestation.get("jax_links"):
+        raise _reject("jax link attestation mismatch")
     if not isinstance(files, list) or files != _inventory(release, owner_uid=owner_uid, owner_gid=owner_gid):
         raise _reject("artifact inventory mismatch")
     paths = {entry["path"] for entry in files if isinstance(entry, dict)}

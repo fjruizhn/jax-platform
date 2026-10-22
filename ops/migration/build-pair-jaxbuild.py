@@ -153,6 +153,14 @@ def main() -> None:
         subprocess.run([str(venv / "bin" / "pip"), "freeze", "--all"], check=True, stdout=freeze, env=SAFE_ENV)
     attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "platform_links": platform_links, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "jax_links": jax_links, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
     (arguments.out / "build-attestation.json").write_text(json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    # The final root adoption re-owns this tree but never changes bytes.  Keep the
+    # Git-link attestation beside the sealed inventory so readiness can compare it.
+    readiness_spec = __import__("importlib.util").util.spec_from_file_location("pair_readiness", Path(__file__).with_name("pair_artifact_readiness.py"))
+    assert readiness_spec and readiness_spec.loader
+    readiness = __import__("importlib.util").util.module_from_spec(readiness_spec)
+    readiness_spec.loader.exec_module(readiness)
+    manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": arguments.platform_commit, "jax_revision": arguments.jax_commit, "dependency_lock_sha256": digest(arguments.lock), "wheelhouse_manifest_sha256": actual_wheelhouse, "jax_links": jax_links, "files": readiness._inventory(arguments.out, owner_uid=os.getuid(), owner_gid=os.getgid())}
+    (arguments.out / readiness.MANIFEST).write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

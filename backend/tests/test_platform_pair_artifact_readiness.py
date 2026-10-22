@@ -30,9 +30,13 @@ def _pair(tmp_path: Path) -> tuple[Path, int, int]:
                  root / "jax-platform" / "backend" / ".venv", root / "jax-platform" / "backend" / ".venv" / "bin",
                  root / "jax", root / "jax" / "jax", root.parent, root.parent.parent):
         path.chmod(0o755)
+    attestation = {"schema": "axioma.pair-build/v2", "jax_links": []}
+    (root / "build-attestation.json").write_text(json.dumps(attestation), encoding="utf-8")
+    (root / "build-attestation.json").chmod(0o644)
     manifest = {"schema": readiness.SCHEMA, "jax_platform_revision": "a" * 40,
                 "jax_revision": "b" * 40, "dependency_lock_sha256": "c" * 64,
                 "wheelhouse_manifest_sha256": "d" * 64,
+                "jax_links": [],
                 "files": readiness._inventory(root, owner_uid=uid, owner_gid=gid)}
     (root / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     (root / readiness.MANIFEST).chmod(0o644)
@@ -79,12 +83,31 @@ def test_allows_only_sealed_internal_jax_symlink_targets(tmp_path: Path) -> None
     target = root / "jax" / "jax" / "memory.py"
     link = root / "jax" / "las_manos_memory.py"
     link.symlink_to("jax/memory.py")
+    link_attestation = {"path": "jax/las_manos_memory.py", "mode": "120000", "blob_oid": "a" * 40,
+                        "target": "jax/memory.py", "target_path": "jax/jax/memory.py", "target_mode": "100644", "target_oid": "b" * 40}
+    (root / "build-attestation.json").write_text(json.dumps({"schema": "axioma.pair-build/v2", "jax_links": [link_attestation]}), encoding="utf-8")
     manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8"))
+    manifest["jax_links"] = [link_attestation]
     manifest["files"] = readiness._inventory(root, owner_uid=uid, owner_gid=gid)
     (root / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
     _verify(root, uid, gid)
     link.unlink(); link.symlink_to("/etc/passwd")
     with pytest.raises(readiness.PairReadinessError):
+        _verify(root, uid, gid)
+
+
+@pytest.mark.parametrize("field,value", [("target_oid", "c" * 40), ("target_mode", "100755")])
+def test_rejects_pair_manifest_link_attestation_mutation(tmp_path: Path, field: str, value: str) -> None:
+    root, uid, gid = _pair(tmp_path)
+    link_attestation = {"path": "jax/link", "mode": "120000", "blob_oid": "a" * 40,
+                        "target": "jax/memory.py", "target_path": "jax/jax/memory.py", "target_mode": "100644", "target_oid": "b" * 40}
+    (root / "jax" / "link").symlink_to("jax/memory.py")
+    (root / "build-attestation.json").write_text(json.dumps({"schema": "axioma.pair-build/v2", "jax_links": [link_attestation]}), encoding="utf-8")
+    manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8")); manifest["jax_links"] = [dict(link_attestation)]
+    manifest["jax_links"][0][field] = value
+    manifest["files"] = readiness._inventory(root, owner_uid=uid, owner_gid=gid)
+    (root / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(readiness.PairReadinessError, match="jax link attestation mismatch"):
         _verify(root, uid, gid)
 
 
