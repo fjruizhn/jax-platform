@@ -20,7 +20,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
   const [revokeError, setRevokeError] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
   const [busy, setBusy] = useState(false)
-  const issueKey = useRef(null)
+  const issueIntent = useRef(null)
   const revokeKey = useRef(null)
 
   if (!enabled) return null
@@ -28,13 +28,15 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
   async function issue(event) {
     event.preventDefault()
     if (busy || !email.trim()) return
-    issueKey.current ??= crypto.randomUUID()
+    const payload = { email: email.trim(), audience }
+    const signature = JSON.stringify(payload)
+    if (issueIntent.current?.signature !== signature) issueIntent.current = { signature, key: crypto.randomUUID() }
     setBusy(true)
     setError(null)
     setRefreshError(null)
     try {
-      await officeInvitationsApi.issue(projectId, { email: email.trim(), audience }, issueKey.current)
-      issueKey.current = null
+      await officeInvitationsApi.issue(projectId, payload, issueIntent.current.key)
+      issueIntent.current = null
       setEmail('')
     } catch {
       setError(t.officeInvitation.managerError)
@@ -48,6 +50,16 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
     } finally {
       setBusy(false)
     }
+  }
+
+  function closeManager() {
+    if (busy || revoke) return
+    issueIntent.current = null
+    setEmail('')
+    setAudience('INTERNAL')
+    setError(null)
+    setRefreshError(null)
+    setOpen(false)
   }
 
   async function confirmRevoke() {
@@ -77,14 +89,14 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
 
   return <>
     <button type="button" onClick={() => setOpen(true)} className={BUTTON}>{t.officeInvitation.manage}</button>
-    {open && <Dialogo idTitulo="office-invitations" titulo={t.officeInvitation.manage} onCerrar={() => { if (!busy && !revoke) setOpen(false) }}>
+    {open && <Dialogo idTitulo="office-invitations" titulo={t.officeInvitation.manage} onCerrar={closeManager}>
       <div data-office-invitation-content={true} inert={revoke || undefined} aria-hidden={revoke ? 'true' : undefined}>
       <form onSubmit={issue} className="space-y-3">
         <label className="block text-sm text-texto-suave" htmlFor="office-invitation-email">{t.officeInvitation.email}
-          <input id="office-invitation-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required className={`${INPUT} mt-1`} />
+          <input id="office-invitation-email" type="email" value={email} disabled={busy} onChange={(event) => { setEmail(event.target.value); setError(null) }} autoComplete="email" required className={`${INPUT} mt-1`} />
         </label>
         <label className="block text-sm text-texto-suave" htmlFor="office-invitation-audience">{t.officeInvitation.audience}
-          <select id="office-invitation-audience" value={audience} onChange={(event) => setAudience(event.target.value)} className={`${INPUT} mt-1`}>
+          <select id="office-invitation-audience" value={audience} disabled={busy} onChange={(event) => { setAudience(event.target.value); setError(null) }} className={`${INPUT} mt-1`}>
             <option value="INTERNAL">{t.officeInvitation.audiences.INTERNAL}</option>
             <option value="CLIENT_PUBLISHED">{t.officeInvitation.audiences.CLIENT_PUBLISHED}</option>
           </select>

@@ -33,6 +33,43 @@ describe('OfficeInvitationManager', () => {
     await waitFor(() => expect(invitations.issue).toHaveBeenCalledWith(12, { email: 'ana@example.test', audience: 'INTERNAL' }, 'fixed-uuid'))
   })
 
+  it('retries the same failed invitation intent with its original idempotency key', async () => {
+    invitations.issue.mockRejectedValueOnce(new Error('lost')).mockResolvedValueOnce({ data: {} })
+    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('key-a').mockReturnValueOnce('key-b') })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo completar la operación de invitación.')
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    await waitFor(() => expect(invitations.issue).toHaveBeenNthCalledWith(2, 12, { email: 'ana@example.test', audience: 'INTERNAL' }, 'key-a'))
+  })
+
+  it('uses a new idempotency key when a failed invitation payload changes', async () => {
+    invitations.issue.mockRejectedValueOnce(new Error('lost')).mockResolvedValueOnce({ data: {} })
+    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('key-a').mockReturnValueOnce('key-b') })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    await screen.findByRole('alert')
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'bea@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    await waitFor(() => expect(invitations.issue).toHaveBeenNthCalledWith(2, 12, { email: 'bea@example.test', audience: 'INTERNAL' }, 'key-b'))
+  })
+
+  it('does not allow the invitation payload to be edited while it is in flight', async () => {
+    let resolve
+    invitations.issue.mockReturnValue(new Promise((done) => { resolve = done }))
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.change(screen.getByLabelText('Correo electrónico'), { target: { value: 'ana@example.test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
+    expect(screen.getByLabelText('Correo electrónico')).toBeDisabled()
+    expect(screen.getByLabelText('Audiencia')).toBeDisabled()
+    resolve({ data: {} })
+  })
+
   it('requires an explicit modal confirmation before revoking the version displayed', async () => {
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
