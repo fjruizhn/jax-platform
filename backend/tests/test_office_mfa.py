@@ -367,6 +367,38 @@ def test_recovery_receipt_tamper_fails_closed_and_expiry_erases_ciphertext(clien
     client.portal.call(scenario)
 
 
+@pytest.mark.parametrize("boundary", ("INSERT INTO office_mfa_recovery_receipt", "UPDATE office_mfa_recovery_code SET used_at", "UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1", "UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED'", "UPDATE office_mfa_credential SET state='PENDING'", "UPDATE office_mfa_recovery_receipt SET output_challenge_hash"))
+def test_recovery_compound_mutation_boundaries_roll_back(client, boundary):
+    async def scenario():
+        await _migrate(); user_id, _, enrolled = await _active_user(); code = enrolled.recovery_codes[0]
+        before = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)
+        class FaultCursor:
+            def __init__(self, delegate): self._delegate = delegate
+            async def execute(self, statement, *args):
+                if boundary in statement: raise RuntimeError("injected recovery boundary")
+                return await self._delegate.execute(statement, *args)
+            def __getattr__(self, name): return getattr(self._delegate, name)
+        with pytest.raises(RuntimeError, match="injected recovery boundary"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await recover_to_pending_enrollment_in_cursor(FaultCursor(cur), recovery_code=code, config=CONFIG, server_correlation_id=b"B" * 16)
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True) == before
+        assert await sql("SELECT used_at FROM office_mfa_recovery_code WHERE code_hash=UNHEX(SHA2(%s,256))", (code,), True) == ((None,),)
+        assert await sql("SELECT COUNT(*) FROM office_mfa_recovery_receipt WHERE user_id=%s", (user_id,), True) == ((0,),)
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("zone", ("-06:00", "+05:30"))
+def test_recovery_one_hop_uses_utc_under_hostile_session_timezone(client, zone):
+    async def scenario():
+        await _migrate(); _user, _, enrolled = await _active_user()
+        async with _session_timezone_transaction(zone) as cur:
+            first = await recover_to_pending_enrollment_in_cursor(cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG, server_correlation_id=b"Z" * 16)
+        async with _session_timezone_transaction(zone) as cur:
+            replay = await recover_to_pending_enrollment_in_cursor(cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG, server_correlation_id=b"Y" * 16)
+        assert replay == first and first.expires_at.tzinfo is dt.timezone.utc
+    client.portal.call(scenario)
+
+
 @pytest.mark.parametrize("terminal", ("expired", "exhausted"))
 def test_terminal_enrollment_erases_its_recovery_replay_package(client, terminal):
     async def scenario():

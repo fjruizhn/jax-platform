@@ -579,6 +579,16 @@ def test_mfa_recovery_preflight_only_blocks_live_unreceipted_legacy_bearers(clie
                         (f"receipt-source-{tag}", user, enrollment_hash, enrollment_expiry),
                     )
                     await _preflight_legacy_recovery_in_flight(cur)
+                    await cur.execute(
+                        "INSERT INTO jax_users (tenant_id,email,password_hash,account_class) VALUES (%s,%s,'x','OFFICE_INTERNAL')",
+                        (tenant, f"receipt-other-{tag}@example.invalid"),
+                    )
+                    other = cur.lastrowid
+                    with pytest.raises(aiomysql.IntegrityError):
+                        await cur.execute(
+                            "UPDATE office_mfa_recovery_receipt SET user_id=%s WHERE user_id=%s",
+                            (other, user),
+                        )
 
                     # A terminal receipt has erased the replay package.  Its
                     # still-live PENDING enrollment cannot prove v7 origin
