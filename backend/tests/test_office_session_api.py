@@ -192,7 +192,9 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     assert (revoked_response.status_code, revoked_response.json()) == (401, {"detail": "sesion_invalida"})
     assert unknown_response.status_code == 200
     assert unknown_response.json()["mfa"] == {"verified": False, "recent": False}
-    assert all(value is False for value in unknown_response.json()["capabilities"].values())
+    assert unknown_response.json()["capabilities"] == {
+        "create_project": True, "administer_office": False, "administer_identity_security": False,
+    }
 
 
 def test_office_session_rechecks_token_cut_after_dependency_before_response(client, monkeypatch):
