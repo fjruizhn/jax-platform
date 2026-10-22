@@ -33,6 +33,8 @@ args=(--site-root "$fixture/site" --releases-root "$fixture/site/releases" --rel
 backup=$(find "$fixture/backups" -mindepth 1 -maxdepth 1 -type d | head -1)
 "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$backup" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"
+# A stale snapshot cannot overwrite a later state.
+if "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$backup" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'stale rollback unexpectedly ran' >&2; exit 1; fi
 
 # A smoke failure after switching must restore the old release automatically.
 export FAIL_SMOKE=1
@@ -48,7 +50,7 @@ first=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name CURRENT_ABSENT -pr
 # curl is deliberately replaced with a no-byte response for this isolated fixture.
 cat > "$fixture/bin/curl" <<'SH'
 #!/usr/bin/env bash
-exit 0
+printf 'previous default host\n'
 SH
 chmod 755 "$fixture/bin/curl"
 PATH="$fixture/bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null

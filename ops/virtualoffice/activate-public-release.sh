@@ -25,6 +25,12 @@ while (($#)); do case $1 in
 [[ -x $validator && -x $nginx && -f $source ]] || die 'validator, nginx, or vhost source is unavailable'
 site=$(readlink -f -- "$site"); releases=$(readlink -f -- "$releases"); release=$(readlink -f -- "$release")
 case "$release" in "$releases"/*) ;; *) die 'release escapes releases root';; esac
+install -d -o root -g root -m 0755 "$site"
+lock="$site/.activation.lock"
+[[ ! -e $lock || ( $(stat -c %u "$lock") == 0 && $(stat -c %a "$lock") == 600 ) ]] || die 'activation lock is unsafe'
+install -o root -g root -m 0600 /dev/null "$lock"
+exec 9>"$lock"
+flock -n 9 || die 'another Office activation or rollback is running'
 "$validator" offline --config "$source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-user "$nginx_user"
 
 install -d -o root -g root -m 0700 "$backups"
@@ -43,16 +49,16 @@ printf '%s\n' "$index" > "$backup/new-index-sha256"
 rollback="$(dirname "$(readlink -f -- "$0")")/rollback-public-release.sh"
 [[ -x $rollback ]] || die 'rollback executable is unavailable'
 changed=0
-restore_on_error() { local code=$?; if ((changed)); then "$rollback" --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index" || true; fi; exit "$code"; }
+restore_on_error() { local code=$?; if ((changed)); then "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index" || true; fi; exit "$code"; }
 trap restore_on_error ERR INT TERM
 
 install -d -o root -g root -m 0755 "$(dirname -- "$vhost")"
 install -o root -g root -m 0644 "$source" "$vhost.new"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"
+changed=1
 mv -f -- "$vhost.new" "$vhost"
 mv -Tf -- "$site/.current.new" "$current"
-changed=1
 "$validator" offline --config "$vhost" --site-root "$site" --releases-root "$releases" --release "$current" --expected-source-sha "$sha" --nginx-user "$nginx_user"
 "$nginx" -t
 "$nginx" -s reload
