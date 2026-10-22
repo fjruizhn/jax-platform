@@ -47,6 +47,8 @@ note() { printf 'provision-db-runtime: %s\n' "$*"; }
 
 declare -A CFG=()
 declare -A RUNTIME_ALLOWED=()
+declare -A OFFICE_INVITATION_CFG=()
+OFFICE_INVITATION_KEYS=(OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL OFFICE_PUBLIC_ORIGIN)
 load_runtime_allowlist() {
   local pair_exec allowed_keys allowed_key required_runtime_key
   # The service executes this installed helper, so provisioning derives the
@@ -87,6 +89,76 @@ parse_env() {
     CFG["$key"]=$value
   done < "$ENV_FILE"
 }
+load_office_invitation_config() {
+  local source=$1 strict_mode=$2 parsed line key value
+  if [ "$strict_mode" = runtime ]; then
+    [[ -f $source && ! -L $source ]] || die "existing runtime Office invitation configuration is unavailable"
+    [[ $(stat -c '%U:%G:%a' "$source") == root:root:600 ]] || die "existing runtime Office invitation configuration has unsafe permissions"
+  fi
+  parsed=$(python3 -I -S - "$source" "$strict_mode" <<'PY'
+import os, re, stat, sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+path = Path(sys.argv[1])
+strict_mode = sys.argv[2]
+keys = (
+    "OFFICE_INVITATION_LIFETIME_SECONDS", "OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS",
+    "OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT",
+    "OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "OFFICE_INVITATION_PUBLIC_BASE_URL",
+    "OFFICE_PUBLIC_ORIGIN",
+)
+values = {}
+try:
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        if key in keys:
+            if key in values:
+                raise ValueError("duplicate")
+            values[key] = value
+except (OSError, UnicodeDecodeError, ValueError):
+    raise SystemExit(1)
+if set(values) != set(keys):
+    raise SystemExit(1)
+limits = {
+    "OFFICE_INVITATION_LIFETIME_SECONDS": (1, 604800),
+    "OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS": (1, 3600),
+    "OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT": (1, 1000),
+    "OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT": (1, 100),
+    "OFFICE_INVITATION_DELIVERY_BATCH_LIMIT": (1, 25),
+}
+for key, (low, high) in limits.items():
+    raw = values[key]
+    if not re.fullmatch(r"[1-9][0-9]*", raw) or not low <= int(raw) <= high:
+        raise SystemExit(1)
+def origin(raw):
+    if not raw or raw != raw.strip() or len(raw) > 2048:
+        raise ValueError
+    parsed = urlsplit(raw)
+    if (parsed.scheme != "https" or not parsed.netloc or parsed.hostname is None
+            or not parsed.hostname.isascii() or parsed.username is not None
+            or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
+            or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
+        raise ValueError
+    return raw
+try:
+    public_base = origin(values["OFFICE_INVITATION_PUBLIC_BASE_URL"])
+    public_origin = origin(values["OFFICE_PUBLIC_ORIGIN"])
+except ValueError:
+    raise SystemExit(1)
+if public_base != public_origin:
+    raise SystemExit(1)
+for key in keys:
+    print(f"{key}={values[key]}")
+PY
+) || die "Office invitation configuration is incomplete or invalid"
+  while IFS= read -r line; do
+    key=${line%%=*}; value=${line#*=}
+    OFFICE_INVITATION_CFG["$key"]=$value
+  done <<< "$parsed"
+}
 parse_env
 
 need() { [[ -n ${CFG[$1]+yes} && -n ${CFG[$1]} ]] || die "missing required key: $1"; }
@@ -106,7 +178,18 @@ DB=${CFG[JAX_DB_NAME]}
 [[ "$RUNTIME_USER" != "$MIGRATE_USER" ]] || die "database principal names must differ"
 [[ "$RUNTIME_USER" =~ ^[A-Za-z0-9_]{1,32}$ && "$MIGRATE_USER" =~ ^[A-Za-z0-9_]{1,32}$ ]] || die "invalid database principal name"
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
-if [ "$MIGRATOR_ONLY" = 0 ]; then load_runtime_allowlist; fi
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  load_runtime_allowlist
+  office_keys_in_deployment=0
+  for key in "${OFFICE_INVITATION_KEYS[@]}"; do [[ -v "CFG[$key]" ]] && office_keys_in_deployment=$((office_keys_in_deployment + 1)); done
+  if [ "$office_keys_in_deployment" = 0 ]; then
+    load_office_invitation_config "$RUNTIME_ENV" runtime
+  elif [ "$office_keys_in_deployment" = "${#OFFICE_INVITATION_KEYS[@]}" ]; then
+    load_office_invitation_config "$ENV_FILE" deployment
+  else
+    die "Office invitation configuration is incomplete in deployment environment"
+  fi
+fi
 
 declare -a RUNTIME_TABLES=()
 declare -A RUNTIME_TABLE_PRIVILEGES=()
@@ -479,10 +562,11 @@ write_atomic() { local destination=$1 content=$2 temp parent; parent=$(dirname "
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   runtime_content=
   for key in "${!CFG[@]}"; do
-    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
+    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*|OFFICE_INVITATION_*|OFFICE_PUBLIC_ORIGIN) continue ;; esac
     [[ -v "RUNTIME_ALLOWED[$key]" ]] || continue
     runtime_content+="$key=${CFG[$key]}"$'\n'
   done
+  for key in "${OFFICE_INVITATION_KEYS[@]}"; do runtime_content+="$key=${OFFICE_INVITATION_CFG[$key]}"$'\n'; done
   runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
   runtime_content+="JAX_DB_PASSWORD=$runtime_password"$'\n'
 fi

@@ -67,6 +67,18 @@ if JAX_PAIR_EXEC_FIXTURE="$STALE_PAIR_EXEC" "$HELPER" --plan --env "$ENV_FILE" -
   echo 'stale runtime launcher was accepted' >&2; exit 1
 fi
 
+mkdir -p "$TEMP/state"
+printf 'OFFICE_INVITATION_LIFETIME_SECONDS=3600\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test\nOFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test\n' > "$TEMP/state/runtime.env"
+chown root:root "$TEMP/state/runtime.env"
+chmod 600 "$TEMP/state/runtime.env"
+INCOMPLETE_RUNTIME="$TEMP/incomplete-runtime.env"
+printf 'OFFICE_INVITATION_LIFETIME_SECONDS=3600\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test\n' > "$INCOMPLETE_RUNTIME"
+chown root:root "$INCOMPLETE_RUNTIME"
+chmod 600 "$INCOMPLETE_RUNTIME"
+if JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --plan --env "$ENV_FILE" --runtime-env "$INCOMPLETE_RUNTIME" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'incomplete existing Office invitation configuration was accepted' >&2; exit 1
+fi
+
 absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') AND Host='%s';\n" "$WEB" "$MIG" "$HOST" | admin)
 [ "$absent" = 0 ] || { echo 'random fixture principal already exists; refusing ownership' >&2; exit 2; }
 OWNED=1
@@ -97,6 +109,7 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
 ! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
+for entry in OFFICE_INVITATION_LIFETIME_SECONDS=3600 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
 ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" MIGRATE_ENV="$TEMP/state/migrate.env" python3 - <<'PY'
 import importlib.util, os
 from pathlib import Path
