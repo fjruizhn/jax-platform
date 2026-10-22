@@ -155,13 +155,15 @@ def main() -> None:
     parser.add_argument("--jax", type=Path, required=True)
     parser.add_argument("--jax-commit", required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--wheelhouse", type=Path, required=True)
+    parser.add_argument("--inputs", type=Path, required=True, help="root-sealed snapshot containing wheelhouse/ and lock")
     parser.add_argument("--wheelhouse-sha256", required=True)
-    parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--lock-sha256", required=True)
     parser.add_argument("--python", default=sys.executable)
     arguments = parser.parse_args()
-    if (arguments.out.exists() or not arguments.wheelhouse.is_dir() or arguments.wheelhouse.is_symlink() or not arguments.lock.is_file() or arguments.lock.is_symlink() or not exact_commit(arguments.platform_commit) or not exact_commit(arguments.jax_commit) or len(arguments.wheelhouse_sha256) != 64 or len(arguments.lock_sha256) != 64 or "--hash=sha256:" not in arguments.lock.read_text(encoding="utf-8")):
+    arguments.wheelhouse = arguments.inputs / "wheelhouse"
+    arguments.lock = arguments.inputs / "lock"
+    snapshot_stat = arguments.inputs.lstat() if arguments.inputs.exists() else None
+    if (arguments.out.exists() or snapshot_stat is None or snapshot_stat.st_uid != 0 or snapshot_stat.st_mode & 0o022 or not arguments.wheelhouse.is_dir() or arguments.wheelhouse.is_symlink() or not arguments.lock.is_file() or arguments.lock.is_symlink() or not exact_commit(arguments.platform_commit) or not exact_commit(arguments.jax_commit) or len(arguments.wheelhouse_sha256) != 64 or len(arguments.lock_sha256) != 64 or "--hash=sha256:" not in arguments.lock.read_text(encoding="utf-8")):
         die("invalid inputs")
     actual_wheelhouse = wheelhouse_digest(arguments.wheelhouse)
     if actual_wheelhouse != arguments.wheelhouse_sha256 or digest(arguments.lock) != arguments.lock_sha256:
@@ -177,7 +179,8 @@ def main() -> None:
     jax_tree, jax_links = extract(arguments.jax, arguments.jax_commit, jax_output)
     venv = platform_output / "backend" / ".venv"
     subprocess.run([arguments.python, "-m", "venv", "--copies", str(venv)], check=True, env=SAFE_ENV)
-    subprocess.run([str(venv / "bin" / "pip"), "install", "--no-index", f"--find-links={arguments.wheelhouse}", "--require-hashes", "-r", str(arguments.lock)], check=True, env=SAFE_ENV)
+    pip_env = SAFE_ENV | {"PIP_CONFIG_FILE": "/dev/null", "PYTHONNOUSERSITE": "1"}
+    subprocess.run([str(venv / "bin" / "pip"), "install", "--no-index", "--no-cache-dir", f"--find-links={arguments.wheelhouse}", "--require-hashes", "--no-deps", "-r", str(arguments.lock)], check=True, env=pip_env)
     with (arguments.out / "freeze.txt").open("xb") as freeze:
         subprocess.run([str(venv / "bin" / "pip"), "freeze", "--all"], check=True, stdout=freeze, env=SAFE_ENV)
     attestation = {"schema": "axioma.pair-build/v2", "platform_commit": arguments.platform_commit, "platform_tree": platform_tree, "platform_links": platform_links, "jax_commit": arguments.jax_commit, "jax_tree": jax_tree, "jax_links": jax_links, "wheelhouse_sha256": actual_wheelhouse, "lock_sha256": digest(arguments.lock), "python": str(Path(arguments.python).resolve()), "python_sha256": digest(Path(arguments.python).resolve()), "python_version": subprocess.check_output([arguments.python, "-c", "import sys; print(sys.implementation.cache_tag)"], env=SAFE_ENV, text=True).strip(), "freeze_sha256": digest(arguments.out / "freeze.txt")}
