@@ -63,6 +63,27 @@ def _safe_node(path: Path, *, directory: bool = False, owner_uid: int = 0, owner
     return value
 
 
+def _read_regular_fd(path: Path, *, owner_uid: int, owner_gid: int) -> tuple[os.stat_result, bytes]:
+    """Open once without following a final symlink, then validate those bytes."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise PackageError("missing package node") from exc
+    try:
+        value = os.fstat(descriptor)
+        if (not stat.S_ISREG(value.st_mode) or value.st_nlink != 1
+                or value.st_uid != owner_uid or value.st_gid != owner_gid or value.st_mode & 0o022):
+            raise PackageError("unsafe package node")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                return value, b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
 def _trusted_ancestors(path: Path, *, owner_uid: int = 0, owner_gid: int = 0) -> None:
     """Reject a package whose pathname can be replaced through an ancestor."""
     current = path.parent
@@ -108,8 +129,8 @@ def _load(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: in
     if owner_uid == 0 and owner_gid == 0:
         _trusted_ancestors(root, owner_uid=owner_uid, owner_gid=owner_gid)
     manifest = root / "manifest.json"
-    _safe_node(manifest, owner_uid=owner_uid, owner_gid=owner_gid)
-    data = _canonical_manifest(manifest.read_bytes(), expected_digest)
+    _, manifest_bytes = _read_regular_fd(manifest, owner_uid=owner_uid, owner_gid=owner_gid)
+    data = _canonical_manifest(manifest_bytes, expected_digest)
     payload = data["payload"]
     if not isinstance(payload, list) or not payload:
         raise PackageError("payload")
@@ -127,8 +148,7 @@ def _load(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: in
                 or item["mode"] != required_mode or item["owner"] != "root:root"):
             raise PackageError("entry metadata")
         entry = root / path
-        value = _safe_node(entry, owner_uid=owner_uid, owner_gid=owner_gid)
-        contents = entry.read_bytes()
+        value, contents = _read_regular_fd(entry, owner_uid=owner_uid, owner_gid=owner_gid)
         if value.st_size != item["size"] or len(contents) != item["size"] or f"{stat.S_IMODE(value.st_mode):04o}" != required_mode or hashlib.sha256(contents).hexdigest() != item["sha256"]:
             raise PackageError("payload mismatch")
         paths.append(path)
