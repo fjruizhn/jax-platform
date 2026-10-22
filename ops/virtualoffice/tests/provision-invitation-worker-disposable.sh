@@ -40,6 +40,9 @@ case "$HOST" in ''|%|*%*|*_* ) echo 'unsafe measured fixture host' >&2; exit 2;;
 [[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$USER_NAME" "$HOST" | admin) == 0 ]] || { echo 'fixture principal already exists' >&2; exit 2; }
 OWNED=1
 
+SQL_FILE="$TEMP/office-invitation-delivery-v1.sql"
+cp "$ROOT_DIR/ops/virtualoffice/office-invitation-delivery-v1.sql" "$SQL_FILE"
+chown root:root "$SQL_FILE"; chmod 644 "$SQL_FILE"
 ENV_FILE="$TEMP/runtime.env"
 cat > "$ENV_FILE" <<EOF
 JAX_DB_HOST=127.0.0.1
@@ -67,7 +70,7 @@ chmod 666 "$ENV_FILE"
 if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2; exit 1; fi
 chmod 600 "$ENV_FILE"
 run_helper
-"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST"
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE"
 run_helper
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600

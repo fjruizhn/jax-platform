@@ -120,7 +120,7 @@ printf '%s\n' 'invitation worker principal and env provisioned; install audited 
 if [[ "$routine_count" == 3 ]]; then
 # Full grant sets are a contract.  Count alone is insufficient because a
 # different sixth privilege can change authority.
-worker_grants=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | tr '\140' '\047')
+worker_grants=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
 expected_worker=$(cat <<EOF2
 GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'
 GRANT SELECT ('attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at') ON '$db'.'office_invitation_outbox' TO '$WORKER_DB_USER'@'$host'
@@ -130,5 +130,5 @@ GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_D
 GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'
 EOF2
 )
-[[ $(printf '%s\n' "$worker_grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { printf '%s\n' 'worker database grants are not exact' >&2; exit 1; }
+[[ $(printf '%s\n' "$worker_grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { printf '%s\n' 'worker database grants are not exact' >&2; printf '%s\n' "$worker_grants" >&2; exit 1; }
 fi
