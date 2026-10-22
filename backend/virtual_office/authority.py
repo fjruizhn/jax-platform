@@ -7,7 +7,9 @@ from db.connection import get_pool
 from .capabilities import ADMIN_OPERATIONS, OfficeOperation, grant_permits, operation_requires_project
 from .models import OfficeDecision
 from . import repository
-from .mfa import MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor, reload_current_self_mfa_verified_in_cursor
+from .mfa import (MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor,
+                  reload_current_self_mfa_verified_in_cursor,
+                  reload_issued_invitation_mfa_proof_in_cursor)
 
 
 def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None,
@@ -55,6 +57,44 @@ async def authorize_office_in_cursor(cur, actor_user_id: int, operation: OfficeO
     _validate(actor_user_id, operation, project_id, recipient_group_id)
     decision = await _authorize(cur, actor_user_id, operation, project_id, recipient_group_id, require_recent_mfa, True)
     return await _apply_mfa_requirement(cur, decision, require_recent_mfa, mfa_proof_event_id, mfa_config)
+
+
+async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
+                                                 project_id: int, proof_event_id: int,
+                                                 issued_mfa_version: int,
+                                                 issued_mfa_at) -> OfficeDecision:
+    """Revalidate an issuance proof for delegated acceptance without its age.
+
+    This narrow resolver is intentionally separate from the general MFA
+    switch: only the immutable invitation proof may be older than the normal
+    interactive recency window, and its user token/MFA versions plus present
+    Office authority are still reread under the caller transaction locks.
+    """
+    _validate(issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id, None)
+    decision = await _authorize(cur, issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS,
+                                project_id, None, False, True)
+    if not decision.allowed:
+        return decision
+    # ADMINISTER_PROJECT_MEMBERS deliberately permits cleanup against an
+    # archived scope.  Delegated acceptance is a grant, never cleanup, so its
+    # narrow capability must separately require the current scope to be live.
+    await cur.execute(
+        "SELECT status FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
+    scope = await cur.fetchone()
+    if scope is None or scope[0] != "ACTIVE":
+        return _decision(False, "office_invitation_project_inactive", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
+    proof = await reload_issued_invitation_mfa_proof_in_cursor(
+        cur, issuer_user_id=issuer_user_id, proof_event_id=proof_event_id,
+        issued_mfa_version=issued_mfa_version, issued_at=issued_mfa_at)
+    if isinstance(proof, MFADenied):
+        return _decision(False, "office_invitation_issuer_proof_invalid", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
+    return decision
 
 
 async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_mfa: bool,
