@@ -15,7 +15,8 @@ def regular(path:Path, mode:int|None=None)->bytes:
 def load_request(path:Path)->dict:
  raw=regular(path,0o600)
  try: x=json.loads(raw)
- except Exception: die('invalid request')
+ except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+  raise SystemExit('pair-build-supervisor: invalid request') from exc
  required={'schema','nonce','platform','platform_commit','jax','jax_commit','platform_predecessor','jax_predecessor','inputs','wheelhouse_sha256','lock_sha256','out','bootstrap_predecessor','builder_sha256','python'}
  if set(x)!=required or x.get('schema')!='axioma.pair-build-request/v1' or not isinstance(x.get('bootstrap_predecessor'),bool): die('invalid request')
  for k,n in [('nonce',64),('platform_commit',40),('jax_commit',40),('wheelhouse_sha256',64),('lock_sha256',64),('builder_sha256',64)]:
@@ -35,7 +36,8 @@ def main()->None:
  child=subprocess.Popen(args,pass_fds=(write_fd,),stdin=subprocess.DEVNULL);os.close(write_fd); raw=os.read(read_fd,65536);os.close(read_fd)
  if child.wait()!=0: die('builder failed')
  try: receipt=json.loads(raw)
- except Exception: die('invalid builder receipt')
+ except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+  raise SystemExit('pair-build-supervisor: invalid builder receipt') from exc
  wanted={'schema':'axioma.pair-build-receipt/v1','nonce':r['nonce'],'platform_commit':r['platform_commit'],'jax_commit':r['jax_commit'],'builder_sha256':r['builder_sha256'],'python':r['python']}
  if any(receipt.get(k)!=v for k,v in wanted.items()): die('receipt binding mismatch')
  out=Path(r['out']);st=out.stat()
