@@ -497,7 +497,10 @@ async def send_reset_link(user_id: int, request: Request, user: AuthUser = Depen
         email, estado = fila
         if estado != "active":
             raise HTTPException(status_code=409, detail="usuario_no_activo")
-        token, enlace = await auth_api._crear_enlace_de_recuperacion(cur, user_id, ip)
+        try:
+            token, enlace = await auth_api._crear_enlace_de_recuperacion(cur, user_id, ip)
+        except auth_api.BrowserSecurityConfigError as exc:
+            raise HTTPException(status_code=503, detail="password_reset_origin_unavailable") from exc
     # Mismo juego de excepciones que /smtp/test (etapa 1, api/admin/smtp.py):
     # la tupla común (UnicodeEncodeError, OSError, SMTPException) va ANTES que
     # ValueError -- UnicodeEncodeError es subclase suya (smtplib codifica el
