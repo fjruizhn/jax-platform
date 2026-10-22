@@ -167,4 +167,27 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         assert replay.replay is True
         assert replay.identity_proof_event_id == receipt.identity_proof_event_id
         assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0] == after_first + 1
+        # Replay binds immutable ceremony subject and basis; a fresh proof is
+        # never a generic capability to retrieve or rewrite another receipt.
+        fresh_session = await _session(user_id, email, second)
+        for wrong_target, wrong_basis in ((user_id, "other-basis"), (user_id + 999999, "test-bootstrap")):
+            try:
+                await bootstrap_initial_office_root(session_user=fresh_session,
+                                                    target_user_id=wrong_target,
+                                                    expected_email=email, basis_ref=wrong_basis)
+            except BootstrapDenied:
+                pass
+            else:
+                raise AssertionError("bootstrap accepted a wrong ceremony binding")
+        forged = AuthUser(user_id=str(user_id), tenant_id="1", role="operator", email=email,
+                          token_version=fresh_session.token_version, account_class="INTERNAL",
+                          mfa_proof_event_id=999999999, mfa_version=fresh_session.mfa_version,
+                          mfa_at=fresh_session.mfa_at)
+        try:
+            await bootstrap_initial_office_root(session_user=forged, target_user_id=user_id,
+                                                expected_email=email, basis_ref="test-bootstrap")
+        except BootstrapDenied:
+            pass
+        else:
+            raise AssertionError("bootstrap accepted forged proof")
     client.portal.call(scenario)
