@@ -230,8 +230,11 @@ async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[
         raise RuntimeError(f"Office {table} primary key is invalid")
 
 
-async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False,
+                                                     require_table: bool = False) -> None:
     if not await _table_exists(cur, "office_membership_mutation_receipt"):
+        if require_table:
+            raise RuntimeError("Office membership receipt table is missing")
         return
     await _assert_columns(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_COLUMNS)
     await _assert_indexes(cur, table="office_membership_mutation_receipt", expected=_MEMBERSHIP_RECEIPT_INDEXES)

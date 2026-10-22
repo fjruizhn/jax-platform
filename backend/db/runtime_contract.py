@@ -89,7 +89,8 @@ async def _bootstrap_metadata(cur):
 
 async def _membership_receipt_metadata(cur):
     try:
-        await assert_membership_receipt_runtime_metadata(cur, allow_redacted_trigger_body=True)
+        await assert_membership_receipt_runtime_metadata(
+            cur, allow_redacted_trigger_body=True, require_table=True)
     except RuntimeError as error:
         raise RuntimeDbContractError("Office membership receipt metadata is invalid") from error
 

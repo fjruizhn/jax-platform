@@ -286,6 +286,45 @@ def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
     client.portal.call(scenario)
 
 
+def test_runtime_metadata_denies_stamped_schema_without_terminal_membership_receipt(client):
+    """The migration's legacy preflight exception never weakens web readiness."""
+    async def scenario():
+        from db.runtime_contract import _membership_receipt_metadata
+
+        database = os.environ["JAX_DB_NAME"]
+        schema = f"office_receipt_runtime_{uuid.uuid4().hex[:16]}"
+        pool = await aiomysql.create_pool(
+            host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
+            user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
+            db=database, charset="utf8mb4", autocommit=True,
+        )
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_project_membership", "jax_project_membership_event",
+                        "jax_namespace_membership_mutation_request",
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await stamp_office_runtime_revision(cur)
+                    await cur.execute("DROP TABLE office_membership_mutation_receipt")
+                    with pytest.raises(RuntimeDbContractError, match="membership receipt metadata is invalid"):
+                        await _membership_receipt_metadata(cur)
+        finally:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"USE `{database}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            pool.close()
+            await pool.wait_closed()
+
+    client.portal.call(scenario)
+
+
 def test_migrator_rejects_mfa_trigger_that_only_protects_the_fence(client):
     """Only the migrator can attest a redacted append-only trigger body."""
     async def scenario():
