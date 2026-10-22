@@ -132,7 +132,7 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
                     for statement in statements:
                         try:
                             await cur.execute(statement)
-                        except Exception as error:
+                        except Exception as error:  # fail-soft: finish independent cleanup; raise below.
                             cleanup_errors.append(error)
                     try:
                         if principal_created:
@@ -143,7 +143,7 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
                                 "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s", (schema,)
                             )
                             assert (await cur.fetchone())[0] == 0
-                    except Exception as error:
+                    except Exception as error:  # fail-soft: retain residue failure; raise below.
                         cleanup_errors.append(error)
             finally:
                 admin.close()
