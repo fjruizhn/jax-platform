@@ -100,12 +100,13 @@ OFFICE_INVITATION_DDL = (
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_invitation_event ("
     "event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-    "event_kind VARCHAR(32) NOT NULL,causation_event_id BIGINT UNSIGNED NULL,actor_user_id INT NULL,bearer_token_hash BINARY(32) NULL,observed_outbox_state VARCHAR(16) NULL,"
+    "event_kind VARCHAR(32) NOT NULL,causation_event_id BIGINT UNSIGNED NULL,actor_user_id INT NULL,bearer_token_hash BINARY(32) NULL,observed_outbox_state VARCHAR(16) NULL,authorization_event_id BIGINT UNSIGNED NULL,invocation_digest BINARY(32) NULL,"
     "correlation_id BINARY(16) NOT NULL,occurred_at DATETIME(6) NOT NULL,"
-    "UNIQUE KEY uq_office_invitation_event_kind (invitation_id,event_kind),KEY idx_office_invitation_event_correlation (invitation_id,correlation_id,event_id),KEY idx_office_invitation_event_invitation (invitation_id,occurred_at,event_id),"
+    "UNIQUE KEY uq_office_invitation_event_kind (invitation_id,event_kind),KEY idx_office_invitation_event_correlation (invitation_id,correlation_id,event_id),KEY idx_office_invitation_event_invitation (invitation_id,occurred_at,event_id),KEY idx_office_invitation_event_authorization (authorization_event_id),"
     "CONSTRAINT fk_office_invitation_event_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
     "CONSTRAINT fk_office_invitation_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_invitation_event_causation FOREIGN KEY (causation_event_id) REFERENCES office_invitation_event(event_id),"
+    "CONSTRAINT fk_office_invitation_event_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),"
     "CONSTRAINT chk_office_invitation_event_shape CHECK ((event_kind='ISSUED' AND causation_event_id IS NULL AND actor_user_id IS NOT NULL AND bearer_token_hash IS NULL AND observed_outbox_state IS NULL) OR "
     "(event_kind='INVITATION_BEARER_PRESENTED' AND causation_event_id IS NOT NULL AND actor_user_id IS NULL AND bearer_token_hash IS NOT NULL AND observed_outbox_state IS NULL) OR "
     "(event_kind='ACCEPTED' AND causation_event_id IS NOT NULL AND actor_user_id IS NOT NULL AND bearer_token_hash IS NULL AND observed_outbox_state IN ('QUEUED','CLAIMED','SMTP_ACCEPTED','UNKNOWN','CANCELLED')) OR "
@@ -150,7 +151,7 @@ OFFICE_INVITATION_DDL = (
     "((operation='ISSUE' AND expected_version=0 AND response_version=1 AND expires_at IS NOT NULL) OR "
     "(operation='REVOKE' AND expected_version>=1 AND response_version=expected_version+1 AND expires_at IS NULL)))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF (NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.invitation_id=i.invitation_id AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id)) OR (NEW.operation='REVOKE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id JOIN office_authorization_event a ON a.event_id=NEW.authorization_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=NEW.actor_user_id AND a.operation='ADMINISTER_PROJECT_MEMBERS' AND a.requested_project_id=NEW.project_id AND a.project_id=NEW.project_id AND a.result='ALLOWED')) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF (NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event e ON e.event_id=NEW.result_event_id JOIN office_authorization_event a ON a.event_id=e.authorization_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.authorization_event_id=NEW.authorization_event_id AND e.invocation_digest=NEW.request_digest AND e.invitation_id=i.invitation_id AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id AND NEW.expires_at=s.expires_at AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=NEW.actor_user_id AND a.operation='ADMINISTER_PROJECT_MEMBERS' AND a.requested_project_id=NEW.project_id AND a.project_id=NEW.project_id AND a.result='ALLOWED')) OR (NEW.operation='REVOKE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id JOIN office_authorization_event a ON a.event_id=e.authorization_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id AND i.version=NEW.response_version AND e.authorization_event_id=NEW.authorization_event_id AND e.invocation_digest=NEW.request_digest AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=NEW.actor_user_id AND a.operation='ADMINISTER_PROJECT_MEMBERS' AND a.requested_project_id=NEW.project_id AND a.project_id=NEW.project_id AND a.result='ALLOWED')) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_mutation_receipt BEFORE UPDATE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_mutation_receipt BEFORE DELETE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
 )
@@ -486,6 +487,7 @@ _INVITATION_FOREIGN_KEYS = {
         "fk_office_invitation_event_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_event_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_event_causation": (("causation_event_id",), "office_invitation_event", ("event_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_event_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
     },
     "office_invitation_outbox": {
         "fk_office_invitation_outbox_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
@@ -523,6 +525,7 @@ _INVITATION_INDEXES = {
         "idx_office_invitation_event_invitation": (("invitation_id", "occurred_at", "event_id"), False),
         "fk_office_invitation_event_actor": (("actor_user_id",), False),
         "fk_office_invitation_event_causation": (("causation_event_id",), False),
+        "idx_office_invitation_event_authorization": (("authorization_event_id",), False),
     },
     "office_invitation_outbox": {
         "PRIMARY": (("outbox_id",), True),
@@ -539,7 +542,7 @@ _INVITATION_CHECK_DIGESTS = {
 _INVITATION_COLUMNS = {
     "office_invitation_issuance": (("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("token_hash","binary","binary(32)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("tenant_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),("recipient_group_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("target_account_class","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("grant_role","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("audience","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("issued_by_user_id","int","int(11)","NO",None,None,"",None),("issuer_profile_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_grant_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_proof_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("issuer_mfa_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_mfa_at","datetime","datetime(6)","NO",None,None,"",None),("issuance_authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("proof_digest","binary","binary(32)","NO",None,None,"",None),("correlation_id","binary","binary(16)","NO",None,None,"",None),("issued_at","datetime","datetime(6)","NO",None,None,"",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None)),
     "office_invitation": (("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("status","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'ISSUED'"),("version","bigint","bigint(20)","NO",None,None,"","1"),("project_id","int","int(11)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("pending_email","varchar","varchar(320)","YES","ascii","ascii_bin","STORED GENERATED","NULL"),("accepted_user_id","int","int(11)","YES",None,None,"","NULL"),("accepted_at","datetime","datetime(6)","YES",None,None,"","NULL"),("revoked_by_user_id","int","int(11)","YES",None,None,"","NULL"),("revoked_at","datetime","datetime(6)","YES",None,None,"","NULL")),
-    "office_invitation_event": (("event_id","bigint","bigint(20) unsigned","NO",None,None,"auto_increment",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("event_kind","varchar","varchar(32)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("causation_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("actor_user_id","int","int(11)","YES",None,None,"","NULL"),("bearer_token_hash","binary","binary(32)","YES",None,None,"","NULL"),("observed_outbox_state","varchar","varchar(16)","YES","utf8mb4","utf8mb4_uca1400_ai_ci","","NULL"),("correlation_id","binary","binary(16)","NO",None,None,"",None),("occurred_at","datetime","datetime(6)","NO",None,None,"",None)),
+    "office_invitation_event": (("event_id","bigint","bigint(20) unsigned","NO",None,None,"auto_increment",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("event_kind","varchar","varchar(32)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("causation_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("actor_user_id","int","int(11)","YES",None,None,"","NULL"),("bearer_token_hash","binary","binary(32)","YES",None,None,"","NULL"),("observed_outbox_state","varchar","varchar(16)","YES","utf8mb4","utf8mb4_uca1400_ai_ci","","NULL"),("authorization_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("invocation_digest","binary","binary(32)","YES",None,None,"","NULL"),("correlation_id","binary","binary(16)","NO",None,None,"",None),("occurred_at","datetime","datetime(6)","NO",None,None,"",None)),
     "office_invitation_outbox": (("outbox_id","char","char(36)","NO","ascii","ascii_bin","",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("state","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'QUEUED'"),("attempt_id","char","char(36)","YES","ascii","ascii_bin","","NULL"),("attempt_count","int","int(11)","NO",None,None,"","0"),("cancel_requested","tinyint","tinyint(1)","NO",None,None,"","0"),("payload_ciphertext","mediumblob","mediumblob","YES",None,None,"","NULL"),("message_id","varchar","varchar(320)","YES","ascii","ascii_bin","","NULL"),("result_code","varchar","varchar(64)","YES","ascii","ascii_bin","","NULL"),("claimed_at","datetime","datetime(6)","YES",None,None,"","NULL"),("finished_at","datetime","datetime(6)","YES",None,None,"","NULL"),("created_at","datetime","datetime(6)","NO",None,None,"",None),("updated_at","datetime","datetime(6)","NO",None,None,"",None)),
 }
 
@@ -586,6 +589,13 @@ _INVITATION_MUTATION_RECEIPT_TRIGGERS = {
         )).split(" FOR EACH ROW ", 1)[1]),
 }
 _INVITATION_MUTATION_RECEIPT_CHECK_DIGEST = "36c08ea87356a58a85f8bdebed430f3b2aad6e93c1d3c6a292c9ed786aabf22c"
+_INVITATION_MUTATION_RECEIPT_GUARD_PREDECESSOR_DIGESTS = frozenset((
+    # 2e86051: receipt lacked the revoke authorization attestation.
+    "8c4ec368ac456a2aef4ef0eea6263f130fac8065894adb36bc6d641fa6416e51",
+    # 30650e6 through 675d364: authorization was checked but the trigger was
+    # not replaced after that amendment, so it lacks event/digest/expiry ties.
+    "6e12d391133eaea141279c4e9446ab38c7678e831eeac1369d915ddbc2e8a745",
+))
 
 
 async def _assert_columns(cur, *, table: str, expected: tuple[tuple[object, ...], ...]) -> None:
@@ -773,6 +783,35 @@ async def _prepare_invitation_schema(cur) -> None:
         await cur.execute(f"DROP TABLE IF EXISTS {table}")
 
 
+async def _upgrade_invitation_event_causality(cur) -> None:
+    """Add nullable causal fields without rewriting immutable history.
+
+    Existing events predate the receipt-to-event binding and remain readable.
+    The new receipt trigger rejects them as companions for a new receipt.
+    """
+    if not await _table_exists(cur, "office_invitation_event"):
+        return
+    if not await _column_exists(cur, "office_invitation_event", "authorization_event_id"):
+        await cur.execute(
+            "ALTER TABLE office_invitation_event "
+            "ADD COLUMN authorization_event_id BIGINT UNSIGNED NULL"
+        )
+    if not await _column_exists(cur, "office_invitation_event", "invocation_digest"):
+        await cur.execute(
+            "ALTER TABLE office_invitation_event ADD COLUMN invocation_digest BINARY(32) NULL"
+        )
+    if not await _index_exists(cur, "office_invitation_event", "idx_office_invitation_event_authorization"):
+        await cur.execute(
+            "ALTER TABLE office_invitation_event ADD KEY idx_office_invitation_event_authorization (authorization_event_id)"
+        )
+    if not await _constraint_exists(cur, "fk_office_invitation_event_authorization"):
+        await cur.execute(
+            "ALTER TABLE office_invitation_event ADD CONSTRAINT "
+            "fk_office_invitation_event_authorization FOREIGN KEY (authorization_event_id) "
+            "REFERENCES office_authorization_event(event_id)"
+        )
+
+
 async def _upgrade_invitation_guards(cur) -> None:
     """Replace only the attested b44 guard set; unknown history fails closed."""
     names = {
@@ -805,6 +844,27 @@ async def _upgrade_invitation_guards(cur) -> None:
             raise RuntimeError("Office invitation guard history is incompatible; historic evidence is not rewritten")
     for name in found:
         await cur.execute(f"DROP TRIGGER {name}")
+
+
+async def _upgrade_invitation_mutation_receipt_guard(cur) -> None:
+    """Replace only measured predecessor receipt guards, preserving rows."""
+    name = "guard_office_invitation_mutation_receipt_insert"
+    await cur.execute(
+        "SELECT EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=%s",
+        (name,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return
+    expected = _INVITATION_MUTATION_RECEIPT_TRIGGERS[name]
+    if tuple(row) == expected:
+        return
+    if (tuple(row[:4]) != expected[:4]
+            or hashlib.sha256(str(row[4]).encode("utf-8")).hexdigest()
+            not in _INVITATION_MUTATION_RECEIPT_GUARD_PREDECESSOR_DIGESTS):
+        raise RuntimeError("Office invitation mutation receipt guard history is incompatible; historic evidence is not rewritten")
+    await cur.execute(f"DROP TRIGGER {name}")
 
 
 async def assert_membership_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False,
@@ -1581,7 +1641,9 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute(statement)
     await assert_bootstrap_runtime_metadata(cursor)
     await _prepare_invitation_schema(cursor)
+    await _upgrade_invitation_event_causality(cursor)
     await _upgrade_invitation_guards(cursor)
+    await _upgrade_invitation_mutation_receipt_guard(cursor)
     for statement in OFFICE_INVITATION_DDL:
         await cursor.execute(statement)
     await assert_invitation_runtime_metadata(cursor)

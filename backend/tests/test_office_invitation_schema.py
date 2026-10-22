@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import secrets
 import uuid
@@ -15,6 +16,18 @@ from virtual_office.migrations import apply_office_migrations
 from tests.test_office_mfa import _active_user, _step_up_proof
 from tests.test_office_runtime_contract import _grant_exact_runtime_acl, _runtime_pool
 from tests.fixtures.office_invitation_b44_guards import GUARD_STATEMENTS, SOURCE_COMMIT
+
+
+_RECEIPT_GUARD_2E86051 = (
+    "CREATE TRIGGER guard_office_invitation_mutation_receipt_insert BEFORE INSERT ON office_invitation_mutation_receipt FOR EACH ROW BEGIN IF "
+    "(NEW.operation='ISSUE' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+    "JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id AND i.project_id=NEW.project_id "
+    "AND s.issued_by_user_id=NEW.actor_user_id AND s.issuance_authorization_event_id=NEW.authorization_event_id AND e.invitation_id=i.invitation_id "
+    "AND e.event_kind='ISSUED' AND e.actor_user_id=NEW.actor_user_id)) OR (NEW.operation='REVOKE' AND NOT EXISTS "
+    "(SELECT 1 FROM office_invitation i JOIN office_invitation_event e ON e.event_id=NEW.result_event_id WHERE i.invitation_id=NEW.invitation_id "
+    "AND i.project_id=NEW.project_id AND e.invitation_id=i.invitation_id AND e.event_kind='REVOKED' AND e.actor_user_id=NEW.actor_user_id)) "
+    "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt companion denied'; END IF; END"
+)
 
 
 async def _migration_admin_pool():
@@ -207,6 +220,74 @@ def test_invitation_receipt_attestation_rejects_weaker_named_check(client):
     client.portal.call(scenario)
 
 
+def test_invitation_receipt_requires_exact_event_authority_digest_and_expiry(client):
+    """A receipt cannot borrow issuance authority or attest different bytes."""
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"R" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                invitation_id, _, issued_event_id, _ = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"receipt-causal-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                await cur.execute(
+                    "SELECT i.project_id,s.issuance_authorization_event_id,s.expires_at "
+                    "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+                    "WHERE i.invitation_id=%s",
+                    (invitation_id,),
+                )
+                project_id, issuance_auth, expiry = await cur.fetchone()
+
+                async def insert_receipt(*, key: str, digest: bytes, authorization: int, expires_at):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_mutation_receipt "
+                        "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,expected_version,response_version,result_event_id,authorization_event_id,response_contract,expires_at,created_at) "
+                        "VALUES (%s,%s,'ISSUE',%s,%s,%s,0,1,%s,%s,'office-invitation-mutation-response/v1',%s,UTC_TIMESTAMP(6))",
+                        (key, digest, issuer, project_id, invitation_id, issued_event_id, authorization, expires_at),
+                    )
+
+                with pytest.raises(aiomysql.OperationalError, match="companion denied"):
+                    await insert_receipt(key=str(uuid.uuid4()), digest=bytes.fromhex("cf" * 32), authorization=issuance_auth, expires_at=expiry)
+                with pytest.raises(aiomysql.OperationalError, match="companion denied"):
+                    await insert_receipt(key=str(uuid.uuid4()), digest=bytes.fromhex("ce" * 32), authorization=issuance_auth,
+                                         expires_at=expiry + dt.timedelta(microseconds=1))
+                await insert_receipt(key=str(uuid.uuid4()), digest=bytes.fromhex("ce" * 32), authorization=issuance_auth, expires_at=expiry)
+
+                await cur.execute(
+                    "INSERT INTO office_authorization_event "
+                    "(actor_user_id,event_kind,operation,requested_project_id,project_id,tenant_id,result,reason_code,occurred_at) "
+                    "VALUES (%s,'AUTHORIZATION','ADMINISTER_PROJECT_MEMBERS',%s,%s,1,'ALLOWED','test-revoke',UTC_TIMESTAMP(6))",
+                    (issuer, project_id, project_id),
+                )
+                revoke_auth = cur.lastrowid
+                await cur.execute(
+                    "INSERT INTO office_invitation_event "
+                    "(invitation_id,event_kind,causation_event_id,actor_user_id,authorization_event_id,invocation_digest,correlation_id,occurred_at) "
+                    "VALUES (%s,'REVOKED',%s,%s,%s,UNHEX(REPEAT('de',32)),UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))",
+                    (invitation_id, issued_event_id, issuer, revoke_auth),
+                )
+                revoked_event_id = cur.lastrowid
+                await cur.execute(
+                    "UPDATE office_invitation SET status='REVOKED',version=2,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s",
+                    (issuer, invitation_id),
+                )
+                with pytest.raises(aiomysql.OperationalError, match="companion denied"):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_mutation_receipt "
+                        "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,expected_version,response_version,result_event_id,authorization_event_id,response_contract,expires_at,created_at) "
+                        "VALUES (%s,UNHEX(REPEAT('de',32)),'REVOKE',%s,%s,%s,1,2,%s,%s,'office-invitation-mutation-response/v1',NULL,UTC_TIMESTAMP(6))",
+                        (str(uuid.uuid4()), issuer, project_id, invitation_id, revoked_event_id, issuance_auth),
+                    )
+    client.portal.call(scenario)
+
+
 def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     from db.runtime_privileges import runtime_table_privilege_map
 
@@ -250,6 +331,28 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
                     "'guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
                 )
                 assert (await cur.fetchone())[0] == 5
+    client.portal.call(scenario)
+
+
+def test_predecessor_receipt_guard_upgrades_idempotently(client):
+    """The 2e86051 guard is replaced before CREATE IF NOT EXISTS can retain it."""
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
+                await cur.execute(_RECEIPT_GUARD_2E86051)
+                await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                    "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
+                )
+                action = (await cur.fetchone())[0]
+                assert "e.authorization_event_id=NEW.authorization_event_id" in action
+                assert "e.invocation_digest=NEW.request_digest" in action
+                assert "NEW.expires_at=s.expires_at" in action
+                await apply_office_migrations(cur)
     client.portal.call(scenario)
 
 
@@ -329,9 +432,10 @@ async def _seed_pending_invitation(
         (project_id, issuer, issuer),
     )
     await cur.execute(
-        "INSERT INTO office_authorization_event (actor_user_id,event_kind,operation,result,reason_code,occurred_at) "
-        "VALUES (%s,'AUTHORIZATION','ADMINISTER_PROJECT_MEMBERS','ALLOWED','test',UTC_TIMESTAMP(6))",
-        (issuer,),
+        "INSERT INTO office_authorization_event "
+        "(actor_user_id,event_kind,operation,requested_project_id,project_id,tenant_id,result,reason_code,occurred_at) "
+        "VALUES (%s,'AUTHORIZATION','ADMINISTER_PROJECT_MEMBERS',%s,%s,1,'ALLOWED','test',UTC_TIMESTAMP(6))",
+        (issuer, project_id, project_id),
     )
     authorization_event_id = cur.lastrowid
     issuance_id = str(uuid.uuid4())
@@ -356,9 +460,10 @@ async def _seed_pending_invitation(
         (outbox_id, invitation_id),
     )
     await cur.execute(
-        "INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,correlation_id,occurred_at) "
-        "VALUES (%s,'ISSUED',%s,UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))",
-        (invitation_id, issuer),
+        "INSERT INTO office_invitation_event "
+        "(invitation_id,event_kind,actor_user_id,authorization_event_id,invocation_digest,correlation_id,occurred_at) "
+        "VALUES (%s,'ISSUED',%s,%s,UNHEX(REPEAT('ce',32)),UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))",
+        (invitation_id, issuer, authorization_event_id),
     )
     return invitation_id, outbox_id, cur.lastrowid, issuance_id
 
