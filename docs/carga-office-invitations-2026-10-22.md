@@ -4,7 +4,9 @@
 `loadtest/office_invitations.py`, resultado
 `docs/evidence/office-invitations-load-corrected-2026-10-22.json`
 (SHA-256 `55559512cacca43a7c2d8d9330a0ee86e8a0b41f815b35b419210bd9312e2515`).
-No acredita rendimiento de producción.
+Esta es historia de la corrida anterior: no acredita el árbol combinado con
+el limitador de aceptación separado. La medición vigente de ese árbol está
+más abajo. Ninguna de las dos acredita rendimiento de producción.
 
 ## Entorno y frontera
 
@@ -45,6 +47,41 @@ Con el criterio diagnóstico del arnés (p95 superior a 3× c=1), la primera
 degradación aparece en lista y revocación a c=5; emisión a c=10. Aceptación
 no pasa 3× c=1 hasta c=10. Es un indicador de cola en esta máquina, no un
 umbral de GO de producción.
+
+## Medición combinada con limitador de aceptación separado
+
+Esta evidencia **sustituye la corrida anterior como medición vigente de la
+rama combinada**. El artefacto íntegro es
+`docs/evidence/office-invitations-load-rate-limit-aware-2026-10-22.json`
+(SHA-256 `f464b4ceb7e31559a48bb26d72bd22e7078e5b113359c020b395902bd8359173`).
+
+- JXP exacto: `e4b2e1c7732bfb0cd919fe9cfba800898a288e32`; incluye #218,
+  #219 y el arnés que fija los dos cubos de aceptación.
+- JAX pareado: `62b4eaff2470e40cdb9f15a520a59023fa4a05e9`
+  (`office-namespace.2`).
+- MariaDB desechable `cv-op343-db-20261020`, sólo `127.0.0.1:33991`, esquema
+  nuevo `jax_memory_test_a219c223`; ASGI en un puerto loopback efímero.
+- El proceso de benchmark fijó únicamente para sí `JAX_LOGIN_RATE_IP`,
+  `JAX_LOGIN_RATE_EMAIL`, `JAX_OFFICE_INVITATION_ACCEPT_RATE_IP` y
+  `JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN` en `10000/60`; también ambos
+  límites de claves en `20000`. La configuración de producción no cambió.
+- Se usaron principales runtime/migrator efímeros con el contrato de
+  privilegios, eliminados al finalizar. No se usó DNS, vhost, TLS ni una base
+  productiva.
+
+| Operación | c=1 (4 peticiones) | c=5 (20) | c=10 (40) |
+| --- | ---: | ---: | ---: |
+| Lista de 100 activas | 3.83 ms · 5.25 rps | 11.83 ms · 23.73 rps | 24.75 ms · 35.99 rps |
+| Emitir para aceptar | 6.88 ms · 200.14 rps | 13.19 ms · 396.72 rps | 29.85 ms · 356.21 rps |
+| Aceptar | 204.22 ms · 5.56 rps | 171.56 ms · 26.99 rps | 192.26 ms · 44.63 rps |
+| Emitir para revocar | 5.17 ms · 242.10 rps | 12.31 ms · 422.51 rps | 28.63 ms · 371.00 rps |
+| Revocar | 3.82 ms · 298.48 rps | 11.74 ms · 462.46 rps | 23.01 ms · 454.52 rps |
+
+Las 64 aceptaciones (4 + 20 + 40) devolvieron HTTP 200, con 0 errores y 0
+429. La degradación diagnóstica aparece en lista/revocación desde c=5 y en
+las dos emisiones en c=10; aceptación no se degrada dentro de c≤10. Esto
+mide el proceso local con sus límites de benchmark, no sustituye la prueba de
+carga final por el dominio/TLS ni fija un límite de producción.
 
 ## Evidencia histórica rechazada
 
