@@ -15,11 +15,13 @@ import MiCuentaModal from './MiCuentaModal'
 // monta ([data-foco-inicial]: el campo del chat en "/", el <main> de Admin).
 // El efecto de este componente corre después de los de sus hijos: la
 // pantalla ya está montada.
-export default function RequireAuth({ children }) {
+export default function RequireAuth({ children, allowOfficeAccount = false }) {
   const token = useJaxStore((s) => s.token)
   const user = useJaxStore((s) => s.user)
   const sessionRestoring = useJaxStore((s) => s.sessionRestoring)
   const obligatorio = !!user?.must_change_password
+  const mfaRecoveryCodes = useJaxStore((s) => s.mfaRecoveryCodes)
+  const mfaRecoveryCodesOwnerId = useJaxStore((s) => s.mfaRecoveryCodesOwnerId)
   const veniaDelCambio = useRef(false)
 
   useEffect(() => {
@@ -33,9 +35,12 @@ export default function RequireAuth({ children }) {
   }, [obligatorio])
 
   if (sessionRestoring) return null
-  if (!token) return <Navigate to="/login" replace />
-  if (obligatorio) {
+  if (!token && !(allowOfficeAccount && mfaRecoveryCodes && mfaRecoveryCodesOwnerId !== null)) return <Navigate to="/login" replace />
+  if (token && obligatorio) {
     return <div className="h-dvh bg-fondo"><MiCuentaModal obligatorio onCerrar={() => {}} /></div>
+  }
+  if (!allowOfficeAccount && ['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'].includes(user?.account_class)) {
+    return <Navigate to="/account/security" replace />
   }
   return children
 }

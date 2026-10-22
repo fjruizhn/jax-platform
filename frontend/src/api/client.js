@@ -17,7 +17,19 @@ const SESION_INVALIDA = 'sesion_invalida'
 // sin haber tenido nunca una sesión; una contraseña equivocada (/auth/login
 // -> 401) hacía lo mismo y sumaba una segunda caja roja encima del error de
 // credenciales. Estos tres nunca deben reintentar ni tocar el store acá.
-const ENDPOINTS_DE_AUTH_SIN_REINTENTO = ['/auth/login', '/auth/refresh', '/auth/logout']
+// Las capacidades públicas de MFA no son sesiones. Un 401 acá significa que
+// la capacidad fue consumida, venció o no corresponde: intentar refresh
+// restauraría una sesión vieja y podría reintentar contra una autoridad ajena.
+const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
+  '/auth/login', '/auth/refresh', '/auth/logout',
+  '/auth/mfa/login/verify', '/auth/mfa/recover',
+  '/auth/mfa/recovery/enrollment/start', '/auth/mfa/enrollment/start',
+  '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up',
+  // Mutaciones sensibles: una respuesta 401/no disponible no permite saber
+  // si el servidor consumió OTP, contraseña o capacidad. Nunca se repiten.
+  '/auth/mfa/reenrollment/start', '/auth/mfa/recovery-codes/regenerate',
+  '/auth/mfa/disable', '/auth/mfa/step-up/verify',
+]
 
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de
 // la propia contraseña sube token_version. Un 401 de un poll que salió con el
@@ -122,7 +134,7 @@ api.interceptors.response.use(
               : refreshErr?.response?.status >= 500
                 ? 'error_del_servidor'
                 : 'sesion_expirada'
-        useJaxStore.setState({ ...SESION_VACIA, avisoSesion })
+        useJaxStore.setState({ ...SESION_VACIA, avisoSesion, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
       }
     }
     return Promise.reject(err)

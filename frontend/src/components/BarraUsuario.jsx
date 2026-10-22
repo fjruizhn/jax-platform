@@ -200,6 +200,10 @@ export default function BarraUsuario() {
       </button>
       {miCuenta && <MiCuentaModal onCerrar={() => setMiCuenta(false)} />}
 
+      <Link to="/account/security" className="text-xs min-h-6 text-texto-tenue hover:text-texto transition-colors">
+        {t.mfa.account}
+      </Link>
+
       <span aria-hidden="true" className="h-4 w-px bg-borde flex-shrink-0" />
 
       <div className="flex items-center gap-1 flex-shrink-0">
