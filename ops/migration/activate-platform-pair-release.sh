@@ -158,12 +158,26 @@ transaction ddl "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 /usr/bin/flock -u 8; exec 8>&-
 # Starting web triggers its Requires=jax-platform-migrate.service exactly once.
 $SYSTEMCTL start jax-platform.service
-$HEALTH --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/api/health >/dev/null
-state=$($SYSTEMCTL show --value --property=ActiveState jax-platform.service)
-substate=$($SYSTEMCTL show --value --property=SubState jax-platform.service)
-pid=$($SYSTEMCTL show --value --property=MainPID jax-platform.service)
-result=$($SYSTEMCTL show --value --property=Result jax-platform.service)
-[[ $state == active && $substate == running && $pid =~ ^[1-9][0-9]*$ && $result == success ]] || { echo 'web service did not become healthy' >&2; exit 1; }
+# Type=simple returns from `start` when the process has been forked, before
+# uvicorn has necessarily bound its listener.  Never accept a health response
+# from a process whose effective systemd state is no longer the selected web
+# service; check it before every bounded probe.
+web_service_effective() {
+  state=$($SYSTEMCTL show --value --property=ActiveState jax-platform.service)
+  substate=$($SYSTEMCTL show --value --property=SubState jax-platform.service)
+  pid=$($SYSTEMCTL show --value --property=MainPID jax-platform.service)
+  result=$($SYSTEMCTL show --value --property=Result jax-platform.service)
+  [[ $state == active && $substate == running && $pid =~ ^[1-9][0-9]*$ && $result == success ]]
+}
+health_deadline=$((SECONDS + 10))
+while :; do
+  web_service_effective || { echo 'web service did not become healthy' >&2; exit 1; }
+  if $HEALTH --fail --silent --show-error --max-time 1 http://127.0.0.1:8080/api/health >/dev/null; then
+    break
+  fi
+  (( SECONDS < health_deadline )) || { echo 'web health check timed out' >&2; exit 1; }
+  /usr/bin/sleep 1
+done
 /usr/bin/python3 -Es - "$ROOT" "$SELECTION" "$RELEASE" "$EXPECTED" "$pid" <<'PY'
 import hashlib,json,sys
 from pathlib import Path

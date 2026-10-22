@@ -104,7 +104,16 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     )
     fake_systemctl.chmod(0o755)
     health = tmp_path / "health"
-    health.write_text("#!/bin/sh\nsleep .4\nexit 0\n", encoding="utf-8")
+    health_calls = tmp_path / "health.calls"
+    # Type=simple reports active before uvicorn binds.  The first two probes
+    # deliberately fail so activation must poll rather than leaving DDL_STARTED.
+    health.write_text(
+        "#!/bin/sh\n"
+        "count=0; [ -f \"$JAX_PAIR_TEST_HEALTH_CALLS\" ] && count=$(cat \"$JAX_PAIR_TEST_HEALTH_CALLS\")\n"
+        "count=$((count + 1)); printf '%s' \"$count\" > \"$JAX_PAIR_TEST_HEALTH_CALLS\"\n"
+        "[ \"$count\" -ge 3 ]\n",
+        encoding="utf-8",
+    )
     health.chmod(0o755)
     digest = hashlib.sha256((release / readiness.MANIFEST).read_bytes()).hexdigest()
     predecessor = root / "releases" / ("c" * 40 + "-" + "d" * 40)
@@ -126,6 +135,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_TEST_SERVICE_PID": str(service_pid),
         "JAX_PAIR_TEST_RELEASE": str(release),
         "JAX_PAIR_HEALTH_BIN": str(health),
+        "JAX_PAIR_TEST_HEALTH_CALLS": str(health_calls),
     }
     command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest]
     script_index = command.index(str(MIGRATION / "activate-platform-pair-release.sh"))
@@ -165,13 +175,16 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
-    assert calls.read_text(encoding="utf-8").splitlines()[-15:] == [
+    assert calls.read_text(encoding="utf-8").splitlines()[-23:] == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
         "start jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
     ]
+    assert health_calls.read_text(encoding="utf-8") == "3"
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
     lock_inode = (root / ".runtime.lock").stat().st_ino
     repeat = subprocess.run(command[:-1] + [digest], text=True, capture_output=True, check=False)
