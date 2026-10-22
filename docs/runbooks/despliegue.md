@@ -107,30 +107,40 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 
 ## 1 · Par inmutable JAX + plataforma
 
-El backend no ejecuta checkouts actualizables ni mezcla revisiones. El instalador
-recibe dos SHA completos ya auditados, archiva sus objetos Git sin ejecutar el
-contenido de los repositorios y recibe un venv construido previamente por root.
-Sella cada byte importable y ejecutable en un manifiesto; sólo después mueve el
-selector root-owned `current`. Si la verificación posterior falla, restaura el
-selector anterior.
+El backend no ejecuta checkouts actualizables ni mezcla revisiones. Primero, un
+usuario sin privilegios verifica los dos SHA auditados y prepara los archivos de
+fuente; el operador copia esos archivos a una ubicación root-owned que no sea
+escribible. El runtime se instala desde esa copia y sólo entonces root construye
+el venv final dentro del release con el wheelhouse y lock con hashes. El release
+sellado no se selecciona al instalarlo: el digest del manifiesto que imprime el
+instalador se conserva fuera del árbol para la activación posterior.
 
 ```bash
-sudo /ruta/a/ops/migration/install-platform-pair-release.sh \
-  --platform-repository /ruta/root-owned/jax-platform --platform-revision <SHA-JXP-40> \
-  --jax-repository /ruta/root-owned/jax --jax-revision <SHA-JAX-40> \
-  --venv /ruta/root-owned/venv-auditado
-sudo install -o root -g root -m 0755 ops/migration/pair-artifact-readiness.sh \
-  /usr/local/libexec/jax-platform-pair-artifact-readiness
-sudo install -o root -g root -m 0644 ops/migration/pair_artifact_readiness.py \
-  /usr/local/libexec/pair_artifact_readiness.py
-sudo /usr/local/libexec/jax-platform-pair-artifact-readiness
-sudo systemctl restart jax-platform-migrate jax-platform
+sudo /ruta/root-owned/ops/migration/install-platform-pair-runtime.sh \
+  /ruta/root-owned/ops/migration
+# Como usuario sin privilegios, antes de copiar los tar y sus hashes a /ruta/root-owned:
+ops/migration/prepare-platform-pair-source.sh /checkout/jax-platform <SHA-JXP-40> /tmp/jxp.tar
+ops/migration/prepare-platform-pair-source.sh /checkout/jax <SHA-JAX-40> /tmp/jax.tar
+sudo /usr/local/libexec/install-platform-pair-release.sh \
+  --platform-source /ruta/root-owned/jxp.tar --platform-source-sha256 "$JXP_SOURCE_SHA256" --platform-revision <SHA-JXP-40> \
+  --jax-source /ruta/root-owned/jax.tar --jax-source-sha256 "$JAX_SOURCE_SHA256" --jax-revision <SHA-JAX-40> \
+  --wheelhouse /ruta/root-owned/wheelhouse --lock /ruta/root-owned/requirements.lock
+# Guardar MANIFEST_SHA256 exactamente como lo imprimió el comando anterior.
+sudo /usr/local/libexec/activate-platform-pair-release.sh \
+  --release /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
+  --expected-manifest-sha256 "$MANIFEST_SHA256" \
+  --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256"
 ```
 
-La unidad fija `JAX_REPO_PATH=/opt/jax-platform-pair/current/jax`; `runtime.env`
-no puede sustituir el núcleo del par. Una modificación, byte extra, enlace,
-permisos inseguros, manifiesto alterado o selector que salga de `releases/`
-detiene el arranque antes de importar Python.
+El launcher lee una selección JSON root-owned, toma un candado compartido durante
+todo el proceso y fija `JAX_REPO_PATH` después de limpiar el entorno importado;
+`runtime.env` no puede sustituir el núcleo del par. La activación toma el candado
+exclusivo, detiene el par anterior, cambia la selección de forma atómica, ejecuta
+migración y luego web. Un fallo de migración no intenta revertir DDL ni vuelve a
+arrancar automáticamente el release previo: se detiene para recuperación humana
+con backup probado. Una modificación, byte extra, enlace, permisos inseguros,
+manifiesto alterado o selección que salga de `releases/` detiene el arranque antes
+de importar Python.
 
 Verificar **por comportamiento**, no por `is-active`:
 

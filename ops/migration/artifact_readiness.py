@@ -58,7 +58,7 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
         if len(envs) != 1 or len(starts) != 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         pre, post, condition = (values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition"))
-        if post or condition or len(pre) != 1 or pre[0] != "/usr/local/libexec/jax-platform-pair-artifact-readiness":
+        if pre or post or condition:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         try:
             argv = shlex.split(starts[0])
@@ -67,18 +67,14 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed") from exc
         if not argv or starts[0].startswith("-") or envs[0].startswith("-"):
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        source_backend = cwd[0]
-        expected_backend = str(artifact / "backend")
-        if argv[:2] != ["/usr/bin/env", "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax"]:
+        mode = "web" if unit == "jax-platform.service" else "migrate"
+        if cwd[0] != "/" or argv != ["/usr/local/libexec/jax-platform-pair-exec", mode]:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        if not source_backend.startswith("/") or len(argv) < 3 or not argv[2].startswith(source_backend + "/"):
-            raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        expected_argv = [expected_backend + argument[len(source_backend):] if argument.startswith(source_backend + "/") else argument for argument in argv]
         contract[unit] = {
-            "WorkingDirectory": expected_backend, "User": users[0], "Group": groups[0] if groups else "",
+            "WorkingDirectory": "/", "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
             "EnvironmentFiles": [[envs[0], False]],
-            "ExecStart": expected_argv, "ExecStartPre": pre, "Type": types[0], "RemainAfterExit": remain == ["yes"],
+            "ExecStart": argv, "ExecStartPre": [], "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
         }
@@ -112,12 +108,6 @@ def effective_contract(command: list[str], unit: str) -> dict[str, object]:
 
 
 def verify(artifact: Path, command: list[str]) -> None:
-    backend = artifact / "backend"
-    if not backend.is_dir():
-        raise ReadinessError("artifact readiness: artifact: missing backend")
-    for unit, executable in ((UNITS[0], backend / ".venv/bin/uvicorn"), (UNITS[1], backend / ".venv/bin/python")):
-        if not executable.is_file() or not executable.stat().st_mode & 0o111:
-            raise ReadinessError(f"artifact readiness: {unit}: missing executable")
     expected = source_contract(Path(__file__).with_name("systemd-units"), artifact)
     for unit in UNITS:
         actual = effective_contract(command, unit)
@@ -141,31 +131,14 @@ def verify(artifact: Path, command: list[str]) -> None:
             raise fail(unit, "ExecStartEx")
         actual_argv = starts[0][1]
         expected_argv = wanted["ExecStart"]
-        if unit == "jax-platform.service":
-            placeholder = "--forwarded-allow-ips=${JAX_TRUSTED_PROXIES}"
-            if placeholder not in expected_argv:
-                raise fail(unit, "ExecStartEx")
-            position = expected_argv.index(placeholder)
-            if (len(actual_argv) != len(expected_argv)
-                    or actual_argv[:position] != expected_argv[:position]
-                    or actual_argv[position + 1:] != expected_argv[position + 1:]):
-                raise fail(unit, "ExecStartEx")
-            proxy_arg = actual_argv[position]
-            if not proxy_arg.startswith("--forwarded-allow-ips="):
-                raise fail(unit, "ExecStartEx")
-            try:
-                proxies = tuple(value for value in proxy_arg.split("=", 1)[1].split(",") if value)
-                if not proxies or len(proxies) != len(set(proxies)):
-                    raise ValueError
-                for proxy in proxies:
-                    ipaddress.ip_address(proxy)
-            except ValueError:
-                raise fail(unit, "ExecStartEx") from None
-        elif actual_argv != expected_argv:
+        if actual_argv != expected_argv:
             raise fail(unit, "ExecStartEx")
         pre = actual["ExecStartPreEx"]
         expected_pre = wanted["ExecStartPre"]
-        if (not isinstance(pre, list) or len(pre) != 1 or not isinstance(pre[0], list) or len(pre[0]) != 10
+        if expected_pre == []:
+            if pre != []:
+                raise fail(unit, "ExecStartPreEx")
+        elif (not isinstance(pre, list) or len(pre) != 1 or not isinstance(pre[0], list) or len(pre[0]) != 10
                 or pre[0][0] != expected_pre[0] or pre[0][1] != expected_pre or pre[0][2] != []):
             raise fail(unit, "ExecStartPreEx")
         for field in ("ExecStartPostEx", "ExecConditionEx"):

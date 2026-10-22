@@ -90,3 +90,28 @@ def test_platform_units_bind_both_processes_to_the_same_pair() -> None:
         unit = (root / "ops" / "migration" / "systemd-units" / name).read_text(encoding="utf-8")
         assert "WorkingDirectory=/" in unit
         assert f"ExecStart=/usr/local/libexec/jax-platform-pair-exec {mode}" in unit
+
+
+def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() -> None:
+    root = Path(__file__).resolve().parents[2]
+    launcher = (root / "ops" / "migration" / "jax-platform-pair-exec").read_text(encoding="utf-8")
+    activator = (root / "ops" / "migration" / "activate-platform-pair-release.sh").read_text(encoding="utf-8")
+    installer = (root / "ops" / "migration" / "install-platform-pair-release.sh").read_text(encoding="utf-8")
+
+    assert "selection=/etc/jax/platform-pair-selection.json" in launcher
+    assert "unset JAX_REPO_PATH PYTHONPATH PYTHONHOME VIRTUAL_ENV" in launcher
+    assert 'export JAX_REPO_PATH="$release/jax"' in launcher
+    assert "/usr/bin/flock -s 9" in launcher
+    assert "/usr/bin/flock -x 8" in activator
+    assert "--expected-manifest-sha256" in activator
+    assert "mktemp /etc/jax/.platform-pair-selection." in activator
+    assert "systemctl start jax-platform-migrate.service" in activator
+    assert "systemctl start jax-platform.service" in activator
+    assert activator.index("systemctl start jax-platform-migrate.service") < activator.index("systemctl start jax-platform.service")
+    assert "git -C" not in activator
+    assert "git -C" not in installer
+    assert "--platform-source-sha256" in installer
+    assert "source archive digest mismatch" in installer
+    assert "-m venv --copies" in installer
+    assert "--require-hashes --no-deps" in installer
+    assert "current" not in installer.split("name=", 1)[1]
