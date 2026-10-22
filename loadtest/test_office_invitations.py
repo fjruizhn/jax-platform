@@ -19,6 +19,54 @@ def test_summary_uses_the_clock_when_its_operation_finishes(monkeypatch):
     assert oi.summarize([2.0] * 4, {200: 4}, 100.0)["rps"] == 1.0
 
 
+def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch):
+    """A later stateful leg must never lengthen the list RPS denominator."""
+    class Clock:
+        now = 0.0
+        def perf_counter(self):
+            return self.now
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        def __init__(self, body): self.body = body
+        def json(self): return self.body
+
+    class Client:
+        def __init__(self):
+            self.issued = 0
+            self.issue_summary_counts = []
+        async def get(self, _path, **_kwargs):
+            clock.now += 1.0
+            return Response({"invitations": [{}] * 100})
+        async def post(self, path, **_kwargs):
+            if path.endswith("/invitations"):
+                self.issue_summary_counts.append(len(summary_times))
+                self.issued += 1
+                clock.now += 10.0
+                return Response({"id": f"invitation-{self.issued}", "version": 1})
+            clock.now += 10.0
+            return Response({})
+        async def delete(self, _path, **_kwargs):
+            clock.now += 10.0
+            return Response({})
+
+    clock, client, summary_times = Clock(), Client(), []
+    monkeypatch.setattr(oi.time, "perf_counter", clock.perf_counter)
+    monkeypatch.setattr(oi, "outbox_tokens", lambda _cfg, _key, ids: {item: "token" for item in ids})
+    def capture_summary(*_args, **_kwargs):
+        summary_times.append(clock.now)
+        return {"errors": 0, "p95_ms": 1.0}
+    monkeypatch.setattr(oi, "summarize", capture_summary)
+
+    result = __import__("asyncio").run(
+        oi.run_level(client, {}, 1, {}, b"unused", "fixture", 1))
+
+    assert summary_times[0] == 4.0
+    assert client.issue_summary_counts[0] == 1
+    assert result["list"] == {"errors": 0, "p95_ms": 1.0}
+
+
 def test_semantic_list_error_is_counted_even_when_http_status_is_200():
     result = oi.summarize([3.0], {200: 1}, 0, ["list did not return the seeded 100 invitations"], 1)
     assert result["ok"] == 0
