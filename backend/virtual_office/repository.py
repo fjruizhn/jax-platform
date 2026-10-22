@@ -68,11 +68,11 @@ async def fetch_external_grant(cur, project_id: int, actor_user_id: int, recipie
     return None if row is None else dict(zip(("grant_role", "audience", "grant_status", "relation_status", "recipient_group_id", "group_status"), row))
 
 
-async def fetch_delegation(cur, actor_user_id: int, operation: OfficeOperation, *, for_update: bool):
+async def fetch_delegation(cur, actor_user_id: int, tenant_id: int, operation: OfficeOperation, *, for_update: bool):
     suffix = " FOR UPDATE" if for_update else ""
     await cur.execute(
-        "SELECT status FROM office_admin_delegation WHERE user_id=%s AND capability=%s" + suffix,
-        (actor_user_id, operation.value),
+        "SELECT status FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s AND capability=%s" + suffix,
+        (tenant_id, actor_user_id, operation.value),
     )
     row = await cur.fetchone()
     return None if row is None else {"status": row[0]}

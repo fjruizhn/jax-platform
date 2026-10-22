@@ -5,7 +5,7 @@ from db.runtime_privileges import MANIFEST_VERSION, runtime_table_privilege_dige
 
 OFFICE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_account_profile (user_id INT NOT NULL PRIMARY KEY, global_role VARCHAR(24) NOT NULL DEFAULT 'COLLABORATOR', status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), CONSTRAINT fk_office_account_profile_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT chk_office_account_profile_role CHECK (global_role IN ('COLLABORATOR','GENERAL_ADMIN','OFFICE_SUPERUSER')), CONSTRAINT chk_office_account_profile_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS office_admin_delegation (delegation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, capability VARCHAR(40) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', granted_by INT NOT NULL, version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_admin_delegation (user_id,capability), KEY idx_office_admin_delegation_scope (user_id,capability,status), CONSTRAINT fk_office_admin_delegation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_admin_delegation_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_admin_delegation_capability CHECK (capability IN ('ADMINISTER_OFFICE')), CONSTRAINT chk_office_admin_delegation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_admin_delegation (delegation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, tenant_id INT NOT NULL, user_id INT NOT NULL, capability VARCHAR(40) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', granted_by INT NOT NULL, version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_admin_delegation (tenant_id,user_id,capability), KEY idx_office_admin_delegation_scope (tenant_id,user_id,capability,status), KEY idx_office_admin_delegation_user (user_id), CONSTRAINT fk_office_admin_delegation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id), CONSTRAINT fk_office_admin_delegation_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_admin_delegation_capability CHECK (capability IN ('ADMINISTER_OFFICE')), CONSTRAINT chk_office_admin_delegation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_project_grant (grant_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, grant_role VARCHAR(24) NOT NULL, audience VARCHAR(24) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, granted_by INT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_project_grant_subject (project_id,user_id), KEY idx_office_project_grant_scope (project_id,user_id,status,audience), KEY idx_office_project_grant_list (user_id,status,audience,project_id,grant_role), CONSTRAINT fk_office_project_grant_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_project_grant_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_project_grant_granted_by FOREIGN KEY (granted_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_project_grant_role CHECK (grant_role IN ('PROJECT_ADMIN','COLLABORATOR')), CONSTRAINT chk_office_project_grant_audience CHECK (audience IN ('INTERNAL','CLIENT_PUBLISHED')), CONSTRAINT chk_office_project_grant_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_recipient_group (recipient_group_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, tenant_id INT NOT NULL, group_kind VARCHAR(16) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', created_by INT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_recipient_group_project_kind (project_id,group_kind), UNIQUE KEY uq_office_recipient_group_id_project (recipient_group_id,project_id), KEY idx_office_recipient_group_scope (project_id,status), CONSTRAINT fk_office_recipient_group_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id), CONSTRAINT fk_office_recipient_group_created_by FOREIGN KEY (created_by) REFERENCES jax_users(user_id), CONSTRAINT chk_office_recipient_group_kind CHECK (group_kind='CLIENT'), CONSTRAINT chk_office_recipient_group_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_external_relation (relation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, project_id INT NOT NULL, user_id INT NOT NULL, recipient_group_id BIGINT UNSIGNED NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), UNIQUE KEY uq_office_external_relation_subject (project_id,user_id), KEY idx_office_external_relation_scope (project_id,user_id,status,recipient_group_id), KEY idx_office_external_relation_list (user_id,status,project_id,recipient_group_id), CONSTRAINT fk_office_external_relation_project FOREIGN KEY (project_id) REFERENCES projects(id), CONSTRAINT fk_office_external_relation_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_external_relation_group FOREIGN KEY (recipient_group_id) REFERENCES office_recipient_group(recipient_group_id), CONSTRAINT fk_office_external_relation_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id), CONSTRAINT chk_office_external_relation_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -223,6 +223,78 @@ async def _ensure_office_list_indexes(cur) -> None:
             )
         if not await _index_has_exact_shape(cur, table, index, columns):
             raise RuntimeError("Office project list index is incompatible")
+
+
+_DELEGATION_UNIQUE_INDEX = ("tenant_id", "user_id", "capability")
+_DELEGATION_SCOPE_INDEX = ("tenant_id", "user_id", "capability", "status")
+_DELEGATION_USER_INDEX = ("user_id",)
+
+
+async def _delegation_row_count(cur) -> int:
+    await cur.execute("SELECT COUNT(*) FROM office_admin_delegation")
+    return int((await cur.fetchone())[0])
+
+
+async def _ensure_tenant_bound_delegation(cur) -> None:
+    """Upgrade only an empty legacy delegation table to the tenant contract.
+
+    Global rows have no authoritative tenant attribution.  We therefore refuse
+    before any delegation DDL when they exist.  An interrupted upgrade is
+    resumable only while the table remains empty; this avoids treating a row
+    written into a partially upgraded shape as historical evidence.
+    """
+    has_tenant = await _column_exists(cur, "office_admin_delegation", "tenant_id")
+    if not has_tenant and await _delegation_row_count(cur):
+        raise RuntimeError("Office legacy delegations require reviewed tenant assignment")
+
+    # The old unique key begins with user_id and often backs the user FK.  Give
+    # that FK an explicit supporting index before replacing the unique key.
+    if not await _index_exists(cur, "office_admin_delegation", "idx_office_admin_delegation_user"):
+        await cur.execute("ALTER TABLE office_admin_delegation ADD KEY idx_office_admin_delegation_user (user_id)")
+
+    if not has_tenant:
+        await cur.execute("ALTER TABLE office_admin_delegation ADD COLUMN tenant_id INT NOT NULL AFTER delegation_id")
+
+    unique_ok = await _index_has_exact_shape(
+        cur, "office_admin_delegation", "uq_office_admin_delegation", _DELEGATION_UNIQUE_INDEX, unique=True)
+    scope_ok = await _index_has_exact_shape(
+        cur, "office_admin_delegation", "idx_office_admin_delegation_scope", _DELEGATION_SCOPE_INDEX)
+    user_ok = await _index_has_exact_shape(
+        cur, "office_admin_delegation", "idx_office_admin_delegation_user", _DELEGATION_USER_INDEX)
+    if not (unique_ok and scope_ok and user_ok):
+        if await _delegation_row_count(cur):
+            raise RuntimeError("Office admin delegation indexes are incompatible")
+        if await _index_exists(cur, "office_admin_delegation", "uq_office_admin_delegation"):
+            await cur.execute("ALTER TABLE office_admin_delegation DROP INDEX uq_office_admin_delegation")
+        if await _index_exists(cur, "office_admin_delegation", "idx_office_admin_delegation_scope"):
+            await cur.execute("ALTER TABLE office_admin_delegation DROP INDEX idx_office_admin_delegation_scope")
+        if not await _index_exists(cur, "office_admin_delegation", "uq_office_admin_delegation"):
+            await cur.execute("ALTER TABLE office_admin_delegation ADD UNIQUE KEY uq_office_admin_delegation (tenant_id,user_id,capability)")
+        if not await _index_exists(cur, "office_admin_delegation", "idx_office_admin_delegation_scope"):
+            await cur.execute("ALTER TABLE office_admin_delegation ADD KEY idx_office_admin_delegation_scope (tenant_id,user_id,capability,status)")
+
+    if not await _constraint_exists(cur, "fk_office_admin_delegation_tenant"):
+        await cur.execute("ALTER TABLE office_admin_delegation ADD CONSTRAINT fk_office_admin_delegation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id)")
+    if not await _index_has_exact_shape(cur, "office_admin_delegation", "uq_office_admin_delegation", _DELEGATION_UNIQUE_INDEX, unique=True):
+        raise RuntimeError("Office admin delegation unique index is incompatible")
+    if not await _index_has_exact_shape(cur, "office_admin_delegation", "idx_office_admin_delegation_scope", _DELEGATION_SCOPE_INDEX):
+        raise RuntimeError("Office admin delegation scope index is incompatible")
+    if not await _index_has_exact_shape(cur, "office_admin_delegation", "idx_office_admin_delegation_user", _DELEGATION_USER_INDEX):
+        raise RuntimeError("Office admin delegation user index is incompatible")
+    if not await _constraint_exists(cur, "fk_office_admin_delegation_tenant"):
+        raise RuntimeError("Office admin delegation tenant foreign key is missing")
+
+
+async def _assert_professional_grant_version(cur) -> None:
+    """The CAS column is authority state; a same-named nullable field is unsafe."""
+    await cur.execute(
+        "SELECT DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT "
+        "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_professional_grant' AND COLUMN_NAME='version'"
+    )
+    row = await cur.fetchone()
+    if row != ("bigint", "bigint(20)", "NO", "1"):
+        raise RuntimeError("Office professional grant version is incompatible")
 
 
 async def _constraint_exists(cur, name: str) -> bool:
@@ -664,11 +736,13 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE office_schema_revision MODIFY component VARCHAR(64) NOT NULL, DROP PRIMARY KEY, ADD PRIMARY KEY (component)")
     if not await _index_exists(cursor, "office_recipient_group", "uq_office_recipient_group_id_project"):
         await cursor.execute("ALTER TABLE office_recipient_group ADD UNIQUE KEY uq_office_recipient_group_id_project (recipient_group_id,project_id)")
+    await _ensure_tenant_bound_delegation(cursor)
     # Professional capability is mutable/revocable.  Existing pre-3C rows
     # receive the deterministic first version; later API mutations use a CAS
     # instead of treating a stale form as authority.
     if not await _column_exists(cursor, "office_professional_grant", "version"):
         await cursor.execute("ALTER TABLE office_professional_grant ADD COLUMN version BIGINT NOT NULL DEFAULT 1 AFTER granted_by")
+    await _assert_professional_grant_version(cursor)
     if not await _constraint_exists(cursor, "fk_office_external_relation_group_project"):
         await cursor.execute("ALTER TABLE office_external_relation ADD CONSTRAINT fk_office_external_relation_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id)")
     if not await _constraint_exists(cursor, "fk_office_authorization_event_scope"):

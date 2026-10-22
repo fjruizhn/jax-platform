@@ -362,7 +362,7 @@ def test_root_cross_tenant_and_delegated_general_admin_without_implicit_content(
         assert (await authorize_office(None, fixture["outsider"], OfficeOperation.VIEW_PROJECT, fixture["project"], **_with_proof(root_proof))).allowed is True
         manager = await _sql("INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) VALUES (%s,%s,'x','operator','active','INTERNAL')", (fixture["tenant_a"], f"office-manager-{uuid.uuid4().hex[:10]}@example.invalid"))
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (manager,))
-        await _sql("INSERT INTO office_admin_delegation (user_id,capability,status,granted_by) VALUES (%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (manager, fixture["actor"]))
+        await _sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (fixture["tenant_a"], manager, fixture["actor"]))
         manager_proof = await _real_mfa_proof(manager, step_up=True)
         assert (await authorize_office(None, manager, OfficeOperation.ADMINISTER_OFFICE, **_with_proof(manager_proof))).allowed is True
         assert (await authorize_office(None, manager, OfficeOperation.VIEW_PROJECT, fixture["project"])).code == "office_grant_missing"
@@ -375,7 +375,7 @@ def test_general_admin_cannot_receive_or_use_create_office_project_delegation(cl
         manager = await _sql("INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) VALUES (%s,%s,'x','operator','active','INTERNAL')", (fixture["tenant_a"], f"office-create-{uuid.uuid4().hex[:10]}@example.invalid"))
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (manager,))
         try:
-            await _sql("INSERT INTO office_admin_delegation (user_id,capability,status,granted_by) VALUES (%s,'CREATE_OFFICE_PROJECT','ACTIVE',%s)", (manager, fixture["actor"]))
+            await _sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'CREATE_OFFICE_PROJECT','ACTIVE',%s)", (fixture["tenant_a"], manager, fixture["actor"]))
         except aiomysql.OperationalError:
             pass
         else:
@@ -410,14 +410,14 @@ def test_explain_covers_each_canonical_authority_lookup_without_sort_or_temporar
         group = await _sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,%s,'CLIENT','ACTIVE',%s)", (fixture["project"], fixture["tenant_a"], fixture["actor"]))
         await _sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (fixture["project"], external, group))
         await _sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (fixture["project"], external, fixture["actor"]))
-        await _sql("INSERT INTO office_admin_delegation (user_id,capability,status,granted_by) VALUES (%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (fixture["actor"], fixture["actor"]))
+        await _sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (fixture["tenant_a"], fixture["actor"], fixture["actor"]))
         await _sql("INSERT INTO office_professional_grant (project_id,user_id,capability,basis,evidence_ref,status,granted_by) VALUES (%s,%s,'PROFESSIONAL_ACTION','test','test','ACTIVE',%s)", (fixture["project"], fixture["actor"], fixture["actor"]))
         plans = (
             ("SELECT u.tenant_id,u.status,u.account_class,t.status,p.global_role,p.status FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s", (fixture["actor"],)),
             ("SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s", (fixture["project"],)),
             ("SELECT g.grant_role,g.audience,g.status,m.status FROM office_project_grant g JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id WHERE g.project_id=%s AND g.user_id=%s", (fixture["project"], fixture["actor"])),
             ("SELECT g.grant_role,g.audience,g.status,r.status,r.recipient_group_id,rg.status FROM office_project_grant g JOIN office_external_relation r ON r.project_id=g.project_id AND r.user_id=g.user_id JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=r.project_id WHERE g.project_id=%s AND g.user_id=%s AND r.recipient_group_id=%s", (fixture["project"], external, group)),
-            ("SELECT status FROM office_admin_delegation WHERE user_id=%s AND capability=%s", (fixture["actor"], "ADMINISTER_OFFICE")),
+            ("SELECT status FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s AND capability=%s", (fixture["tenant_a"], fixture["actor"], "ADMINISTER_OFFICE")),
             ("SELECT status FROM office_professional_grant WHERE project_id=%s AND user_id=%s AND capability=%s", (fixture["project"], fixture["actor"], "PROFESSIONAL_ACTION")),
         )
         for query, params in plans:

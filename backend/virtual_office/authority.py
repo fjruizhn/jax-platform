@@ -163,7 +163,7 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
                 return _decision(False, "office_tenant_denied", actor, operation, project, project_tenant, global_role, canonical_project_id=project)
             if operation is OfficeOperation.ADMINISTER_PROJECT_MEMBERS and global_role == "GENERAL_ADMIN":
                 delegation = await repository.fetch_delegation(
-                    cur, actor, OfficeOperation.ADMINISTER_OFFICE, for_update=locked)
+                    cur, actor, tenant, OfficeOperation.ADMINISTER_OFFICE, for_update=locked)
                 if project_status == "ACTIVE" and delegation is not None and delegation["status"] == "ACTIVE":
                     return _decision(True, "office_delegated_member_admin", actor, operation, project,
                                      project_tenant, global_role, canonical_project_id=project)
@@ -197,7 +197,7 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
     # Identity-security authority is root-only.  A general Office
     # administrator must never inherit another user's credentials/MFA power.
     if operation is OfficeOperation.ADMINISTER_OFFICE and global_role == "GENERAL_ADMIN":
-        delegation = await repository.fetch_delegation(cur, actor, operation, for_update=locked)
+        delegation = await repository.fetch_delegation(cur, actor, tenant, operation, for_update=locked)
         if delegation is not None and delegation["status"] == "ACTIVE":
             return _decision(True, "office_delegation", actor, operation, None, tenant, global_role)
     return _decision(False, "office_delegation_missing", actor, operation, None, tenant, global_role)

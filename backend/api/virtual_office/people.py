@@ -30,6 +30,10 @@ class GlobalRoleUpdate(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class DelegationUpdate(BaseModel):
+    expected_version: int = Field(ge=0)
+
+
 def _actor_id(user: AuthUser) -> int:
     try:
         return int(user.user_id)
@@ -46,6 +50,22 @@ async def _current_admin(cur, *, actor_user_id: int, proof_event_id: int | None)
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_people_access_denied")
     return decision
+
+
+async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id: int) -> int:
+    """Take the shared tenant mutexes before actor/profile then target rows."""
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (actor_user_id,))
+    actor = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (target_user_id,))
+    target = await cur.fetchone()
+    if actor is None or target is None:
+        raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+    target_tenant_id = int(target[0])
+    for tenant_id in sorted({int(actor[0]), target_tenant_id}):
+        await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+    return target_tenant_id
 
 
 @router.get("")
@@ -157,3 +177,87 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
         await record_authorization_event(cur, decision)
     return {"user_id": target_user_id, "global_role": payload.global_role,
             "version": payload.expected_version + 1}
+
+
+@router.put("/{target_user_id}/delegation")
+async def grant_tenant_administration(target_user_id: int, payload: DelegationUpdate,
+                                      user: AuthUser = Depends(get_current_user)):
+    """Grant tenant-scoped general administration to an existing GENERAL_ADMIN."""
+    actor_user_id = _actor_id(user)
+    config = load_mfa_config_from_environment()
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        target_tenant_hint = await _lock_actor_target_tenants(
+            cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        decision = await _current_admin(cur, actor_user_id=actor_user_id,
+                                        proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_delegation_denied")
+        await cur.execute(
+            "SELECT u.tenant_id,u.status,t.status,p.global_role,p.status FROM jax_users u "
+            "JOIN jax_tenants t ON t.tenant_id=u.tenant_id JOIN office_account_profile p ON p.user_id=u.user_id "
+            "WHERE u.user_id=%s FOR UPDATE", (target_user_id,))
+        target = await cur.fetchone()
+        if target is None or target[1] != "active" or target[2] != "active" or target[3] != "GENERAL_ADMIN" or target[4] != "ACTIVE":
+            raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+        tenant_id = int(target[0])
+        if tenant_id != target_tenant_hint:
+            raise HTTPException(status_code=409, detail="office_delegation_target_drift")
+        await cur.execute("SELECT delegation_id,status,version FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' FOR UPDATE", (tenant_id, target_user_id))
+        existing = await cur.fetchone()
+        if existing is None:
+            if payload.expected_version != 0:
+                raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+            await cur.execute("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (tenant_id, target_user_id, actor_user_id))
+            version, replayed = 1, False
+        else:
+            status, version = existing[1], int(existing[2])
+            if status == "ACTIVE":
+                if payload.expected_version not in {0, version}:
+                    raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+                replayed = True
+            else:
+                if payload.expected_version != version:
+                    raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+                await cur.execute("UPDATE office_admin_delegation SET status='ACTIVE',granted_by=%s,version=version+1 WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' AND version=%s", (actor_user_id, tenant_id, target_user_id, version))
+                version, replayed = version + 1, False
+        decision = await _current_admin(cur, actor_user_id=actor_user_id, proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_delegation_denied")
+        await record_authorization_event(cur, decision)
+    return {"user_id": target_user_id, "tenant_id": tenant_id, "capability": "ADMINISTER_OFFICE", "version": version, "replayed": replayed}
+
+
+@router.delete("/{target_user_id}/delegation")
+async def revoke_tenant_administration(target_user_id: int, expected_version: int = Query(ge=1),
+                                       user: AuthUser = Depends(get_current_user)):
+    actor_user_id = _actor_id(user)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        target_tenant_hint = await _lock_actor_target_tenants(
+            cur, actor_user_id=actor_user_id, target_user_id=target_user_id)
+        decision = await _current_admin(cur, actor_user_id=actor_user_id,
+                                        proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_delegation_denied")
+        await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s FOR UPDATE", (target_user_id,))
+        target = await cur.fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="office_delegation_target_not_found")
+        tenant_id = int(target[0])
+        if tenant_id != target_tenant_hint:
+            raise HTTPException(status_code=409, detail="office_delegation_target_drift")
+        await cur.execute("SELECT status,version FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' FOR UPDATE", (tenant_id, target_user_id))
+        delegation = await cur.fetchone()
+        if delegation is None:
+            raise HTTPException(status_code=404, detail="office_delegation_not_found")
+        if int(delegation[1]) != expected_version:
+            raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+        if delegation[0] == "REVOKED":
+            return {"user_id": target_user_id, "tenant_id": tenant_id, "capability": "ADMINISTER_OFFICE", "version": expected_version, "replayed": True}
+        await cur.execute("UPDATE office_admin_delegation SET status='REVOKED',version=version+1 WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' AND version=%s", (tenant_id, target_user_id, expected_version))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+        decision = await _current_admin(cur, actor_user_id=actor_user_id, proof_event_id=user.mfa_proof_event_id)
+        if decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_delegation_denied")
+        await record_authorization_event(cur, decision)
+    return {"user_id": target_user_id, "tenant_id": tenant_id, "capability": "ADMINISTER_OFFICE", "version": expected_version + 1, "replayed": False}
