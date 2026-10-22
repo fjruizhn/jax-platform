@@ -45,9 +45,11 @@ def test_candidate_identity_manifest_claim_and_generic_evidence_are_bound() -> N
     assert "OCTET_LENGTH(evidence_bytes)<=16777215" in evidence
 
 
-def test_predecessor_is_only_removed_when_empty() -> None:
+def test_legacy_release_tables_fail_closed_without_destructive_ddl() -> None:
     source = Path(candidate.__file__).read_text()
-    assert "refusing destructive candidate-storage migration" in source
+    assert "explicit data-preserving migration" in source
+    assert "DROP TABLE" not in source
+    assert "FOREIGN_KEY_CHECKS" not in source
     assert candidate._LEGACY_TABLES[0] == "office_module_published_event"
 
 
