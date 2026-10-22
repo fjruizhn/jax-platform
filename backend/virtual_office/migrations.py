@@ -1418,7 +1418,10 @@ _BOOTSTRAP_TRIGGER_METADATA = {
 _BOOTSTRAP_CHECKS = {
     "chk_office_bootstrap_identity": "`target_user_id` = `identity_actor_user_id`",
     "chk_office_bootstrap_basis": "`basis_ref` <> ''",
-    "chk_office_bootstrap_verification": "(`verification_method` = 'MFA' AND `identity_proof_event_id` IS NOT NULL AND `credential_audit_id` IS NOT NULL) OR (`verification_method` = 'PASSWORD_REAUTH' AND `identity_proof_event_id` IS NULL AND `credential_audit_id` IS NULL)",
+    # MariaDB stores this CHECK with its canonical lower-case boolean
+    # operators and without redundant grouping parentheses.  This is the
+    # exact metadata representation to attest, not a permissive comparison.
+    "chk_office_bootstrap_verification": "`verification_method` = 'MFA' and `identity_proof_event_id` is not null and `credential_audit_id` is not null or `verification_method` = 'PASSWORD_REAUTH' and `identity_proof_event_id` is null and `credential_audit_id` is null",
 }
 
 _MFA_UNIQUE_INDEXES = {
