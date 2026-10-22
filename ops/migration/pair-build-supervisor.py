@@ -42,7 +42,7 @@ def main()->None:
  if any(receipt.get(k)!=v for k,v in wanted.items()): die('receipt binding mismatch')
  out=Path(r['out']);st=out.stat()
  if receipt.get('output_dev')!=st.st_dev or receipt.get('output_ino')!=st.st_ino: die('output identity mismatch')
- 
+
  fd=os.open(out/'pair-manifest.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
  try:
   st=os.fstat(fd)
