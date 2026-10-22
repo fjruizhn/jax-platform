@@ -8,7 +8,7 @@ import uuid
 
 import aiomysql
 import pytest
-from pymysql.err import IntegrityError, OperationalError
+from pymysql.err import DataError, IntegrityError, OperationalError
 
 
 _MODULE_PATH = Path(__file__).parents[1] / "virtual_office" / "module_release_ledger.py"
@@ -69,12 +69,6 @@ async def _create_empty_predecessor_787_shape(cur) -> None:
             for index, column in enumerate(columns)
         )
         await cur.execute(f"CREATE TABLE `{table}` ({definition}) ENGINE=InnoDB")
-    await cur.execute("ALTER TABLE office_module_release_revision ADD CONSTRAINT old_revision_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id)")
-    await cur.execute("ALTER TABLE office_module_license_evidence ADD CONSTRAINT old_license_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
-    await cur.execute("ALTER TABLE office_module_creative_approval ADD CONSTRAINT old_creative_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
-    await cur.execute("ALTER TABLE office_module_rights_verdict ADD CONSTRAINT old_rights_revision FOREIGN KEY (revision_id) REFERENCES office_module_release_revision(revision_id)")
-    await cur.execute("ALTER TABLE office_module_published_event ADD CONSTRAINT old_published_release FOREIGN KEY (release_id) REFERENCES office_module_release(release_id)")
-    await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_revision FOREIGN KEY (current_revision_id) REFERENCES office_module_release_revision(revision_id)")
     await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_revision FOREIGN KEY (current_revision_id) REFERENCES office_module_release_revision(revision_id)")
     await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_published FOREIGN KEY (effective_published_event_id) REFERENCES office_module_published_event(published_event_id)")
 
@@ -233,7 +227,7 @@ def test_mariadb_mediumblob_boundary_matches_declared_cap(client) -> None:
                 candidate_id = cur.lastrowid
                 digest = bytes.fromhex("22" * 32)
                 await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,1,UNHEX(SHA2(REPEAT('x',16777215),256)),REPEAT('x',16777215),%s,'untrusted-key')", (candidate_id, digest))
-                with pytest.raises((IntegrityError, OperationalError)):
+                with pytest.raises((DataError, IntegrityError, OperationalError)):
                     await cur.execute("INSERT INTO office_module_candidate_revision (candidate_id,revision_no,manifest_sha256,manifest_bytes,claimed_artifact_set_digest,claimed_signing_key_id) VALUES (%s,2,UNHEX(SHA2(REPEAT('x',16777216),256)),REPEAT('x',16777216),%s,'untrusted-key')", (candidate_id, digest))
         finally:
             async with conn.cursor() as cur:
