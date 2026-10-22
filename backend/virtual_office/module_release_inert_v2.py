@@ -1,0 +1,93 @@
+"""Inert v2 Office release records.
+
+The v1 staging tables deliberately remain untouched.  This version records
+the three authorities separately and makes no effective publication claim.
+It is intentionally not wired into the web process or the runtime migrator.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any
+
+
+PENDING = "PENDING_CONTRACT"
+TABLES = (
+    "office_module_artifact_snapshot_v2", "office_module_publication_request_v2",
+    "office_module_creative_approval_v2", "office_module_rights_verdict_v2",
+    "office_module_release_operation_v2", "office_module_release_receipt_v2",
+    "office_module_effective_release_head_v2",
+)
+
+# No table here is writable by the ordinary Office web principal.  The
+# provisioner must continue to reject these names even before a future,
+# separately-reviewed writer capability exists.
+FORBIDDEN_RUNTIME_TABLES = frozenset(TABLES)
+
+DDL = (
+    "CREATE TABLE IF NOT EXISTS office_module_artifact_snapshot_v2 ("
+    "snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,module_package_digest BINARY(32) NOT NULL,client_artifact_set_digest BINARY(32) NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_snapshot_v2 (snapshot_id,candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,client_artifact_set_digest,project_id,tenant_id),KEY idx_office_module_snapshot_v2_scope (project_id,tenant_id,snapshot_id),"
+    "CONSTRAINT fk_office_module_snapshot_v2_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,client_artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_snapshot_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT chk_office_module_snapshot_v2_digest CHECK (OCTET_LENGTH(module_package_digest)=32 AND OCTET_LENGTH(client_artifact_set_digest)=32 AND module_package_digest<>client_artifact_set_digest)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_publication_request_v2 ("
+    "publication_request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,snapshot_id BIGINT UNSIGNED NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,requested_by_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NULL,state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_request_v2 (publication_request_id,snapshot_id,project_id,tenant_id),KEY idx_office_module_request_v2_scope (project_id,tenant_id,created_at),CONSTRAINT fk_office_module_request_v2_snapshot FOREIGN KEY (snapshot_id) REFERENCES office_module_artifact_snapshot_v2(snapshot_id),CONSTRAINT fk_office_module_request_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT fk_office_module_request_v2_user FOREIGN KEY (requested_by_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_request_v2_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_request_v2_state CHECK (state='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_creative_approval_v2 ("
+    "creative_approval_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,publication_request_id BIGINT UNSIGNED NOT NULL,human_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NULL,decision VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_creative_approval_v2 (creative_approval_id,publication_request_id),KEY idx_office_module_creative_approval_v2_request (publication_request_id,created_at),CONSTRAINT fk_office_module_creative_approval_v2_request FOREIGN KEY (publication_request_id) REFERENCES office_module_publication_request_v2(publication_request_id),CONSTRAINT fk_office_module_creative_approval_v2_human FOREIGN KEY (human_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_creative_approval_v2_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_creative_approval_v2_state CHECK (decision='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_rights_verdict_v2 ("
+    "rights_verdict_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,publication_request_id BIGINT UNSIGNED NOT NULL,critic_principal VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,evidence_set_sha256 BINARY(32) NOT NULL,verification_state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,decision VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_rights_verdict_v2 (rights_verdict_id,publication_request_id),KEY idx_office_module_rights_verdict_v2_request (publication_request_id,created_at),CONSTRAINT fk_office_module_rights_verdict_v2_request FOREIGN KEY (publication_request_id) REFERENCES office_module_publication_request_v2(publication_request_id),CONSTRAINT chk_office_module_rights_verdict_v2_state CHECK (critic_principal<>'' AND OCTET_LENGTH(evidence_set_sha256)=32 AND verification_state='PENDING_CONTRACT' AND decision='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_release_operation_v2 ("
+    "release_operation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,publication_request_id BIGINT UNSIGNED NOT NULL,creative_approval_id BIGINT UNSIGNED NOT NULL,rights_verdict_id BIGINT UNSIGNED NOT NULL,office_release_signer VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_release_operation_v2 (release_operation_id,publication_request_id,creative_approval_id,rights_verdict_id),KEY idx_office_module_release_operation_v2_request (publication_request_id,created_at),CONSTRAINT fk_office_module_release_operation_v2_request FOREIGN KEY (publication_request_id) REFERENCES office_module_publication_request_v2(publication_request_id),CONSTRAINT fk_office_module_release_operation_v2_creative FOREIGN KEY (creative_approval_id,publication_request_id) REFERENCES office_module_creative_approval_v2(creative_approval_id,publication_request_id),CONSTRAINT fk_office_module_release_operation_v2_rights FOREIGN KEY (rights_verdict_id,publication_request_id) REFERENCES office_module_rights_verdict_v2(rights_verdict_id,publication_request_id),CONSTRAINT chk_office_module_release_operation_v2_state CHECK (office_release_signer<>'' AND state='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_release_receipt_v2 ("
+    "release_receipt_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,release_operation_id BIGINT UNSIGNED NOT NULL,receipt_sha256 BINARY(32) NULL,receipt_signature MEDIUMBLOB NULL,state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_release_receipt_v2 (release_receipt_id,release_operation_id),CONSTRAINT fk_office_module_release_receipt_v2_operation FOREIGN KEY (release_operation_id) REFERENCES office_module_release_operation_v2(release_operation_id),CONSTRAINT chk_office_module_release_receipt_v2_state CHECK (state='PENDING_CONTRACT' AND receipt_sha256 IS NULL AND receipt_signature IS NULL)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_module_effective_release_head_v2 ("
+    "project_id INT NOT NULL,tenant_id INT NOT NULL,module_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,head_version BIGINT UNSIGNED NOT NULL,release_receipt_id BIGINT UNSIGNED NOT NULL,status VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),PRIMARY KEY(project_id,tenant_id,module_id,head_version),KEY idx_office_module_effective_head_v2_receipt (release_receipt_id),CONSTRAINT fk_office_module_effective_head_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT fk_office_module_effective_head_v2_receipt FOREIGN KEY (release_receipt_id) REFERENCES office_module_release_receipt_v2(release_receipt_id),CONSTRAINT chk_office_module_effective_head_v2_state CHECK (module_id<>'' AND head_version>=1 AND status='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
+class ReleaseReceiptRejected(ValueError): pass
+
+@dataclass(frozen=True)
+class BoundReleaseReceipt:
+    module_package_digest: str
+    client_artifact_set_digest: str
+    project_id: int
+    tenant_id: int
+    creative_approval_id: int
+    rights_verdict_id: int
+    office_release_signer: str
+
+_HEX = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+def validate_release_receipt(value: Any, *, module_package_digest: str, client_artifact_set_digest: str, project_id: int, tenant_id: int, human_approval_id: int, critic_rights_id: int, human_principal: str) -> BoundReleaseReceipt:
+    """Pure structural binding only; it verifies neither signatures nor rights."""
+    if not isinstance(value, dict) or set(value) != {"domain", "module_package_digest", "client_artifact_set_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id", "office_release_signer"}:
+        raise ReleaseReceiptRejected("release receipt shape is invalid")
+    if value["domain"] != "approval-record/v1": raise ReleaseReceiptRejected("release receipt domain is invalid")
+    if any(key in value for key in ("authorized_by", "model", "selector")): raise ReleaseReceiptRejected("release receipt has forbidden authority")
+    for name in ("module_package_digest", "client_artifact_set_digest"):
+        if not isinstance(value[name], str) or not _HEX.fullmatch(value[name]): raise ReleaseReceiptRejected("release receipt digest is invalid")
+    fields = ("module_package_digest", "client_artifact_set_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
+    expected = (module_package_digest, client_artifact_set_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
+    if tuple(value[field] for field in fields) != expected: raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
+    signer = value["office_release_signer"]
+    if not isinstance(signer, str) or not signer.startswith("office-release:") or signer == human_principal: raise ReleaseReceiptRejected("release signer is not distinct Office authority")
+    return BoundReleaseReceipt(*expected, signer)
+
+async def apply_inert_release_v2_migrations(cur) -> None:
+    """Resumable only for a creation cutpoint; metadata attestation closes drift."""
+    for statement in DDL: await cur.execute(statement)
+    for table in TABLES:
+        for operation in ("UPDATE", "DELETE"):
+            await cur.execute(f"CREATE TRIGGER IF NOT EXISTS no_{operation.lower()}_{table} BEFORE {operation} ON {table} FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
+    await assert_inert_release_v2_metadata(cur)
+
+async def assert_inert_release_v2_metadata(cur) -> None:
+    for table in TABLES:
+        await cur.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if await cur.fetchone() != ("InnoDB",): raise RuntimeError(f"inert release v2 table {table} is invalid")
+        await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
+        if tuple(row[0] for row in await cur.fetchall()) != (f"no_delete_{table}", f"no_update_{table}"): raise RuntimeError(f"inert release v2 triggers {table} are invalid")
