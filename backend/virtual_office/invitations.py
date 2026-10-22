@@ -721,12 +721,20 @@ async def finalize_invitation_delivery_in_cursor(
         "SELECT invitation_id,state,attempt_id,cancel_requested FROM office_invitation_outbox WHERE outbox_id=%s FOR UPDATE",
         (outbox_id,))
     row = await cur.fetchone()
-    if row is None or row[1] != "CLAIMED" or row[2] != attempt_id:
+    if row is None or row[2] != attempt_id:
         return False
     invitation_id = str(row[0])
     # A cancellation fences another send, but cannot rewrite what a relay
     # already accepted after this attempt was claimed.
     state = "SMTP_ACCEPTED" if relay_accepted else "UNKNOWN"
+    if row[1] == "UNKNOWN":
+        # A stale lease records ambiguity.  The still-running SMTP thread may
+        # later obtain a relay acceptance for this exact fenced attempt; that
+        # refines uncertainty and never permits another send.
+        if not relay_accepted:
+            return False
+    elif row[1] != "CLAIMED":
+        return False
     if relay_accepted and (not isinstance(message_id, str) or not message_id or len(message_id) > 320 or not message_id.isascii()):
         raise InvitationError("office_invitation_integrity", status_code=503)
     code = ("SMTP_ACCEPTED" if relay_accepted else (result_code or "SMTP_UNKNOWN"))

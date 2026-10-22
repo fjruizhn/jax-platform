@@ -203,6 +203,13 @@ _replace_invitation_guard(
 _replace_invitation_guard(
     "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update",
     (
+        "IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF",
+        "IF OLD.state='UNKNOWN' AND NOT (NEW.state='SMTP_ACCEPTED' AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=OLD.cancel_requested AND NEW.payload_ciphertext IS NULL AND NEW.message_id IS NOT NULL AND NEW.result_code='SMTP_ACCEPTED' AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NOT NULL) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF",
+    ),
+)
+_replace_invitation_guard(
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update",
+    (
         "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext",
         "(NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=OLD.cancel_requested AND NEW.payload_ciphertext",
     ),
