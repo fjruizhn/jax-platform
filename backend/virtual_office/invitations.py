@@ -73,6 +73,11 @@ class InvitationError(RuntimeError):
         super().__init__(code)
 
 
+class InvitationDeliveryMaintenanceFailure(RuntimeError):
+    """A committed stale-claim repair that must alert before new delivery."""
+    code = "stale_claims_settled"
+
+
 @dataclass(frozen=True)
 class IssuedInvitation:
     invitation_id: str
@@ -1099,7 +1104,8 @@ async def expire_stale_invitations_in_cursor(cur, *, config: InvitationConfig) -
     return expired
 
 
-async def deliver_one_invitation() -> bool:
+async def deliver_one_invitation(*, config: InvitationConfig | None = None, smtp_settings=None,
+                                 maintain: bool = True) -> bool:
     """Run one delivery outside database locks and settle its fenced result.
 
     This is intentionally not scheduled by application startup.  A reviewed
@@ -1110,20 +1116,24 @@ async def deliver_one_invitation() -> bool:
     import smtp_config
 
     from .invitation_config import load_invitation_config_from_environment
-    config = load_invitation_config_from_environment()
+    config = config or load_invitation_config_from_environment()
     if config is None:
         raise InvitationError("office_invitation_transport_unavailable", status_code=503)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        await expire_stale_invitations_in_cursor(cur, config=config)
-        await settle_stale_invitation_claims_in_cursor(cur, config=config)
+        if maintain:
+            await expire_stale_invitations_in_cursor(cur, config=config)
+            await settle_stale_invitation_claims_in_cursor(cur, config=config)
         delivery = await claim_next_invitation_delivery_in_cursor(cur)
     if delivery is None:
         return False
+    # The dedicated worker always passes preflighted settings.  This fallback
+    # keeps the older one-shot library API usable for maintenance callers; it
+    # is deliberately not used by the timer entry point.
+    settings = smtp_settings if smtp_settings is not None else await smtp_config.cargar_settings()
     accepted = False
     message_id: str | None = None
     result_code = "SMTP_UNKNOWN"
     try:
-        settings = await smtp_config.cargar_settings()
         subject, text, body_html = _invitation_email(config, delivery)
         message = smtp_config.construir_mensaje(
             settings, delivery.recipient, subject, text, body_html,
@@ -1151,6 +1161,48 @@ async def deliver_one_invitation() -> bool:
             cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
             relay_accepted=accepted, message_id=message_id, result_code=result_code)
     return True
+
+
+@dataclass(frozen=True)
+class InvitationDeliveryRun:
+    delivered: int
+    expired: int
+    stale_settled: int
+
+
+async def drain_invitation_deliveries() -> InvitationDeliveryRun:
+    """Deliver one bounded batch after all dependencies pass preflight.
+
+    The dedicated systemd worker invokes this function.  It never starts from
+    the web application and deliberately propagates claim, transport and
+    finalization failures so the unit is failed and alerted.  A relay failure
+    is still finalized as UNKNOWN before it is propagated; no bearer returns
+    to QUEUED after an attempt begins.
+    """
+    from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+    import smtp_config
+
+    from .invitation_config import load_invitation_config_from_environment
+    config = load_invitation_config_from_environment()
+    if config is None:
+        raise InvitationError("office_invitation_transport_unavailable", status_code=503)
+    # Read validated settings before claiming *any* row.  This is intentionally
+    # outside the transaction: smtp_config owns its own short read transaction.
+    settings = await smtp_config.cargar_settings()
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        expired = await expire_stale_invitations_in_cursor(cur, config=config)
+        stale_settled = await settle_stale_invitation_claims_in_cursor(cur, config=config)
+    # The transaction above has committed by the time this is raised.  Stop
+    # here so an operator/alert sees the abandoned attempt before a later
+    # queued bearer is claimed by this same oneshot execution.
+    if stale_settled:
+        raise InvitationDeliveryMaintenanceFailure()
+    delivered = 0
+    for _ in range(config.delivery_batch_limit):
+        if not await deliver_one_invitation(config=config, smtp_settings=settings, maintain=False):
+            break
+        delivered += 1
+    return InvitationDeliveryRun(delivered=delivered, expired=expired, stale_settled=stale_settled)
 
 
 def _invitation_acceptance_url(config: InvitationConfig, bearer_token: str) -> str:

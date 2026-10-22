@@ -1,0 +1,90 @@
+"""Pure safety contracts for the dedicated invitation worker."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from virtual_office import invitations
+from virtual_office.invitation_config import InvitationConfig
+
+
+_CONFIG = InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 2)
+
+
+def test_delivery_batch_config_is_required_and_bounded():
+    with pytest.raises(ValueError):
+        InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 0)
+    with pytest.raises(ValueError):
+        InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 1001)
+
+
+def test_worker_preflight_fails_before_it_can_claim(monkeypatch):
+    """SMTP configuration failure happens before the first transaction/claim."""
+    import smtp_config
+
+    async def broken_settings():
+        raise smtp_config.SmtpNoConfigurado("missing")
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", broken_settings)
+    import virtual_office.invitation_config
+    monkeypatch.setattr(virtual_office.invitation_config, "load_invitation_config_from_environment", lambda: _CONFIG)
+
+    class ForbiddenTransaction:
+        async def __aenter__(self):
+            raise AssertionError("worker claimed or maintained before SMTP preflight")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    import db.transaccion
+    monkeypatch.setattr(db.transaccion, "transaccion", lambda *_args: ForbiddenTransaction())
+    with pytest.raises(smtp_config.SmtpNoConfigurado):
+        asyncio.run(invitations.drain_invitation_deliveries())
+
+
+def test_stale_claim_repair_stops_the_oneshot_before_any_new_claim(monkeypatch):
+    """The maintenance transaction completes, then OnFailure can alert."""
+    import db.transaccion
+    import smtp_config
+    import virtual_office.invitation_config
+
+    async def settings():
+        return object()
+
+    async def expired(_cur, *, config):
+        return 0
+
+    async def stale(_cur, *, config):
+        return 1
+
+    async def forbidden_claim(_cur):
+        raise AssertionError("a stale repair must end this oneshot before a new claim")
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(virtual_office.invitation_config, "load_invitation_config_from_environment", lambda: _CONFIG)
+    monkeypatch.setattr(smtp_config, "cargar_settings", settings)
+    monkeypatch.setattr(db.transaccion, "transaccion", lambda *_args: Transaction())
+    monkeypatch.setattr(invitations, "expire_stale_invitations_in_cursor", expired)
+    monkeypatch.setattr(invitations, "settle_stale_invitation_claims_in_cursor", stale)
+    monkeypatch.setattr(invitations, "claim_next_invitation_delivery_in_cursor", forbidden_claim)
+    with pytest.raises(invitations.InvitationDeliveryMaintenanceFailure):
+        asyncio.run(invitations.drain_invitation_deliveries())
+
+
+def test_worker_cli_returns_nonzero_without_serializing_exception(monkeypatch, caplog):
+    from virtual_office import invitation_delivery_worker
+
+    async def broken():
+        raise RuntimeError("recipient@example.test token-value")
+
+    monkeypatch.setattr(invitation_delivery_worker, "run_once", broken)
+    assert invitation_delivery_worker.main() == 1
+    assert "recipient@example.test" not in caplog.text
+    assert "token-value" not in caplog.text
