@@ -52,28 +52,46 @@ async def _current_step_up_proof(user_id: int) -> int:
     )
 
 
-def test_root_creates_cross_tenant_office_scope_and_audits_canonical_target(client):
+def test_root_creates_same_tenant_office_scope_and_audits_canonical_target(client):
     async def scenario():
         from jax.memory.b9_mariadb import MariaDBB9Store
         from jax.memory.project_authority import ProjectAuthorityAdmin, ProjectNamespace
 
-        actor, _actor_tenant, target_tenant = await _root_and_tenants()
+        actor, actor_tenant, _other_tenant = await _root_and_tenants()
         proof_id = await _current_step_up_proof(actor)
         admin = ProjectAuthorityAdmin(MariaDBB9Store(await get_pool()))
         created = await admin.create_namespaced_project(
-            actor_user_id=actor, target_tenant_id=target_tenant,
+            actor_user_id=actor, target_tenant_id=actor_tenant,
             namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name="Office adapter test",
             description=None, idempotency_key=str(uuid.uuid4()),
             authorizer=OfficeNamespaceAuthorizer(mfa_proof_event_id=proof_id, mfa_config=_MFA_CONFIG))
         assert created.created is True
         assert await _sql(
             "SELECT tenant_id,authorization_namespace,status FROM jax_project_scope WHERE project_id=%s",
-            (created.project_id,), True) == ((target_tenant, "OFFICE_CONFIDENTIAL", "ACTIVE"),)
+            (created.project_id,), True) == ((actor_tenant, "OFFICE_CONFIDENTIAL", "ACTIVE"),)
         audit = await _sql(
             "SELECT actor_user_id,operation,requested_project_id,project_id,tenant_id,result,reason_code "
             "FROM office_authorization_event WHERE actor_user_id=%s AND operation='CREATE_OFFICE_PROJECT' "
             "ORDER BY event_id DESC LIMIT 1", (actor,), True)
-        assert audit == ((actor, "CREATE_OFFICE_PROJECT", None, None, target_tenant, "ALLOWED", "office_namespace_create"),)
+        assert audit == ((actor, "CREATE_OFFICE_PROJECT", None, None, actor_tenant, "ALLOWED", "office_namespace_create"),)
+    client.portal.call(scenario)
+
+
+def test_root_cannot_create_cross_tenant_office_scope(client):
+    async def scenario():
+        from jax.memory.b9_mariadb import MariaDBB9Store
+        from jax.memory.project_authority import AuthorizationDenied, ProjectAuthorityAdmin, ProjectNamespace
+
+        actor, _actor_tenant, target_tenant = await _root_and_tenants()
+        admin = ProjectAuthorityAdmin(MariaDBB9Store(await get_pool()))
+        with pytest.raises((AuthorizationDenied, PermissionError)):
+            await admin.create_namespaced_project(
+                actor_user_id=actor, target_tenant_id=target_tenant,
+                namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name="Cross tenant denied",
+                description=None, idempotency_key=str(uuid.uuid4()), authorizer=OfficeNamespaceAuthorizer())
+        assert await _sql(
+            "SELECT project_id FROM jax_project_scope WHERE tenant_id=%s AND authorization_namespace='OFFICE_CONFIDENTIAL'",
+            (target_tenant,), True) == ()
     client.portal.call(scenario)
 
 

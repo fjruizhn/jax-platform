@@ -62,16 +62,17 @@ async def list_project_members(project_id: int, cursor: int = Query(default=0, g
             # project that has no grants.
             raise HTTPException(status_code=403, detail="office_project_grant_denied")
         await cur.execute(
-            "SELECT user_id,grant_role,audience,status,version FROM office_project_grant "
-            "WHERE project_id=%s AND user_id>%s ORDER BY user_id ASC LIMIT %s",
+            "SELECT g.user_id,u.email,g.grant_role,g.audience,g.status,g.version "
+            "FROM office_project_grant g JOIN jax_users u ON u.user_id=g.user_id "
+            "WHERE g.project_id=%s AND g.user_id>%s ORDER BY g.user_id ASC LIMIT %s",
             (project_id, cursor, limit + 1),
         )
         rows = await cur.fetchall()
     page = rows[:limit]
     members = [
-        {"user_id": int(member[0]), "grant_role": str(member[1]),
-         "audience": str(member[2]), "status": str(member[3]),
-         "version": int(member[4])}
+        {"user_id": int(member[0]), "email": str(member[1]),
+         "grant_role": str(member[2]), "audience": str(member[3]),
+         "status": str(member[4]), "version": int(member[5])}
         for member in page
     ]
     return {
@@ -104,8 +105,7 @@ async def change_project_member_role(project_id: int, target_user_id: int,
                 audience="INTERNAL")
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-                require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
-                mfa_config=config,
+                mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config,
             )
             if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
                 raise HTTPException(status_code=403, detail="office_project_role_denied")

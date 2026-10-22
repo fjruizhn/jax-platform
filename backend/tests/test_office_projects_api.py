@@ -498,7 +498,32 @@ def test_create_project_jax_first_then_exact_replay_and_one_client_group(client,
     assert replay.status_code == 200
     assert replay.json() == {"id": project_id, "created": False}
     assert client.portal.call(sql, "SELECT authorization_namespace,tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,), True) == (("OFFICE_CONFIDENTIAL", 1),)
+    assert client.portal.call(
+        sql,
+        "SELECT m.project_role,m.status,g.grant_role,g.audience,g.status,g.version "
+        "FROM jax_project_membership m JOIN office_project_grant g "
+        "ON g.project_id=m.project_id AND g.user_id=m.user_id "
+        "WHERE m.project_id=%s AND m.user_id=%s",
+        (project_id, root), True,
+    ) == (("CONTRIBUTOR", "ACTIVE", "PROJECT_ADMIN", "INTERNAL", "ACTIVE", 1),)
+    assert client.portal.call(
+        sql,
+        "SELECT operation,target_user_id,expected_version,grant_role,audience,office_grant_version,office_grant_status "
+        "FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s",
+        (key,), True,
+    ) == (("GRANT_OFFICE_MEMBER", root, 0, "PROJECT_ADMIN", "INTERNAL", 1, "ACTIVE"),)
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT' AND status='ACTIVE'", (project_id,), True) == ((1,),)
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND target_user_id=%s),"
+        "(SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id=%s),"
+        "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s),"
+        "(SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT')",
+        (project_id, root, project_id, root, key, project_id), True,
+    ) == ((1, 1, 1, 1),)
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=_proof_headers(root, tv, mv, proof, str(uuid.uuid4())))
+    assert detail.status_code == 200
+    assert detail.json()["capabilities"]["manage_invitations"] is True
 
 
 def test_root_bootstrap_creates_lists_and_views_project_without_mfa_or_config(client, monkeypatch):
@@ -552,12 +577,41 @@ def test_create_project_group_fault_is_partial_and_same_key_repairs(client, monk
         assert first.status_code == 503
         project_id = client.portal.call(sql, "SELECT project_id FROM jax_namespace_project_creation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s", (key,), True)[0][0]
         assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s", (project_id,), True) == ((0,),)
+        assert client.portal.call(
+            sql,
+            "SELECT (SELECT COUNT(*) FROM jax_project_membership WHERE project_id=%s AND user_id=%s),"
+            "(SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id=%s),"
+            "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s),"
+            "(SELECT COUNT(*) FROM jax_namespace_membership_mutation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s)",
+            (project_id, root, project_id, root, key, key), True,
+        ) == ((0, 0, 0, 0),)
     finally:
         client.portal.call(sql, "DROP TRIGGER " + trigger)
     repaired = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
     assert repaired.status_code == 200
     assert repaired.json()["created"] is False
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND status='ACTIVE'", (project_id,), True) == ((1,),)
+
+
+def test_create_project_rejects_cross_tenant_before_phase_a(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    tenant_name = "office-cross-create-" + uuid.uuid4().hex[:12]
+    client.portal.call(sql, "INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (tenant_name,))
+    target_tenant = client.portal.call(sql, "SELECT tenant_id FROM jax_tenants WHERE name=%s", (tenant_name,), True)[0][0]
+    key = str(uuid.uuid4())
+    response = client.post(
+        "/api/virtual-office/projects",
+        json={"tenant_id": target_tenant, "name": "cross-tenant", "description": None},
+        headers=_proof_headers(root, tv, mv, proof, key),
+    )
+    assert (response.status_code, response.json()) == (403, {"detail": "office_project_create_denied"})
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_project_scope WHERE tenant_id=%s AND authorization_namespace='OFFICE_CONFIDENTIAL'),"
+        "(SELECT COUNT(*) FROM jax_namespace_project_creation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s)",
+        (target_tenant, key), True,
+    ) == ((0, 0),)
 
 
 def test_create_project_revoked_actor_cannot_repair_or_reactivate_group(client, monkeypatch):

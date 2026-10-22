@@ -48,6 +48,7 @@ def test_project_member_list_returns_only_mutation_fields_and_pages(client, monk
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
     project, first = client.portal.call(_office_project_and_unassigned_member)
+    first_email = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id=%s", (first,), True)[0][0]
 
     async def add_second_member():
         second, _ = await crear_usuario()
@@ -64,6 +65,7 @@ def test_project_member_list_returns_only_mutation_fields_and_pages(client, monk
         return second
 
     second = client.portal.call(add_second_member)
+    second_email = client.portal.call(sql, "SELECT email FROM jax_users WHERE user_id=%s", (second,), True)[0][0]
     headers = _headers(root, tv, mv, proof)
     first_page = client.get(f"/api/virtual-office/projects/{project}/members?limit=1", headers=headers)
     assert first_page.status_code == 200
@@ -71,7 +73,7 @@ def test_project_member_list_returns_only_mutation_fields_and_pages(client, monk
     assert set(first_body) == {"project_id", "members", "next_cursor"}
     assert first_body["project_id"] == project
     assert first_body["members"] == [{
-        "user_id": first, "grant_role": "COLLABORATOR", "audience": "INTERNAL",
+        "user_id": first, "email": first_email, "grant_role": "COLLABORATOR", "audience": "INTERNAL",
         "status": "ACTIVE", "version": 1,
     }]
     assert first_body["next_cursor"] == first
@@ -80,7 +82,7 @@ def test_project_member_list_returns_only_mutation_fields_and_pages(client, monk
     )
     assert second_page.status_code == 200
     assert second_page.json()["members"] == [{
-        "user_id": second, "grant_role": "COLLABORATOR", "audience": "CLIENT_PUBLISHED",
+        "user_id": second, "email": second_email, "grant_role": "COLLABORATOR", "audience": "CLIENT_PUBLISHED",
         "status": "REVOKED", "version": 3,
     }]
     assert second_page.json()["next_cursor"] is None
@@ -187,6 +189,44 @@ def test_root_changes_active_internal_role_without_touching_jax_membership(clien
     assert client.portal.call(
         sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND target_user_id=%s", (project, target), True,
     ) == events_before
+
+
+def test_root_promotes_member_without_mfa(client, monkeypatch):
+    """A current Office root may delegate project administration at sign-in level."""
+    _configure_mfa(monkeypatch)
+    root, token_version, _mfa_version, _proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def existing_collaborator():
+        await sql(
+            "INSERT INTO jax_project_membership "
+            "(membership_id,project_id,tenant_id,user_id,project_role,status,grant_origin,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE','OFFICE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), project, target),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (project, target, root),
+        )
+
+    client.portal.call(existing_collaborator)
+    for name in (
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+    ):
+        monkeypatch.delenv(name)
+    response = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+        headers={
+            "Authorization": "Bearer " + create_access_token(str(root), "1", "operator", token_version),
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["grant_role"] == "PROJECT_ADMIN"
 
 
 def test_only_root_can_change_role_and_ineligible_member_is_rejected(client, monkeypatch):

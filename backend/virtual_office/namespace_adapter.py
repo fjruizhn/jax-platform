@@ -36,6 +36,11 @@ class OfficeNamespaceAuthorizer:
         )
         if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
             raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
+        # A root may create Office work only for its own tenant.  This check
+        # runs in JAX's pre-create transaction, before a project scope or its
+        # idempotency request can be written.
+        if decision.tenant_id is None or int(decision.tenant_id) != target_tenant_id:
+            raise OfficeNamespaceAuthorizationDenied("Office project target tenant denied")
         target = await repository.fetch_tenant(cursor, target_tenant_id, for_update=True)
         if target is None or target["status"] != "active":
             raise OfficeNamespaceAuthorizationDenied("Office target tenant is not active")

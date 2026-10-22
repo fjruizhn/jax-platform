@@ -8,6 +8,7 @@ from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from virtual_office.audit import record_authorization_event
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
 from virtual_office.invitations import (
@@ -59,9 +60,10 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
                                    project_id: int, idempotency_key: str) -> None:
     """Finish the Office-owned phase after JAX committed the canonical project.
 
-    This intentionally has its own transaction.  A failed recipient-group
-    initialization leaves the confidential JAX scope inaccessible and is
-    repaired only by an authorized replay of the original key.
+    This intentionally has its own transaction.  A failed companion phase
+    leaves the confidential JAX scope inaccessible and is repaired only by an
+    authorized replay of the original key.  The creator's canonical JAX
+    membership, Office grant, receipt, and client group commit together.
     """
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -86,7 +88,8 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
             )
-            if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
+            if (not decision.allowed or decision.global_role != "OFFICE_SUPERUSER"
+                    or decision.tenant_id != target_tenant_id):
                 raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
 
             await cur.execute(
@@ -106,6 +109,80 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
             request = await cur.fetchone()
             if request is None or tuple(map(int, request)) != (actor_user_id, target_tenant_id, project_id):
                 raise _PhaseBRetryable("office project creation request is unavailable")
+
+            # This is the one narrowly-defined self-grant: it binds the
+            # creator to the scope that the same canonical CREATE request has
+            # just created.  JAX validates that exception under these locks;
+            # JXP supplies the current Office-root authority and records the
+            # Office companion in this same Phase-B transaction.
+            from api.virtual_office.grants import (
+                _OfficeMembershipAuthorizer,
+                _assert_receipt_companion,
+                _locked_membership_receipt,
+                _membership_receipt_digest,
+                _write_membership_receipt,
+            )
+            from jax.memory.b9_mariadb import MariaDBB9Store
+            from jax.memory.project_authority import (
+                NamespacedMemberKind,
+                ProjectAuthorityAdmin,
+                ProjectNamespace,
+            )
+
+            result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
+                cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
+                project_id=project_id, target_user_id=actor_user_id,
+                namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
+                member_kind=NamespacedMemberKind.INTERNAL,
+                idempotency_key=idempotency_key,
+                execution=None,
+                authorizer=_OfficeMembershipAuthorizer(
+                    proof_event_id=None, mfa_config=None, grant_role="PROJECT_ADMIN"),
+            )
+            digest = _membership_receipt_digest(
+                operation="GRANT_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                target_tenant_id=target_tenant_id, project_id=project_id,
+                target_user_id=actor_user_id, expected_version=0,
+                grant_role="PROJECT_ADMIN", audience="INTERNAL",
+            )
+            receipt = await _locked_membership_receipt(cur, idempotency_key=idempotency_key)
+            if receipt is not None:
+                if (not result.replayed or receipt[0] != digest
+                        or str(receipt[1]) != result.membership_id
+                        or str(receipt[2]) != result.event_id):
+                    raise _PhaseBRetryable("office creator grant replay is unavailable")
+                await _assert_receipt_companion(
+                    cur, project_id=project_id, target_user_id=actor_user_id,
+                    receipt=receipt)
+            else:
+                if result.replayed:
+                    # A canonical replay without JXP's terminal receipt is a
+                    # torn or incompatible companion, never a license to
+                    # manufacture missing authorization evidence.
+                    raise _PhaseBRetryable("office creator grant receipt is unavailable")
+                await cur.execute(
+                    "SELECT grant_role,audience,status,version FROM office_project_grant "
+                    "WHERE project_id=%s AND user_id=%s FOR UPDATE",
+                    (project_id, actor_user_id),
+                )
+                if await cur.fetchone() is not None:
+                    raise _PhaseBRetryable("office creator grant is unavailable")
+                await cur.execute(
+                    "INSERT INTO office_project_grant "
+                    "(project_id,user_id,grant_role,audience,status,granted_by) "
+                    "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+                    (project_id, actor_user_id, actor_user_id),
+                )
+                authorization_event_id = await record_authorization_event(cur, decision)
+                await _write_membership_receipt(
+                    cur, idempotency_key=idempotency_key, digest=digest,
+                    operation="GRANT_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                    target_tenant_id=target_tenant_id, project_id=project_id,
+                    target_user_id=actor_user_id, expected_version=0,
+                    grant_role="PROJECT_ADMIN", audience="INTERNAL", result=result,
+                    office_grant_version=1, office_grant_status="ACTIVE",
+                    authorization_event_id=authorization_event_id,
+                )
 
             await cur.execute(
                 "SELECT recipient_group_id,tenant_id,status FROM office_recipient_group "
