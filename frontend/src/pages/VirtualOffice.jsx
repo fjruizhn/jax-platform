@@ -88,7 +88,7 @@ export default function VirtualOffice({ onOfficeDenied }) {
           {error && <p role="alert" className="mt-3 text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
           {projects?.length === 0 && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.empty}</p>}
           {projects?.length > 0 && <ul className="mt-3 divide-y divide-borde border-y border-borde">
-            {projects.map((project) => <li key={project.id}><button type="button" onClick={() => openDetail(project.id)} className="w-full py-3 text-left text-sm text-texto hover:bg-hundido focus:outline-none focus-visible:ring-2 focus-visible:ring-foco">{project.name}</button></li>)}
+            {projects.map((project) => <li key={project.id}><button type="button" onClick={() => openDetail(project.id)} className="w-full break-words py-3 text-left text-sm text-texto hover:bg-hundido focus:outline-none focus-visible:ring-2 focus-visible:ring-foco">{project.name}</button></li>)}
           </ul>}
           {nextAfterId !== null && <button type="button" disabled={pageLoading} aria-busy={pageLoading} onClick={() => loadProjects(nextAfterId, true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido disabled:opacity-60`}>{pageLoading ? t.virtualOffice.projects.loading : t.virtualOffice.projects.more}</button>}
         </section>
@@ -97,7 +97,7 @@ export default function VirtualOffice({ onOfficeDenied }) {
         <p className="text-sm text-texto-suave">{t.virtualOffice.accessBody}</p>
         <div className="mt-5 flex justify-end"><button type="button" onClick={() => setShowAccess(false)} className={`${TAMANO_BOTON_ACCION} rounded bg-accion text-sobre-color`}>{t.virtualOffice.close}</button></div>
       </Dialogo>}
-      {detail && <Dialogo idTitulo="office-project-detail" titulo={detail.loading || detail.failed ? t.virtualOffice.projects.detailTitle : detail.name} className="max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col" onCerrar={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }}>
+      {detail && <Dialogo idTitulo="office-project-detail" titulo={detail.loading || detail.failed ? t.virtualOffice.projects.detailTitle : detail.name} claseTitulo="text-sm font-semibold text-texto mb-4 break-words" className="max-w-lg max-h-[calc(100dvh-2rem)] flex flex-col" onCerrar={() => { detailGeneration.current += 1; setDetail(null); setDetailError(false) }}>
         <div className="min-h-0 overflow-y-auto break-words pr-1">
           {detail.loading && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {detailError && <p role="alert" className="text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
