@@ -53,3 +53,26 @@ DECISIÓN TÉCNICA Codex basada en revisión Sol office_private_access_review. S
 - Unidades apuntan al artefacto `/srv/jax-prod`, no checkout `/home/fruiz`. Web Requires+After=migrate; oneshot sin RemainAfterExit. Actualizar/verificar drop-ins efectivos, incluido cuenta-de-servicio.conf que puede prevalecer sobre User base. Startup fallido del migrador impide web; cada start/restart real lo ejecuta de nuevo.
 
 Pruebas del código: parser/saneamiento env, provisión idempotente y rechazo de principales existentes incompatibles, concesión DML real y preflightmigrador con grants extra, templates de unidad sin secretoscompartidos/paths viejos, regresiones clásicas y EXPLAIN con volumen representativo. Task6 verifica identidades/entornos/permisos efectivos con systemctl cat/show, denegación real de lectura de archivos y /proc ajenos comojaxweb, orden y repetición del runner, fallo de migrador sin web, LAS MANOS sin regresión. No afirmar esas pruebas de producción por probar templates.
+
+## ACL de tablas versionada · refinamiento 2026-10-22
+
+El principal runtime conserva SELECT/INSERT de esquema. UPDATE/DELETE están
+solamente en el manifiesto ordenado y versionado
+`ops/migration/runtime-table-privileges-v1.txt`, derivado del SQL de ejecución
+clásico y Office y validado bajo un principal restringido. Incluye el UPDATE
+que conserva la siembra transitoria de `user_api_keys` de `/api/admin/keys`;
+el INSERT lo cubre el privilegio de esquema. El manifiesto excluye
+`office_bootstrap_state`, los ledgers append-only y `office_schema_revision`.
+El guard exige el conjunto efectivo exacto de privilegios globales, de esquema,
+tabla, columna, rutinas y roles; una UPDATE/DELETE sobre bootstrap debe devolver
+1142 incluso sin filas.
+
+El provisionador puede continuar únicamente un estado nuevo exacto o el prefijo
+ordenado de la migración legacy: concede las tablas que falten y después revoca
+UPDATE/DELETE de esquema. Un estado mixto distinto falla cerrado. No restaura
+automáticamente privilegios amplios para revertir: una reversión exige un
+procedimiento revisado que introduzca una revisión y manifiesto explícitos.
+El migrador valida el manifiesto antes de DDL y estampa su digest en la revisión
+runtime. Como MariaDB redacta ACTION_STATEMENT para runtime, el migrador atestigua
+los cuerpos completos de los triggers append-only antes de estampar; runtime solo
+comprueba su identidad y la denegación efectiva por ACL.

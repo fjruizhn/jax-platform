@@ -5,6 +5,7 @@ umask 077
 
 CONTAINER=cv-op343-db-20261020
 PORT=33991
+DB=jax_memory_test
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/migration/provision-db-runtime.sh"
 [ "$(id -u)" = 0 ] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
@@ -51,6 +52,46 @@ grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 test "$(wc -l < "$TEMP/state/migrate.env")" -eq 7
 grep -qx 'JAX_MIGRATE_DB_READINESS_ATTEMPTS=12' "$TEMP/state/migrate.env"
 grep -qx 'JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=10' "$TEMP/state/migrate.env"
+
+# The web credential is allowed to make the classic mutation it actually
+# needs, but the append-only bootstrap table must deny UPDATE/DELETE before a
+# trigger could decide anything.  Both predicates are empty on purpose: this
+# proves the privilege boundary without changing the disposable fixture.
+runtime_sql() { mariadb "--defaults-extra-file=$TEMP/state/secrets/$WEB.client.cnf" --batch --skip-column-names "$DB" "$@"; }
+printf '[client]\nuser=%s\npassword=%s\nhost=127.0.0.1\nport=%s\n' "$WEB" "$(head -n1 "$TEMP/state/secrets/$WEB.password")" "$PORT" > "$TEMP/state/secrets/$WEB.client.cnf"
+chmod 600 "$TEMP/state/secrets/$WEB.client.cnf"
+runtime_sql -e 'SELECT 1' | grep -qx 1
+runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
+if runtime_sql -e "UPDATE office_bootstrap_state SET completed_at=completed_at WHERE ceremony_key='__acl_disposable_probe__'"; then
+  echo 'runtime UPDATE on protected bootstrap state was accepted' >&2; exit 1
+fi
+if runtime_sql -e "DELETE FROM office_bootstrap_state WHERE ceremony_key='__acl_disposable_probe__'"; then
+  echo 'runtime DELETE on protected bootstrap state was accepted' >&2; exit 1
+fi
+
+# Simulate an interruption after the first narrow table GRANT but before the
+# legacy schema UPDATE/DELETE revoke.  The next invocation may resume that
+# exact manifest prefix; an arbitrary extra grant remains fail-closed below.
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
+
+# Every durable cut-point for a newly created principal is resumable and
+# bounded: CREATE USER (USAGE), schema grant, and the first table grant.  The
+# migration principal has only CREATE USER and its one schema grant cut-point.
+reset_new_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
+}
+reset_new_runtime
+run_helper
+reset_new_runtime
+printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+reset_new_runtime
+printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+run_helper
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_helper
 
 chmod 644 "$TEMP/state/secrets/$WEB.password"
 if run_helper; then echo 'unsafe secret mode was accepted' >&2; exit 1; fi

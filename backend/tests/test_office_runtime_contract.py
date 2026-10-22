@@ -9,6 +9,12 @@ import aiomysql
 import pytest
 
 from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractError, assert_runtime_db_contract
+from db.runtime_privileges import (
+    MANIFEST_VERSION,
+    load_runtime_table_privileges,
+    runtime_table_privilege_digest,
+    runtime_table_privilege_map,
+)
 from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
 
 
@@ -31,6 +37,58 @@ async def _errno(pool, statement: str) -> int:
             return int(error.value.args[0])
 
 
+async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
+    """Grant the checked-in runtime ACL to a disposable test principal."""
+    await cur.execute(f"GRANT SELECT, INSERT ON `{database}`.* TO `{user}`@'%'")
+    for table, privileges in runtime_table_privilege_map().items():
+        await cur.execute(
+            f"GRANT {', '.join(sorted(privileges))} ON `{database}`.`{table}` TO `{user}`@'%'"
+        )
+
+
+async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) -> None:
+    """Exercise every manifest grant with a zero-row statement.
+
+    The restricted principal performs the actual parse/privilege check for
+    each production-mutated table.  ``WHERE 1=0`` keeps the disposable schema
+    unchanged while catching a manifest entry that names a stale table or
+    misses an operation needed by runtime SQL.
+    """
+    columns: dict[str, str] = {}
+    async with admin_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table in runtime_table_privilege_map():
+                await cur.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION LIMIT 1",
+                    (database, table),
+                )
+                row = await cur.fetchone()
+                assert row is not None, table
+                columns[table] = str(row[0])
+    async with runtime_pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table, privileges in runtime_table_privilege_map().items():
+                if "UPDATE" in privileges:
+                    column = columns[table]
+                    await cur.execute(f"UPDATE `{table}` SET `{column}`=`{column}` WHERE 1=0")
+                if "DELETE" in privileges:
+                    await cur.execute(f"DELETE FROM `{table}` WHERE 1=0")
+
+
+def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evidence():
+    rows = load_runtime_table_privileges()
+    assert MANIFEST_VERSION == "runtime-table-privileges-v1"
+    assert [table for table, _ in rows] == sorted(table for table, _ in rows)
+    assert runtime_table_privilege_digest() == "d1434aaaaae77f578e00bed087692aec3ce0c821faffb109c6d61bbbc1758928"
+    grants = runtime_table_privilege_map()
+    for protected in (
+        "office_authorization_event", "office_bootstrap_state",
+        "office_mfa_security_event", "office_schema_revision",
+    ):
+        assert protected not in grants
+
+
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
     async def scenario():
         from db.connection import get_pool
@@ -40,6 +98,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
         user, password, role = f"office_rt_{tag}", f"Office{uuid.uuid4().hex}", f"office_rt_role_{tag}"
         unusual_user = f"office@rt_{tag}"
         routine = f"office_rt_proc_{tag}"
+        external_schema = f"office_rt_external_{tag}"
         admin = await get_pool()
         runtime = None
         try:
@@ -47,12 +106,13 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                 async with conn.cursor() as cur:
                     await apply_office_migrations(cur)
                     await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await _grant_exact_runtime_acl(cur, database, user)
                     await cur.execute(f"CREATE USER `{unusual_user}`@'%%' IDENTIFIED BY %s", (password,))
                     await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{unusual_user}`@'%'")
             runtime = await _runtime_pool(user, password)
             before = await _fence(admin)
             await assert_runtime_db_contract(runtime)
+            await _assert_manifest_dml_smoke(admin, runtime, database)
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(unusual_user, password)
             with pytest.raises(RuntimeDbContractError, match="identity is unsupported"):
@@ -77,9 +137,28 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             async with admin.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(f"REVOKE SELECT ON *.* FROM `{user}`@'%'")
+                    await cur.execute(f"CREATE DATABASE `{external_schema}`")
+                    await cur.execute(f"GRANT SELECT ON `{external_schema}`.* TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="exact schema privileges"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE SELECT ON `{external_schema}`.* FROM `{user}`@'%'")
+                    await cur.execute(f"CREATE TABLE `{external_schema}`.`external_probe` (id INT NOT NULL)")
+                    await cur.execute(f"GRANT SELECT ON `{external_schema}`.`external_probe` TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password)
+            with pytest.raises(RuntimeDbContractError, match="exact table privileges"):
+                await assert_runtime_db_contract(runtime)
+            runtime.close(); await runtime.wait_closed(); runtime = None
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(f"REVOKE SELECT ON `{external_schema}`.`external_probe` FROM `{user}`@'%'")
+                    await cur.execute(f"DROP DATABASE `{external_schema}`")
                     await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%' WITH GRANT OPTION")
             runtime = await _runtime_pool(user, password)
-            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+            with pytest.raises(RuntimeDbContractError, match="exact schema privileges"):
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             async with admin.acquire() as conn:
@@ -97,7 +176,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                     await cur.execute(f"DROP PROCEDURE `{routine}`")
                     await cur.execute(f"GRANT DROP ON `{database}`.* TO `{user}`@'%'")
             runtime = await _runtime_pool(user, password)
-            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+            with pytest.raises(RuntimeDbContractError, match="exact schema privileges"):
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             async with admin.acquire() as conn:
@@ -151,6 +230,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                     await cur.execute(f"DROP USER IF EXISTS `{unusual_user}`@'%'")
                     await cur.execute(f"DROP ROLE IF EXISTS `{role}`")
                     await cur.execute(f"DROP PROCEDURE IF EXISTS `{routine}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{external_schema}`")
     client.portal.call(scenario)
 
 
@@ -206,21 +286,19 @@ def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
     client.portal.call(scenario)
 
 
-def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(client):
-    """A pristine ledger still rejects a trigger which only protects its fence."""
+def test_migrator_rejects_mfa_trigger_that_only_protects_the_fence(client):
+    """Only the migrator can attest a redacted append-only trigger body."""
     async def scenario():
         from db.connection import get_pool
 
         database = os.environ["JAX_DB_NAME"]
         tag = uuid.uuid4().hex[:16]
-        user, password = f"office_mfa_rt_{tag}", f"Office{uuid.uuid4().hex}"
         schema = f"office_mfa_pristine_{tag}"
         admin = await aiomysql.connect(
             host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
             user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
             db=database, charset="utf8mb4", autocommit=True,
         )
-        runtime = None
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
@@ -232,8 +310,6 @@ def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(clien
                 await stamp_office_runtime_revision(cur)
                 await cur.execute("SELECT COUNT(*) FROM office_mfa_security_event WHERE event_kind='MFA_PROOF'")
                 assert (await cur.fetchone())[0] == 0
-                await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{schema}`.* TO `{user}`@'%'")
                 await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
                 await cur.execute(
                     "CREATE TRIGGER no_update_office_mfa_security_event BEFORE UPDATE "
@@ -242,39 +318,85 @@ def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(clien
                     "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'; "
                     "END IF; END"
                 )
-            runtime = await _runtime_pool(user, password, schema)
-            with pytest.raises(RuntimeDbContractError, match="trigger permitted a mutation"):
-                await assert_runtime_db_contract(runtime)
-            async with admin.cursor() as cur:
-                await cur.execute(f"USE `{schema}`")
-                await cur.execute("SELECT COUNT(*) FROM office_mfa_security_event WHERE event_kind='MFA_PROOF'")
-                assert (await cur.fetchone())[0] == 0
+                with pytest.raises(RuntimeError, match="Office MFA triggers are missing or invalid"):
+                    await apply_office_migrations(cur)
         finally:
-            if runtime is not None:
-                runtime.close(); await runtime.wait_closed()
             async with admin.cursor() as cur:
-                await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
                 await cur.execute(f"USE `{database}`")
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
             admin.close()
     client.portal.call(scenario)
 
 
-def test_runtime_bootstrap_probe_rejects_redacted_same_name_noop_triggers(client):
-    """A DML principal cannot inspect trigger text, so it must exercise it."""
+def test_migrator_rejects_audit_same_name_noop_triggers(client):
+    """The migrator attests the audit trigger body hidden from runtime."""
     async def scenario():
         from db.connection import get_pool
-        database = os.environ["JAX_DB_NAME"]
-        tag = uuid.uuid4().hex[:16]
-        user, password = f"office_bootstrap_rt_{tag}", f"Office{uuid.uuid4().hex}"
+
         admin = await get_pool()
-        runtime = None
         try:
             async with admin.acquire() as conn:
                 async with conn.cursor() as cur:
                     await apply_office_migrations(cur)
-                    await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await cur.execute("DROP TRIGGER no_update_office_authorization_event")
+                    await cur.execute(
+                        "CREATE TRIGGER no_update_office_authorization_event BEFORE UPDATE "
+                        "ON office_authorization_event FOR EACH ROW SET NEW.occurred_at=OLD.occurred_at"
+                    )
+                    with pytest.raises(RuntimeError, match="Office authorization audit triggers are missing or invalid"):
+                        await apply_office_migrations(cur)
+        finally:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("DROP TRIGGER IF EXISTS no_update_office_authorization_event")
+                    await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
+def test_migrator_rejects_extra_append_only_ledger_triggers(client):
+    """Each protected ledger has exactly its two canonical append-only triggers."""
+    async def scenario():
+        from db.connection import get_pool
+
+        extras = (
+            ("office_authorization_event", "office_audit_extra_trigger"),
+            ("office_mfa_security_event", "office_mfa_extra_trigger"),
+            ("office_bootstrap_state", "office_bootstrap_extra_trigger"),
+        )
+        admin = await get_pool()
+        try:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    for table, trigger in extras:
+                        await cur.execute(
+                            f"CREATE TRIGGER `{trigger}` BEFORE INSERT ON `{table}` "
+                            "FOR EACH ROW SET @office_unexpected_trigger=1"
+                        )
+                        with pytest.raises(RuntimeError, match="triggers.*invalid"):
+                            await apply_office_migrations(cur)
+                        await cur.execute(f"DROP TRIGGER `{trigger}`")
+                        await apply_office_migrations(cur)
+        finally:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    for _, trigger in extras:
+                        await cur.execute(f"DROP TRIGGER IF EXISTS `{trigger}`")
+                    await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
+def test_migrator_rejects_bootstrap_same_name_noop_triggers(client):
+    """The migrator, not a DML-only principal, attests the trigger bodies."""
+    async def scenario():
+        from db.connection import get_pool
+        database = os.environ["JAX_DB_NAME"]
+        tag = uuid.uuid4().hex[:16]
+        admin = await get_pool()
+        try:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
                     await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
                     await cur.execute("DROP TRIGGER no_delete_office_bootstrap_state")
                     await cur.execute(
@@ -285,27 +407,14 @@ def test_runtime_bootstrap_probe_rejects_redacted_same_name_noop_triggers(client
                         "CREATE TRIGGER no_delete_office_bootstrap_state BEFORE DELETE "
                         "ON office_bootstrap_state FOR EACH ROW SET @office_bootstrap_noop=1"
                     )
-            runtime = await _runtime_pool(user, password)
-            async with runtime.acquire() as runtime_conn:
-                async with runtime_conn.cursor() as runtime_cur:
-                    await runtime_cur.execute(
-                        "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS "
-                        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
-                        "('no_update_office_bootstrap_state','no_delete_office_bootstrap_state') "
-                        "ORDER BY TRIGGER_NAME"
-                    )
-                    assert await runtime_cur.fetchall() == ((None,), (None,))
-            with pytest.raises(RuntimeDbContractError, match="bootstrap trigger permitted a mutation"):
-                await assert_runtime_db_contract(runtime)
+                    with pytest.raises(RuntimeError, match="Office bootstrap state triggers are invalid"):
+                        await apply_office_migrations(cur)
         finally:
-            if runtime is not None:
-                runtime.close(); await runtime.wait_closed()
             async with admin.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
                     await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
                     await apply_office_migrations(cur)
-                    await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
     client.portal.call(scenario)
 
 
@@ -331,7 +440,7 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{schema}`.* TO `{user}`@'%'")
+                await cur.execute(f"GRANT SELECT, INSERT ON `{schema}`.* TO `{user}`@'%'")
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:
