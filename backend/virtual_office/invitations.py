@@ -61,7 +61,7 @@ def _proof_digest(*, token_hash: bytes, email: str, tenant_id: int, project_id: 
     fields = {
         "account_class": account_class, "actor_user_id": actor_user_id,
         "authorization_event_id": authorization_event_id, "email": email,
-        "expires_at": issued_at.isoformat() if False else expires_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
         "grant_role": "COLLABORATOR", "grant_version": grant_version,
         "issued_at": issued_at.isoformat(), "mfa_version": mfa_version,
         "profile_version": profile_version, "project_id": project_id,
@@ -200,3 +200,206 @@ async def issue_invitation_in_cursor(
         "VALUES (%s,%s,'QUEUED',NULL,0,FALSE,%s,NULL,NULL,NULL,NULL,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
         (outbox_id, invitation_id, payload))
     return IssuedInvitation(invitation_id=invitation_id, expires_at=expires_at)
+
+
+async def revoke_invitation_in_cursor(
+    cur, *, actor_user_id: int, invitation_id: str, proof_event_id: int | None,
+    mfa_config: MFAConfig | None,
+) -> bool:
+    """Revoke an unconsumed invitation and let the DB guard cancel delivery."""
+    if mfa_config is None or type(proof_event_id) is not int:
+        raise InvitationError("office_invitation_issuer_denied", status_code=403)
+    await cur.execute(
+        "SELECT i.status,i.version,i.project_id,s.correlation_id FROM office_invitation i "
+        "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
+    invitation = await cur.fetchone()
+    if invitation is None:
+        raise InvitationError("office_invitation_not_found", status_code=404)
+    if invitation[0] == "REVOKED":
+        return True
+    if invitation[0] != "ISSUED":
+        raise InvitationError("office_invitation_terminal")
+    await _issuer_snapshot(cur, actor_user_id=actor_user_id, project_id=int(invitation[2]),
+                           proof_event_id=proof_event_id, mfa_config=mfa_config)
+    await cur.execute(
+        "SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE",
+        (invitation_id,))
+    issued = await cur.fetchone()
+    if issued is None:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+        "VALUES (%s,'REVOKED',%s,%s,NULL,NULL,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, int(issued[0]), actor_user_id, invitation[3]))
+    await cur.execute(
+        "UPDATE office_invitation SET status='REVOKED',version=version+1,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) "
+        "WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
+        (actor_user_id, invitation_id, int(invitation[1])))
+    if cur.rowcount != 1:
+        raise InvitationError("office_invitation_retryable", status_code=503)
+    return False
+
+
+class _InvitationAcceptanceAuthorizer:
+    """Trusted JXP proof resolver used only by JAX's typed capability call."""
+    def __init__(self, *, invitation_id: str, issuer_user_id: int, target_user_id: int,
+                 target_tenant_id: int, project_id: int, mfa_version: int):
+        self.invitation_id = invitation_id
+        self.issuer_user_id = issuer_user_id
+        self.target_user_id = target_user_id
+        self.target_tenant_id = target_tenant_id
+        self.project_id = project_id
+        self.mfa_version = mfa_version
+        self.authorization_event_id: int | None = None
+
+    async def authorize_membership_in_transaction(self, cursor, *, actor_user_id: int,
+                                                  target_tenant_id: int, project_id: int,
+                                                  target_user_id: int, namespace, operation,
+                                                  member_kind, idempotency_key: str, execution) -> None:
+        from jax.memory.project_authority import AuthorizationDenied, NamespaceMembershipExecutionKind
+        if (getattr(namespace, "value", namespace) != "OFFICE_CONFIDENTIAL"
+                or getattr(operation, "value", operation) != "GRANT_OFFICE_MEMBER"
+                or getattr(getattr(execution, "kind", None), "value", None)
+                != NamespaceMembershipExecutionKind.INVITATION_ACCEPTANCE.value
+                or getattr(execution, "invitation_id", None) != self.invitation_id
+                or actor_user_id != self.issuer_user_id or target_user_id != self.target_user_id
+                or target_tenant_id != self.target_tenant_id or project_id != self.project_id):
+            raise AuthorizationDenied("Office invitation capability binding denied")
+        await cursor.execute(
+            "SELECT u.mfa_version,p.status FROM jax_users u LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+            "WHERE u.user_id=%s FOR UPDATE", (self.issuer_user_id,))
+        issuer = await cursor.fetchone()
+        if issuer is None or int(issuer[0]) != self.mfa_version or issuer[1] != "ACTIVE":
+            raise AuthorizationDenied("Office invitation issuer proof is no longer current")
+        decision = await authorize_office_in_cursor(
+            cursor, self.issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, self.project_id,
+        )
+        if not decision.allowed:
+            raise AuthorizationDenied("Office invitation issuer authority is no longer current")
+        self.authorization_event_id = await record_authorization_event(cursor, decision)
+
+
+async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: int,
+                            issued_event_id: int, correlation_id: bytes, expires_at: dt.datetime) -> None:
+    now = await _db_now(cur)
+    if status != "ISSUED" or now <= (expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at):
+        return
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+        "VALUES (%s,'EXPIRED',%s,NULL,NULL,NULL,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, issued_event_id, correlation_id))
+    await cur.execute(
+        "UPDATE office_invitation SET status='EXPIRED',version=version+1 WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
+        (invitation_id, version))
+    raise InvitationError("office_invitation_expired", status_code=410)
+
+
+async def accept_invitation_in_cursor(
+    cur, *, accepting_user_id: int, accepting_email: str | None, bearer_token: str,
+    idempotency_key: str,
+) -> bool:
+    """Consume one bearer through JAX and the Office companion atomically."""
+    token_hash = _token_hash(bearer_token)
+    await cur.execute(
+        "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,"
+        "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_proof_event_id,"
+        "s.issuer_mfa_version,s.issuer_mfa_at,s.issuance_authorization_event_id,s.token_hash,s.expires_at,s.correlation_id "
+        "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "WHERE s.token_hash=%s FOR UPDATE", (token_hash,))
+    row = await cur.fetchone()
+    if row is None:
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    (invitation_id, status, version, project_id, target_user_id, issuer_user_id, tenant_id,
+     account_class, grant_role, audience, group_id, proof_event_id, issuer_mfa_version,
+     issuer_mfa_at, issuance_auth_id, stored_hash, expires_at, correlation_id) = row
+    if stored_hash != token_hash or target_user_id is None or int(target_user_id) != accepting_user_id:
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    if status == "ACCEPTED":
+        return True
+    if status != "ISSUED":
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    await cur.execute("SELECT event_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
+    issued = await cur.fetchone()
+    if issued is None:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    await _expire_if_needed(cur, invitation_id=invitation_id, status=status, version=int(version),
+                            issued_event_id=int(issued[0]), correlation_id=correlation_id, expires_at=expires_at)
+    normalized = _normalize_email(accepting_email or "")
+    await cur.execute(
+        "SELECT email,tenant_id,account_class,status FROM jax_users WHERE user_id=%s FOR UPDATE", (accepting_user_id,))
+    accepting = await cur.fetchone()
+    if (accepting is None or accepting[0] != normalized or int(accepting[1]) != int(tenant_id)
+            or accepting[2] != account_class or accepting[3] != "active"):
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    # Proof event is immutable issuance evidence, then the callback below
+    # reauthorizes the issuer from current Office state without minting a new
+    # user session or treating a request boolean as authority.
+    await cur.execute(
+        "SELECT subject_user_id,event_kind,purpose,mfa_version,result,occurred_at FROM office_mfa_security_event "
+        "WHERE event_id=%s FOR UPDATE", (proof_event_id,))
+    proof = await cur.fetchone()
+    if (proof is None or int(proof[0]) != int(issuer_user_id) or proof[1] != "MFA_PROOF"
+            or proof[2] not in {"LOGIN", "STEP_UP"} or proof[4] != "VERIFIED" or int(proof[3]) != int(issuer_mfa_version)
+            or proof[5] != issuer_mfa_at):
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    await cur.execute(
+        "SELECT state FROM office_invitation_outbox WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
+    outbox = await cur.fetchone()
+    if outbox is None or outbox[0] not in {"QUEUED", "CLAIMED", "SMTP_ACCEPTED", "UNKNOWN", "CANCELLED"}:
+        raise InvitationError("office_invitation_integrity", status_code=503)
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+        "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,NULL,%s,NULL,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, int(issued[0]), token_hash, correlation_id))
+    bearer_event_id = int(cur.lastrowid)
+    from db.connection import get_pool
+    from jax.memory.b9_mariadb import MariaDBB9Store
+    from jax.memory.project_authority import (NamespacedMemberKind, NamespaceMembershipExecution,
+                                              NamespaceMembershipExecutionKind, ProjectAuthorityAdmin,
+                                              ProjectNamespace)
+    authorizer = _InvitationAcceptanceAuthorizer(
+        invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
+        target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version))
+    result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
+        cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
+        target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
+        member_kind=(NamespacedMemberKind.INTERNAL if account_class == "OFFICE_INTERNAL" else NamespacedMemberKind.EXTERNAL_CLIENT),
+        idempotency_key=idempotency_key, authorizer=authorizer,
+        execution=NamespaceMembershipExecution(NamespaceMembershipExecutionKind.INVITATION_ACCEPTANCE, invitation_id),
+    )
+    if result.replayed or authorizer.authorization_event_id is None:
+        raise InvitationError("office_invitation_retryable", status_code=503)
+    await cur.execute(
+        "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+        "VALUES (%s,%s,%s,%s,'ACTIVE',%s)",
+        (project_id, accepting_user_id, grant_role, audience, issuer_user_id))
+    external_relation = None
+    if audience == "CLIENT_PUBLISHED":
+        await cur.execute(
+            "INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')",
+            (project_id, accepting_user_id, group_id))
+        await cur.execute(
+            "SELECT relation_id,version,recipient_group_id FROM office_external_relation WHERE project_id=%s AND user_id=%s FOR UPDATE",
+            (project_id, accepting_user_id))
+        external_relation = tuple(map(int, await cur.fetchone()))
+    digest = invitation_acceptance_digest(
+        invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id),
+        project_id=int(project_id), target_user_id=accepting_user_id, grant_role=grant_role, audience=audience)
+    await write_invitation_acceptance_receipt(
+        cur, idempotency_key=idempotency_key, digest=digest, invitation_id=invitation_id,
+        issuer_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
+        target_user_id=accepting_user_id, grant_role=grant_role, audience=audience, result=result,
+        office_grant_version=1, authorization_event_id=authorizer.authorization_event_id,
+        external_relation=external_relation)
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
+        "VALUES (%s,'ACCEPTED',%s,%s,NULL,%s,%s,UTC_TIMESTAMP(6))",
+        (invitation_id, bearer_event_id, accepting_user_id, outbox[0], correlation_id))
+    await cur.execute(
+        "UPDATE office_invitation SET status='ACCEPTED',version=version+1,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) "
+        "WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
+        (accepting_user_id, invitation_id, int(version)))
+    if cur.rowcount != 1:
+        raise InvitationError("office_invitation_retryable", status_code=503)
+    return False
