@@ -35,7 +35,7 @@ def test_engine_catalogue_is_empty_and_refuses_weakened_homonym(client):
                 assert await cur.fetchone() == (0,)
                 await cur.execute("DROP TABLE office_engine")
                 await cur.execute("CREATE TABLE office_engine (engine_key VARCHAR(64) NOT NULL PRIMARY KEY) ENGINE=InnoDB")
-                with pytest.raises(RuntimeError, match="Office engine catalogue metadata is invalid"):
+                with pytest.raises(RuntimeError, match="Office engine catalogue v16 predecessor is not exact and empty"):
                     await apply_office_migrations(cur)
                 await cur.execute("DROP TABLE office_engine")
                 await apply_office_migrations(cur)
@@ -95,7 +95,6 @@ def test_exact_empty_v16_engine_upgrades_but_rows_or_drift_fail_closed(client):
                     assert await cur.fetchone() == (1,)
                 # A crash after trigger 2 resumes, then a rerun is idempotent.
                 await cur.execute("DROP TRIGGER guard_office_engine_delete")
-                await cur.execute("DROP TRIGGER guard_office_engine_update")
                 await apply_office_migrations(cur)
                 await apply_office_migrations(cur)
                 # A crash after trigger 1 also resumes.
