@@ -114,4 +114,20 @@ grep -qx 'foreign-vhost' "$fixture/vhosts/office.conf"
 cp "$fixture/exact-new-vhost" "$fixture/vhosts/office.conf"
 "$fixture/bin/rollback-public-release.sh" --recover-incomplete --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$killed" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"; [[ ! -f $killed/ACTIVATION_IN_PROGRESS ]]
+
+# A manual rollback killed after vhost restoration must be resumed only from its
+# durable rollback marker; a foreign current state remains untouched.
+printf 'new-vhost\n' > "$fixture/template.conf"; chown root:root "$fixture/template.conf"; chmod 644 "$fixture/template.conf"
+activation_output=$("$fixture/bin/activate" "${args[@]}")
+rollback_snapshot=$(awk '/activation snapshot/{print $NF}' <<<"$activation_output")
+[[ -d $rollback_snapshot ]]
+if PATH="$fixture/kill-bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$rollback_snapshot" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'rollback unexpectedly survived SIGKILL hook' >&2; exit 1; fi
+[[ -f $rollback_snapshot/ROLLBACK_IN_PROGRESS ]]
+[[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$new" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"
+rm "$fixture/site/current"; : > "$fixture/site/current"
+if "$fixture/bin/rollback-public-release.sh" --recover-rollback --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$rollback_snapshot" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'rollback recovery accepted foreign current' >&2; exit 1; fi
+[[ -f $fixture/site/current ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"
+rm "$fixture/site/current"; ln -s "$fixture/site/releases/$new" "$fixture/site/current"
+"$fixture/bin/rollback-public-release.sh" --recover-rollback --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$rollback_snapshot" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
+[[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"; [[ ! -f $rollback_snapshot/ROLLBACK_IN_PROGRESS ]]
 echo 'public release activation/rollback fixtures passed'
