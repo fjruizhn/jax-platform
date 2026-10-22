@@ -152,6 +152,17 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0] == before_denial
         await sql("INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES (UTC_TIMESTAMP(6),%s,%s,'create')", (user_id, user_id))
         await sql("INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES (UTC_TIMESTAMP(6),%s,%s,'password_reset_completed')", (user_id, user_id))
+        # A pre-existing profile is an incompatible bootstrap state; the
+        # singleton ceremony cannot silently reinterpret it as a receipt.
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
+        try:
+            await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
+                                                target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
+        except BootstrapDenied:
+            pass
+        else:
+            raise AssertionError("bootstrap accepted incompatible profile")
+        await sql("DELETE FROM office_account_profile WHERE user_id=%s", (user_id,))
         # A durable provenance write failure is a real database failure: the
         # preceding profile/reset/version writes must all roll back together.
         await sql("CREATE TRIGGER test_bootstrap_provenance_failure BEFORE INSERT ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='bootstrap test failure'")

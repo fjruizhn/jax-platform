@@ -81,6 +81,10 @@ def test_root_can_promote_existing_profile_with_version_and_no_identity_conversi
     promoted = client.put(f"/api/virtual-office/people/{target}/global-role", json={"global_role": "OFFICE_SUPERUSER", "expected_version": 1}, headers=headers)
     assert promoted.status_code == 200
     assert promoted.json() == {"user_id": target, "global_role": "OFFICE_SUPERUSER", "version": 2}
+    assert client.portal.call(
+        sql, "SELECT COUNT(*) FROM office_account_profile WHERE global_role='OFFICE_SUPERUSER' AND status='ACTIVE' "
+             "AND user_id IN (%s,%s)", (root, target), True,
+    ) == ((2,),)
     stale = client.put(f"/api/virtual-office/people/{target}/global-role", json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=headers)
     assert stale.status_code == 409
     assert client.portal.call(sql, "SELECT account_class,global_role,version FROM jax_users u JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s", (target,), True) == ((account_class, "OFFICE_SUPERUSER", 2),)
