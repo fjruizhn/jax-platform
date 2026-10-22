@@ -6,6 +6,10 @@ migrator fully attests this schema before it stamps v13.  The restricted web
 principal deliberately performs no post-stamp metadata attestation: MariaDB
 redacts parts of that metadata, and a live guard broker is required before
 receipt verification can be activated.
+
+An interrupted first install resumes only when it is an exact, empty,
+unstamped prefix of this module's DDL/trigger sequence. Any rows, stamp, or
+schema divergence fails closed rather than being repaired.
 """
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ _CHECK_CLAUSES = {
     "chk_office_trusted_critic_key_shape": "key_id<>''andprincipal_ref<>''andpurpose='rights.review'andalgorithm='ed25519'and(not_afterisnullornot_before<not_after)",
     "chk_office_trusted_critic_key_revocation_shape": "revoked_at<=recorded_at",
 }
+_PREDECESSOR_KEY_CHECK = "key_id<>''andprincipal_ref<>''andpurpose='rights.review'andalgorithm='ed25519'andnot_before<not_after"
 
 
 def _normalize_check(value: object) -> str:
@@ -71,21 +76,9 @@ async def apply_critic_trust_anchor_migrations(cur) -> None:
     """Create the empty, append-only critic trust registry and attest it."""
     existing = tuple([await _table_exists(cur, table) for table in _APPEND_ONLY])
     if any(existing):
-        if not all(existing):
-            raise RuntimeError("Office critic trust key history is incompatible")
-        await _upgrade_not_after_nullable(cur)
-        # A durable trust registry never receives self-healing DDL: repairing
-        # a missing guard would erase evidence of drift before the v13 stamp.
-        await assert_critic_trust_anchor_metadata(cur)
+        await _resume_exact_unstamped_prefix(cur, existing)
         return
-    for statement in _KEY_DDL:
-        await cur.execute(statement)
-    for table in _APPEND_ONLY:
-        for operation in ("UPDATE", "DELETE"):
-            await cur.execute(
-                f"CREATE TRIGGER IF NOT EXISTS no_{operation.lower()}_{table} BEFORE {operation} ON `{table}` "
-                f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
-            )
+    await _create_trust_tables_and_triggers(cur)
     await assert_critic_trust_anchor_metadata(cur)
 
 
@@ -94,6 +87,64 @@ async def _table_exists(cur, table: str) -> bool:
         "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,)
     )
     return await cur.fetchone() is not None
+
+
+def _trigger_definitions(tables=_APPEND_ONLY):
+    return tuple(
+        (f"no_{operation.lower()}_{table}", table, operation,
+         f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
+        for table in tables for operation in ("UPDATE", "DELETE")
+    )
+
+
+async def _create_trust_tables_and_triggers(cur) -> None:
+    for statement in _KEY_DDL:
+        await cur.execute(statement)
+    for name, table, operation, statement in _trigger_definitions():
+        await cur.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {name} BEFORE {operation} ON `{table}` "
+            f"FOR EACH ROW {statement}"
+        )
+
+
+async def _runtime_stamp_exists(cur) -> bool:
+    if not await _table_exists(cur, "office_schema_revision"):
+        return False
+    await cur.execute(
+        "SELECT 1 FROM office_schema_revision WHERE component='virtual-office' LIMIT 1"
+    )
+    return await cur.fetchone() is not None
+
+
+async def _assert_empty(cur, tables) -> None:
+    for table in tables:
+        await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
+        if await cur.fetchone() is not None:
+            raise RuntimeError("Office critic trust key history is incompatible")
+
+
+async def _resume_exact_unstamped_prefix(cur, existing) -> None:
+    """Complete only the measured empty, unstamped DDL/trigger prefix."""
+    if existing[0] is False:
+        raise RuntimeError("Office critic trust key history is incompatible")
+    if await _runtime_stamp_exists(cur):
+        if not all(existing):
+            raise RuntimeError("Office critic trust key history is incompatible")
+        await _upgrade_not_after_nullable(cur)
+        await assert_critic_trust_anchor_metadata(cur)
+        return
+    present = tuple(table for table, exists in zip(_APPEND_ONLY, existing) if exists)
+    if present not in ((_APPEND_ONLY[0],), _APPEND_ONLY):
+        raise RuntimeError("Office critic trust key history is incompatible")
+    if all(existing):
+        await _upgrade_not_after_nullable(cur)
+    await _assert_critic_trust_anchor_metadata(
+        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
+        tables=present, allow_trigger_prefix=True,
+    )
+    await _assert_empty(cur, present)
+    await _create_trust_tables_and_triggers(cur)
+    await assert_critic_trust_anchor_metadata(cur)
 
 
 async def _upgrade_not_after_nullable(cur) -> None:
@@ -113,12 +164,38 @@ async def _upgrade_not_after_nullable(cur) -> None:
         return
     if found != predecessor:
         raise RuntimeError("Office critic trust key history is incompatible")
-    await cur.execute("ALTER TABLE office_trusted_critic_key MODIFY not_after DATETIME(6) NULL")
+    predecessor_checks = dict(_CHECK_CLAUSES)
+    predecessor_checks["chk_office_trusted_critic_key_shape"] = _PREDECESSOR_KEY_CHECK
+    await _assert_critic_trust_anchor_metadata(
+        cur, expected_columns={**_TABLE_COLUMNS, table: predecessor}, expected_clauses=predecessor_checks,
+    )
+    # MariaDB DDL commits implicitly, so perform the nullable-column and CHECK
+    # transition in one atomic ALTER.  A dropped old CHECK must never survive
+    # as a separately committed intermediate schema.
+    await cur.execute(
+        "ALTER TABLE office_trusted_critic_key "
+        "DROP CONSTRAINT chk_office_trusted_critic_key_shape, "
+        "MODIFY not_after DATETIME(6) NULL, "
+        "ADD CONSTRAINT chk_office_trusted_critic_key_shape CHECK "
+        "(key_id<>'' AND principal_ref<>'' AND purpose='rights.review' "
+        "AND algorithm='Ed25519' AND (not_after IS NULL OR not_before<not_after))"
+    )
 
 
 async def assert_critic_trust_anchor_metadata(cur) -> None:
     """Reject substituted trust-anchor schema before the runtime can be ready."""
-    for table, expected in _TABLE_COLUMNS.items():
+    await _assert_critic_trust_anchor_metadata(
+        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
+    )
+
+
+async def _assert_critic_trust_anchor_metadata(
+    cur, *, expected_columns, expected_clauses, tables=None, allow_trigger_prefix: bool = False,
+) -> None:
+    """Attest an exact schema generation; callers choose the known generation."""
+    tables = tuple(expected_columns) if tables is None else tuple(tables)
+    for table in tables:
+        expected = expected_columns[table]
         await cur.execute(
             "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
             "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,)
@@ -131,6 +208,8 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
         if tuple(await cur.fetchone() or ()) != ("InnoDB",):
             raise RuntimeError(f"Office critic trust engine for {table} is invalid")
     for (table, index), (unique, columns) in _INDEXES.items():
+        if table not in tables:
+            continue
         await cur.execute(
             "SELECT NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS "
             "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX", (table, index)
@@ -138,41 +217,50 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
         rows = await cur.fetchall()
         if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
             raise RuntimeError(f"Office critic trust index {table}.{index} is invalid")
+    quoted_tables = ",".join(f"'{table}'" for table in tables)
     await cur.execute(
         "SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc "
         "JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA "
         "AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() "
-        "AND tc.TABLE_NAME IN ('office_trusted_critic_key','office_trusted_critic_key_revocation') "
+        f"AND tc.TABLE_NAME IN ({quoted_tables}) "
         "AND tc.CONSTRAINT_TYPE='CHECK'"
     )
     checks = await cur.fetchall()
-    if {row[1]: row[0] for row in checks} != _CHECKS:
+    expected_checks = {name: table for name, table in _CHECKS.items() if table in tables}
+    if {row[1]: row[0] for row in checks} != expected_checks:
         raise RuntimeError("Office critic trust checks are invalid")
     clauses = {row[1]: _normalize_check(row[2]) for row in checks}
-    if clauses != _CHECK_CLAUSES:
+    expected_clauses = {name: clause for name, clause in expected_clauses.items() if name in expected_checks}
+    if clauses != expected_clauses:
         raise RuntimeError("Office critic trust CHECK expressions are invalid")
-    await cur.execute(
+    if "office_trusted_critic_key_revocation" in tables:
+        await cur.execute(
         "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE "
         "FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r "
         "ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME "
         "AND r.TABLE_NAME=k.TABLE_NAME WHERE k.CONSTRAINT_SCHEMA=DATABASE() "
         "AND k.TABLE_NAME='office_trusted_critic_key_revocation' "
+        "AND k.REFERENCED_TABLE_SCHEMA=DATABASE() "
         "AND k.CONSTRAINT_NAME='fk_office_trusted_critic_key_revocation_key'"
-    )
-    if tuple(await cur.fetchall()) != (("key_id", "office_trusted_critic_key", "key_id", "RESTRICT", "RESTRICT"),):
-        raise RuntimeError("Office critic trust foreign key is invalid")
-    for table in _APPEND_ONLY:
+        )
+        if tuple(await cur.fetchall()) != (("key_id", "office_trusted_critic_key", "key_id", "RESTRICT", "RESTRICT"),):
+            raise RuntimeError("Office critic trust foreign key is invalid")
+    found = {}
+    for table in tables:
         await cur.execute(
             "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
             "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
         )
-        found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
-        expected = {
-            f"no_update_{table}": (table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"),
-            f"no_delete_{table}": (table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"),
-        }
-        if found != expected:
-            raise RuntimeError(f"Office critic trust triggers are invalid for {table}")
+        found.update({row[0]: tuple(row[1:]) for row in await cur.fetchall()})
+    definitions = _trigger_definitions(tables)
+    expected = {
+        name: (table, "BEFORE", operation, "ROW", statement)
+        for name, table, operation, statement in definitions
+    }
+    if allow_trigger_prefix:
+        expected = dict(list(expected.items())[:len(found)])
+    if found != expected:
+        raise RuntimeError("Office critic trust triggers are invalid")
 
 
 @dataclass(frozen=True)
