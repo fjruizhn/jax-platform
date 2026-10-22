@@ -21,28 +21,40 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v16 adds the attested, migrator-only engine catalogue. Its digest still
+# v17 adds the activation-epoch guard to the attested, migrator-only engine
+# catalogue. Its digest still
 # binds the unchanged per-table web write contract and forces a full restamp.
-RUNTIME_REVISION = f"office-runtime-v16-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v17-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 INVALIDATED_RUNTIME_REVISION = "office-runtime-invalidating-v1"
 
 # An engine row never stores a provider URL or credential. The fingerprint is
 # a 64-hex digest of the approved dynamic provider/model/credential identity.
+# Re-enabling requires a distinct activation epoch and approved version, so an
+# old enabled binding cannot be replayed after it has been disabled.
+_OFFICE_ENGINE_UPDATE_GUARD = (
+    "BEGIN IF NEW.version <= OLD.version OR "
+    "(NEW.enabled = OLD.enabled AND NEW.activation_epoch <> OLD.activation_epoch) OR "
+    "(OLD.enabled = 0 AND NEW.enabled = 1 AND NEW.activation_epoch <> OLD.activation_epoch + 1) OR "
+    "(OLD.enabled = 1 AND NEW.enabled = 0 AND NEW.activation_epoch <> OLD.activation_epoch) "
+    "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_engine update requires a new approved revision'; END IF; END"
+)
 OFFICE_ENGINE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_engine ("
     "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
     "display_name_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,"
     "model_ref INT NOT NULL,transport ENUM('http_openai_compat') NOT NULL,"
     "allowed_data_classifications JSON NOT NULL,binding_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-    "enabled BOOLEAN NOT NULL DEFAULT FALSE,version BIGINT NOT NULL DEFAULT 1,"
+    "enabled BOOLEAN NOT NULL DEFAULT FALSE,activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0,version BIGINT NOT NULL DEFAULT 1,"
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
     "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),"
     "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),"
     "CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
     "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
     "CONSTRAINT chk_office_engine_binding_fingerprint CHECK (binding_fingerprint REGEXP '^[0-9a-f]{64}$'),"
+    "CONSTRAINT chk_office_engine_activation_epoch CHECK (activation_epoch>=0),"
     "CONSTRAINT chk_office_engine_version CHECK (version>=1)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_engine_update BEFORE UPDATE ON office_engine FOR EACH ROW " + _OFFICE_ENGINE_UPDATE_GUARD,
 )
 _OFFICE_ENGINE_COLUMNS = (
     ("engine_key", "varchar", "varchar(64)", "NO", "ascii", "ascii_bin", "", None),
@@ -52,6 +64,7 @@ _OFFICE_ENGINE_COLUMNS = (
     ("allowed_data_classifications", "longtext", "longtext", "NO", "utf8mb4", "utf8mb4_bin", "", None),
     ("binding_fingerprint", "char", "char(64)", "NO", "ascii", "ascii_bin", "", None),
     ("enabled", "tinyint", "tinyint(1)", "NO", None, None, "", "0"),
+    ("activation_epoch", "bigint", "bigint(20) unsigned", "NO", None, None, "", "0"),
     ("version", "bigint", "bigint(20)", "NO", None, None, "", "1"),
     ("created_at", "datetime", "datetime(6)", "NO", None, None, "", "current_timestamp(6)"),
     ("updated_at", "datetime", "datetime(6)", "NO", None, None, "on update current_timestamp(6)", "current_timestamp(6)"),
@@ -63,6 +76,7 @@ _OFFICE_ENGINE_CHECKS = {
     "chk_office_engine_display_name_key": "`display_name_key` <> ''",
     "chk_office_engine_classifications": "json_type(`allowed_data_classifications`) = 'ARRAY' and json_length(`allowed_data_classifications`) > 0",
     "chk_office_engine_binding_fingerprint": "`binding_fingerprint` regexp '^[0-9a-f]{64}$'",
+    "chk_office_engine_activation_epoch": "`activation_epoch` >= 0",
     "chk_office_engine_version": "`version` >= 1",
 }
 
@@ -1813,6 +1827,14 @@ async def assert_office_engine_runtime_metadata(cur) -> None:
     expected = {name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_CHECKS.items()}
     if checks != expected:
         raise RuntimeError("Office engine catalogue checks are invalid")
+    await cur.execute(
+        "SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
+    )
+    triggers = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    expected_triggers = {"guard_office_engine_update": ("BEFORE", "UPDATE", "ROW", _OFFICE_ENGINE_UPDATE_GUARD)}
+    if triggers != expected_triggers:
+        raise RuntimeError("Office engine catalogue triggers are invalid")
 
 
 async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
@@ -1932,7 +1954,7 @@ async def invalidate_office_runtime_revision(cur) -> None:
             # contract.  The v15 candidate-origin schema changes the global
             # Office contract, so preserve a durable tombstone and force the
             # separate v14 migrator to re-attest before it can be ready again.
-            if prior is not None and str(prior[0]).startswith(("office-runtime-v13-", "office-runtime-v15-")):
+            if prior is not None and str(prior[0]).startswith(("office-runtime-v13-", "office-runtime-v15-", "office-runtime-v16-")):
                 from virtual_office.module_critic_trust import invalidate_critic_trust_v14_for_office_v15
                 await invalidate_critic_trust_v14_for_office_v15(cur)
             # Keep an explicit non-ready tombstone.  MariaDB DDL commits

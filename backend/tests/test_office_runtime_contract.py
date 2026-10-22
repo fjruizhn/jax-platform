@@ -528,15 +528,15 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v15 marker cannot certify the v16 engine-catalogue contract."""
+    """A v16 marker cannot certify the v17 epoch-guarded catalogue contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v16-")
-        predecessor = "office-runtime-v15-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
+        assert SCHEMA_REVISION.startswith("office-runtime-v17-")
+        predecessor = "office-runtime-v16-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)

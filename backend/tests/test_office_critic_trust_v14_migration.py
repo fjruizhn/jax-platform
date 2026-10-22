@@ -175,8 +175,8 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                 # seal into the v16 engine-catalogue contract. The global
                 # invalidation preserves a durable cause, and v14 refuses to
                 # become ready until the current runtime marker is re-stamped.
-                old_v15 = RUNTIME_REVISION.replace("office-runtime-v16-", "office-runtime-v15-", 1)
-                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (old_v15,))
+                old_v16 = RUNTIME_REVISION.replace("office-runtime-v17-", "office-runtime-v16-", 1)
+                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (old_v16,))
                 await invalidate_office_runtime_revision(cur)
                 assert await _revision(cur, "virtual-office") != RUNTIME_REVISION
                 assert await _revision(cur, "virtual-office-critic-trust") == trust._V15_INVALIDATED_MARKER
