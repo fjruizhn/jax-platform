@@ -375,7 +375,7 @@ def test_recovery_receipt_tamper_fails_closed_and_expiry_erases_ciphertext(clien
     client.portal.call(scenario)
 
 
-@pytest.mark.parametrize("boundary", ("INSERT INTO office_mfa_recovery_receipt", "UPDATE office_mfa_recovery_code SET used_at", "UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1", "UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED'", "UPDATE office_mfa_credential SET state='PENDING'", "UPDATE office_mfa_recovery_receipt SET output_challenge_hash"))
+@pytest.mark.parametrize("boundary", ("INSERT INTO office_mfa_recovery_receipt", "UPDATE office_mfa_recovery_code SET used_at", "UPDATE office_mfa_recovery_code SET used_at=COALESCE", "UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1", "UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED'", "UPDATE office_mfa_credential SET state='PENDING'", "UPDATE office_mfa_challenge SET state='INVALIDATED'", "UPDATE office_mfa_recovery_receipt SET output_challenge_hash"))
 def test_recovery_compound_mutation_boundaries_roll_back(client, boundary):
     async def scenario():
         await _migrate(); user_id, _, enrolled = await _active_user(); code = enrolled.recovery_codes[0]

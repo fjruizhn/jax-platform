@@ -10,6 +10,7 @@ import pytest
 
 from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractError, assert_runtime_db_contract
 from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
+from virtual_office.migrations import assert_mfa_recovery_receipt_runtime_metadata
 
 
 @pytest.mark.parametrize("key", (None, "not-a-fernet-key"))
@@ -21,6 +22,26 @@ def test_runtime_contract_rejects_missing_or_invalid_mfa_fernet_key(monkeypatch,
         monkeypatch.setenv("FERNET_KEY", key)
     with pytest.raises(RuntimeDbContractError, match="encryption readiness"):
         _mfa_crypto_readiness()
+
+
+@pytest.mark.parametrize(("ddl", "cleanup"), (
+    ("ALTER TABLE office_mfa_recovery_receipt ADD KEY extra_receipt_index (created_at)", "ALTER TABLE office_mfa_recovery_receipt DROP INDEX extra_receipt_index"),
+    ("ALTER TABLE office_mfa_recovery_receipt ADD CONSTRAINT extra_receipt_fk FOREIGN KEY (user_id) REFERENCES jax_users(user_id)", "ALTER TABLE office_mfa_recovery_receipt DROP FOREIGN KEY extra_receipt_fk"),
+    ("ALTER TABLE office_mfa_recovery_receipt ADD CONSTRAINT extra_receipt_check CHECK (user_id > 0)", "ALTER TABLE office_mfa_recovery_receipt DROP CONSTRAINT extra_receipt_check"),
+))
+def test_recovery_receipt_attestation_rejects_extra_metadata(client, ddl, cleanup):
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute(ddl)
+                with pytest.raises(RuntimeError, match="recovery receipt"):
+                    await assert_mfa_recovery_receipt_runtime_metadata(cur)
+                await cur.execute(cleanup)
+                await assert_mfa_recovery_receipt_runtime_metadata(cur)
+    client.portal.call(scenario)
 
 
 async def _runtime_pool(user: str, password: str, database: str | None = None):
