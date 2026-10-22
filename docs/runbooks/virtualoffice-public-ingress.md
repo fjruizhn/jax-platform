@@ -139,7 +139,7 @@ siendo `172.16.20.11` y que el origen clásico sigue en `axioma-ia.io`:
 ```text
 JAX_ENVIRONMENT=production
 JAX_PUBLIC_HOST_ORIGIN_BINDINGS=axioma-ia.io=https://axioma-ia.io;virtualoffice.axioma-ia.io=https://virtualoffice.axioma-ia.io
-JAX_OPERATIONAL_TRUSTED_HOSTS=172.16.20.5
+JAX_OPERATIONAL_TRUSTED_HOSTS=127.0.0.1,localhost,172.16.20.5
 JAX_TRUSTED_PROXIES=172.16.20.11
 JAX_REFRESH_COOKIE_SECURE=true
 FRONTEND_ORIGIN=https://axioma-ia.io
