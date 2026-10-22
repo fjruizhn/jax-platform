@@ -1148,8 +1148,10 @@ jobs:
             // de GitHub 119942966889 y 119943131447: 1501/0/1501, 121 archivos.
             // 1501 -> 1506 (recuperación MFA, 2026-10-22): medido en los runners
             // de GitHub 119972590490 y 119972668257: 1506/0/1506, 121 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1506) {
-              console.error("PISO ROTO: se esperaban 1506 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1506 -> 1513 (administración Office, 2026-10-22): medido local
+            // sobre el árbol unido de #229: 1513/0/1513, 121 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1513) {
+              console.error("PISO ROTO: se esperaban 1513 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
