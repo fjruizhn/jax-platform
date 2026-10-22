@@ -42,6 +42,9 @@ describe('Office invitation acceptance', () => {
     await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer', password: 'una-clave-segura' }, expect.objectContaining({ accessToken: null })))
     expect(screen.getByRole('status')).toHaveTextContent('La invitación fue aceptada.')
     expect(window.sessionStorage.getItem('office-invitation-token-v1')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Aceptar invitación' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar sesión en Oficina virtual' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/login')
   })
 
   it('uses an existing signed-in target without asking it to replace a password', async () => {
@@ -52,6 +55,10 @@ describe('Office invitation acceptance', () => {
     expect(screen.queryByLabelText('Contraseña nueva')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
     await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer' }, expect.objectContaining({ accessToken: 'session-token' })))
+    expect(await screen.findByRole('status')).toHaveTextContent('La invitación fue aceptada.')
+    expect(screen.queryByRole('button', { name: 'Aceptar invitación' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Ir a Oficina virtual' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/virtual-office')
   })
 
   it('waits for session restoration before choosing new-account or existing-account acceptance', async () => {

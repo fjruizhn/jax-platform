@@ -1790,7 +1790,7 @@ export default {
     newAccountIntro: 'Creá una cuenta para aceptar esta invitación.', createAccount: 'Crear mi cuenta',
     newPasswordIntro: 'Elegí una contraseña para tu cuenta nueva.', newPassword: 'Contraseña nueva', confirmPassword: 'Confirmar contraseña',
     passwordMismatch: 'Las contraseñas no coinciden.', accept: 'Aceptar invitación', accepting: 'Aceptando invitación…',
-    accepted: 'La invitación fue aceptada.', error: 'No se pudo aceptar la invitación. Revisá el enlace e intentá de nuevo.',
+    accepted: 'La invitación fue aceptada.', continueToOffice: 'Ir a Oficina virtual', signInToOffice: 'Iniciar sesión en Oficina virtual', error: 'No se pudo aceptar la invitación. Revisá el enlace e intentá de nuevo.',
     login: 'Iniciar sesión', loginRequired: 'Iniciá sesión para continuar con la invitación.', ambiguous: 'No pudimos confirmar el resultado. Iniciá sesión para recuperar el acceso; no reenvíes la invitación.',
     reopenLink: 'Este navegador no puede conservar la invitación durante el inicio de sesión. Iniciá sesión y después abrí de nuevo el enlace del correo.',
     manage: 'Gestionar invitaciones', email: 'Correo electrónico', audience: 'Audiencia', audiences: { INTERNAL: 'Equipo interno', CLIENT_PUBLISHED: 'Cliente publicado' },

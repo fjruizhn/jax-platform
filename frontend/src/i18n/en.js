@@ -1694,7 +1694,7 @@ export default {
     newAccountIntro: 'Create an account to accept this invitation.', createAccount: 'Create my account',
     newPasswordIntro: 'Choose a password for your new account.', newPassword: 'New password', confirmPassword: 'Confirm password',
     passwordMismatch: 'Passwords do not match.', accept: 'Accept invitation', accepting: 'Accepting invitation…',
-    accepted: 'The invitation was accepted.', error: 'The invitation could not be accepted. Check the link and try again.',
+    accepted: 'The invitation was accepted.', continueToOffice: 'Go to Virtual Office', signInToOffice: 'Sign in to Virtual Office', error: 'The invitation could not be accepted. Check the link and try again.',
     login: 'Sign in', loginRequired: 'Sign in to continue with the invitation.', ambiguous: 'We could not confirm the result. Sign in to recover access; do not submit the invitation again.',
     reopenLink: 'This browser cannot retain the invitation while you sign in. Sign in, then open the email link again.',
     manage: 'Manage invitations', email: 'Email address', audience: 'Audience', audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' },
