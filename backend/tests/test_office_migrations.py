@@ -598,10 +598,18 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     # challenge table survives, while the ledger does not.
                     # The new ledger FK cannot be declared until the
                     # challenge surrogate and composite uniqueness exist.
-                    # Invitation issuance is a later child of the ledger.
-                    # Remove its complete dependency tree so this owned
-                    # schema represents the pre-invitation predecessor,
-                    # rather than attempting an invalid parent-table drop.
+                    # Invitation issuance and module creative review are
+                    # later children of the ledger. Remove their dependency
+                    # trees so this owned schema represents the predecessor.
+                    for table in (
+                        "office_module_release",
+                        "office_module_release_event",
+                        "office_module_rights_review_head",
+                        "office_module_rights_review_event",
+                        "office_module_creative_review_head",
+                        "office_module_creative_review_event",
+                    ):
+                        await cur.execute(f"DROP TABLE {table}")
                     await cur.execute("DROP TABLE office_invitation_outbox")
                     await cur.execute("DROP TABLE office_invitation_event")
                     await cur.execute("DROP TABLE office_invitation")
