@@ -105,50 +105,32 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 > desde la segunda llamada `mariadb` cae al socket local por defecto
 > (`ERROR 2002 ... mysqld.sock`). Medido el mismo día.
 
-## 1 · `jax` (si el cambio lo toca)
+## 1 · Par inmutable JAX + plataforma
+
+El backend no ejecuta checkouts actualizables ni mezcla revisiones. El instalador
+recibe dos SHA completos ya auditados, archiva sus objetos Git sin ejecutar el
+contenido de los repositorios y recibe un venv construido previamente por root.
+Sella cada byte importable y ejecutable en un manifiesto; sólo después mueve el
+selector root-owned `current`. Si la verificación posterior falla, restaura el
+selector anterior.
 
 ```bash
-sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
-  git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
-sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
-sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
-# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
-unset SHA
-SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
-if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD)" = "$SHA" ]; then
-  sudo systemctl restart jax-las-manos
-else
-  echo "NO desplegado: /srv/jax-prod/jax no está en $SHA (el pull falló); no se reinició"
-fi
+sudo /ruta/a/ops/migration/install-platform-pair-release.sh \
+  --platform-repository /ruta/root-owned/jax-platform --platform-revision <SHA-JXP-40> \
+  --jax-repository /ruta/root-owned/jax --jax-revision <SHA-JAX-40> \
+  --venv /ruta/root-owned/venv-auditado
+sudo install -o root -g root -m 0755 ops/migration/pair-artifact-readiness.sh \
+  /usr/local/libexec/jax-platform-pair-artifact-readiness
+sudo install -o root -g root -m 0644 ops/migration/pair_artifact_readiness.py \
+  /usr/local/libexec/pair_artifact_readiness.py
+sudo /usr/local/libexec/jax-platform-pair-artifact-readiness
+sudo systemctl restart jax-platform-migrate jax-platform
 ```
 
-La migración corre sola al arrancar (`ensure_schema`). **Comprobar la columna en
-la base, no suponerla:**
-
-```sql
-SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
-```
-
-## 2 · Backend de la plataforma
-
-> **Si el cambio toca el ejecutor del catálogo o el nombre de su candado, NO sigas
-> acá:** usa «Caso general: un cambio toca el nombre del candado o el ejecutor
-> programado», más abajo.
-
-```bash
-sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
-  git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
-sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
-sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
-# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
-unset SHA
-SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
-if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD)" = "$SHA" ]; then
-  sudo systemctl restart jax-platform
-else
-  echo "NO desplegado: /srv/jax-prod/jax-platform no está en $SHA (el pull falló); no se reinició"
-fi
-```
+La unidad fija `JAX_REPO_PATH=/opt/jax-platform-pair/current/jax`; `runtime.env`
+no puede sustituir el núcleo del par. Una modificación, byte extra, enlace,
+permisos inseguros, manifiesto alterado o selector que salga de `releases/`
+detiene el arranque antes de importar Python.
 
 Verificar **por comportamiento**, no por `is-active`:
 

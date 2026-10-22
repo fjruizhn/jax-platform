@@ -57,7 +57,8 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         if len(envs) != 1 or len(starts) != 1:
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
-        if any(values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition")):
+        pre, post, condition = (values("Service", key) for key in ("ExecStartPre", "ExecStartPost", "ExecCondition"))
+        if post or condition or len(pre) != 1 or pre[0] != "/usr/local/libexec/jax-platform-pair-artifact-readiness":
             raise ReadinessError(f"artifact readiness: {unit}: source unit malformed")
         try:
             argv = shlex.split(starts[0])
@@ -75,7 +76,7 @@ def source_contract(units_dir: Path, artifact: Path) -> dict[str, dict[str, obje
             "WorkingDirectory": expected_backend, "User": users[0], "Group": groups[0] if groups else "",
             "SupplementaryGroups": values("Service", "SupplementaryGroups"), "Environment": expected_environment,
             "EnvironmentFiles": [[envs[0], False]],
-            "ExecStart": expected_argv, "Type": types[0], "RemainAfterExit": remain == ["yes"],
+            "ExecStart": expected_argv, "ExecStartPre": pre, "Type": types[0], "RemainAfterExit": remain == ["yes"],
             "Requires": [item for value in values("Unit", "Requires") for item in value.split()],
             "After": [item for value in values("Unit", "After") for item in value.split()],
         }
@@ -160,7 +161,12 @@ def verify(artifact: Path, command: list[str]) -> None:
                 raise fail(unit, "ExecStartEx") from None
         elif actual_argv != expected_argv:
             raise fail(unit, "ExecStartEx")
-        for field in ("ExecStartPreEx", "ExecStartPostEx", "ExecConditionEx"):
+        pre = actual["ExecStartPreEx"]
+        expected_pre = wanted["ExecStartPre"]
+        if (not isinstance(pre, list) or len(pre) != 1 or not isinstance(pre[0], list) or len(pre[0]) != 10
+                or pre[0][0] != expected_pre[0] or pre[0][1] != expected_pre or pre[0][2] != []):
+            raise fail(unit, "ExecStartPreEx")
+        for field in ("ExecStartPostEx", "ExecConditionEx"):
             if actual[field] != []:
                 raise fail(unit, field)
         for field in ("Requires", "After"):
