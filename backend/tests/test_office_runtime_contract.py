@@ -17,11 +17,24 @@ from db.runtime_privileges import (
     runtime_table_privilege_digest,
     runtime_table_privilege_map,
 )
-from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
+from virtual_office.migrations import (
+    INVALIDATED_RUNTIME_REVISION,
+    apply_office_migrations,
+    stamp_office_runtime_revision,
+)
 
 
-def test_critic_trust_drift_refuses_runtime_stamp(client) -> None:
-    """The platform migrator clears readiness before strict v13 attestation."""
+@pytest.mark.parametrize("dropped", (
+    ("no_delete_office_trusted_critic_key_revocation",),
+    (
+        "no_update_office_trusted_critic_key",
+        "no_delete_office_trusted_critic_key",
+        "no_update_office_trusted_critic_key_revocation",
+        "no_delete_office_trusted_critic_key_revocation",
+    ),
+))
+def test_post_stamp_critic_trust_drift_refuses_runtime_stamp(client, dropped) -> None:
+    """The invalidation marker prevents drift masquerading as a clean prefix."""
     async def scenario() -> None:
         from db.connection import get_pool
         from db.migrations import run_migrations
@@ -31,7 +44,8 @@ def test_critic_trust_drift_refuses_runtime_stamp(client) -> None:
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute("DROP TRIGGER no_update_office_trusted_critic_key")
+                    for trigger in dropped:
+                        await cur.execute(f"DROP TRIGGER `{trigger}`")
             with pytest.raises(RuntimeError, match="Office critic trust triggers are invalid"):
                 await run_migrations()
             async with pool.acquire() as conn:
@@ -39,16 +53,17 @@ def test_critic_trust_drift_refuses_runtime_stamp(client) -> None:
                     await cur.execute(
                         "SELECT revision FROM office_schema_revision WHERE component='virtual-office'"
                     )
-                    assert await cur.fetchone() is None
+                    assert (await cur.fetchone()) == (INVALIDATED_RUNTIME_REVISION,)
         finally:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute(
-                        "CREATE TRIGGER IF NOT EXISTS no_update_office_trusted_critic_key "
-                        "BEFORE UPDATE ON office_trusted_critic_key FOR EACH ROW "
-                        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = "
-                        "'office_trusted_critic_key append-only'"
-                    )
+                    for trigger in dropped:
+                        table = trigger.removeprefix("no_update_").removeprefix("no_delete_")
+                        operation = "UPDATE" if trigger.startswith("no_update_") else "DELETE"
+                        await cur.execute(
+                            f"CREATE TRIGGER IF NOT EXISTS `{trigger}` BEFORE {operation} ON `{table}` "
+                            f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
+                        )
             await run_migrations()
     client.portal.call(scenario)
 
