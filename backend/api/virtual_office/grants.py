@@ -33,6 +33,51 @@ class ProjectGrantUpdate(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+@router.get("/{project_id}/members")
+async def list_project_members(project_id: int, cursor: int = Query(default=0, ge=0),
+                               limit: int = Query(default=50, ge=1, le=100),
+                               user: AuthUser = Depends(get_current_user)):
+    """Return the Office-side mutable grant state for project administrators.
+
+    This deliberately exposes no profile or tenant fields.  ``user_id`` is
+    the only identity needed by the caller to submit the existing versioned
+    grant/revoke operations.  The cursor is exclusive and ordered by that
+    stable identifier, so clients can safely continue while roles change.
+    """
+    actor_user_id = _actor_id(user)
+    config = load_mfa_config_from_environment()
+    if project_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_grant_denied")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await authorize_office_in_cursor(
+            cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+            require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
+            mfa_config=config,
+        )
+        if not decision.allowed:
+            # Do not let a non-member distinguish a missing project from a
+            # project that has no grants.
+            raise HTTPException(status_code=403, detail="office_project_grant_denied")
+        await cur.execute(
+            "SELECT user_id,grant_role,audience,status,version FROM office_project_grant "
+            "WHERE project_id=%s AND user_id>%s ORDER BY user_id ASC LIMIT %s",
+            (project_id, cursor, limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    members = [
+        {"user_id": int(member[0]), "grant_role": str(member[1]),
+         "audience": str(member[2]), "status": str(member[3]),
+         "version": int(member[4])}
+        for member in page
+    ]
+    return {
+        "project_id": project_id,
+        "members": members,
+        "next_cursor": int(page[-1][0]) if len(rows) > limit else None,
+    }
+
+
 def _membership_receipt_digest(*, operation: str, actor_user_id: int,
                                target_tenant_id: int, project_id: int,
                                target_user_id: int, expected_version: int,

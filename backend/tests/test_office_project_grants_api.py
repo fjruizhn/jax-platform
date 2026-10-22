@@ -21,6 +21,95 @@ async def _office_project_and_unassigned_member():
     return project, target
 
 
+async def _project_admin_with_proof(*, project: int, root: int):
+    admin, _ = await crear_usuario()
+    await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (admin,))
+    versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (admin,), True))[0]
+    proof = await sql(
+        "INSERT INTO office_mfa_security_event "
+        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+        "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,UTC_TIMESTAMP(6))",
+        (admin, admin, versions[0], versions[1], uuid.uuid4().bytes),
+    )
+    await sql(
+        "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,grant_origin,created_at,created_by,updated_at) "
+        "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE','OFFICE',NOW(6),'test',NOW(6))",
+        (str(uuid.uuid4()), project, admin),
+    )
+    await sql(
+        "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+        "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project, admin, root),
+    )
+    return admin, int(versions[0]), int(versions[1]), int(proof)
+
+
+def test_project_member_list_returns_only_mutation_fields_and_pages(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, first = client.portal.call(_office_project_and_unassigned_member)
+
+    async def add_second_member():
+        second, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (second,))
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)", (project, first, root),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','REVOKED',%s)", (project, second, root),
+        )
+        await sql("UPDATE office_project_grant SET version=3 WHERE project_id=%s AND user_id=%s", (project, second))
+        return second
+
+    second = client.portal.call(add_second_member)
+    headers = _headers(root, tv, mv, proof)
+    first_page = client.get(f"/api/virtual-office/projects/{project}/members?limit=1", headers=headers)
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert set(first_body) == {"project_id", "members", "next_cursor"}
+    assert first_body["project_id"] == project
+    assert first_body["members"] == [{
+        "user_id": first, "grant_role": "COLLABORATOR", "audience": "INTERNAL",
+        "status": "ACTIVE", "version": 1,
+    }]
+    assert first_body["next_cursor"] == first
+    second_page = client.get(
+        f"/api/virtual-office/projects/{project}/members?cursor={first_body['next_cursor']}&limit=1", headers=headers,
+    )
+    assert second_page.status_code == 200
+    assert second_page.json()["members"] == [{
+        "user_id": second, "grant_role": "COLLABORATOR", "audience": "CLIENT_PUBLISHED",
+        "status": "REVOKED", "version": 3,
+    }]
+    assert second_page.json()["next_cursor"] is None
+
+
+def test_project_admin_may_list_members_but_client_and_nonmember_are_denied(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _tv, _mv, _proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    admin, tv, mv, proof = client.portal.call(_project_admin_with_proof, project=project, root=root)
+    assert client.get(f"/api/virtual-office/projects/{project}/members", headers=_headers(admin, tv, mv, proof)).status_code == 200
+
+    async def denied_actors():
+        nonmember, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (nonmember,))
+        client_user, _ = await crear_usuario()
+        await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (client_user,))
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (client_user,))
+        rows = await sql("SELECT user_id,token_version,mfa_version FROM jax_users WHERE user_id IN (%s,%s) ORDER BY user_id", (nonmember, client_user), True)
+        return {int(row[0]): (int(row[1]), int(row[2])) for row in rows}
+
+    versions = client.portal.call(denied_actors)
+    for user_id, (token_version, mfa_version) in versions.items():
+        response = client.get(
+            f"/api/virtual-office/projects/{project}/members",
+            headers=_headers(user_id, token_version, mfa_version, 1),
+        )
+        assert (response.status_code, response.json()) == (403, {"detail": "office_project_grant_denied"})
+
+
 def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
