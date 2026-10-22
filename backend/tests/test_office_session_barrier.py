@@ -9,12 +9,13 @@ def _set_class(client, user_id: int, account_class: str):
     client.portal.call(sql, "UPDATE jax_users SET account_class=%s WHERE user_id=%s", (account_class, user_id))
 
 
-def test_restricted_class_is_rejected_before_classic_admin_handler(client, usuarios, monkeypatch):
+@pytest.mark.parametrize("account_class", ("OFFICE_INTERNAL", "EXTERNAL_CLIENT"))
+def test_restricted_class_is_rejected_before_classic_admin_handler(client, usuarios, monkeypatch, account_class):
     from api.admin import users as users_mod
 
     target, _ = usuarios()
     actor, _ = usuarios(role="superadmin")
-    _set_class(client, actor, "OFFICE_INTERNAL")
+    _set_class(client, actor, account_class)
     reached = []
 
     async def forbidden(*args, **kwargs):

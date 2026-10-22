@@ -281,6 +281,25 @@ async def _pending_enrollment_anchor(
     return anchor
 
 
+async def pending_enrollment_is_recovery_origin_in_cursor(
+    cur, *, user: int, current_mfa_version: int, pending_enrollment_id: object,
+) -> bool:
+    """Classify PENDING from its immutable owner, never current token state.
+
+    A missing/corrupt owner is fail-closed for password login.  Challenge
+    expiry, invalidation and a token-only cut do not erase recovery lineage.
+    """
+    anchor = await _pending_enrollment_anchor(
+        cur, user=user, current_mfa_version=current_mfa_version,
+        pending_enrollment_id=pending_enrollment_id,
+    )
+    if isinstance(anchor, MFADenied):
+        return True
+    return await _has_current_recovery_lineage(
+        cur, user=user, versions=(int(anchor[2]), int(anchor[3])),
+    )
+
+
 async def issue_login_challenge_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
     versions = await _user(cur, preauthenticated_user_id)
     if versions is None or not await _active_credential(cur, preauthenticated_user_id): return MFADenied("mfa_subject_invalid", terminal=True)

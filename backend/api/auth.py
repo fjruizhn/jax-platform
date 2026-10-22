@@ -32,7 +32,7 @@ from virtual_office.mfa import (
     start_first_enrollment_after_password_in_cursor, confirm_enrollment_in_cursor,
     consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
     start_reenrollment_after_password_in_cursor,
-    _has_current_recovery_lineage,
+    pending_enrollment_is_recovery_origin_in_cursor,
     regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
     reset_mfa_by_office_root_in_cursor,
     load_mfa_config_from_environment,
@@ -195,14 +195,14 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise _credenciales_invalidas()
         if current[1] != "active":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
-        await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
+        await cur.execute("SELECT state,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
         credential = await cur.fetchone()
         # Recovery is enrollment-only.  A first-enrollment PENDING (and a
         # deliberately DISABLED factor) keeps the historic classic-login
         # contract; a PENDING credential with current recovery lineage does
         # not.
-        recovery_pending = credential is not None and credential[0] == "PENDING" and await _has_current_recovery_lineage(
-            cur, user=int(user_id), versions=(int(current[2]), int(current[3])),
+        recovery_pending = credential is not None and credential[0] == "PENDING" and await pending_enrollment_is_recovery_origin_in_cursor(
+            cur, user=int(user_id), current_mfa_version=int(current[3]), pending_enrollment_id=credential[1],
         )
         if credential is not None and (credential[0] == "RECOVERY_REQUIRED" or recovery_pending):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="mfa_recovery_required")

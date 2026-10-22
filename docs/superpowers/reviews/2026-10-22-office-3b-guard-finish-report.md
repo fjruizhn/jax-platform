@@ -338,3 +338,33 @@ GREEN: 308 passed (3181 migration warnings); git diff --check clean.
 All five Sol round 1 findings now have source changes and focused HTTP
 coverage. **FREEZE CANDIDATE for exact Sol re-audit; not a Sol approval and
 not authorization for 3C.** No commit, push, PR or production action.
+
+## Sol round 2/5 · Fix 2 freeze candidate
+
+Recovery PENDING classification now locks the credential-owned immutable
+ENROLLMENT anchor and uses its historical token/MFA versions to find recovery
+lineage. A missing/corrupt anchor denies password login. Token-only session
+revocation cannot turn recovery-origin PENDING into a Classic session, and
+anchor expiry/invalidation is intentionally irrelevant to origin identity.
+
+`/api/auth/mfa/reenrollment/start` is now the exact added entry in the finite
+Office restricted-account auth allowlist; default deny remains intact.
+
+The recovery-origin HTTP flow now uses the canonical Classic
+`POST /api/admin/users/{id}/revoke-sessions` token-only cut before password
+login; it remains 403/no access/no cookie both immediately and after a
+controlled expired-anchor fixture. Separate actual HTTP compatibility witnesses
+keep first-PENDING and DISABLED Classic password login working. Restricted
+`OFFICE_INTERNAL` and `EXTERNAL_CLIENT` both complete actual STEP_UP and reach
+the finite reenrollment route; both remain rejected before a Classic admin
+handler.
+
+Focused barrier + login run and the full selected suite passed:
+
+```text
+...cv-office-run-tests.py jxp -q --disable-warnings [15 selected files]
+GREEN: 313 passed (3244 warnings) in 20.04s; git diff --check clean.
+```
+
+**FREEZE CANDIDATE for exact Sol re-audit, not approval for 3C.** No commit,
+push, PR or production action.
