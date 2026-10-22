@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Root-admin attestation for the immutable delivery-v1 SQL authority.
 set -euo pipefail
-DB= ADMIN_TRANSPORT=
-while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; *) exit 2;; esac; shift; done
-[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && -x ${ADMIN_TRANSPORT:-/missing} ]] || exit 2
+DB= ADMIN_TRANSPORT= WORKER_HOST=localhost
+while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; --worker-host) WORKER_HOST=${2:?}; shift;; *) exit 2;; esac; shift; done
+[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && $WORKER_HOST =~ ^[A-Za-z0-9._-]{1,255}$ && -x ${ADMIN_TRANSPORT:-/missing} ]] || exit 2
 q() { printf '%s\n' "$1" | "$ADMIN_TRANSPORT"; }
 read -r count <<<"$(q "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='$DB' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');")"
 [[ $count == 3 ]] || { echo 'delivery routine component incomplete' >&2; exit 1; }
@@ -35,7 +35,7 @@ done
 # procedures; any lifecycle/event DML is an authority escalation.
 worker=${JAX_INVITATION_WORKER_DB_USER:-jaxinvite}
 [[ $worker =~ ^[a-z][a-z0-9_]{0,31}$ ]] || { echo 'unsafe delivery worker principal' >&2; exit 1; }
-grants=$(q "SHOW GRANTS FOR '$worker'@'localhost';")
+grants=$(q "SHOW GRANTS FOR '$worker'@'$WORKER_HOST';")
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_claim_next_v1\`" >/dev/null || { echo 'delivery claim execute absent' >&2; exit 1; }
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_expire_due_v1\`" >/dev/null || { echo 'delivery expire execute absent' >&2; exit 1; }
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_settle_delivery_v1\`" >/dev/null || { echo 'delivery settle execute absent' >&2; exit 1; }
