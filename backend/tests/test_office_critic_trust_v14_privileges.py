@@ -15,6 +15,7 @@ import pytest
 from pymysql.err import OperationalError
 
 from db_connect_config import db_connect_timeout_seconds
+from base_de_test import _en_ci
 from virtual_office import module_critic_trust as trust
 
 
@@ -24,6 +25,23 @@ async def _connection(*, database: str, user: str, password: str):
         user=user, password=password, db=database, autocommit=True,
         charset="utf8mb4", connect_timeout=db_connect_timeout_seconds(),
     )
+
+
+class _TestAdminUnavailable(RuntimeError):
+    pass
+
+
+def _assert_exact_grants(grants: tuple[str, ...], *, schema: str, principal: str) -> None:
+    usage_prefix = f"GRANT USAGE ON *.* TO `{principal}`@`%`"
+    expected_tables = {
+        f"GRANT SELECT, TRIGGER ON `{schema}`.`{table}` TO `{principal}`@`%`"
+        for table in trust._APPEND_ONLY
+    }
+    usage = tuple(grant for grant in grants if grant.startswith(usage_prefix))
+    assert len(grants) == 3 and len(usage) == 1
+    assert set(grants) - set(usage) == expected_tables
+    assert all("GRANT OPTION" not in grant and "DEFAULT ROLE" not in grant for grant in grants)
+    assert all("GRANT OPTION" not in grant and "DEFAULT ROLE" not in grant for grant in grants)
 
 
 def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client) -> None:
@@ -36,19 +54,29 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
             database=source, user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
         )
         restricted = None
+        principal_created = False
+        cleanup_errors: list[Exception] = []
         try:
             async with admin.cursor() as cur:
-                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
-                await cur.execute(f"USE `{schema}`")
-                for statement in trust._KEY_DDL:
-                    await cur.execute(statement)
-                for name, table, operation, statement in trust._trigger_definitions():
-                    await cur.execute(
-                        f"CREATE TRIGGER `{name}` BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
-                    )
-                await cur.execute(f"CREATE USER `{principal}`@'%%' IDENTIFIED BY %s", (password,))
-                for table in trust._APPEND_ONLY:
-                    await cur.execute(f"GRANT SELECT, TRIGGER ON `{schema}`.`{table}` TO `{principal}`@'%'")
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                    await cur.execute(f"USE `{schema}`")
+                    for statement in trust._KEY_DDL:
+                        await cur.execute(statement)
+                    for name, table, operation, statement in trust._trigger_definitions():
+                        await cur.execute(
+                            f"CREATE TRIGGER `{name}` BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+                        )
+                    # PyMySQL consumes %% while binding the password; the
+                    # created host is the literal % used below everywhere.
+                    await cur.execute(f"CREATE USER `{principal}`@'%%' IDENTIFIED BY %s", (password,))
+                    principal_created = True
+                    for table in trust._APPEND_ONLY:
+                        await cur.execute(f"GRANT SELECT, TRIGGER ON `{schema}`.`{table}` TO `{principal}`@'%'")
+                except OperationalError as error:
+                    if error.args and error.args[0] in {1044, 1045, 1142, 1227}:
+                        raise _TestAdminUnavailable(str(error)) from error
+                    raise
                 await cur.execute(
                     "SELECT TRIGGER_NAME,ACTION_STATEMENT,DEFINER,SQL_MODE "
                     "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=%s ORDER BY TRIGGER_NAME",
@@ -63,10 +91,7 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
                 assert (await cur.fetchone())[0] == f"{principal}@%"
                 await cur.execute("SHOW GRANTS")
                 grants = tuple(row[0] for row in await cur.fetchall())
-                table_grants = tuple(grant for grant in grants if f"`{schema}`." in grant)
-                assert len(table_grants) == 2
-                assert all("SELECT, TRIGGER" in grant for grant in table_grants)
-                assert all("ON *.*" in grant or f"`{schema}`." in grant for grant in grants)
+                _assert_exact_grants(grants, schema=schema, principal=principal)
                 await cur.execute(
                     "SELECT TRIGGER_NAME,ACTION_STATEMENT,DEFINER,SQL_MODE "
                     "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME"
@@ -91,9 +116,37 @@ def test_v14_table_scoped_select_trigger_metadata_and_authority_boundary(client)
         finally:
             if restricted is not None:
                 restricted.close()
-            async with admin.cursor() as cur:
-                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
-                await cur.execute(f"DROP USER IF EXISTS `{principal}`@'%'")
-            admin.close()
+            try:
+                async with admin.cursor() as cur:
+                    statements = [f"DROP DATABASE IF EXISTS `{schema}`"]
+                    if principal_created:
+                        statements = [
+                            f"REVOKE ALL PRIVILEGES, GRANT OPTION FROM `{principal}`@'%'",
+                            f"DROP USER IF EXISTS `{principal}`@'%'",
+                            *statements,
+                        ]
+                    for statement in statements:
+                        try:
+                            await cur.execute(statement)
+                        except Exception as error:
+                            cleanup_errors.append(error)
+                    try:
+                        await cur.execute("SELECT COUNT(*) FROM mysql.user WHERE User=%s", (principal,))
+                        assert (await cur.fetchone())[0] == 0
+                        await cur.execute(
+                            "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s", (schema,)
+                        )
+                        assert (await cur.fetchone())[0] == 0
+                    except Exception as error:
+                        cleanup_errors.append(error)
+            finally:
+                admin.close()
+            if cleanup_errors:
+                raise AssertionError("critic-v14 disposable cleanup failed") from cleanup_errors[0]
 
-    client.portal.call(scenario)
+    try:
+        client.portal.call(scenario)
+    except _TestAdminUnavailable as error:
+        if _en_ci():
+            raise RuntimeError("CI MariaDB principal lost required CREATE USER/GRANT authority") from error
+        pytest.skip(f"MariaDB test principal cannot create the disposable v14 account: {error}")
