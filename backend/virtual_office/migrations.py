@@ -21,7 +21,11 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-RUNTIME_REVISION = f"office-runtime-v8-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v9 binds readiness to the invitation expiry, causal-evidence and mutation-
+# receipt contracts added after v8.  Keep the ACL manifest digest as part of
+# the stamp too: either the schema contract or the runtime privilege contract
+# changing requires the platform migrator to restamp before web readiness.
+RUNTIME_REVISION = f"office-runtime-v9-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
