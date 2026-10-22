@@ -157,10 +157,10 @@ async def change_project_member_role(project_id: int, target_user_id: int,
             if old_role == payload.grant_role:
                 raise HTTPException(status_code=409, detail="office_project_role_no_change")
             await cur.execute(
-                "UPDATE office_project_grant SET grant_role=%s,granted_by=%s,version=version+1,"
+                "UPDATE office_project_grant SET grant_role=%s,version=version+1,"
                 "updated_at=UTC_TIMESTAMP(6) WHERE project_id=%s AND user_id=%s AND version=%s "
                 "AND status='ACTIVE' AND audience='INTERNAL'",
-                (payload.grant_role, actor_user_id, project_id, target_user_id, payload.expected_version),
+                (payload.grant_role, project_id, target_user_id, payload.expected_version),
             )
             if cur.rowcount != 1:
                 raise HTTPException(status_code=409, detail="office_project_role_version_conflict")
