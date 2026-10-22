@@ -121,7 +121,7 @@ OFFICE_INVITATION_DDL = (
     "state VARCHAR(16) NOT NULL DEFAULT 'QUEUED',attempt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,attempt_count INT NOT NULL DEFAULT 0,cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,"
     "payload_ciphertext MEDIUMBLOB NULL,message_id VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NULL,result_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,"
     "claimed_at DATETIME(6) NULL,finished_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL,updated_at DATETIME(6) NOT NULL,"
-    "UNIQUE KEY uq_office_invitation_outbox_invitation (invitation_id),KEY idx_office_invitation_outbox_claim (state,created_at,outbox_id),"
+    "UNIQUE KEY uq_office_invitation_outbox_invitation (invitation_id),KEY idx_office_invitation_outbox_claim (state,created_at,outbox_id),KEY idx_office_invitation_outbox_stale_claim (state,claimed_at,outbox_id),"
     "CONSTRAINT fk_office_invitation_outbox_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
     "CONSTRAINT chk_office_invitation_outbox_shape CHECK ((state='QUEUED' AND attempt_id IS NULL AND attempt_count=0 AND cancel_requested=FALSE AND payload_ciphertext IS NOT NULL AND result_code IS NULL AND claimed_at IS NULL AND finished_at IS NULL) OR "
     "(state='CLAIMED' AND attempt_id IS NOT NULL AND attempt_id REGEXP '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' AND attempt_count=1 AND ((cancel_requested=FALSE AND payload_ciphertext IS NOT NULL) OR (cancel_requested=TRUE AND payload_ciphertext IS NULL)) AND message_id IS NULL AND result_code IS NULL AND claimed_at IS NOT NULL AND finished_at IS NULL) OR "
@@ -541,6 +541,7 @@ _INVITATION_INDEXES = {
         "PRIMARY": (("outbox_id",), True),
         "uq_office_invitation_outbox_invitation": (("invitation_id",), True),
         "idx_office_invitation_outbox_claim": (("state", "created_at", "outbox_id"), False),
+        "idx_office_invitation_outbox_stale_claim": (("state", "claimed_at", "outbox_id"), False),
     },
 }
 _INVITATION_CHECK_DIGESTS = {
@@ -793,6 +794,36 @@ async def _prepare_invitation_schema(cur) -> None:
         await cur.execute(f"DROP TABLE IF EXISTS {table}")
 
 
+async def _preflight_invitation_receipt_causal_history(cur) -> None:
+    """Do not replace an old receipt guard over evidence it cannot attest.
+
+    The 2e/306 guard accepted receipt rows before their result event carried
+    an authority and invocation digest.  Those receipts are append-only
+    evidence.  Adding nullable columns and replacing the guard would make the
+    physical contract look current while leaving historic rows unverifiable.
+    """
+    if not await _table_exists(cur, "office_invitation_mutation_receipt"):
+        return
+    await cur.execute("SELECT 1 FROM office_invitation_mutation_receipt LIMIT 1")
+    if await cur.fetchone() is None:
+        return
+    if (not await _column_exists(cur, "office_invitation_event", "authorization_event_id")
+            or not await _column_exists(cur, "office_invitation_event", "invocation_digest")):
+        raise RuntimeError(
+            "Office invitation receipt history predates causal event binding; historic evidence is not rewritten"
+        )
+    await cur.execute(
+        "SELECT 1 FROM office_invitation_mutation_receipt r "
+        "LEFT JOIN office_invitation_event e ON e.event_id=r.result_event_id "
+        "WHERE e.event_id IS NULL OR e.authorization_event_id IS NULL OR e.invocation_digest IS NULL "
+        "OR e.authorization_event_id<>r.authorization_event_id OR e.invocation_digest<>r.request_digest LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError(
+            "Office invitation receipt history lacks causal event binding; historic evidence is not rewritten"
+        )
+
+
 async def _upgrade_invitation_event_causality(cur) -> None:
     """Add nullable causal fields without rewriting immutable history.
 
@@ -830,6 +861,16 @@ async def _upgrade_invitation_event_causality(cur) -> None:
             "ALTER TABLE office_invitation_event ADD CONSTRAINT "
             "fk_office_invitation_event_authorization FOREIGN KEY (authorization_event_id) "
             "REFERENCES office_authorization_event(event_id)"
+        )
+
+
+async def _upgrade_invitation_outbox_stale_index(cur) -> None:
+    """Add the bounded stale-claim scan index before the worker can use it."""
+    if (await _table_exists(cur, "office_invitation_outbox")
+            and not await _index_exists(cur, "office_invitation_outbox", "idx_office_invitation_outbox_stale_claim")):
+        await cur.execute(
+            "ALTER TABLE office_invitation_outbox ADD KEY "
+            "idx_office_invitation_outbox_stale_claim (state,claimed_at,outbox_id)"
         )
 
 
@@ -1666,7 +1707,9 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute(statement)
     await assert_bootstrap_runtime_metadata(cursor)
     await _prepare_invitation_schema(cursor)
+    await _preflight_invitation_receipt_causal_history(cursor)
     await _upgrade_invitation_event_causality(cursor)
+    await _upgrade_invitation_outbox_stale_index(cursor)
     await _upgrade_invitation_guards(cursor)
     await _upgrade_invitation_mutation_receipt_guard(cursor)
     for statement in OFFICE_INVITATION_DDL:

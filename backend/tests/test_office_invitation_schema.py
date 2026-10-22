@@ -335,7 +335,7 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
 
 
 def test_predecessor_receipt_guard_upgrades_idempotently(client):
-    """The 2e86051 guard is replaced before CREATE IF NOT EXISTS can retain it."""
+    """An empty 2e86051 receipt ledger can advance and retain the index."""
     async def scenario():
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -352,7 +352,64 @@ def test_predecessor_receipt_guard_upgrades_idempotently(client):
                 assert "e.authorization_event_id=NEW.authorization_event_id" in action
                 assert "e.invocation_digest=NEW.request_digest" in action
                 assert "NEW.expires_at=s.expires_at" in action
+                await cur.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+                    "AND TABLE_NAME='office_invitation_outbox' AND INDEX_NAME='idx_office_invitation_outbox_stale_claim' "
+                    "ORDER BY SEQ_IN_INDEX"
+                )
+                assert tuple(row[0] for row in await cur.fetchall()) == ('state', 'claimed_at', 'outbox_id')
                 await apply_office_migrations(cur)
+    client.portal.call(scenario)
+
+
+def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(client):
+    """A legal 2e receipt row must block upgrade before its guard is replaced."""
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"H" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                invitation_id, _, issued_event_id, _ = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id,
+                    serial=f"historical-receipt-{uuid.uuid4().hex}", target_user_id=issuer,
+                )
+                await cur.execute(
+                    "SELECT i.project_id,s.issuance_authorization_event_id,s.expires_at "
+                    "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+                    "WHERE i.invitation_id=%s",
+                    (invitation_id,),
+                )
+                project_id, authorization_event_id, expiry = await cur.fetchone()
+                await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
+                await cur.execute(_RECEIPT_GUARD_2E86051)
+                await cur.execute("DROP TRIGGER no_update_office_invitation_event")
+                await cur.execute(
+                    "UPDATE office_invitation_event SET authorization_event_id=NULL,invocation_digest=NULL WHERE event_id=%s",
+                    (issued_event_id,),
+                )
+                await cur.execute(
+                    "CREATE TRIGGER no_update_office_invitation_event BEFORE UPDATE ON office_invitation_event "
+                    "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'"
+                )
+                await cur.execute(
+                    "INSERT INTO office_invitation_mutation_receipt "
+                    "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,expected_version,response_version,result_event_id,authorization_event_id,response_contract,expires_at,created_at) "
+                    "VALUES (%s,UNHEX(REPEAT('ce',32)),'ISSUE',%s,%s,%s,0,1,%s,%s,'office-invitation-mutation-response/v1',%s,UTC_TIMESTAMP(6))",
+                    (str(uuid.uuid4()), issuer, project_id, invitation_id, issued_event_id, authorization_event_id, expiry),
+                )
+                with pytest.raises(RuntimeError, match='receipt history lacks causal event binding'):
+                    await apply_office_migrations(cur)
+                await cur.execute(
+                    "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                    "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
+                )
+                assert (await cur.fetchone())[0] == _RECEIPT_GUARD_2E86051.split(" FOR EACH ROW ", 1)[1]
     client.portal.call(scenario)
 
 
