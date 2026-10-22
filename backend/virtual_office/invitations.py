@@ -256,6 +256,10 @@ async def issue_invitation_in_cursor(
         expires_at = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
         return IssuedInvitation(invitation_id=str(receipt[4]), expires_at=expires_at,
                                 version=int(receipt[6]), replayed=True)
+    # The global idempotency key may race an issuer in another project.  Keep
+    # all provisional lifecycle rows inside a savepoint so a duplicate key can
+    # be re-read without committing a second invitation.
+    await cur.execute("SAVEPOINT office_invitation_issue")
     await cur.execute(
         "SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
     scope = await cur.fetchone()
@@ -322,12 +326,31 @@ async def issue_invitation_in_cursor(
         "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_id,attempt_count,cancel_requested,payload_ciphertext,message_id,result_code,claimed_at,finished_at,created_at,updated_at) "
         "VALUES (%s,%s,'QUEUED',NULL,0,FALSE,%s,NULL,NULL,NULL,NULL,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
         (outbox_id, invitation_id, payload))
-    await _write_mutation_receipt(
-        cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="ISSUE",
-        actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
-        expected_version=0, response_version=1, result_event_id=issued_event_id,
-        authorization_event_id=authorization_event_id, expires_at=expires_at,
-    )
+    try:
+        await _write_mutation_receipt(
+            cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="ISSUE",
+            actor_user_id=actor_user_id, project_id=project_id, invitation_id=invitation_id,
+            expected_version=0, response_version=1, result_event_id=issued_event_id,
+            authorization_event_id=authorization_event_id, expires_at=expires_at,
+        )
+    except Exception as error:
+        if not (getattr(error, "args", ()) and error.args[0] == 1062):
+            raise
+        await cur.execute("ROLLBACK TO SAVEPOINT office_invitation_issue")
+        await cur.execute("RELEASE SAVEPOINT office_invitation_issue")
+        winner = await _load_mutation_receipt(
+            cur, idempotency_key=idempotency_key, digest=mutation_digest, operation="ISSUE",
+            actor_user_id=actor_user_id, project_id=project_id)
+        if winner is None:
+            raise InvitationError("office_invitation_retryable", status_code=503) from error
+        winner_expiry = winner[10]
+        if winner_expiry is None:
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        winner_expiry = (winner_expiry.replace(tzinfo=dt.timezone.utc)
+                         if winner_expiry.tzinfo is None else winner_expiry.astimezone(dt.timezone.utc))
+        return IssuedInvitation(invitation_id=str(winner[4]), expires_at=winner_expiry,
+                                version=int(winner[6]), replayed=True)
+    await cur.execute("RELEASE SAVEPOINT office_invitation_issue")
     return IssuedInvitation(invitation_id=invitation_id, expires_at=expires_at)
 
 
