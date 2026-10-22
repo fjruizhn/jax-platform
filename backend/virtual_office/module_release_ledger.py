@@ -276,9 +276,19 @@ async def assert_module_candidate_storage_metadata(
         if tuple(await cur.fetchone() or ()) != ("InnoDB",):
             raise RuntimeError(f"Office module candidate engine for {table} is invalid")
     for (table, index), (unique, columns) in expected_indexes.items():
-        await cur.execute("SELECT NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX", (table, index))
+        await cur.execute(
+            "SELECT NON_UNIQUE,COLUMN_NAME,SUB_PART,INDEX_TYPE,COLLATION,IGNORED "
+            "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",
+            (table, index),
+        )
         rows = await cur.fetchall()
-        if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
+        if (
+            not rows
+            or any(int(row[0]) != int(not unique) for row in rows)
+            or tuple(row[1] for row in rows) != columns
+            or any(row[2] is not None or str(row[3]).upper() != "BTREE" or row[4] != "A" or str(row[5]).upper() != "NO" for row in rows)
+        ):
             raise RuntimeError(f"Office module candidate index {table}.{index} is invalid")
     found_indexes = await _index_set(cur)
     if found_indexes != expected_indexes:

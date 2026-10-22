@@ -161,6 +161,10 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                             f"CREATE TRIGGER no_{operation.lower()}_{table} BEFORE {operation} ON {table} "
                             f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
                         )
+                await cur.execute("ALTER TABLE office_module_candidate DROP INDEX uq_office_module_candidate_identity, ADD UNIQUE KEY uq_office_module_candidate_identity (module_id(1),module_version(1))")
+                with pytest.raises(RuntimeError, match="index.*invalid"):
+                    await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("ALTER TABLE office_module_candidate DROP INDEX uq_office_module_candidate_identity, ADD UNIQUE KEY uq_office_module_candidate_identity (module_id,module_version)")
                 await cur.execute("ALTER TABLE office_module_candidate ADD UNIQUE KEY rogue_predecessor_module (module_id)")
                 with pytest.raises(RuntimeError, match="index set is invalid"):
                     await candidate.apply_module_candidate_storage_migrations(cur)
@@ -175,6 +179,10 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                 await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('predecessor','1',11,12)")
                 with pytest.raises(IntegrityError):
                     await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('wrong-scope','1',99,12)")
+                await cur.execute("ALTER TABLE office_module_candidate DROP INDEX uq_office_module_candidate_identity, ADD UNIQUE KEY uq_office_module_candidate_identity (module_id(1),module_version(1))")
+                with pytest.raises(RuntimeError, match="index.*invalid"):
+                    await candidate.assert_module_candidate_storage_metadata(cur)
+                await cur.execute("ALTER TABLE office_module_candidate DROP INDEX uq_office_module_candidate_identity, ADD UNIQUE KEY uq_office_module_candidate_identity (module_id,module_version)")
                 await cur.execute("ALTER TABLE office_module_candidate ADD UNIQUE KEY rogue_final_module (module_id)")
                 with pytest.raises(RuntimeError, match="index set is invalid"):
                     await candidate.assert_module_candidate_storage_metadata(cur)
