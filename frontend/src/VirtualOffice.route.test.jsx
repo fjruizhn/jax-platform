@@ -20,6 +20,8 @@ describe('Virtual Office route', () => {
     render(<I18nProvider><App /></I18nProvider>)
     expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/virtual-office')
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Otorgar permiso|Invitar persona|Elegir proyecto/ })).not.toBeInTheDocument()
   })
 
   it('does not expose the Office entry to a classic account through a direct URL', async () => {

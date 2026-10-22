@@ -12,27 +12,23 @@ function show() {
 
 beforeEach(() => {
   useJaxStore.setState({ token: 'office-token', user: {
-    user_id: 7, email: 'persona@example.test', account_class: 'OFFICE_INTERNAL', office_role: 'GENERAL_ADMIN',
+    user_id: 7, email: 'persona@example.test', account_class: 'OFFICE_INTERNAL',
   } })
 })
 
 describe('Virtual Office', () => {
-  it('identifies the signed-in office account and starts in the protected project selector', () => {
+  it('identifies the signed-in restricted account without inferring administrative authority', () => {
     show()
     expect(screen.getByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(screen.getByText('persona@example.test')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Proyectos' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('status')).toHaveTextContent('La conexión con proyectos de Oficina todavía no está disponible.')
+    expect(screen.getByRole('status')).toHaveTextContent('La administración de proyectos y permisos se habilitará cuando el servidor confirme una capacidad de Oficina.')
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Otorgar permiso|Invitar persona|Elegir proyecto/ })).not.toBeInTheDocument()
   })
 
-  it('uses keyboard-accessible tabs and keeps unavailable mutations disabled until the Office API exists', () => {
+  it('opens access information in the shared keyboard-accessible dialog', () => {
     show()
-    const people = screen.getByRole('tab', { name: 'Personas' })
-    people.focus()
-    fireEvent.keyDown(people, { key: 'ArrowRight' })
-    expect(screen.getByRole('tab', { name: 'Permisos' })).toHaveFocus()
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Permisos' }), { key: 'Enter' })
-    expect(screen.getByRole('tabpanel')).toHaveTextContent('Los grants se habilitarán cuando la API de Oficina publique su contrato.')
-    expect(screen.getByRole('button', { name: 'Otorgar permiso' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Información de acceso' }))
+    expect(screen.getByRole('dialog', { name: 'Acceso de Oficina virtual' })).toBeInTheDocument()
   })
 })
