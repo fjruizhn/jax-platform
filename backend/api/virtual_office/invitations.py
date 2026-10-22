@@ -74,9 +74,23 @@ def _invitation_rate_key(bearer_token: str) -> str:
     bucket, but the invitation capability itself must never become a raw
     in-memory key or an accidental diagnostic value.
     """
+    _require_ascii_invitation_bearer(bearer_token)
     return hashlib.sha256(
         b"office-invitation-bearer-rate/v1\x00" + bearer_token.encode("ascii")
     ).hexdigest()
+
+
+def _require_ascii_invitation_bearer(bearer_token: str) -> None:
+    """Reject malformed capabilities before they reach the limiter or bcrypt.
+
+    ``InvitationAcceptRequest`` bounds Unicode code points, whereas the
+    bearer contract is an ASCII capability.  Keeping this check at ingress
+    prevents an encoding failure from escaping as a 500 and keeps malformed
+    tokens indistinguishable from other invalid invitation bearers.
+    """
+    if (not isinstance(bearer_token, str) or not 43 <= len(bearer_token) <= 256
+            or not bearer_token.isascii()):
+        raise HTTPException(status_code=403, detail="office_invitation_invalid")
 
 
 async def _optional_current_user(
@@ -136,6 +150,7 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
 @router.post("/invitations/accept")
 async def accept_invitation(payload: InvitationAcceptRequest,
                             request: Request, user: AuthUser | None = Depends(_optional_current_user)):
+    _require_ascii_invitation_bearer(payload.token)
     password_hash: str | None = None
     if user is None:
         # Bound CPU before the untrusted password reaches bcrypt.  The bearer
@@ -153,6 +168,7 @@ async def accept_invitation(payload: InvitationAcceptRequest,
         password_hash = await asyncio.to_thread(_hash, payload.password)
     elif payload.password is not None:
         raise HTTPException(status_code=409, detail="office_invitation_existing_session_required")
+    from jax.memory.project_authority import ProjectAuthorityRetryable
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             replayed = await accept_invitation_in_cursor(
@@ -162,6 +178,10 @@ async def accept_invitation(payload: InvitationAcceptRequest,
             )
     except InvitationError as error:
         _raise(error)
+    except ProjectAuthorityRetryable as error:
+        # JAX reserves this class for transient MariaDB contention.  Its
+        # stable contract is that retrying the same request is safe.
+        raise HTTPException(status_code=503, detail="office_invitation_retryable") from error
     if replayed is None:
         raise HTTPException(status_code=410, detail="office_invitation_expired")
     return {"status": "ACCEPTED", "replayed": replayed}
