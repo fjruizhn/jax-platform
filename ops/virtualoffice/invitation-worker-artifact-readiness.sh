@@ -26,7 +26,7 @@ grep -Fqx 'OnUnitInactiveSec=30s' "$timer"
 grep -Fqx 'Persistent=true' "$timer"
 grep -Fq 'GRANT UPDATE ON' "$provision" && grep -Fq 'office_invitation_outbox' "$provision"
 grep -Fq 'GRANT INSERT ON' "$provision" && grep -Fq 'office_invitation_event' "$provision"
-grep -Fq 'git -C "$REPO" archive' "$installer"
+grep -Fq 'git -C "$trusted_repo" archive' "$installer"
 grep -Fq 'chown -R root:root' "$installer"
 if [[ "$effective" == --effective ]]; then
   systemctl is-enabled axioma-office-invitation-worker.timer | grep -qx enabled
