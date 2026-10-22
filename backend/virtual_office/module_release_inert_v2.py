@@ -18,11 +18,14 @@ TABLES = (
     "office_module_release_operation_v2", "office_module_release_receipt_v2",
     "office_module_effective_release_head_v2",
 )
+STAMP_TABLE = "office_module_release_v2_schema_stamp"
+_STAMP_COMPONENT = "office-module-release-v2"
+_STAMP_VERSION = "v2"
 
 # No table here is writable by the ordinary Office web principal.  The
 # provisioner must continue to reject these names even before a future,
 # separately-reviewed writer capability exists.
-FORBIDDEN_RUNTIME_TABLES = frozenset(TABLES)
+FORBIDDEN_RUNTIME_TABLES = frozenset((*TABLES, STAMP_TABLE))
 
 DDL = (
     "CREATE TABLE IF NOT EXISTS office_module_artifact_snapshot_v2 ("
@@ -61,6 +64,35 @@ _EXPECTED_COLUMNS = {
     "office_module_release_receipt_v2": ("release_receipt_id","release_operation_id","project_id","tenant_id","module_id","module_version","receipt_sha256","receipt_signature","state","created_at"),
     "office_module_effective_release_head_v2": ("project_id","tenant_id","module_id","module_version","release_receipt_id","status","created_at"),
 }
+_EXPECTED_COLUMN_SHAPES = {
+    "snapshot_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "publication_request_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "creative_approval_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "rights_verdict_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "release_operation_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "release_receipt_id": ("bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+    "candidate_revision_id": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "candidate_id": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "snapshot_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "publication_request_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "creative_approval_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "rights_verdict_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "release_operation_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "release_receipt_id_ref": ("bigint(20) unsigned", "NO", None, "", None, None),
+    "project_id": ("int(11)", "NO", None, "", None, None), "tenant_id": ("int(11)", "NO", None, "", None, None),
+    "manifest_sha256": ("binary(32)", "NO", None, "", None, None), "module_package_digest": ("binary(32)", "NO", None, "", None, None),
+    "evidence_set_sha256": ("binary(32)", "NO", None, "", None, None),
+    "module_id": ("varchar(96)", "NO", None, "", "ascii", "ascii_bin"), "module_version": ("varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+    "critic_principal": ("varchar(128)", "NO", None, "", "ascii", "ascii_bin"), "office_release_signer": ("varchar(128)", "NO", None, "", "ascii", "ascii_bin"),
+    "state": ("varchar(24)", "NO", None, "", "ascii", "ascii_bin"), "status": ("varchar(24)", "NO", None, "", "ascii", "ascii_bin"), "decision": ("varchar(24)", "NO", None, "", "ascii", "ascii_bin"), "verification_state": ("varchar(24)", "NO", None, "", "ascii", "ascii_bin"),
+    "requested_by_user_id": ("int(11)", "NO", None, "", None, None), "human_user_id": ("int(11)", "NO", None, "", None, None),
+    "mfa_proof_event_id": ("bigint(20) unsigned", "YES", "NULL", "", None, None), "receipt_sha256": ("binary(32)", "YES", "NULL", "", None, None), "receipt_signature": ("mediumblob", "YES", "NULL", "", None, None),
+    "created_at": ("datetime(6)", "NO", "current_timestamp(6)", "", None, None),
+}
+def _column_shape(table: str, name: str):
+    if name in {"snapshot_id", "publication_request_id", "creative_approval_id", "rights_verdict_id", "release_operation_id", "release_receipt_id"} and _EXPECTED_COLUMNS[table][0] != name:
+        return _EXPECTED_COLUMN_SHAPES[f"{name}_ref"]
+    return _EXPECTED_COLUMN_SHAPES[name]
 def _names(pattern: str, table: str) -> frozenset[str]: return frozenset(re.findall(pattern, _DDL_BY_TABLE[table]))
 _EXPECTED_FKS = {table: _names(r"CONSTRAINT (fk_[a-z0-9_]+) FOREIGN KEY", table) for table in TABLES}
 _EXPECTED_CHECKS = {table: _names(r"CONSTRAINT (chk_[a-z0-9_]+) CHECK", table) for table in TABLES}
@@ -109,7 +141,7 @@ _HEX = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 def validate_release_receipt(value: Any, *, module_package_digest: str, project_id: int, tenant_id: int, human_approval_id: int, critic_rights_id: int, human_principal: str) -> BoundReleaseReceipt:
     """Pure structural binding only; it verifies neither signatures nor rights."""
-    if not isinstance(value, dict) or set(value) != {"domain", "module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id", "office_release_signer"}:
+    if not isinstance(value, dict) or set(value) != {"domain", "module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id", "critic_principal", "office_release_signer"}:
         raise ReleaseReceiptRejected("release receipt shape is invalid")
     if value["domain"] != "axioma.office.module-release-receipt/v1": raise ReleaseReceiptRejected("release receipt domain is invalid")
     if any(key in value for key in ("authorized_by", "model", "selector")): raise ReleaseReceiptRejected("release receipt has forbidden authority")
@@ -117,31 +149,74 @@ def validate_release_receipt(value: Any, *, module_package_digest: str, project_
         if not isinstance(value[name], str) or not _HEX.fullmatch(value[name]): raise ReleaseReceiptRejected("release receipt digest is invalid")
     fields = ("module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
     expected = (module_package_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
-    if tuple(value[field] for field in fields) != expected: raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
+    if tuple(value[field] for field in fields) != expected or any(type(value[field]) is not int or value[field] <= 0 for field in fields[1:]): raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
     signer = value["office_release_signer"]
-    if not isinstance(signer, str) or not signer.startswith("office-release:") or signer == human_principal: raise ReleaseReceiptRejected("release signer is not distinct Office authority")
+    critic = value["critic_principal"]
+    if not isinstance(critic, str) or not critic.startswith("critic:") or critic == human_principal: raise ReleaseReceiptRejected("release critic is not distinct authority")
+    if not isinstance(signer, str) or not signer.startswith("office-release:") or signer == "office-release:" or signer in {human_principal, critic}: raise ReleaseReceiptRejected("release signer is not distinct Office authority")
     return BoundReleaseReceipt(*expected, signer)
 
 async def apply_inert_release_v2_migrations(cur) -> None:
     """Resumable only for a creation cutpoint; metadata attestation closes drift."""
-    for statement in DDL: await cur.execute(statement)
-    for table in TABLES:
+    await cur.execute("SELECT GET_LOCK(CONCAT('office-release-v2:',DATABASE()),30)")
+    if await cur.fetchone() != (1,): raise RuntimeError("inert release v2 migration lock is unavailable")
+    try:
+        await _apply_inert_release_v2_locked(cur)
+    finally:
+        await cur.execute("SELECT RELEASE_LOCK(CONCAT('office-release-v2:',DATABASE()))")
+
+async def _apply_inert_release_v2_locked(cur) -> None:
+    """Advance only exact, empty table-and-trigger prefixes; never normalize drift."""
+    await cur.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s,%s,%s,%s,%s,%s)", TABLES)
+    if {row[0] for row in await cur.fetchall()} == set(TABLES):
+        await assert_inert_release_v2_metadata(cur)
+        await _assert_release_stamp(cur)
+        return
+    for index, (table, statement) in enumerate(zip(TABLES, DDL)):
+        await _assert_release_prefix(cur, index)
+        await cur.execute(statement)
         for operation in ("UPDATE", "DELETE"):
             await cur.execute(f"CREATE TRIGGER IF NOT EXISTS no_{operation.lower()}_{table} BEFORE {operation} ON {table} FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
+        await _assert_release_prefix(cur, index + 1)
+    await cur.execute(f"CREATE TABLE IF NOT EXISTS {STAMP_TABLE} (component VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,version VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),CONSTRAINT chk_office_module_release_v2_stamp CHECK (component='{_STAMP_COMPONENT}' AND version='{_STAMP_VERSION}')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin")
+    await cur.execute(f"INSERT IGNORE INTO {STAMP_TABLE} (component,version) VALUES (%s,%s)", (_STAMP_COMPONENT, _STAMP_VERSION))
+    await _assert_release_stamp(cur)
     await assert_inert_release_v2_metadata(cur)
 
+async def _assert_release_stamp(cur) -> None:
+    await cur.execute(f"SELECT component,version FROM {STAMP_TABLE}")
+    if await cur.fetchall() != ((_STAMP_COMPONENT, _STAMP_VERSION),): raise RuntimeError("inert release v2 stamp is invalid")
+
+async def _assert_release_prefix(cur, count: int) -> None:
+    """A partial release schema is safe only as the exact empty prefix we create."""
+    for index, table in enumerate(TABLES):
+        await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        exists = await cur.fetchone() is not None
+        if index >= count:
+            if exists: raise RuntimeError("inert release v2 migration cutpoint is invalid")
+            continue
+        if not exists: raise RuntimeError("inert release v2 migration prefix is invalid")
+        await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
+        if await cur.fetchone() is not None: raise RuntimeError("inert release v2 interrupted prefix has rows")
+    if count:
+        await _assert_inert_release_v2_tables(cur, TABLES[:count])
+
 async def assert_inert_release_v2_metadata(cur) -> None:
-    for table in TABLES:
+    await _assert_inert_release_v2_tables(cur, TABLES)
+
+async def _assert_inert_release_v2_tables(cur, tables) -> None:
+    for table in tables:
         await cur.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if await cur.fetchone() != ("InnoDB",): raise RuntimeError(f"inert release v2 table {table} is invalid")
         await cur.execute("SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if await cur.fetchone() != ("utf8mb4_bin",): raise RuntimeError(f"inert release v2 collation {table} is invalid")
-        await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
-        if tuple(row[0] for row in await cur.fetchall()) != _EXPECTED_COLUMNS[table]: raise RuntimeError(f"inert release v2 columns {table} are invalid")
-        await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,COLLATION,SUB_PART,IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
+        await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+        rows = await cur.fetchall()
+        if tuple(row[0] for row in rows) != _EXPECTED_COLUMNS[table] or tuple(tuple(row[1:]) for row in rows) != tuple(_column_shape(table, name) for name in _EXPECTED_COLUMNS[table]): raise RuntimeError(f"inert release v2 columns {table} are invalid")
+        await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,COLLATION,SUB_PART,IGNORED,INDEX_TYPE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
         found_indexes: dict[str, tuple[bool, tuple[str, ...]]] = {}
-        for name, non_unique, column, collation, sub_part, ignored in await cur.fetchall():
-            if collation != "A" or sub_part is not None or str(ignored).upper() not in {"NO", "0"}: raise RuntimeError(f"inert release v2 index shape {table} is invalid")
+        for name, non_unique, column, collation, sub_part, ignored, index_type in await cur.fetchall():
+            if collation != "A" or sub_part is not None or str(ignored).upper() not in {"NO", "0"} or str(index_type).upper() != "BTREE": raise RuntimeError(f"inert release v2 index shape {table} is invalid")
             unique, columns = found_indexes.get(name, (not bool(non_unique), ()))
             if unique != (not bool(non_unique)): raise RuntimeError(f"inert release v2 index uniqueness {table} is invalid")
             found_indexes[name] = (unique, (*columns, column))
@@ -152,11 +227,17 @@ async def assert_inert_release_v2_metadata(cur) -> None:
         for name in _EXPECTED_FKS[table]:
             await cur.execute("SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME=%s AND k.CONSTRAINT_NAME=%s ORDER BY k.ORDINAL_POSITION", (table, name))
             rows = await cur.fetchall(); local, target, remote = _EXPECTED_FK_EDGES[(table, name)]
-            if tuple(row[0] for row in rows) != local or not rows or rows[0][1] != target or tuple(row[2] for row in rows) != remote or any((row[3], row[4]) != ("RESTRICT", "RESTRICT") for row in rows): raise RuntimeError(f"inert release v2 foreign key {name} is invalid")
+            await cur.execute("SELECT REFERENCED_TABLE_SCHEMA FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_NAME=%s LIMIT 1", (table, name))
+            schema = await cur.fetchone()
+            if tuple(row[0] for row in rows) != local or not rows or rows[0][1] != target or tuple(row[2] for row in rows) != remote or any((row[3], row[4]) != ("RESTRICT", "RESTRICT") for row in rows) or schema != ((await _database_name(cur)),): raise RuntimeError(f"inert release v2 foreign key {name} is invalid")
         await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK'", (table,))
         if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_CHECKS[table]: raise RuntimeError(f"inert release v2 checks {table} are invalid")
         await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK')", (table,))
         if {name: _normalize_clause(clause) for name, clause in await cur.fetchall()} != _EXPECTED_CHECK_CLAUSES[table]: raise RuntimeError(f"inert release v2 check clauses {table} are invalid")
-        await cur.execute("SELECT TRIGGER_NAME,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
-        expected_triggers = ((f"no_delete_{table}", "DELETE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"), (f"no_update_{table}", "UPDATE", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"))
+        await cur.execute("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
+        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"))
         if tuple(tuple(row) for row in await cur.fetchall()) != expected_triggers: raise RuntimeError(f"inert release v2 triggers {table} are invalid")
+
+async def _database_name(cur) -> str:
+    await cur.execute("SELECT DATABASE()")
+    return (await cur.fetchone())[0]

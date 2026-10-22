@@ -14,7 +14,7 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 
 def valid():
-    return {"domain":"axioma.office.module-release-receipt/v1","module_package_digest":"sha256:"+"11"*32,"project_id":7,"tenant_id":8,"creative_approval_id":9,"rights_verdict_id":10,"office_release_signer":"office-release:primary"}
+    return {"domain":"axioma.office.module-release-receipt/v1","module_package_digest":"sha256:"+"11"*32,"project_id":7,"tenant_id":8,"creative_approval_id":9,"rights_verdict_id":10,"critic_principal":"critic:primary","office_release_signer":"office-release:primary"}
 
 def test_v2_separates_package_client_and_authorities_while_staying_pending():
     source = "\n".join(module.DDL)
@@ -22,7 +22,7 @@ def test_v2_separates_package_client_and_authorities_while_staying_pending():
     assert "evidence_set_sha256" in source and "mfa_proof_event_id BIGINT UNSIGNED NULL" in source
     assert source.count("PENDING_CONTRACT") >= 6
     assert "PUBLISHED" not in source
-    assert module.FORBIDDEN_RUNTIME_TABLES == frozenset(module.TABLES)
+    assert module.FORBIDDEN_RUNTIME_TABLES == frozenset((*module.TABLES, module.STAMP_TABLE))
 
 def test_v2_uses_a_single_composite_scope_module_chain():
     edges = module._EXPECTED_FK_EDGES
@@ -47,7 +47,7 @@ def test_receipt_binds_distinct_authorities():
     receipt = module.validate_release_receipt(valid(), module_package_digest="sha256:"+"11"*32, project_id=7, tenant_id=8, human_approval_id=9, critic_rights_id=10, human_principal="human:fernando")
     assert receipt.office_release_signer == "office-release:primary"
 
-@pytest.mark.parametrize("key,value", [("module_package_digest","sha256:"+"00"*32),("office_release_signer","human:fernando"),("domain","module-package/v1")])
+@pytest.mark.parametrize("key,value", [("module_package_digest","sha256:"+"00"*32),("office_release_signer","human:fernando"),("office_release_signer","office-release:"),("critic_principal","human:fernando"),("project_id",True),("domain","module-package/v1")])
 def test_receipt_rejects_misbinding(key, value):
     item = valid(); item[key] = value
     with pytest.raises(module.ReleaseReceiptRejected): module.validate_release_receipt(item, module_package_digest="sha256:"+"11"*32, project_id=7, tenant_id=8, human_approval_id=9, critic_rights_id=10, human_principal="human:fernando")
