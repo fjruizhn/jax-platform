@@ -9,7 +9,9 @@ de JAX Platform y hable con su API usando el mismo origen.
 El vhost modelo está en
 [`ops/virtualoffice/virtualoffice.axioma-ia.io.conf`](../../ops/virtualoffice/virtualoffice.axioma-ia.io.conf).
 Sirve un release inmutable bajo `/www/wwwroot/virtualoffice.axioma-ia.io/current`,
-usa el certificado wildcard ya instalado para `axioma-ia.io`, y reenvía sólo:
+usa el certificado wildcard ya instalado para `axioma-ia.io`, habilita HSTS
+solamente para este host (`max-age=31536000`, sin `includeSubDomains`), y
+reenvía sólo:
 
 - las rutas de autenticación enumeradas en el archivo;
 - `GET /api/apariencia`, la configuración pública y de sólo lectura que carga
@@ -29,8 +31,10 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 
 1. Construir el frontend desde el SHA ya auditado con el mecanismo de releases
    inmutables de `docs/runbooks/frontend-estatico-p100.md`. Copiar el `dist`
-   resultante a una carpeta de release nueva, propiedad de `root`, y hacer que
-   `current` apunte sólo al release que pasó su manifiesto.
+   y su `manifest.json` resultante a una carpeta de release nueva, propiedad
+   de `root`. El directorio de release se llama exactamente como
+   `manifest.json.source_sha`; no se genera ni reescribe un manifiesto en el
+   ingreso.
 2. Instalar la plantilla como un nuevo archivo de vhost de aaPanel, sin editar
    el vhost de `axioma-ia.io`. Ajustar sólo rutas físicas que difieran de la
    plantilla y registrar el diff.
@@ -39,13 +43,14 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 ```bash
 ops/virtualoffice/validate-public-ingress.sh offline \
   --config /ruta/al/virtualoffice.axioma-ia.io.conf \
-  --dist /www/wwwroot/virtualoffice.axioma-ia.io/current \
-  --manifest /ruta-de-respaldo/ASSET-SHA256SUMS
+  --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE
 ```
 
-`offline` no modifica el release: escribe el manifiesto donde indique
-`--manifest`. Guardar ese archivo junto con el SHA de fuente y el respaldo, y
-anotar el SHA-256 de `index.html`. No publicar desde un checkout Git ni desde
+`offline` no modifica el release. Rechaza un `dist` que tenga archivos distintos
+del manifiesto, digests distintos, symlinks internos, o un nombre que no coincida
+con el SHA de fuente. Sólo después de pasar se puede apuntar `current` a ese
+release; si se verifica `current`, el comando resuelve el enlace una vez y luego
+aplica las mismas reglas al destino. No publicar desde un checkout Git ni desde
 `:5173`.
 
 4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
@@ -65,7 +70,8 @@ sin depender de DNS público:
 ```bash
 ops/virtualoffice/validate-public-ingress.sh smoke \
   --public-ip INGRESS_PUBLIC_IP \
-  --expected-index-sha SHA256_DE_INDEX_HTML
+  --expected-index-sha SHA256_DE_INDEX_HTML \
+  --asset-path /assets/ARCHIVO_DEL_MANIFIESTO
 ```
 
 La comprobación exige el mismo HTML y confirma que la sesión Office existe
@@ -75,14 +81,23 @@ reciba 404. Un 404 en `/api/auth/login` también detiene el proceso. Después se
 verifica TLS/SNI desde una red externa y únicamente entonces se crea DNS con el
 procedimiento administrado.
 
+El smoke además prueba que los HTML y assets llevan `nosniff`, frame denial,
+referrer policy y HSTS; niega `/api/auth/mfa/root-reset`, rutas codificadas,
+normalizadas y traversal con `--path-as-is`; y exige que un Host o SNI ajeno no
+reciba el hash de Office.
+
 ## Reversión
 
-Antes de activar, guardar en un directorio de respaldo con permisos 0700: el
-vhost vigente, la ruta canónica previa de `current`, el manifiesto de hashes y
-la salida de `nginx -T`. Para volver atrás, restaurar el vhost anterior y
-reapuntar `current` al release previamente verificado; validar `nginx -t`,
-recargar, y repetir la comprobación `--resolve` con el hash del release previo.
-No se borra el release nuevo hasta que la reversión haya pasado la verificación.
+Antes de activar, guardar en un directorio de respaldo con permisos 0700: la
+salida de `nginx -T`, el vhost previo **o el marcador `VHOST_ABSENT`**, la ruta
+canónica de `current` **o el marcador `CURRENT_ABSENT`**, y el manifiesto
+original del release anterior. La reversión lee esos marcadores: si había
+vhost/current, los restaura; si era el primer despliegue, retira únicamente el
+vhost y el enlace `current` que instaló este cambio. En ambos casos ejecuta
+`nginx -t`, recarga nginx, y comprueba con `--resolve` que el SNI de Office ya
+no sirve su hash; para un estado previo existente, también repite el smoke con
+el hash anterior. No se borra el release nuevo hasta que la reversión pasó estas
+comprobaciones.
 
 ## Gates que este archivo no reemplaza
 
