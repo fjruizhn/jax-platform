@@ -47,10 +47,23 @@ def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, mon
 
     replay = client.put(
         f"/api/virtual-office/projects/{project}/members/{target}",
-        json={**body, "expected_version": 1}, headers=headers,
+        json=body, headers=headers,
     )
     assert replay.status_code == 200
     assert replay.json()["replayed"] is True
+    # The Office receipt binds the optimistic version as well as JAX's
+    # namespace request.  Reusing a UUID with another Office transition is
+    # not a lost-response retry.
+    conflict = client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={**body, "expected_version": 1}, headers=headers,
+    )
+    assert (conflict.status_code, conflict.json()["detail"]) == (409, "office_project_grant_idempotency_conflict")
+    assert client.portal.call(
+        sql,
+        "SELECT operation,expected_version,office_grant_status FROM office_membership_mutation_receipt "
+        "WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s", (headers["Idempotency-Key"],), True,
+    ) == (("GRANT_OFFICE_MEMBER", 0, "ACTIVE"),)
     revoke_headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
     revoked = client.delete(
         f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1", headers=revoke_headers,
@@ -62,6 +75,11 @@ def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, mon
     )
     assert revoke_replay.status_code == 200
     assert revoke_replay.json()["replayed"] is True
+    assert client.portal.call(
+        sql,
+        "SELECT operation,expected_version,office_grant_version,office_grant_status FROM office_membership_mutation_receipt "
+        "WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s", (revoke_headers["Idempotency-Key"],), True,
+    ) == (("REVOKE_OFFICE_MEMBER", 1, 2, "REVOKED"),)
     assert client.portal.call(
         sql,
         "SELECT m.status,g.status FROM jax_project_membership m JOIN office_project_grant g "
@@ -187,3 +205,51 @@ def test_office_grant_write_failure_rolls_back_jax_membership(client, monkeypatc
     assert client.portal.call(
         sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
     ) == ()
+
+
+def test_terminal_receipt_failure_rolls_back_every_companion(client, monkeypatch):
+    """The receipt is terminal evidence, never a best-effort post-commit log."""
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def install_trigger():
+        await sql("DROP TRIGGER IF EXISTS test_office_receipt_rollback")
+        await sql(
+            "CREATE TRIGGER test_office_receipt_rollback BEFORE INSERT ON office_membership_mutation_receipt "
+            "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test receipt rollback'"
+        )
+
+    client.portal.call(install_trigger)
+    try:
+        response = client.put(
+            f"/api/virtual-office/projects/{project}/members/{target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert response.status_code == 503
+    finally:
+        client.portal.call(sql, "DROP TRIGGER IF EXISTS test_office_receipt_rollback")
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_project_membership WHERE project_id=%s AND user_id=%s),"
+        "(SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id=%s),"
+        "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE project_id=%s AND target_user_id=%s)",
+        (project, target, project, target, project, target), True,
+    ) == ((0, 0, 0),)
+
+
+def test_replay_refuses_drifted_office_companion(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    body = {"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}
+    assert client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers).status_code == 200
+    client.portal.call(
+        sql,
+        "UPDATE office_project_grant SET version=version+1 WHERE project_id=%s AND user_id=%s",
+        (project, target),
+    )
+    replay = client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
+    assert (replay.status_code, replay.json()["detail"]) == (503, "office_project_grant_retryable")

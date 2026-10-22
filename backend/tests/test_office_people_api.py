@@ -132,6 +132,12 @@ def test_root_enables_only_self_controlled_existing_profile_and_never_reactivate
     ) == (("ACTIVE", root, audit_id),)
     revoked = client.delete(f"/api/virtual-office/people/{target}/profile?expected_version=1", headers=headers)
     assert revoked.status_code == 200
+    assert client.portal.call(
+        sql,
+        "SELECT actor_user_id,target_user_id,action,version_before,version_after,reason_code "
+        "FROM office_profile_revocation_event WHERE target_user_id=%s", (target,), True,
+    ) == ((root, target, "REVOKE_PROFILE", 1, 2, "office_profile_revoke"),)
+    assert revoked.status_code == 200
     retry = client.put(f"/api/virtual-office/people/{target}/profile", json={"expected_version": 2}, headers=headers)
     assert retry.status_code == 409
     assert client.portal.call(sql, "SELECT status FROM office_account_profile WHERE user_id=%s", (target,), True) == (("REVOKED",),)

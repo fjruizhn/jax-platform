@@ -43,6 +43,82 @@ OFFICE_BOOTSTRAP_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_bootstrap_state BEFORE DELETE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
 )
 
+# These records are the Office half of an already immutable JAX namespace
+# mutation.  They deliberately have their own receipt key: the JAX request is
+# re-authorized by the core before it can be read, and this FK makes a partial
+# "Office says done" record structurally impossible.
+OFFICE_MEMBERSHIP_RECEIPT_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_membership_mutation_receipt ("
+    "namespace VARCHAR(32) NOT NULL,idempotency_key CHAR(36) NOT NULL,request_digest CHAR(64) NOT NULL,"
+    "operation VARCHAR(32) NOT NULL,actor_user_id INT NOT NULL,target_tenant_id INT NOT NULL,project_id INT NOT NULL,target_user_id INT NOT NULL,"
+    "expected_version BIGINT NOT NULL,grant_role VARCHAR(24) NULL,audience VARCHAR(24) NULL,execution_kind VARCHAR(32) NOT NULL,"
+    "jax_membership_id CHAR(36) NOT NULL,jax_event_id CHAR(36) NOT NULL,office_grant_version BIGINT NOT NULL,office_grant_status VARCHAR(16) NOT NULL,"
+    "external_relation_id BIGINT UNSIGNED NULL,external_relation_version BIGINT NULL,recipient_group_id BIGINT UNSIGNED NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "PRIMARY KEY(namespace,idempotency_key),UNIQUE KEY uq_office_membership_receipt_jax_event(jax_event_id),"
+    "KEY idx_office_membership_receipt_jax_request(namespace,idempotency_key),"
+    "CONSTRAINT fk_office_membership_receipt_jax_request FOREIGN KEY(namespace,idempotency_key) REFERENCES jax_namespace_membership_mutation_request(namespace,idempotency_key),"
+    "CONSTRAINT fk_office_membership_receipt_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_membership_receipt_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_membership_receipt_scope FOREIGN KEY(project_id,target_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
+    "CONSTRAINT fk_office_membership_receipt_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),"
+    "CONSTRAINT fk_office_membership_receipt_relation FOREIGN KEY(external_relation_id) REFERENCES office_external_relation(relation_id),"
+    "CONSTRAINT fk_office_membership_receipt_group FOREIGN KEY(recipient_group_id) REFERENCES office_recipient_group(recipient_group_id),"
+    "CONSTRAINT chk_office_membership_receipt_operation CHECK(operation IN ('GRANT_OFFICE_MEMBER','REVOKE_OFFICE_MEMBER')),"
+    "CONSTRAINT chk_office_membership_receipt_expected_version CHECK(expected_version >= 0),"
+    "CONSTRAINT chk_office_membership_receipt_grant CHECK(grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND audience IN ('INTERNAL','CLIENT_PUBLISHED') AND ((operation='GRANT_OFFICE_MEMBER' AND office_grant_status='ACTIVE') OR (operation='REVOKE_OFFICE_MEMBER' AND office_grant_status='REVOKED'))),"
+    "CONSTRAINT chk_office_membership_receipt_external CHECK((external_relation_id IS NULL AND external_relation_version IS NULL AND recipient_group_id IS NULL) OR (external_relation_id IS NOT NULL AND external_relation_version IS NOT NULL AND recipient_group_id IS NOT NULL))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_membership_mutation_receipt BEFORE UPDATE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_membership_mutation_receipt BEFORE DELETE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
+)
+
+OFFICE_PROFILE_REVOCATION_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_profile_revocation_event BEFORE UPDATE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_profile_revocation_event BEFORE DELETE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
+)
+
+_MEMBERSHIP_RECEIPT_TRIGGERS = {
+    "no_update_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
+    "no_delete_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
+}
+_PROFILE_REVOCATION_TRIGGERS = {
+    "no_update_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
+    "no_delete_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
+}
+
+
+async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]]) -> None:
+    """Reject homonymous/no-op append-only guards before readiness is stamped."""
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,"
+        "ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS "
+        "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
+    found = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+    if found != triggers:
+        raise RuntimeError(f"Office {table} triggers are missing or invalid")
+    await cur.execute(
+        "SELECT COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME='PRIMARY' ORDER BY SEQ_IN_INDEX", (table,))
+    expected_primary = (("namespace", 0), ("idempotency_key", 0)) if table == "office_membership_mutation_receipt" else (("event_id", 0),)
+    if tuple(await cur.fetchall()) != expected_primary:
+        raise RuntimeError(f"Office {table} primary key is invalid")
+
+
+async def assert_membership_receipt_runtime_metadata(cur) -> None:
+    if await _table_exists(cur, "office_membership_mutation_receipt"):
+        await _assert_append_only_table_metadata(
+            cur, table="office_membership_mutation_receipt", triggers=_MEMBERSHIP_RECEIPT_TRIGGERS)
+        if not await _index_has_exact_shape(
+            cur, "office_membership_mutation_receipt", "uq_office_membership_receipt_jax_event", ("jax_event_id",), unique=True):
+            raise RuntimeError("Office membership receipt JAX-event index is invalid")
+
+
+async def assert_profile_revocation_runtime_metadata(cur) -> None:
+    await _assert_append_only_table_metadata(
+        cur, table="office_profile_revocation_event", triggers=_PROFILE_REVOCATION_TRIGGERS)
+
 # Exact MariaDB 12.3.3 CHECK_CLAUSE renderings, measured from the constraint
 # created below.  Normalization deliberately preserves boolean operators and
 # literals; accepting a bag of words would turn a permissive OR into a guard.
@@ -835,3 +911,15 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("INSERT INTO office_authorization_event (actor_user_id,actor_principal,event_kind,fence_key,operation,project_id,tenant_id,result,reason_code,correlation_id,occurred_at) VALUES (NULL,'system:office-schema-migrator','SYSTEM_FENCE','office-audit-fence-v1','AUDIT_FENCE_CANARY',NULL,NULL,'RECORDED','office_audit_fence_v1',NULL,NOW(6))")
     elif tuple(row) != canonical:
         raise RuntimeError("Office audit fence is not canonical")
+    # Receipt is deliberately last: a committed receipt means the canonical
+    # JAX event, Office companion and authorization event all committed.
+    # Focused legacy/MFA fixtures intentionally exercise only their tiny
+    # predecessor schema.  A real platform migration has already installed
+    # this JAX core table; without it no member route can run or be ready.
+    if await _table_exists(cursor, "jax_namespace_membership_mutation_request"):
+        for statement in OFFICE_MEMBERSHIP_RECEIPT_DDL:
+            await cursor.execute(statement)
+        await assert_membership_receipt_runtime_metadata(cursor)
+    for statement in OFFICE_PROFILE_REVOCATION_DDL:
+        await cursor.execute(statement)
+    await assert_profile_revocation_runtime_metadata(cursor)

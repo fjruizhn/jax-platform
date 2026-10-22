@@ -19,6 +19,8 @@ _FORBIDDEN_TABLES = frozenset((
     "office_authorization_event",
     "office_bootstrap_state",
     "office_mfa_security_event",
+    "office_membership_mutation_receipt",
+    "office_profile_revocation_event",
     "office_schema_revision",
 ))
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
