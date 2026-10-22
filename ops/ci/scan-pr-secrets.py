@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 LISTA = os.environ.get("JAX_CI_SECRETS", os.path.join(AQUI, "known-secrets-ci.txt"))
@@ -36,7 +37,12 @@ MIN_TOKEN = 6
 # La propia lista se excluye del escaneo: es la REFERENCIA contra la que se
 # compara, no contenido a revisar. Solo lleva hashes y salts.
 EXCLUIDOS = {"ops/ci/known-secrets-ci.txt"}
-MAX_TOKENS = 40000  # techo de runtime; si se supera, falla en vez de truncar
+# Ambos limites son una barrera de disponibilidad, no una optimizacion que
+# pueda truncar el escaneo. MAX_WORK_UNITS tambien hace que una futura lista
+# grande no multiplique en silencio el costo de scrypt.
+MAX_TOKENS = 50000
+MAX_WORK_UNITS = 100000
+MAX_WORKERS = 2
 SEPARADORES = re.compile(r"""[\s"'`,;()\[\]{}<>=:]+""")
 RUNS = re.compile(rb"[\x20-\x7e]{%d,}" % MIN_TOKEN)
 
@@ -88,6 +94,23 @@ def tokens_de(texto):
     return {t for t in vistos if len(t) >= MIN_TOKEN}
 
 
+def comparar_entrada(entrada, tokens):
+    """Devuelve los tokens que coinciden con una sola entrada conocida.
+
+    Cada token llega aqui una sola vez por entrada. La concurrencia se limita
+    en main() a dos entradas a la vez para no convertir el escaneo en una
+    tormenta de memoria/CPU cuando crezca la lista.
+    """
+    salt, esperado, etiqueta = entrada
+    hallados = set()
+    for token in tokens:
+        digest = hashlib.scrypt(token.encode("utf-8", "replace"), salt=salt,
+                                n=2**14, r=8, p=1, dklen=32).hex()
+        if digest == esperado:
+            hallados.add((token, etiqueta))
+    return hallados
+
+
 def main():
     if len(sys.argv) != 3:
         fallar("uso: scan-pr-secrets.py <base-sha> <head-sha>")
@@ -102,7 +125,9 @@ def main():
     diff = git(["diff", "--unified=0", "--no-color", "--diff-filter=ACMRT",
                 f"{base}...{head}"])
 
-    cands, con_texto, archivo, en_hunk = set(), set(), None, False
+    # token -> todos los archivos que lo introducen. El KDF se hace una vez
+    # por token/entrada y el informe conserva cada ruta afectada.
+    cands, con_texto, archivo, en_hunk = {}, set(), None, False
     for linea in diff.splitlines():
         if linea.startswith("diff --git "):
             archivo, en_hunk = None, False
@@ -116,7 +141,7 @@ def main():
             if archivo:
                 con_texto.add(archivo)
             for t in tokens_de(linea[1:]):
-                cands.add((archivo, t))
+                cands.setdefault(t, set()).add(archivo)
 
     # Binarios y rutas con el diff apagado por .gitattributes: sin lineas '+'.
     # Se leen enteros desde head. Es la clase del .pyc que origino todo esto.
@@ -126,22 +151,28 @@ def main():
         crudo = git(["show", f"{head}:{a}"], binario=True)
         for run in RUNS.findall(crudo):
             for t in tokens_de(run.decode("ascii", "replace")):
-                cands.add((a, t))
+                cands.setdefault(t, set()).add(a)
 
-    unicos = {t for _, t in cands}
+    unicos = tuple(sorted(cands))
     if len(unicos) > MAX_TOKENS:
         fallar(f"el diff supera el techo de {MAX_TOKENS} tokens unicos ({len(unicos)}).",
                "  Se falla en vez de truncar: un escaneo parcial que dice 'limpio' es fail-open.")
+    trabajo = len(unicos) * len(entradas)
+    if trabajo > MAX_WORK_UNITS:
+        fallar(f"el diff supera el techo de {MAX_WORK_UNITS} comparaciones scrypt ({trabajo}).",
+               "  Se falla en vez de truncar: una lista futura no puede degradar el escaneo hasta hacerlo inusable.")
 
     print(f"scan-pr-secrets: {len(archivos)} archivos, {len(unicos)} tokens unicos, "
-          f"{len(entradas)} entradas conocidas")
+          f"{len(entradas)} entradas conocidas, {trabajo} comparaciones")
 
-    hallados = []
-    for salt, esperado, etiqueta in entradas:
-        for a, t in cands:
-            if hashlib.scrypt(t.encode("utf-8", "replace"), salt=salt,
-                              n=2**14, r=8, p=1, dklen=32).hex() == esperado:
-                hallados.append((a, etiqueta))
+    # Una tarea por entrada, nunca por token: como maximo dos workers y no
+    # miles de Futures. executor.map conserva las excepciones como fallo duro.
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ejecutor:
+        coincidencias = ejecutor.map(lambda entrada: comparar_entrada(entrada, unicos), entradas)
+        tokens_hallados = set().union(*coincidencias)
+    hallados = [(archivo, etiqueta)
+                for token, etiqueta in tokens_hallados
+                for archivo in cands[token]]
     if hallados:
         for a, e in sorted(set(hallados)):
             print(f"::error file={a}::secreto conocido '{e}' introducido por este PR")
