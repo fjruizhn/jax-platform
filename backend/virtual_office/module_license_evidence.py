@@ -233,8 +233,8 @@ def _artifact_snapshot(value: Any) -> dict[str, Any]:
             _reject("artifact_set exceeds its byte limit")
         copied_entries.append({"path": path, "size": size, "mode": mode, "digest": digest})
     return {
-        "schema_version": value["schema_version"],
-        "domain": value["domain"],
+        "schema_version": schema_version,
+        "domain": domain,
         "entries": copied_entries,
         "root_digest": root_digest,
     }

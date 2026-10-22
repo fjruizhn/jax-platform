@@ -164,6 +164,20 @@ def test_converts_top_level_key_deletion_during_snapshot_to_domain_error(tmp_pat
         sys.settrace(None)
 
 
+def test_uses_captured_top_level_values_when_keys_disappear_before_return(tmp_path):
+    artifact_set = _artifact_set(tmp_path)
+    evidence = _evidence(artifact_set)
+    tracer = _mutate_on_snapshot_line(
+        "copied_entries.append", lambda: (artifact_set.pop("schema_version"), artifact_set.pop("domain"))
+    )
+    sys.settrace(tracer)
+    try:
+        assert license_evidence.validate_license_evidence(evidence, artifact_set).state == "PENDING_VERIFICATION"
+        assert "schema_version" not in artifact_set and "domain" not in artifact_set
+    finally:
+        sys.settrace(None)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
