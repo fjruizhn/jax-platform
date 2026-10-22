@@ -76,14 +76,13 @@ vacío. Ahora:
     resultado o su misma excepción: con la DB caída, N turnos a la vez son
     UN intento, no N en serie. Terminada (bien o mal) se limpia el "en
     vuelo"; si falló, `_cache` no cambia y el turno SIGUIENTE reintenta.
-    Cancelación: cada turno espera con `asyncio.shield`, así que cancelar el
-    turno que la lanzó no cancela la recarga de los demás. Consecuencia
-    declarada (ronda de arreglo 2, opción a): en Python 3.14, si un turno se
-    cancela mientras espera y la recarga después falla, `shield` deja en el
-    log de asyncio UNA línea ERROR "... exception in shielded future" por
-    recarga (asyncio/tasks.py, `_log_on_exception`; no depende de que la
-    excepción esté recuperada). Se deja: es una recarga fallida y tiene que
-    verse (P10); los que siguen esperando reciben igual la excepción.
+    Cancelación: cada turno espera mediante un futuro de relevo, así que
+    cancelar el turno que la lanzó no cancela la recarga de los demás. Si
+    después la recarga falla, el callback común deja UNA línea ERROR
+    "exception in shielded future" por recarga. No dependemos del callback
+    interno de `asyncio.shield`, cuyo comportamiento cambió entre versiones
+    de Python; la falla sigue siendo visible (P10) y los demás turnos reciben
+    la misma excepción.
   * LÍMITE DE TIEMPO: la recarga completa (from_db + el to_thread) va bajo
     `asyncio.wait_for(..., timeout)`, con el timeout de la variable de
     entorno GOVERNANCE_RELOAD_TIMEOUT_SECONDS, default 5.0 s. Se lee y se
@@ -118,6 +117,7 @@ vacío. Ahora:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import sys
@@ -166,6 +166,11 @@ def _stamp() -> _Stamp:
 
 _cache: tuple[_Stamp, tuple] | None = None
 _inflight: tuple[_Stamp, asyncio.Future] | None = None
+# `asyncio.shield()` dejó de emitir de forma estable su aviso interno entre
+# versiones de Python. Conservamos la señal operativa de una recarga fallida
+# que sobrevivió a turnos cancelados de forma explícita y una vez por tarea.
+_cancelled_waiters: set[asyncio.Future] = set()
+_asyncio_logger = logging.getLogger("asyncio")
 
 
 def _build_static(catalog):
@@ -216,13 +221,47 @@ def _done(inflight: tuple[_Stamp, asyncio.Future]):
         if _inflight is inflight:  # otra recarga más nueva pudo reemplazarla
             _inflight = None
         # Marca la excepción como recuperada: evita el aviso "Task exception
-        # was never retrieved" si nadie la esperaba. NO evita el ERROR "...
-        # exception in shielded future" que deja shield() cuando un turno se
-        # canceló esperando (opción a, ver el docstring del módulo): ese se
-        # deja a propósito. Los que siguen esperando la reciben por shield().
+        # was never retrieved" si nadie la esperaba. El ERROR operativo para
+        # una tarea cuyos turnos fueron cancelados se emite abajo, una vez.
         if not task.cancelled():
-            task.exception()
+            exception = task.exception()
+            if exception is not None and task in _cancelled_waiters:
+                # Este texto mantiene la señal que antes producía un callback
+                # interno de shield. Hacerlo aquí evita depender de detalles
+                # distintos entre versiones de asyncio y la deja exactamente
+                # una vez, aunque se cancelen varios turnos.
+                _asyncio_logger.error("exception in shielded future", exc_info=exception)
+        _cancelled_waiters.discard(task)
     return callback
+
+
+async def _wait_for_inflight(task: asyncio.Future):
+    """Espera una tarea compartida sin propagarle la cancelación del turno.
+
+    Un relevo propio por turno conserva la semántica de `shield` sin su
+    callback interno, que en Python 3.14 a veces registra el mismo error y a
+    veces no. El callback de la tarea compartida es la fuente única del log.
+    """
+    waiter = asyncio.get_running_loop().create_future()
+
+    def relay(completed: asyncio.Future) -> None:
+        if waiter.cancelled():
+            return
+        if completed.cancelled():
+            waiter.cancel()
+            return
+        exception = completed.exception()
+        if exception is not None:
+            waiter.set_exception(exception)
+        else:
+            waiter.set_result(completed.result())
+
+    task.add_done_callback(relay)
+    try:
+        return await waiter
+    except asyncio.CancelledError:
+        _cancelled_waiters.add(task)
+        raise
 
 
 async def validation_context():
@@ -237,9 +276,9 @@ async def validation_context():
         inflight = (stamp, asyncio.ensure_future(_reload(stamp)))
         _inflight = inflight
         inflight[1].add_done_callback(_done(inflight))
-    # shield: cancelar ESTE turno no cancela la recarga de los demás (y, si
-    # la recarga falla después, asyncio loguea una línea ERROR: opción a).
-    return await asyncio.shield(inflight[1])
+    # Cancelar ESTE turno no cancela la recarga de los demás. Si esa recarga
+    # falla después, `_done` deja una sola señal ERROR visible.
+    return await _wait_for_inflight(inflight[1])
 
 
 def _cache_clear() -> None:
@@ -255,6 +294,7 @@ def _cache_clear() -> None:
     global _cache, _inflight
     _cache = None
     _inflight = None
+    _cancelled_waiters.clear()
 
 
 # Compatibilidad: quien tenía `validation_context.cache_clear()` lo sigue

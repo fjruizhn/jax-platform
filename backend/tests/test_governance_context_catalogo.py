@@ -321,14 +321,10 @@ def test_timeout_de_recarga_invalido_llega_al_chat_como_SnapshotError_con_su_nom
 
 def test_turnos_cancelados_sobre_una_recarga_que_falla_dejan_UN_error_y_los_demas_la_reciben(
         monkeypatch, caplog):
-    """Opción (a) de la ronda 2, declarada: en Python 3.14 `asyncio.shield`,
-    cuando el turno que espera se cancela, deja en la recarga un callback que
-    loguea ERROR "... exception in shielded future" si la recarga falla. Ese
-    log NO depende de que la excepción esté recuperada (asyncio/tasks.py,
-    _log_on_exception), así que no se puede evitar marcándola; y tampoco se
-    quiere: es una recarga fallida, visible (P10). Lo que se fija: una sola
-    línea por recarga aunque se cancelen varios turnos, y los que siguen
-    esperando reciben la MISMA excepción."""
+    """Una recarga fallida tras cancelar turnos sigue visible (P10), con una
+    sola línea por recarga aunque se cancelen varios turnos. La señal sale del
+    callback común, no de detalles internos variables de `asyncio.shield`; los
+    turnos que siguen esperando reciben la MISMA excepción."""
     arranco = None
 
     async def cae():
