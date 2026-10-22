@@ -214,7 +214,7 @@ async def list_projects(
             )
             if not proof_valid:
                 query += (
-                    " AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
+                    " AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
                     "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
                     "AND pg.status='ACTIVE')"
                 )

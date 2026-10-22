@@ -203,7 +203,7 @@ def test_project_list_never_uses_hidden_lookahead_as_a_cursor(client):
     }
 
 
-def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
+def test_list_prefilter_keeps_project_admin_rows_without_mfa_once(client):
     async def scenario():
         user_id, _ = await crear_usuario()
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
@@ -218,7 +218,7 @@ def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
 
     user_id, (admin_a, admin_b, collaborator_c) = client.portal.call(scenario)
     page = client.get("/api/virtual-office/projects?limit=3", headers=_headers(user_id)).json()
-    assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [collaborator_c]
+    assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [admin_a, admin_b, collaborator_c]
     assert page["next_after_id"] is None
 
 
@@ -245,19 +245,56 @@ def test_list_fails_closed_for_global_admin_or_missing_mfa_runtime_config(client
     collaborator, tv, mv, proof, general_admin, admin_proof, projects = client.portal.call(scenario)
     monkeypatch.setattr(projects_api, "load_mfa_config_from_environment", lambda: None)
     # The durable proof alone is not candidate eligibility if the canonical
-    # resolver cannot receive its runtime configuration.  A/B stay hidden;
-    # ordinary C remains available without a resolver mismatch.
+    # resolver cannot receive its runtime configuration.  The ordinary
+    # project-admin A and collaborator C remain available; professional B is
+    # still excluded without a verified proof.
     collaborator_response = client.get(
         "/api/virtual-office/projects?limit=3",
         headers=_proof_headers(collaborator, tv, mv, proof, str(uuid.uuid4())),
     )
     assert collaborator_response.status_code == 200
-    assert [row["id"] for row in collaborator_response.json()["projects"] if row["id"] in projects] == [projects[2]]
+    assert [row["id"] for row in collaborator_response.json()["projects"] if row["id"] in projects] == [projects[0], projects[2]]
     # GENERAL_ADMIN is privileged for all views.  With no proof it returns the
     # same opaque empty page regardless of a cursor at a real scope boundary.
     for headers in (_headers(general_admin), _proof_headers(general_admin, 0, 0, admin_proof, str(uuid.uuid4()))):
         assert client.get("/api/virtual-office/projects", headers=headers).json() == {"projects": [], "next_after_id": None}
         assert client.get(f"/api/virtual-office/projects?after_id={projects[1]}", headers=headers).json() == {"projects": [], "next_after_id": None}
+
+
+def test_project_admin_lists_and_views_own_project_without_mfa(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+
+    async def scenario():
+        user_id, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,description,status) VALUES (UUID(),%s,%s,'active')",
+            ("project-admin-no-mfa-" + uuid.uuid4().hex, "admin detail"),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,),
+        )
+        await sql(
+            "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), project_id, user_id),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+            (project_id, user_id, user_id),
+        )
+        return user_id, project_id
+
+    user_id, project_id = client.portal.call(scenario)
+    headers = _headers(user_id)
+    listed = client.get("/api/virtual-office/projects", headers=headers)
+    assert listed.status_code == 200
+    assert project_id in [project["id"] for project in listed.json()["projects"]]
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["id"] == project_id
 
 def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(client, monkeypatch):
     import api.virtual_office.projects as projects_api
