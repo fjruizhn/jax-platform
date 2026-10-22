@@ -198,7 +198,7 @@ def _write_file(path: Path, contents: bytes, *, mode: int, uid: int, gid: int) -
     except BaseException:
         try:
             os.unlink(temporary)
-        except FileNotFoundError:
+        except FileNotFoundError:  # fail-soft: the temporary file may not exist if creation failed
             pass
         raise
 
@@ -244,7 +244,7 @@ def restore(paths: dict[str, Path], backup: Path) -> None:
             if record.get("absent") is True:
                 try:
                     path.unlink()
-                except FileNotFoundError:
+                except FileNotFoundError:  # fail-soft: an ABSENT snapshot is already restored
                     pass
                 continue
             if set(record) != {"absent", "mode", "uid", "gid"} or record["absent"] is not False:
