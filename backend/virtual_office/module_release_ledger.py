@@ -234,6 +234,22 @@ async def assert_module_candidate_storage_metadata(
         rows = await cur.fetchall()
         if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
             raise RuntimeError(f"Office module candidate index {table}.{index} is invalid")
+    await cur.execute(
+        "SELECT TABLE_NAME,INDEX_NAME,NON_UNIQUE,COLUMN_NAME "
+        "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN ('office_module_candidate','office_module_candidate_revision','office_module_candidate_evidence') "
+        "ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX"
+    )
+    found_index_rows = await cur.fetchall()
+    found_indexes: dict[tuple[str, str], tuple[bool, tuple[str, ...]]] = {}
+    for table, index, non_unique, column in found_index_rows:
+        key = (str(table), str(index))
+        unique, columns = found_indexes.get(key, (not bool(non_unique), ()))
+        if unique != (not bool(non_unique)):
+            raise RuntimeError("Office module candidate index set is invalid")
+        found_indexes[key] = (unique, (*columns, str(column)))
+    if found_indexes != expected_indexes:
+        raise RuntimeError("Office module candidate index set is invalid")
     await cur.execute("SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME LIKE 'office_module_candidate%' AND tc.CONSTRAINT_TYPE='CHECK'")
     rows = await cur.fetchall()
     expected_check_tables = {
