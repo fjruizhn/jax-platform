@@ -446,8 +446,8 @@ def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v9-")
-        predecessor = SCHEMA_REVISION.replace("office-runtime-v9-", "office-runtime-v8-", 1)
+        assert SCHEMA_REVISION.startswith("office-runtime-v10-")
+        predecessor = SCHEMA_REVISION.replace("office-runtime-v10-", "office-runtime-v9-", 1)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)

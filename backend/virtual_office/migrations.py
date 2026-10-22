@@ -21,11 +21,11 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v9 binds readiness to the invitation expiry, causal-evidence and mutation-
-# receipt contracts added after v8.  Keep the ACL manifest digest as part of
-# the stamp too: either the schema contract or the runtime privilege contract
-# changing requires the platform migrator to restamp before web readiness.
-RUNTIME_REVISION = f"office-runtime-v9-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v10 additionally binds readiness to the project-scoped live-invitation
+# keyset index.  Keep the ACL manifest digest as part of the stamp too:
+# either the schema contract or the runtime privilege contract changing
+# requires the platform migrator to restamp before web readiness.
+RUNTIME_REVISION = f"office-runtime-v10-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -90,7 +90,7 @@ OFFICE_INVITATION_DDL = (
     "pending_email VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status='ISSUED' THEN email_normalized ELSE NULL END) STORED,"
     "accepted_user_id INT NULL,accepted_at DATETIME(6) NULL,revoked_by_user_id INT NULL,revoked_at DATETIME(6) NULL,"
     "UNIQUE KEY uq_office_invitation_issuance (issuance_id),UNIQUE KEY uq_office_invitation_pending_subject (project_id,pending_email),"
-    "KEY idx_office_invitation_expiry (status,issuance_id,invitation_id),KEY idx_office_invitation_status_expiry (status,expires_at,invitation_id),"
+    "KEY idx_office_invitation_expiry (status,issuance_id,invitation_id),KEY idx_office_invitation_status_expiry (status,expires_at,invitation_id),KEY idx_office_invitation_project_live (project_id,status,expires_at,invitation_id),"
     "CONSTRAINT fk_office_invitation_issuance FOREIGN KEY (issuance_id) REFERENCES office_invitation_issuance(issuance_id),"
     "CONSTRAINT fk_office_invitation_project FOREIGN KEY (project_id) REFERENCES projects(id),"
     "CONSTRAINT fk_office_invitation_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id),"
@@ -528,6 +528,7 @@ _INVITATION_INDEXES = {
         "uq_office_invitation_pending_subject": (("project_id", "pending_email"), True),
         "idx_office_invitation_expiry": (("status", "issuance_id", "invitation_id"), False),
         "idx_office_invitation_status_expiry": (("status", "expires_at", "invitation_id"), False),
+        "idx_office_invitation_project_live": (("project_id", "status", "expires_at", "invitation_id"), False),
         "fk_office_invitation_target": (("target_user_id",), False),
         "fk_office_invitation_issuance_binding": (("issuance_id", "project_id", "email_normalized", "target_user_id"), False),
         "fk_office_invitation_accepted_user": (("accepted_user_id",), False),
@@ -906,6 +907,11 @@ async def _upgrade_invitation_expiry_materialization(cur) -> None:
     await cur.execute("ALTER TABLE office_invitation MODIFY COLUMN expires_at DATETIME(6) NOT NULL")
     if not await _index_exists(cur, "office_invitation", "idx_office_invitation_status_expiry"):
         await cur.execute("ALTER TABLE office_invitation ADD KEY idx_office_invitation_status_expiry (status,expires_at,invitation_id)")
+    if not await _index_exists(cur, "office_invitation", "idx_office_invitation_project_live"):
+        await cur.execute(
+            "ALTER TABLE office_invitation ADD KEY "
+            "idx_office_invitation_project_live (project_id,status,expires_at,invitation_id)"
+        )
 
 
 async def _upgrade_invitation_outbox_stale_index(cur) -> None:

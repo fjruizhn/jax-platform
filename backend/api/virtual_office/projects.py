@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
+from pymysql.err import OperationalError
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
@@ -9,6 +10,7 @@ from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
+from virtual_office.invitations import InvitationError, can_manage_invitations_in_cursor
 from virtual_office.mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_verified_in_cursor
 from virtual_office.namespace_adapter import (
     OfficeNamespaceAuthorizationDenied,
@@ -308,11 +310,22 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         # oracle.  A caller with a live Office identity sees a generic deny;
         # unprovisioned callers are handled by the middleware/profile paths.
         raise HTTPException(status_code=403, detail="office_project_access_denied")
+    try:
+        manage_invitations = await can_manage_invitations_in_cursor(
+            cur, actor_user_id=actor_user_id, project_id=project_id,
+            proof_event_id=proof_event_id, mfa_config=mfa_config,
+        )
+    except InvitationError as error:
+        # A normal authorization/MFA denial has already become ``False`` in
+        # the helper.  Any remaining domain error is incomplete operational
+        # state, never a capability that the browser may safely infer.
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
     return {
         "id": int(row[0]), "name": row[1],
         "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],
         "tenant_id": int(row[3]), "scope_version": int(row[4]),
         "audience": decision.audience or "INTERNAL",
+        "capabilities": {"manage_invitations": manage_invitations},
     }
 
 
@@ -322,12 +335,15 @@ async def get_project(project_id: int, user: AuthUser = Depends(get_current_user
         actor_user_id = int(user.user_id)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=403, detail="office_project_access_denied") from error
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        return await _project_detail_in_cursor(
-            cur, actor_user_id=actor_user_id, project_id=project_id,
-            proof_event_id=user.mfa_proof_event_id,
-            mfa_config=load_mfa_config_from_environment(),
-        )
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            return await _project_detail_in_cursor(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id,
+                mfa_config=load_mfa_config_from_environment(),
+            )
+    except OperationalError as error:
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
 
 
 @router.put("/{project_id}")

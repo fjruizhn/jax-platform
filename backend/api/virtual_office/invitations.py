@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from pymysql.err import OperationalError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,7 +24,7 @@ from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.invitation_config import load_invitation_config_from_environment
 from virtual_office.invitations import (
     InvitationError, accept_invitation_in_cursor, invitation_bearer_preflight, issue_invitation_in_cursor,
-    revoke_invitation_in_cursor,
+    list_active_invitations_in_cursor, revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import load_mfa_config_from_environment
 
@@ -134,6 +134,40 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
     return {"id": invitation.invitation_id, "invitation_id": invitation.invitation_id,
             "version": invitation.version, "expires_at": invitation.expires_at.isoformat(),
             "replayed": invitation.replayed}
+
+
+@router.get("/projects/{project_id}/invitations")
+async def list_invitations(project_id: int, response: Response,
+                           limit: int = Query(default=25, ge=1, le=100),
+                           cursor: str | None = Query(default=None, max_length=512),
+                           user: AuthUser = Depends(get_current_user)):
+    """Return only unexpired issued invitations after the issuer gate."""
+    actor = _actor_id(user)
+    mfa_config = load_mfa_config_from_environment()
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitations, next_cursor = await list_active_invitations_in_cursor(
+                cur, actor_user_id=actor, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id, mfa_config=mfa_config,
+                limit=limit, cursor=cursor,
+            )
+    except InvitationError as error:
+        _raise(error)
+    except OperationalError as error:
+        # Listing is unavailable when durable authority or its confidential
+        # rows cannot be read.  Do not turn a database failure into ``[]``.
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
+    return {
+        "invitations": [
+            {"id": invitation.invitation_id, "email": invitation.email,
+             "audience": invitation.audience, "status": invitation.status,
+             "version": invitation.version, "expires_at": invitation.expires_at.isoformat()}
+            for invitation in invitations
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 @router.delete("/projects/{project_id}/invitations/{invitation_id}")

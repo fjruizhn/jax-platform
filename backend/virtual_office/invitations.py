@@ -7,6 +7,8 @@ bearer is hashed immediately and never enters SQL, an exception, or a log.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import datetime as dt
 import html
 import hashlib
@@ -77,6 +79,65 @@ class IssuedInvitation:
     expires_at: dt.datetime
     version: int = 1
     replayed: bool = False
+
+
+@dataclass(frozen=True)
+class ListedInvitation:
+    invitation_id: str
+    email: str
+    audience: str
+    status: str
+    version: int
+    expires_at: dt.datetime
+
+
+_LIST_CURSOR_DOMAIN = "office-invitation-list/v1"
+_LIST_CURSOR_MAX = 512
+
+
+def encode_invitation_list_cursor(*, project_id: int, expires_at: dt.datetime,
+                                  invitation_id: str) -> str:
+    """Encode a position only; authorization is always re-resolved from DB."""
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
+    payload = {
+        "domain": _LIST_CURSOR_DOMAIN,
+        "expires_at": expires_at.astimezone(dt.timezone.utc).isoformat(),
+        "invitation_id": invitation_id,
+        "project_id": project_id,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_invitation_list_cursor(cursor: str, *, project_id: int) -> tuple[dt.datetime, str]:
+    """Fail closed on malformed or cross-project positions.
+
+    The cursor is intentionally unsigned: changing it can only change a
+    bounded position inside the same project/filter, after the database
+    authority gate has succeeded.  It is never an authority credential.
+    """
+    if not isinstance(cursor, str) or not cursor or len(cursor) > _LIST_CURSOR_MAX:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422)
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        value = json.loads(raw.decode("ascii"))
+    except (ValueError, binascii.Error, UnicodeDecodeError) as error:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422) from error
+    if not isinstance(value, dict) or set(value) != {
+        "domain", "expires_at", "invitation_id", "project_id"
+    } or value["domain"] != _LIST_CURSOR_DOMAIN or value["project_id"] != project_id:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422)
+    invitation_id = value["invitation_id"]
+    if not isinstance(invitation_id, str) or len(invitation_id) != 36:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422)
+    try:
+        expires_at = dt.datetime.fromisoformat(value["expires_at"])
+    except (TypeError, ValueError) as error:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422) from error
+    if expires_at.tzinfo is None:
+        raise InvitationError("office_invitation_cursor_invalid", status_code=422)
+    return expires_at.astimezone(dt.timezone.utc), invitation_id
 
 
 def _normalize_email(value: str) -> str:
@@ -236,6 +297,86 @@ async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
     if basis is None:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     return decision, proof, int(basis[0]), int(basis[1])
+
+
+async def can_manage_invitations_in_cursor(cur, *, actor_user_id: int,
+                                           project_id: int, proof_event_id: int | None,
+                                           mfa_config: MFAConfig | None) -> bool:
+    """Return the exact issue/revoke capability without exposing a grant.
+
+    Expected authority and MFA denials become ``False`` for the project
+    detail capability.  Configuration failure remains operational failure;
+    callers must not present a false capability when the system could not
+    evaluate it.
+    """
+    if mfa_config is None:
+        raise InvitationError("office_invitation_unavailable", status_code=503)
+    if type(proof_event_id) is not int or proof_event_id < 1:
+        return False
+    try:
+        await _issuer_snapshot(
+            cur, actor_user_id=actor_user_id, project_id=project_id,
+            proof_event_id=proof_event_id, mfa_config=mfa_config,
+        )
+    except InvitationError as error:
+        if error.status_code == 403:
+            return False
+        raise
+    return True
+
+
+async def list_active_invitations_in_cursor(
+    cur, *, actor_user_id: int, project_id: int, proof_event_id: int | None,
+    mfa_config: MFAConfig | None, limit: int, cursor: str | None,
+) -> tuple[list[ListedInvitation], str | None]:
+    """List a project administrator's live invitations by an indexed keyset.
+
+    The issuer snapshot runs before any invitation/e-mail query.  Every
+    continuation is scoped to the project and repeats this gate.
+    """
+    if mfa_config is None:
+        raise InvitationError("office_invitation_unavailable", status_code=503)
+    if type(actor_user_id) is not int or type(project_id) is not int:
+        raise InvitationError("office_invitation_invalid", status_code=422)
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise InvitationError("office_invitation_invalid", status_code=422)
+    await _issuer_snapshot(
+        cur, actor_user_id=actor_user_id, project_id=project_id,
+        proof_event_id=proof_event_id, mfa_config=mfa_config,
+    )
+    predicate = ""
+    params: tuple[object, ...] = (project_id,)
+    if cursor is not None:
+        expires_at, invitation_id = decode_invitation_list_cursor(cursor, project_id=project_id)
+        # MariaDB datetime parameters are naive UTC values; keep the position
+        # identical to the stored UTC timestamp used for the tie-break range.
+        predicate = (" AND (i.expires_at > %s OR "
+                     "(i.expires_at = %s AND i.invitation_id > %s))")
+        naive_expiry = expires_at.replace(tzinfo=None)
+        params += (naive_expiry, naive_expiry, invitation_id)
+    await cur.execute(
+        "SELECT i.invitation_id,i.email_normalized,s.audience,i.status,i.version,i.expires_at "
+        "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+        "WHERE i.project_id=%s AND i.status='ISSUED' AND i.expires_at>UTC_TIMESTAMP(6)"
+        + predicate + " ORDER BY i.expires_at ASC,i.invitation_id ASC LIMIT %s",
+        (*params, limit + 1),
+    )
+    rows = await cur.fetchall()
+    page = rows[:limit]
+    result = [ListedInvitation(
+        invitation_id=str(row[0]), email=str(row[1]), audience=str(row[2]),
+        status=str(row[3]), version=int(row[4]),
+        expires_at=row[5].replace(tzinfo=dt.timezone.utc)
+        if row[5].tzinfo is None else row[5].astimezone(dt.timezone.utc),
+    ) for row in page]
+    next_cursor = None
+    if len(rows) > limit and result:
+        last = result[-1]
+        next_cursor = encode_invitation_list_cursor(
+            project_id=project_id, expires_at=last.expires_at,
+            invitation_id=last.invitation_id,
+        )
+    return result, next_cursor
 
 
 async def issue_invitation_in_cursor(
