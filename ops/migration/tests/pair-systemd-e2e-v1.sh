@@ -48,14 +48,6 @@ printf 'JAX_DB_HOST=127.0.0.1\n' >/etc/jax/migrate.env
 chown root:root /etc/jax/runtime.env /etc/jax/migrate.env
 chmod 0600 /etc/jax/runtime.env /etc/jax/migrate.env
 install -d -o jaxmigrate -g jaxmigrate -m 0700 /var/lib/jax-pair-e2e
-install -d -o root -g root -m 0755 /etc/systemd/system/jax-platform.service.d
-# Keep the production ExecStart and LoadCredential=%d wiring intact.  The
-# post-start probe only makes Type=simple wait for uvicorn to bind before the
-# activation program performs its own canonical health request.
-cat >/etc/systemd/system/jax-platform.service.d/e2e.conf <<'EOF'
-[Service]
-ExecStartPost=/bin/sh -c 'for n in $$(seq 1 40); do /usr/bin/curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null && exit 0; sleep .25; done; exit 1'
-EOF
 
 build_release() {
   local name=$1 platform=$2 jax=$3 previous_platform=$4 previous_jax=$5
