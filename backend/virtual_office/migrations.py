@@ -1936,10 +1936,11 @@ async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body:
             rows[0][4], rows[0][5],
         ) != expected:
             raise RuntimeError("Office bootstrap state foreign keys are invalid")
+    check_placeholders = ",".join("%s" for _ in _BOOTSTRAP_CHECKS)
     await cur.execute(
         "SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS "
-        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN "
-        "('chk_office_bootstrap_identity','chk_office_bootstrap_basis')"
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME IN (" + check_placeholders + ")",
+        tuple(_BOOTSTRAP_CHECKS),
     )
     checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
     if checks != {name: _normalize_mariadb_check(clause) for name, clause in _BOOTSTRAP_CHECKS.items()}:
