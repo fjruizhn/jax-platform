@@ -19,7 +19,7 @@ from crypto_secrets import clave_de_cifrado_utilizable, decrypt_db_secret, encry
 from validacion import direccion_unica_valida
 
 from .audit import record_authorization_event
-from .authority import authorize_office_in_cursor
+from .authority import authorize_invitation_issuer_in_cursor, authorize_office_in_cursor
 from .capabilities import OfficeOperation
 from .invitation_config import InvitationConfig
 from .membership_receipts import invitation_acceptance_digest, write_invitation_acceptance_receipt
@@ -393,7 +393,7 @@ class _InvitationAcceptanceAuthorizer:
     """Trusted JXP proof resolver used only by JAX's typed capability call."""
     def __init__(self, *, invitation_id: str, issuer_user_id: int, target_user_id: int,
                  target_tenant_id: int, project_id: int, mfa_version: int,
-                 proof_event_id: int, mfa_config: MFAConfig):
+                 proof_event_id: int):
         self.invitation_id = invitation_id
         self.issuer_user_id = issuer_user_id
         self.target_user_id = target_user_id
@@ -401,7 +401,6 @@ class _InvitationAcceptanceAuthorizer:
         self.project_id = project_id
         self.mfa_version = mfa_version
         self.proof_event_id = proof_event_id
-        self.mfa_config = mfa_config
         self.authorization_event_id: int | None = None
 
     async def authorize_membership_in_transaction(self, cursor, *, actor_user_id: int,
@@ -423,10 +422,9 @@ class _InvitationAcceptanceAuthorizer:
         issuer = await cursor.fetchone()
         if issuer is None or int(issuer[0]) != self.mfa_version or issuer[1] != "ACTIVE":
             raise AuthorizationDenied("Office invitation issuer proof is no longer current")
-        decision = await authorize_office_in_cursor(
-            cursor, self.issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, self.project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self.proof_event_id, mfa_config=self.mfa_config,
-        )
+        decision = await authorize_invitation_issuer_in_cursor(
+            cursor, issuer_user_id=self.issuer_user_id, project_id=self.project_id,
+            proof_event_id=self.proof_event_id)
         if not decision.allowed:
             raise AuthorizationDenied("Office invitation issuer authority is no longer current")
         self.authorization_event_id = await record_authorization_event(cursor, decision)
@@ -447,6 +445,25 @@ async def _expire_if_needed(cur, *, invitation_id: str, status: str, version: in
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     return True
+
+
+async def invitation_bearer_preflight(bearer_token: str) -> bool:
+    """Cheap, non-disclosing SHA-256 check performed before bcrypt.
+
+    The transaction still rereads the same digest under lock before consuming
+    anything.  This only prevents arbitrary network input from buying bcrypt
+    work when it cannot name an issued invitation.
+    """
+    token_hash = _token_hash(bearer_token)
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s "
+                "ON s.issuance_id=i.issuance_id WHERE s.token_hash=%s AND i.status='ISSUED' LIMIT 1",
+                (token_hash,))
+            return await cur.fetchone() is not None
 
 
 async def accept_invitation_in_cursor(
@@ -558,13 +575,10 @@ async def accept_invitation_in_cursor(
     from jax.memory.project_authority import (NamespacedMemberKind, NamespaceMembershipExecution,
                                               NamespaceMembershipExecutionKind, ProjectAuthorityAdmin,
                                               ProjectNamespace)
-    acceptance_mfa_config = load_mfa_config_from_environment()
-    if acceptance_mfa_config is None:
-        raise InvitationError("office_invitation_unavailable", status_code=503)
     authorizer = _InvitationAcceptanceAuthorizer(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
         target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version),
-        proof_event_id=int(proof_event_id), mfa_config=acceptance_mfa_config)
+        proof_event_id=int(proof_event_id))
     result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
         cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
         target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
@@ -640,18 +654,26 @@ def _decode_outbox_payload(ciphertext: bytes | str) -> tuple[str, str, str]:
 async def claim_next_invitation_delivery_in_cursor(cur) -> ClaimedInvitationDelivery | None:
     """Fence one queued mail before any worker touches SMTP."""
     await cur.execute(
-        "SELECT outbox_id,invitation_id,payload_ciphertext FROM office_invitation_outbox "
-        "WHERE state='QUEUED' ORDER BY created_at,outbox_id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        "SELECT invitation_id FROM office_invitation_outbox WHERE state='QUEUED' "
+        "ORDER BY created_at,outbox_id LIMIT 1")
     row = await cur.fetchone()
     if row is None:
         return None
-    outbox_id, invitation_id, ciphertext = row
+    invitation_id = row[0]
     await cur.execute(
         "SELECT i.status,i.version,s.expires_at,s.correlation_id FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
         "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
     invitation = await cur.fetchone()
     if invitation is None or invitation[0] != "ISSUED":
         raise InvitationError("office_invitation_integrity", status_code=503)
+    # Every invitation path locks the lifecycle first and its outbox second.
+    await cur.execute(
+        "SELECT outbox_id,payload_ciphertext FROM office_invitation_outbox "
+        "WHERE invitation_id=%s AND state='QUEUED' FOR UPDATE", (invitation_id,))
+    outbox = await cur.fetchone()
+    if outbox is None:
+        return None
+    outbox_id, ciphertext = outbox
     now = await _db_now(cur)
     expiry = invitation[2].replace(tzinfo=dt.timezone.utc) if invitation[2].tzinfo is None else invitation[2].astimezone(dt.timezone.utc)
     if now > expiry:
@@ -688,6 +710,13 @@ async def finalize_invitation_delivery_in_cursor(
     message_id: str | None = None, result_code: str | None = None,
 ) -> bool:
     """Persist the only two post-claim truths: accepted relay or UNKNOWN."""
+    await cur.execute("SELECT invitation_id FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
+    candidate = await cur.fetchone()
+    if candidate is None:
+        return False
+    await cur.execute("SELECT invitation_id FROM office_invitation WHERE invitation_id=%s FOR UPDATE", (candidate[0],))
+    if await cur.fetchone() is None:
+        raise InvitationError("office_invitation_integrity", status_code=503)
     await cur.execute(
         "SELECT invitation_id,state,attempt_id,cancel_requested FROM office_invitation_outbox WHERE outbox_id=%s FOR UPDATE",
         (outbox_id,))

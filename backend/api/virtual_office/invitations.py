@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -16,11 +16,12 @@ from auth.jwt import decode_token
 from auth.middleware import get_current_user, verificar_sesion
 from auth.models import AuthUser
 from auth.password_rules import problema_de_password
+from auth import rate_limit
 from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.invitation_config import load_invitation_config_from_environment
 from virtual_office.invitations import (
-    InvitationError, accept_invitation_in_cursor, issue_invitation_in_cursor,
+    InvitationError, accept_invitation_in_cursor, invitation_bearer_preflight, issue_invitation_in_cursor,
     revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import load_mfa_config_from_environment
@@ -121,9 +122,14 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
 
 @router.post("/invitations/accept")
 async def accept_invitation(payload: InvitationAcceptRequest,
-                            user: AuthUser | None = Depends(_optional_current_user)):
+                            request: Request, user: AuthUser | None = Depends(_optional_current_user)):
     password_hash: str | None = None
     if user is None:
+        # Bound CPU before the untrusted password reaches bcrypt.  The bearer
+        # itself is opaque and is only used as a rate key, never returned.
+        rate_limit.check_login_rate(request, payload.token)
+        if not await invitation_bearer_preflight(payload.token):
+            raise HTTPException(status_code=403, detail="office_invitation_invalid")
         if payload.password is None:
             raise HTTPException(status_code=422, detail="office_invitation_password_required")
         problem = problema_de_password(payload.password)

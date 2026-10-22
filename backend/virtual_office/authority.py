@@ -57,6 +57,30 @@ async def authorize_office_in_cursor(cur, actor_user_id: int, operation: OfficeO
     return await _apply_mfa_requirement(cur, decision, require_recent_mfa, mfa_proof_event_id, mfa_config)
 
 
+async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
+                                                 project_id: int, proof_event_id: int) -> OfficeDecision:
+    """Revalidate an issuance proof for delegated acceptance without its age.
+
+    This narrow resolver is intentionally separate from the general MFA
+    switch: only the immutable invitation proof may be older than the normal
+    interactive recency window, and its user token/MFA versions plus present
+    Office authority are still reread under the caller transaction locks.
+    """
+    _validate(issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id, None)
+    decision = await _authorize(cur, issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS,
+                                project_id, None, False, True)
+    if not decision.allowed:
+        return decision
+    proof = await reload_current_self_mfa_verified_in_cursor(
+        cur, actor_user_id=issuer_user_id, proof_event_id=proof_event_id)
+    if isinstance(proof, MFADenied):
+        return _decision(False, "office_invitation_issuer_proof_invalid", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
+    return decision
+
+
 async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_mfa: bool,
                                  proof_event_id: int | None, config: MFAConfig | None) -> OfficeDecision:
     """Apply the role-derived MFA rule after canonical grants are resolved.
