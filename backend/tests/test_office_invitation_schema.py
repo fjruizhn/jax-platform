@@ -148,23 +148,25 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                     )
                     async with runtime.acquire() as runtime_conn:
                         async with runtime_conn.cursor() as runtime_cur:
-                            with pytest.raises(aiomysql.OperationalError, match='outbox claim denied'):
+                            with pytest.raises(aiomysql.OperationalError, match='outbox (identity|claim) denied'):
                                 await runtime_cur.execute("UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='fake',result_code='fake',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (outbox,))
-                            with pytest.raises(aiomysql.OperationalError, match='outbox claim denied'):
+                            with pytest.raises(aiomysql.OperationalError, match='outbox (identity|claim) denied'):
                                 await runtime_cur.execute("UPDATE office_invitation_outbox SET payload_ciphertext=X'02' WHERE outbox_id=%s", (outbox,))
-                            await runtime_cur.execute("UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (attempt, outbox))
-                            with pytest.raises(aiomysql.OperationalError, match='outbox terminal denied'):
+                            await runtime_cur.execute("UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (attempt, outbox))
+                            with pytest.raises(aiomysql.OperationalError, match='outbox (identity|terminal) denied'):
                                 await runtime_cur.execute("UPDATE office_invitation_outbox SET state='UNKNOWN',attempt_id=%s,payload_ciphertext=NULL,result_code='uncertain',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (str(uuid.uuid4()), outbox))
-                            await runtime_cur.execute("UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='smtp-message',result_code='250',finished_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (outbox,))
-                            with pytest.raises(aiomysql.OperationalError, match='terminal immutable'):
+                            await runtime_cur.execute("UPDATE office_invitation_outbox SET state='SMTP_ACCEPTED',payload_ciphertext=NULL,message_id='smtp-message',result_code='250',finished_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) WHERE outbox_id=%s", (outbox,))
+                            with pytest.raises(aiomysql.OperationalError, match='(identity denied|terminal immutable)'):
                                 await runtime_cur.execute("UPDATE office_invitation_outbox SET result_code='changed' WHERE outbox_id=%s", (outbox,))
                             with pytest.raises(aiomysql.OperationalError, match='acceptance evidence missing'):
                                 await runtime_cur.execute("UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s", (issuer, invitation))
                             with pytest.raises(aiomysql.OperationalError, match='bearer evidence denied'):
                                 await runtime_cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',UNHEX(REPEAT('00',32)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation,))
-                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,correlation_id,occurred_at) VALUES (%s,'ISSUED',%s,UNHEX(REPEAT('03',16)),UTC_TIMESTAMP(6))", (invitation, issuer))
-                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',UNHEX(SHA2(%s,256)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, issuance))
-                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,'SMTP_ACCEPTED',UNHEX(REPEAT('02',16)),UTC_TIMESTAMP(6))", (invitation, issuer))
+                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,correlation_id,occurred_at) VALUES (%s,'ISSUED',%s,UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))", (invitation, issuer))
+                    issued_event = cur.lastrowid
+                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, issued_event, issuance))
+                    bearer_event = cur.lastrowid
+                    await cur.execute("INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,observed_outbox_state,correlation_id,occurred_at) VALUES (%s,'ACCEPTED',%s,%s,'SMTP_ACCEPTED',UNHEX(REPEAT('01',16)),UTC_TIMESTAMP(6))", (invitation, bearer_event, issuer))
                     async with runtime.acquire() as runtime_conn:
                         async with runtime_conn.cursor() as runtime_cur:
                             await runtime_cur.execute("UPDATE office_invitation SET status='ACCEPTED',version=2,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s", (issuer, invitation))
