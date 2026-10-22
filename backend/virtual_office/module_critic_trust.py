@@ -351,7 +351,7 @@ async def resolve_trusted_critic_key(cur, key_id: str) -> TrustedCriticKey | Non
             (key_id,),
         )
         rows = await cur.fetchall()
-    except Exception:
+    except Exception:  # fail-soft: an unavailable lookup yields no trusted key; callers reject it
         return None
     if len(rows) != 1:
         return None
