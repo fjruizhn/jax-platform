@@ -49,7 +49,9 @@ def test_effective_worker_gate_loads_its_root_owned_environment():
     assert "--property=WorkingDirectory=/opt/axioma-office-invitation-worker/backend" in artifact_readiness
     assert "--property=EnvironmentFile=/etc/jax/invitation-worker.env" in artifact_readiness
     runbook = (ROOT / "docs" / "runbooks" / "invitation-delivery-worker.md").read_text(encoding="utf-8")
-    assert "systemctl disable --now axioma-office-invitation-worker.timer" in runbook
+    assert "axioma-office-invitation-worker-enable --source" in runbook
+    activation = (ROOT / "ops" / "virtualoffice" / "enable-invitation-worker-timer.sh").read_text(encoding="utf-8")
+    assert '"$SYSTEMCTL" disable --now axioma-office-invitation-worker.timer' in activation
 
 
 def test_routine_installer_requires_fixed_sql_and_installed_attestor():

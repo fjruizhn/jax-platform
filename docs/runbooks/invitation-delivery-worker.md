@@ -47,6 +47,7 @@ install_from_audited_commit ops/virtualoffice/install-invitation-delivery-routin
 install_from_audited_commit ops/virtualoffice/attest-invitation-delivery-routines.sh /usr/local/libexec/axioma-office-invitation-delivery-attest 0750
 install_from_audited_commit ops/virtualoffice/office-invitation-delivery-v1.sql /usr/local/share/axioma-office-invitation-delivery-v1.sql 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
+install_from_audited_commit ops/virtualoffice/enable-invitation-worker-timer.sh /usr/local/libexec/axioma-office-invitation-worker-enable 0750
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
 sudo /usr/local/libexec/axioma-office-invitation-delivery-install --db "$JAX_DB_NAME" --admin-transport /usr/local/libexec/axioma-mariadb-admin --worker-host "$JAX_DB_GRANTEE_HOST" --sql-file /usr/local/share/axioma-office-invitation-delivery-v1.sql --attestor /usr/local/libexec/axioma-office-invitation-delivery-attest
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
@@ -70,11 +71,7 @@ systemctl daemon-reload
 /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE"
 systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /usr/local/libexec/axioma-office-invitation-worker-readiness
 systemd-run --wait --pipe --working-directory=/opt/axioma-office-invitation-worker/backend --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_smtp_preflight
-systemctl enable --now axioma-office-invitation-worker.timer
-if ! /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE" --effective; then
-  systemctl disable --now axioma-office-invitation-worker.timer
-  exit 1
-fi
+sudo /usr/local/libexec/axioma-office-invitation-worker-enable --source "$SOURCE"
 ```
 
 El wheelhouse se construye como `jaxbuild` a partir del lock del SHA auditado,
