@@ -12,6 +12,7 @@ cat > "$fixture/bin/validator" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_LOG:?}"
+if [[ ${1:-} == offline && -n ${MUTATE_SOURCE:-} ]]; then printf 'replaced-after-open\n' > "$MUTATE_SOURCE"; fi
 [[ ${1:-} == offline || ${1:-} == smoke ]]
 [[ ${FAIL_SMOKE:-0} != 1 || ${1:-} != smoke ]]
 SH
@@ -29,7 +30,9 @@ printf 'old-vhost\n' > "$fixture/vhosts/office.conf"; ln -s "$fixture/site/relea
 printf 'new-vhost\n' > "$fixture/template.conf"; chown root:root "$fixture/template.conf"; chmod 644 "$fixture/template.conf"
 export FAKE_LOG="$fixture/log"
 args=(--site-root "$fixture/site" --releases-root "$fixture/site/releases" --release "$fixture/site/releases/$new" --vhost-source "$fixture/template.conf" --vhost-path "$fixture/vhosts/office.conf" --backup-root "$fixture/backups" --validator "$fixture/bin/validator" --nginx "$fixture/bin/nginx" --expected-source-sha "$new" --public-ip 127.0.0.1 --expected-index-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --asset-path /assets/a.js --expected-asset-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+export MUTATE_SOURCE="$fixture/template.conf"
 "$fixture/bin/activate" "${args[@]}" >/dev/null
+unset MUTATE_SOURCE
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$new" ]]; grep -qx 'new-vhost' "$fixture/vhosts/office.conf"
 lock_inode=$(stat -c '%d:%i' "$fixture/site/.activation.lock")
 backup=$(find "$fixture/backups" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -58,9 +61,18 @@ first=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name CURRENT_ABSENT -pr
 # curl is deliberately replaced with a no-byte response for this isolated fixture.
 cat > "$fixture/bin/curl" <<'SH'
 #!/usr/bin/env bash
-printf 'previous default host\n'
+out= status=${FAKE_HTTP_STATUS:-200}
+while (($#)); do case $1 in --output) out=$2; shift 2;; *) shift;; esac; done
+[[ -n $out ]] && printf 'previous default host\n' > "$out"
+printf '%s' "$status"
 SH
 chmod 755 "$fixture/bin/curl"
+export FAKE_HTTP_STATUS=500
+if PATH="$fixture/bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo '500 rollback verification unexpectedly passed' >&2; exit 1; fi
+unset FAKE_HTTP_STATUS
+# Recreate the absent state so the accepted closed/default response is also proved.
+"$fixture/bin/activate" "${args[@]}" >/dev/null
+first=$(find "$fixture/backups" -mindepth 2 -maxdepth 2 -name CURRENT_ABSENT -printf '%h\n' | tail -1)
 PATH="$fixture/bin:$PATH" "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$first" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ ! -e $fixture/site/current && ! -e $fixture/vhosts/office.conf ]]
 grep -q 'nginx -t' "$fixture/log"; grep -q 'nginx -s reload' "$fixture/log"

@@ -41,11 +41,29 @@ assert (fd.st_dev,fd.st_ino)==(path.st_dev,path.st_ino)==tuple(map(int,expected.
 PY
 fi
 if (( ! lock_is_held )); then exec "$locker" --lock "$lock" -- "$0" "${original_args[@]}"; fi
-"$validator" offline --config "$source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-user "$nginx_user"
-
 install -d -o root -g root -m 0700 "$backups"
 backup=$(mktemp -d "$backups/office-activation.XXXXXXXX")
 chmod 0700 "$backup"; chown root:root "$backup"
+staged_source="$backup/vhost-source"
+python3 - "$source" "$staged_source" <<'PY' || die 'could not pin trusted vhost source'
+import os,stat,sys
+src,dst=sys.argv[1:]
+fd=os.open(src, os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+try:
+ s=os.fstat(fd)
+ if not stat.S_ISREG(s.st_mode) or s.st_uid != 0 or stat.S_IMODE(s.st_mode)&0o022: raise SystemExit('unsafe vhost source')
+ out=os.open(dst,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+ try:
+  while True:
+   b=os.read(fd,65536)
+   if not b: break
+   os.write(out,b)
+  os.fsync(out)
+ finally: os.close(out)
+finally: os.close(fd)
+PY
+[[ ! -L $staged_source && $(stat -c %u "$staged_source") == 0 ]] || die 'pinned vhost source is unsafe'
+"$validator" offline --config "$staged_source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-user "$nginx_user"
 current="$site/current"
 if [[ -e $vhost || -L $vhost ]]; then cp -a -- "$vhost" "$backup/vhost"; sha256sum "$vhost" | awk '{print $1}' > "$backup/previous-vhost-sha256"; else : > "$backup/VHOST_ABSENT"; fi
 if [[ -e $current || -L $current ]]; then
@@ -63,7 +81,7 @@ restore_on_error() { local code=$?; if ((changed)); then if ! "$rollback" --lock
 trap restore_on_error ERR INT TERM
 
 [[ -d $(dirname -- "$vhost") && $(stat -c %u "$(dirname -- "$vhost")") == 0 ]] || die 'vhost parent must already exist and be root-owned'
-install -o root -g root -m 0644 "$source" "$vhost.new"
+install -o root -g root -m 0644 "$staged_source" "$vhost.new"
 sha256sum "$vhost.new" | awk '{print $1}' > "$backup/new-vhost-sha256"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"

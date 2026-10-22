@@ -46,11 +46,13 @@ if [[ -f $backup/current-target ]]; then target=$(cat "$backup/current-target");
 if [[ -f $backup/CURRENT_ABSENT ]]; then
   # The prior host must no longer return the newly activated bytes.
   body=$(mktemp "$backup/rollback-body.XXXXXXXX")
-  curl --noproxy '*' -k --silent --show-error --max-time 10 --resolve "virtualoffice.axioma-ia.io:443:$ip" https://virtualoffice.axioma-ia.io/ > "$body" || die 'first-deploy rollback HTTP verification failed'
-  [[ -s $body ]] || die 'first-deploy rollback HTTP response was empty'
-  got=$(sha256sum "$body" | awk '{print $1}')
+  status=$(curl --noproxy '*' -k --silent --show-error --max-time 10 --output "$body" --write-out '%{http_code}' --resolve "virtualoffice.axioma-ia.io:443:$ip" https://virtualoffice.axioma-ia.io/ || true)
+  case "$status" in
+    200) [[ -s $body ]] || die 'first-deploy rollback HTTP response was empty'; got=$(sha256sum "$body" | awk '{print $1}'); [[ $got != "$new_index" ]] || die 'first-deploy rollback still serves the activated index' ;;
+    000|400|403|404) : ;; # The old default host closed the Office request.
+    *) die "first-deploy rollback returned unacceptable HTTP status: ${status:-curl-failed}" ;;
+  esac
   rm -f -- "$body"
-  [[ $got != "$new_index" ]] || die 'first-deploy rollback still serves the activated index'
 else
   readarray -t prior < <(python3 - "$backup/previous-manifest.json" <<'PY'
 import json,sys
