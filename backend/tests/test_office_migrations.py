@@ -631,3 +631,43 @@ def test_mfa_v4_check_upgrade_is_atomic_across_real_disconnects(target, timing, 
                 pool.release(cleanup)
 
     client.portal.call(scenario)
+
+
+def test_list_index_attestation_rejects_same_name_prefix_drift(client):
+    """A homonymous prefix index cannot satisfy the bounded 3C1 list contract."""
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                for table, index, malformed in (
+                    (
+                        "office_project_grant",
+                        "idx_office_project_grant_list",
+                        "(user_id,status,audience,project_id,grant_role(1))",
+                    ),
+                    (
+                        "office_external_relation",
+                        "idx_office_external_relation_list",
+                        "(user_id,status,project_id,recipient_group_id)",
+                    ),
+                ):
+                    # The production key also happens to support the user FK;
+                    # preserve that independent FK support while replacing it.
+                    support_index = "test_list_fk_support_" + table
+                    await cur.execute(f"ALTER TABLE {table} ADD KEY {support_index} (user_id)")
+                    await cur.execute(f"ALTER TABLE {table} DROP INDEX {index}")
+                    if table == "office_external_relation":
+                        # Same ordered columns but disabled indexes have the
+                        # same historical name and are unusable to the planner.
+                        await cur.execute(f"ALTER TABLE {table} ADD KEY {index} {malformed}")
+                        await cur.execute(f"ALTER TABLE {table} ALTER INDEX {index} IGNORED")
+                    else:
+                        await cur.execute(f"ALTER TABLE {table} ADD KEY {index} {malformed}")
+                    with pytest.raises(RuntimeError, match="Office project list index is incompatible"):
+                        await apply_office_migrations(cur)
+                    await cur.execute(f"ALTER TABLE {table} DROP INDEX {index}")
+                    await apply_office_migrations(cur)
+                    await cur.execute(f"ALTER TABLE {table} DROP INDEX {support_index}")
+    client.portal.call(scenario)

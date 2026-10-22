@@ -165,13 +165,28 @@ async def _index_exists(cur, table: str, index: str) -> bool:
     return await cur.fetchone() is not None
 
 
-async def _index_columns(cur, table: str, index: str) -> tuple[str, ...]:
+async def _index_has_exact_shape(cur, table: str, index: str, columns: tuple[str, ...], *, unique: bool = False) -> bool:
+    """Attest the complete MariaDB index shape, not merely its name/columns."""
     await cur.execute(
-        "SELECT COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
-        "AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",
+        "SELECT SEQ_IN_INDEX,NON_UNIQUE,SUB_PART,COLLATION,INDEX_TYPE,IGNORED,COLUMN_NAME "
+        "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s "
+        "AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX",
         (table, index),
     )
-    return tuple(row[0] for row in await cur.fetchall())
+    rows = await cur.fetchall()
+    return (
+        len(rows) == len(columns)
+        and tuple(row[0] for row in rows) == tuple(range(1, len(columns) + 1))
+        and all(
+            int(row[1]) == int(not unique)
+            and row[2] is None
+            and row[3] == "A"
+            and row[4] == "BTREE"
+            and row[5] == "NO"
+            for row in rows
+        )
+        and tuple(row[6] for row in rows) == columns
+    )
 
 
 _OFFICE_LIST_INDEXES = {
@@ -191,7 +206,7 @@ async def _ensure_office_list_indexes(cur) -> None:
             await cur.execute(
                 "ALTER TABLE " + table + " ADD KEY " + index + " (" + ",".join(columns) + ")"
             )
-        if await _index_columns(cur, table, index) != columns:
+        if not await _index_has_exact_shape(cur, table, index, columns):
             raise RuntimeError("Office project list index is incompatible")
 
 
@@ -555,7 +570,7 @@ async def apply_office_migrations(cursor) -> None:
     proof_index = "idx_office_mfa_security_event_proof"
     proof_columns = ("subject_user_id", "purpose", "token_version", "mfa_version", "occurred_at", "event_id")
     if ledger_existed and await _index_exists(cursor, "office_mfa_security_event", proof_index):
-        if await _index_columns(cursor, "office_mfa_security_event", proof_index) != proof_columns:
+        if not await _index_has_exact_shape(cursor, "office_mfa_security_event", proof_index, proof_columns):
             await cursor.execute(f"ALTER TABLE office_mfa_security_event DROP INDEX {proof_index}")
             await cursor.execute(
                 "ALTER TABLE office_mfa_security_event ADD KEY "

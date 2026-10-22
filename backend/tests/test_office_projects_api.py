@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 import time
 
@@ -247,54 +248,137 @@ def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(
 
 
 def test_list_queries_use_measured_user_leading_indexes_under_skew(client):
+    """Measure the exact bounded candidate SQL under a 1,200-to-3 ownership skew.
+
+    The user-leading keys are useful only if both the normal and no-proof
+    anti-join branches examine the caller's small range, rather than the
+    unrelated Office population.  ANALYZE FORMAT=JSON executes these SELECTs
+    in the private test schema and exposes actual `r_rows` per table.
+    """
     async def scenario():
         from db.connection import get_pool
+
         internal, _ = await crear_usuario()
         external, _ = await crear_usuario()
+        unrelated, _ = await crear_usuario()
         await sql("UPDATE jax_users SET account_class='EXTERNAL_CLIENT' WHERE user_id=%s", (external,))
-        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (internal, external))
-        first_project = None
-        for ordinal in range(80):
-            project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", (f"office-list-skew-{uuid.uuid4().hex}",))
-            first_project = project_id if first_project is None else first_project
-            await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,))
-            await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project_id, internal))
-            await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s),(%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (project_id, internal, internal, project_id, external, internal))
-            group = await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project_id, internal))
-            await sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (project_id, external, group))
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'COLLABORATOR','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')",
+            (internal, external),
+        )
         pool = await get_pool()
+        prefix = "office-list-skew-" + uuid.uuid4().hex
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                internal_query = (
-                    "EXPLAIN SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM office_project_grant g "
+                # Population which belongs to another user.  It is deliberately
+                # much larger than the subject's three confidential projects.
+                await cur.executemany(
+                    "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                    [(f"{prefix}-{ordinal}",) for ordinal in range(1200)],
+                )
+                await cur.execute("SELECT id FROM projects WHERE name LIKE %s ORDER BY id", (prefix + "-%",))
+                unrelated_projects = [int(row[0]) for row in await cur.fetchall()]
+                assert len(unrelated_projects) == 1200
+                await cur.executemany(
+                    "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+                    "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))",
+                    [(project_id,) for project_id in unrelated_projects],
+                )
+                await cur.executemany(
+                    "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+                    "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+                    [(str(uuid.uuid4()), project_id, unrelated) for project_id in unrelated_projects],
+                )
+                await cur.executemany(
+                    "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+                    "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+                    [(project_id, unrelated, unrelated) for project_id in unrelated_projects],
+                )
+                await cur.executemany(
+                    "INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) "
+                    "VALUES (%s,1,'CLIENT','ACTIVE',%s)",
+                    [(project_id, unrelated) for project_id in unrelated_projects],
+                )
+                await cur.execute(
+                    "SELECT recipient_group_id,project_id FROM office_recipient_group WHERE project_id IN ("
+                    + ",".join(["%s"] * len(unrelated_projects)) + ")",
+                    unrelated_projects,
+                )
+                unrelated_groups = {int(project_id): int(group_id) for group_id, project_id in await cur.fetchall()}
+                await cur.executemany(
+                    "INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')",
+                    [(project_id, unrelated, unrelated_groups[project_id]) for project_id in unrelated_projects],
+                )
+
+                owned = []
+                for role, professional in (("PROJECT_ADMIN", False), ("COLLABORATOR", True), ("COLLABORATOR", False)):
+                    await cur.execute("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')", (prefix + "-owned-" + uuid.uuid4().hex,))
+                    project_id = int(cur.lastrowid)
+                    await cur.execute("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,))
+                    await cur.execute("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project_id, internal))
+                    await cur.execute("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,%s,'INTERNAL','ACTIVE',%s),(%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)", (project_id, internal, role, internal, project_id, external, internal))
+                    await cur.execute("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project_id, internal))
+                    group_id = int(cur.lastrowid)
+                    await cur.execute("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (project_id, external, group_id))
+                    if professional:
+                        await cur.execute("INSERT INTO office_professional_grant (project_id,user_id,capability,basis,evidence_ref,status,granted_by) VALUES (%s,%s,'PROFESSIONAL_ACTION','test','test','ACTIVE',%s)", (project_id, internal, internal))
+                    owned.append(project_id)
+
+                internal_sql = (
+                    "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM office_project_grant g "
                     "STRAIGHT_JOIN projects p ON p.id=g.project_id "
                     "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
                     "STRAIGHT_JOIN jax_project_membership m ON m.project_id=p.id AND m.user_id=%s "
                     "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
                     "AND g.user_id=%s AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
                     "AND g.grant_role IN ('COLLABORATOR','PROJECT_ADMIN') AND m.status='ACTIVE' "
-                    "AND p.id>%s ORDER BY p.id LIMIT %s"
                 )
-                await cur.execute(internal_query, (internal, internal, 1, first_project - 1, 51))
-                internal_plan = await cur.fetchall()
-                external_query = (
-                    "EXPLAIN SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM office_external_relation r FORCE INDEX (idx_office_external_relation_list) "
+                external_sql = (
+                    "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM office_external_relation r FORCE INDEX (idx_office_external_relation_list) "
                     "STRAIGHT_JOIN projects p ON p.id=r.project_id "
                     "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
                     "STRAIGHT_JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
                     "STRAIGHT_JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=p.id "
                     "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
                     "AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' "
-                    "AND r.user_id=%s AND r.status='ACTIVE' AND rg.status='ACTIVE' AND p.id>%s ORDER BY p.id LIMIT %s"
+                    "AND r.user_id=%s AND r.status='ACTIVE' AND rg.status='ACTIVE' "
                 )
-                await cur.execute(external_query, (external, external, first_project - 1, 51))
-                external_plan = await cur.fetchall()
-        return internal_plan, external_plan
 
-    internal_plan, external_plan = client.portal.call(scenario)
-    for plan, index in ((internal_plan, "idx_office_project_grant_list"), (external_plan, "idx_office_external_relation_list")):
-        assert any(row[5] == index for row in plan), [(row[2], row[3], row[5], row[8], row[9]) for row in plan]
-        assert all(row[3] != "ALL" and "filesort" not in (row[9] or "").lower() and "temporary" not in (row[9] or "").lower() for row in plan)
+                async def measure(name, statement, params, index):
+                    await cur.execute("EXPLAIN " + statement, params)
+                    plan = await cur.fetchall()
+                    assert any(row[5] == index for row in plan), (name, [(row[2], row[3], row[5], row[8], row[9]) for row in plan])
+                    assert all(row[3] != "ALL" and "filesort" not in (row[9] or "").lower() and "temporary" not in (row[9] or "").lower() for row in plan)
+                    await cur.execute("ANALYZE FORMAT=JSON " + statement, params)
+                    analyzed = json.loads((await cur.fetchone())[0])
+                    return plan, analyzed
+
+                measurements = {}
+                for branch, base, params, index in (
+                    ("internal", internal_sql, (internal, internal, 1), "idx_office_project_grant_list"),
+                    ("external", external_sql, (external, external), "idx_office_external_relation_list"),
+                ):
+                    for proof in ("valid", "missing"):
+                        predicate = ""
+                        if proof == "missing":
+                            predicate = "AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' AND pg.status='ACTIVE') "
+                        for cursor_name, after in (("first", 0), ("after", owned[0])):
+                            statement = base + predicate + "AND p.id>%s ORDER BY p.id LIMIT %s"
+                            query_params = (*params, *((internal,) if proof == "missing" else ()), after, 51)
+                            measurements[(branch, proof, cursor_name)] = await measure(
+                                branch + ":" + proof + ":" + cursor_name, statement, query_params, index
+                            )
+        return owned, measurements
+
+    owned, measurements = client.portal.call(scenario)
+    # ANALYZE's driving table reports actual examined index records.  In both
+    # cursor positions and proof modes it stays within the three owned rows,
+    # despite 1,200 unrelated confidential projects.
+    for name, (plan, analyzed) in measurements.items():
+        first_table = analyzed["query_block"]["nested_loop"][0]["table"]
+        assert first_table["r_rows"] <= 3, (name, first_table)
+    assert owned == sorted(owned)
 
 
 def test_create_project_jax_first_then_exact_replay_and_one_client_group(client, monkeypatch):
