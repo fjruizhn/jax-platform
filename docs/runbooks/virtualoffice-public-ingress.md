@@ -8,7 +8,7 @@ de JAX Platform y hable con su API usando el mismo origen.
 
 El vhost modelo está en
 [`ops/virtualoffice/virtualoffice.axioma-ia.io.conf`](../../ops/virtualoffice/virtualoffice.axioma-ia.io.conf).
-Sirve un release inmutable bajo `/www/wwwroot/virtualoffice.axioma-ia.io/current`,
+Sirve `dist/` del release inmutable bajo `/www/wwwroot/virtualoffice.axioma-ia.io/current`,
 usa el certificado wildcard ya instalado para `axioma-ia.io`, habilita HSTS
 solamente para este host (`max-age=31536000`, sin `includeSubDomains`), y
 reenvía sólo:
@@ -43,15 +43,17 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 ```bash
 ops/virtualoffice/validate-public-ingress.sh offline \
   --config /ruta/al/virtualoffice.axioma-ia.io.conf \
-  --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE
+  --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
+  --expected-source-sha SHA_DE_FUENTE_AUDITADO
 ```
 
 `offline` no modifica el release. Rechaza un `dist` que tenga archivos distintos
 del manifiesto, digests distintos, symlinks internos, o un nombre que no coincida
 con el SHA de fuente. Sólo después de pasar se puede apuntar `current` a ese
 release; si se verifica `current`, el comando resuelve el enlace una vez y luego
-aplica las mismas reglas al destino. No publicar desde un checkout Git ni desde
-`:5173`.
+aplica las mismas reglas al destino. El SHA esperado viene del artefacto auditado
+independiente, no del nombre del directorio ni del manifiesto. No publicar desde
+un checkout Git ni desde `:5173`.
 
 4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
 no sobre el fragmento aislado. Luego recargar sólo después de los gates de
@@ -83,8 +85,9 @@ procedimiento administrado.
 
 El smoke además prueba que los HTML y assets llevan `nosniff`, frame denial,
 referrer policy y HSTS; niega `/api/auth/mfa/root-reset`, rutas codificadas,
-normalizadas y traversal con `--path-as-is`; y exige que un Host o SNI ajeno no
-reciba el hash de Office.
+normalizadas y traversal con `--path-as-is`; y exige que un Host o SNI ajeno
+cierre TLS/444 o dé un 400/403/404. Cualquier 2xx, 3xx o 5xx en esas pruebas
+detiene el procedimiento.
 
 ## Reversión
 

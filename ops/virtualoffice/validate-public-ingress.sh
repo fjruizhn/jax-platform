@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  validate-public-ingress.sh offline --config FILE --release DIR_OR_CURRENT
+  validate-public-ingress.sh offline --config FILE --release DIR_OR_CURRENT --expected-source-sha SHA
   validate-public-ingress.sh syntax --nginx NGINX --config COMPLETE_NGINX_CONF
   validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE
 USAGE
@@ -15,7 +15,7 @@ need() { [[ $# -eq 2 && -n $2 ]] || die "missing value for $1"; }
 has_header() { grep -Eiq "^$2: *$3\\r?$" <<<"$1"; }
 
 cmd=${1:-}; shift || true
-config= release= nginx= public_ip= expected_index_sha= asset_path=
+config= release= nginx= public_ip= expected_index_sha= expected_source_sha= asset_path=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config) need "$1" "${2:-}"; config=$2; shift 2 ;;
@@ -23,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --nginx) need "$1" "${2:-}"; nginx=$2; shift 2 ;;
     --public-ip) need "$1" "${2:-}"; public_ip=$2; shift 2 ;;
     --expected-index-sha) need "$1" "${2:-}"; expected_index_sha=$2; shift 2 ;;
+    --expected-source-sha) need "$1" "${2:-}"; expected_source_sha=$2; shift 2 ;;
     --asset-path) need "$1" "${2:-}"; asset_path=$2; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -35,14 +36,15 @@ verify_manifest() {
   local target=$1
   [[ -d $target/dist && -f $target/manifest.json ]] || die "release needs dist/ and manifest.json: $target"
   find "$target/dist" -type l -print -quit | grep -q . && die 'release dist contains an inner symlink'
-  python3 - "$target" <<'PY'
+  python3 - "$target" "$2" <<'PY'
 import hashlib,json,re,sys
 from pathlib import Path
-r=Path(sys.argv[1])
+r=Path(sys.argv[1]); expected_source_sha=sys.argv[2]
 try: m=json.loads((r/'manifest.json').read_text(encoding='utf-8'))
 except (OSError,ValueError) as e: raise SystemExit(f'invalid release manifest: {e}')
 sha=m.get('source_sha'); files=m.get('files')
 if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('manifest source_sha is not a full lowercase Git SHA')
+if sha != expected_source_sha: raise SystemExit('manifest source_sha differs from independently audited SHA')
 if r.name != sha: raise SystemExit('release directory name does not match manifest source_sha')
 if not isinstance(files,dict) or not files: raise SystemExit('manifest files is empty or invalid')
 d=r/'dist'; actual={p.relative_to(d).as_posix() for p in d.rglob('*') if p.is_file()}
@@ -92,9 +94,9 @@ ROUTES
 
 case $cmd in
  offline)
-  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release ]] || die '--release is required'
+  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release ]] || die '--release is required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
   resolved=$(readlink -f -- "$release") || die "release cannot be resolved: $release"; [[ -d $resolved ]] || die "resolved release is not a directory: $resolved"
-  verify_manifest "$resolved"
+  verify_manifest "$resolved" "$expected_source_sha"
   grep -Fqx '    server_name virtualoffice.axioma-ia.io;' "$config" || die 'exact public host is absent'
   grep -Fqx '    location ^~ /api/ { return 404; }' "$config" || die 'non-Office API is not denied'
   grep -Fqx '    location ^~ /ws/ { return 404; }' "$config" || die 'websocket namespace is not denied'
@@ -121,9 +123,12 @@ case $cmd in
   [[ $(status /api/auth/login) != 404 ]] || die 'login route is unavailable'
   ih=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base/"); ah=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base$asset_path")
   for h in "${headers[@]}"; do n=${h%%:*}; v=${h#*: }; has_header "$ih" "$n" "$v" || die "index missing $n"; has_header "$ah" "$n" "$v" || die "asset missing $n"; done
+  foreign_closed() { [[ $1 == 000 || $1 == 400 || $1 == 403 || $1 == 404 ]] || die "$2 was not closed (HTTP $1)"; }
   mismatch=invalid-sni.axioma-ia.io
-  badsni=$(curl --noproxy '*' -k --silent --show-error --max-time 10 --resolve "$mismatch:443:$public_ip" "https://$mismatch/" | sha256sum | awk '{print $1}'); [[ $badsni != "$expected_index_sha" ]] || die 'unknown SNI served the Office index'
-  badhost=$(curl --noproxy '*' -k --silent --show-error --max-time 10 -H 'Host: invalid-host.axioma-ia.io' "${resolve[@]}" "$base/" | sha256sum | awk '{print $1}'); [[ $badhost != "$expected_index_sha" ]] || die 'mismatched Host served the Office index'
+  badsni=$(curl --noproxy '*' -k --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 --resolve "$mismatch:443:$public_ip" "https://$mismatch/" || true)
+  foreign_closed "$badsni" 'unknown SNI'
+  badhost=$(curl --noproxy '*' -k --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -H 'Host: invalid-host.axioma-ia.io' "${resolve[@]}" "$base/" || true)
+  foreign_closed "$badhost" 'mismatched Host'
   printf 'pre-DNS smoke passed for %s via %s\n' "$host" "$public_ip"
   ;;
  *) usage >&2; exit 2 ;;
