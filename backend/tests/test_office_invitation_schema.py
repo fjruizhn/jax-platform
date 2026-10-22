@@ -95,6 +95,48 @@ def test_invitation_attestation_rejects_a_homonymous_noop_issuance_guard(client)
     client.portal.call(scenario)
 
 
+def test_invitation_attestation_rejects_extra_foreign_key_index_and_check(client):
+    """The readiness stamp attests the complete shape, not just required names."""
+    async def scenario():
+        source = os.environ['JAX_DB_NAME']
+        schema = f"office_invitation_extra_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_project_membership', 'jax_project_membership_event',
+                        'jax_namespace_membership_mutation_request',
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_invitation_outbox ADD CONSTRAINT fk_extra_invitation "
+                        "FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id)"
+                    )
+                    with pytest.raises(RuntimeError, match='foreign key set is invalid'):
+                        await apply_office_migrations(cur)
+                    await cur.execute("ALTER TABLE office_invitation_outbox DROP FOREIGN KEY fk_extra_invitation")
+                    await cur.execute("CREATE INDEX idx_extra_invitation ON office_invitation_outbox (updated_at)")
+                    with pytest.raises(RuntimeError, match='index set is invalid'):
+                        await apply_office_migrations(cur)
+                    await cur.execute("DROP INDEX idx_extra_invitation ON office_invitation_outbox")
+                    await cur.execute(
+                        "ALTER TABLE office_invitation_outbox ADD CONSTRAINT chk_extra_invitation "
+                        "CHECK (attempt_count >= 0)"
+                    )
+                    with pytest.raises(RuntimeError, match='check set is invalid'):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
 def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     from db.runtime_privileges import runtime_table_privilege_map
 
@@ -103,6 +145,150 @@ def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     assert grants['office_invitation_outbox'] == frozenset({'UPDATE'})
     for immutable in ('office_invitation_issuance', 'office_invitation_event'):
         assert immutable not in grants
+
+
+async def _seed_pending_invitation(
+    cur, *, issuer: int, proof_event_id: int, serial: str, target_user_id: int | None = None,
+):
+    """Insert the lawful issued state used to exercise DB lifecycle fences."""
+    await cur.execute(
+        "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+        (f"invite-lifecycle-{serial}",),
+    )
+    project_id = cur.lastrowid
+    await cur.execute(
+        "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+        "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+        (project_id,),
+    )
+    await cur.execute(
+        "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+        "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+        (project_id, issuer, issuer),
+    )
+    await cur.execute(
+        "INSERT INTO office_authorization_event (actor_user_id,event_kind,operation,result,reason_code,occurred_at) "
+        "VALUES (%s,'AUTHORIZATION','ADMINISTER_PROJECT_MEMBERS','ALLOWED','test',UTC_TIMESTAMP(6))",
+        (issuer,),
+    )
+    authorization_event_id = cur.lastrowid
+    issuance_id = str(uuid.uuid4())
+    invitation_id = str(uuid.uuid4())
+    outbox_id = str(uuid.uuid4())
+    await cur.execute(
+        "INSERT INTO office_invitation_issuance (issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
+        "VALUES (%s,UNHEX(SHA2(%s,256)),CONCAT(%s,'@example.invalid'),1,%s,NULL,%s,'OFFICE_INTERNAL','COLLABORATOR','INTERNAL',%s,1,1,%s,1,UTC_TIMESTAMP(6),%s,UNHEX(REPEAT('cd',32)),UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY))",
+        (issuance_id, issuance_id, serial, project_id, target_user_id, issuer, proof_event_id, authorization_event_id),
+    )
+    await cur.execute(
+        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized,target_user_id) "
+        "VALUES (%s,%s,'ISSUED',1,%s,CONCAT(%s,'@example.invalid'),%s)",
+        (invitation_id, issuance_id, project_id, serial, target_user_id),
+    )
+    await cur.execute(
+        "INSERT INTO office_invitation_outbox (outbox_id,invitation_id,state,attempt_count,cancel_requested,payload_ciphertext,created_at,updated_at) "
+        "VALUES (%s,%s,'QUEUED',0,FALSE,X'01',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+        (outbox_id, invitation_id),
+    )
+    await cur.execute(
+        "INSERT INTO office_invitation_event (invitation_id,event_kind,actor_user_id,correlation_id,occurred_at) "
+        "VALUES (%s,'ISSUED',%s,UNHEX(REPEAT('ef',16)),UTC_TIMESTAMP(6))",
+        (invitation_id, issuer),
+    )
+    return invitation_id, outbox_id, cur.lastrowid, issuance_id
+
+
+def test_revocation_and_expiry_stop_queued_or_claimed_outbox_and_erase_ciphertext(client):
+    """A terminal invitation cannot leave a replayable delivery payload behind."""
+    async def scenario():
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                issuer, enrollment, _ = await _active_user()
+                proof = await _step_up_proof(issuer, enrollment.secret, b"L" * 16)
+                await cur.execute(
+                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                    (issuer,),
+                )
+                revoked_id, queued_outbox, revoked_issued, revoked_issuance = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id, serial=f"revoke-{uuid.uuid4().hex}")
+                expired_id, claimed_outbox, expired_issued, _ = await _seed_pending_invitation(
+                    cur, issuer=issuer, proof_event_id=proof.event_id, serial=f"expire-{uuid.uuid4().hex}", target_user_id=issuer)
+                await cur.execute(
+                    "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,claimed_at=UTC_TIMESTAMP(6),updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s",
+                    (str(uuid.uuid4()), claimed_outbox),
+                )
+                with pytest.raises(aiomysql.OperationalError, match='causal evidence denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,correlation_id,occurred_at) "
+                        "VALUES (%s,'REVOKED',%s,%s,UNHEX(REPEAT('ab',16)),UTC_TIMESTAMP(6))",
+                        (revoked_id, expired_issued, issuer),
+                    )
+                with pytest.raises(aiomysql.OperationalError, match='bearer evidence denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
+                        "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('ad',16)),UTC_TIMESTAMP(6))",
+                        (revoked_id, expired_issued, revoked_issuance),
+                    )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
+                    "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('ae',16)),UTC_TIMESTAMP(6))",
+                    (revoked_id, revoked_issued, revoked_issuance),
+                )
+                with pytest.raises(aiomysql.IntegrityError):
+                    await cur.execute(
+                        "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,bearer_token_hash,correlation_id,occurred_at) "
+                        "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,UNHEX(SHA2(%s,256)),UNHEX(REPEAT('af',16)),UTC_TIMESTAMP(6))",
+                        (revoked_id, revoked_issued, revoked_issuance),
+                    )
+                with pytest.raises(aiomysql.OperationalError, match='issuance binding denied'):
+                    await cur.execute(
+                        "INSERT INTO office_invitation (invitation_id,issuance_id,status,version,project_id,email_normalized,target_user_id) "
+                        "SELECT %s,issuance_id,'ISSUED',1,project_id,email_normalized,NULL FROM office_invitation WHERE invitation_id=%s",
+                        (str(uuid.uuid4()), expired_id),
+                    )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,correlation_id,occurred_at) "
+                    "VALUES (%s,'REVOKED',%s,%s,UNHEX(REPEAT('ab',16)),UTC_TIMESTAMP(6))",
+                    (revoked_id, revoked_issued, issuer),
+                )
+                await cur.execute(
+                    "UPDATE office_invitation SET status='REVOKED',version=2,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s",
+                    (issuer, revoked_id),
+                )
+                await cur.execute(
+                    "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,correlation_id,occurred_at) "
+                    "VALUES (%s,'EXPIRED',%s,UNHEX(REPEAT('ac',16)),UTC_TIMESTAMP(6))",
+                    (expired_id, expired_issued),
+                )
+                await cur.execute(
+                    "UPDATE office_invitation SET status='EXPIRED',version=2 WHERE invitation_id=%s",
+                    (expired_id,),
+                )
+                await cur.execute(
+                    "SELECT state,cancel_requested,payload_ciphertext,attempt_id FROM office_invitation_outbox WHERE outbox_id=%s",
+                    (queued_outbox,),
+                )
+                assert await cur.fetchone() == ('CANCELLED', 1, None, None)
+                await cur.execute(
+                    "SELECT state,cancel_requested,payload_ciphertext,attempt_id FROM office_invitation_outbox WHERE outbox_id=%s",
+                    (claimed_outbox,),
+                )
+                claimed_state, cancelled, ciphertext, original_attempt = await cur.fetchone()
+                assert (claimed_state, cancelled, ciphertext) == ('CLAIMED', 1, None)
+                with pytest.raises(aiomysql.OperationalError, match='terminal immutable'):
+                    await cur.execute(
+                        "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s",
+                        (str(uuid.uuid4()), queued_outbox),
+                    )
+                with pytest.raises(aiomysql.OperationalError, match='terminal denied'):
+                    await cur.execute(
+                        "UPDATE office_invitation_outbox SET attempt_id=%s,updated_at=DATE_ADD(updated_at,INTERVAL 1 MICROSECOND) WHERE outbox_id=%s",
+                        (str(uuid.uuid4()), claimed_outbox),
+                    )
+                assert original_attempt is not None
+    client.portal.call(scenario)
 
 
 def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
