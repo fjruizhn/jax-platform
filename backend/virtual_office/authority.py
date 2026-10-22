@@ -123,7 +123,7 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
     privileged_view = (
         decision.operation == OfficeOperation.VIEW_PROJECT.value
         and (decision.global_role in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}
-             or decision.grant_role == "PROJECT_ADMIN")
+        )
     )
     # A professional approver is privileged even when their ordinary project
     # grant says COLLABORATOR.  Resolve this current, indexed grant rather
@@ -135,7 +135,18 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
             OfficeOperation.PROFESSIONAL_ACTION, for_update=False,
         )
         professional_view = professional is not None and professional["status"] == "ACTIVE"
-    derived_recent = decision.operation != OfficeOperation.VIEW_PROJECT.value
+    # A project administrator's ordinary work is intentionally usable after
+    # normal sign-in: viewing its project, maintaining project content, and
+    # administering that project's members do not silently turn MFA into a
+    # prerequisite.  MFA remains a derived, recent-proof requirement for
+    # actions that exercise professional or Office-wide authority.  A caller
+    # may still explicitly request step-up for any operation.
+    derived_recent = decision.operation in {
+        OfficeOperation.PROFESSIONAL_ACTION.value,
+        OfficeOperation.ADMINISTER_OFFICE.value,
+        OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY.value,
+        OfficeOperation.CREATE_OFFICE_PROJECT.value,
+    }
     # An explicit caller requirement hardens even an otherwise ordinary
     # collaborator view.  It is additive, like the role-derived conditions;
     # callers can never use ``False`` to lower either rule.
