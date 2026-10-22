@@ -9,6 +9,7 @@ USAGE
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need(){ [[ $# == 2 && -n $2 ]] || die "missing value for $1"; }
 [[ ${EUID:-$(id -u)} == 0 ]] || die 'must run as root'
+original_args=("$@")
 
 site= releases= release= source= vhost= backups= validator= nginx= sha= ip= index= asset= asset_sha= nginx_user=www
 while (($#)); do case $1 in
@@ -25,12 +26,19 @@ while (($#)); do case $1 in
 [[ -x $validator && -x $nginx && -f $source ]] || die 'validator, nginx, or vhost source is unavailable'
 site=$(readlink -f -- "$site"); releases=$(readlink -f -- "$releases"); release=$(readlink -f -- "$release")
 case "$release" in "$releases"/*) ;; *) die 'release escapes releases root';; esac
-install -d -o root -g root -m 0755 "$site"
 lock="$site/.activation.lock"
-[[ ! -e $lock || ( $(stat -c %u "$lock") == 0 && $(stat -c %a "$lock") == 600 ) ]] || die 'activation lock is unsafe'
-install -o root -g root -m 0600 /dev/null "$lock"
-exec 9>"$lock"
-flock -n 9 || die 'another Office activation or rollback is running'
+locker="$(dirname "$(readlink -f -- "$0")")/with-office-activation-lock.py"
+[[ -x $locker ]] || die 'activation lock helper is unavailable'
+lock_is_held=0
+if [[ -n ${JAX_OFFICE_LOCK_HELD:-} && -e /proc/self/fd/9 ]]; then
+python3 - "$lock" "${JAX_OFFICE_LOCK_HELD}" <<'PY' && lock_is_held=1
+import os,stat,sys
+fd=os.fstat(9); path=os.stat(sys.argv[1]); expected=sys.argv[2]
+assert stat.S_ISREG(fd.st_mode) and fd.st_uid == 0 and stat.S_IMODE(fd.st_mode) == 0o600
+assert (fd.st_dev,fd.st_ino)==(path.st_dev,path.st_ino)==tuple(map(int,expected.split(':')))
+PY
+fi
+if (( ! lock_is_held )); then exec "$locker" --lock "$lock" -- "$0" "${original_args[@]}"; fi
 "$validator" offline --config "$source" --site-root "$site" --releases-root "$releases" --release "$release" --expected-source-sha "$sha" --nginx-user "$nginx_user"
 
 install -d -o root -g root -m 0700 "$backups"

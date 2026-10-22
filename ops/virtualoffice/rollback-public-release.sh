@@ -4,6 +4,7 @@ set -euo pipefail
 usage(){ echo 'Usage: rollback-public-release.sh [--allow-pre-activation] [--lock-held] --site-root DIR --vhost-path FILE --backup DIR --nginx FILE --validator FILE --public-ip IP --new-index-sha256 SHA256'; }
 die(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }; need(){ [[ $# == 2 && -n $2 ]] || die "missing value for $1"; }
 [[ ${EUID:-$(id -u)} == 0 ]] || die 'must run as root'
+original_args=("$@")
 site= vhost= backup= nginx= validator= ip= new_index= allow_pre_activation=0 lock_held=0
 while (($#)); do case $1 in
  --allow-pre-activation) allow_pre_activation=1; shift;;
@@ -13,9 +14,18 @@ while (($#)); do case $1 in
 [[ -d $backup && -x $nginx && -x $validator ]] || die 'backup, nginx, or validator unavailable'
 site=$(readlink -f -- "$site"); current="$site/current"
 lock="$site/.activation.lock"
-[[ ! -e $lock || ( $(stat -c %u "$lock") == 0 && $(stat -c %a "$lock") == 600 ) ]] || die 'activation lock is unsafe'
-install -o root -g root -m 0600 /dev/null "$lock"
-if (( ! lock_held )); then exec 9>"$lock"; flock -n 9 || die 'another Office activation or rollback is running'; fi
+locker="$(dirname "$(readlink -f -- "$0")")/with-office-activation-lock.py"
+[[ -x $locker ]] || die 'activation lock helper is unavailable'
+if (( ! lock_held )) && [[ -z ${JAX_OFFICE_LOCK_HELD:-} ]]; then
+  exec "$locker" --lock "$lock" -- "$0" "${original_args[@]}"
+fi
+[[ -n ${JAX_OFFICE_LOCK_HELD:-} && -e /proc/self/fd/9 ]] || die 'activation rollback lock was not inherited'
+python3 - "$lock" "${JAX_OFFICE_LOCK_HELD:-}" <<'PY' || die 'activation lock descriptor changed'
+import os,stat,sys
+fd=os.fstat(9); path=os.stat(sys.argv[1]); expected=sys.argv[2]
+assert expected and stat.S_ISREG(fd.st_mode) and fd.st_uid == 0 and stat.S_IMODE(fd.st_mode) == 0o600
+assert (fd.st_dev,fd.st_ino)==(path.st_dev,path.st_ino)==tuple(map(int,expected.split(':')))
+PY
 new_release=$(cat "$backup/new-release")
 [[ -d $new_release ]] || die 'recorded new release disappeared'
 if [[ -L $current ]]; then current_target=$(readlink -f -- "$current"); else current_target=ABSENT; fi

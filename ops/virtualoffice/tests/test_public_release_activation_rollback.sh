@@ -7,6 +7,7 @@ fixture=$(mktemp -d); trap 'rm -rf -- "$fixture"' EXIT
 install -d -o root -g root -m 0755 "$fixture/site/releases" "$fixture/vhosts" "$fixture/bin" "$fixture/backups"
 install -o root -g root -m 0755 "$root/activate-public-release.sh" "$fixture/bin/activate"
 install -o root -g root -m 0755 "$root/rollback-public-release.sh" "$fixture/bin/rollback-public-release.sh"
+install -o root -g root -m 0755 "$root/with-office-activation-lock.py" "$fixture/bin/with-office-activation-lock.py"
 cat > "$fixture/bin/validator" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -30,9 +31,16 @@ export FAKE_LOG="$fixture/log"
 args=(--site-root "$fixture/site" --releases-root "$fixture/site/releases" --release "$fixture/site/releases/$new" --vhost-source "$fixture/template.conf" --vhost-path "$fixture/vhosts/office.conf" --backup-root "$fixture/backups" --validator "$fixture/bin/validator" --nginx "$fixture/bin/nginx" --expected-source-sha "$new" --public-ip 127.0.0.1 --expected-index-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --asset-path /assets/a.js --expected-asset-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
 "$fixture/bin/activate" "${args[@]}" >/dev/null
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$new" ]]; grep -qx 'new-vhost' "$fixture/vhosts/office.conf"
+lock_inode=$(stat -c '%d:%i' "$fixture/site/.activation.lock")
 backup=$(find "$fixture/backups" -mindepth 1 -maxdepth 1 -type d | head -1)
 "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$backup" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null
 [[ $(readlink -f "$fixture/site/current") == "$fixture/site/releases/$old" ]]; grep -qx 'old-vhost' "$fixture/vhosts/office.conf"
+# The lock is persistent and a concurrent command cannot acquire a different inode.
+"$fixture/bin/with-office-activation-lock.py" --lock "$fixture/site/.activation.lock" -- /bin/sh -c 'sleep 1' & holder=$!
+sleep 0.1
+if "$fixture/bin/activate" "${args[@]}" >/dev/null 2>&1; then echo 'concurrent activation unexpectedly ran' >&2; exit 1; fi
+wait "$holder"
+[[ $(stat -c '%d:%i' "$fixture/site/.activation.lock") == "$lock_inode" ]]
 # A stale snapshot cannot overwrite a later state.
 if "$fixture/bin/rollback-public-release.sh" --site-root "$fixture/site" --vhost-path "$fixture/vhosts/office.conf" --backup "$backup" --nginx "$fixture/bin/nginx" --validator "$fixture/bin/validator" --public-ip 127.0.0.1 --new-index-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/dev/null 2>&1; then echo 'stale rollback unexpectedly ran' >&2; exit 1; fi
 
