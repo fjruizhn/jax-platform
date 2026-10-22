@@ -63,6 +63,16 @@ def _safe_node(path: Path, *, directory: bool = False, owner_uid: int = 0, owner
     return value
 
 
+def _trusted_ancestors(path: Path, *, owner_uid: int = 0, owner_gid: int = 0) -> None:
+    """Reject a package whose pathname can be replaced through an ancestor."""
+    current = path.parent
+    while True:
+        _safe_node(current, directory=True, owner_uid=owner_uid, owner_gid=owner_gid)
+        if current.parent == current:
+            return
+        current = current.parent
+
+
 def _role_destination(path: str, role: str, destination_root: Path | None = None) -> tuple[Path, str]:
     root = Path("/") if destination_root is None else destination_root
     if path in _HELPERS and role == "helper":
@@ -95,6 +105,8 @@ def _canonical_manifest(raw: bytes, expected_digest: str) -> dict[str, object]:
 def _load(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid: int = 0) -> tuple[dict[str, object], dict[str, bytes]]:
     """Validate every package byte and its closed destination contract."""
     _safe_node(root, directory=True, owner_uid=owner_uid, owner_gid=owner_gid)
+    if owner_uid == 0 and owner_gid == 0:
+        _trusted_ancestors(root, owner_uid=owner_uid, owner_gid=owner_gid)
     manifest = root / "manifest.json"
     _safe_node(manifest, owner_uid=owner_uid, owner_gid=owner_gid)
     data = _canonical_manifest(manifest.read_bytes(), expected_digest)
@@ -279,6 +291,7 @@ def _trusted_program(path: Path, digest: str) -> Path:
     if not path.is_absolute() or not _HEX.fullmatch(digest):
         raise PackageError("invalid bootstrap dependency")
     value = _safe_node(path)
+    _trusted_ancestors(path)
     if stat.S_IMODE(value.st_mode) not in {0o700, 0o750, 0o755} or _sha(path) != digest:
         raise PackageError("untrusted bootstrap dependency")
     return path

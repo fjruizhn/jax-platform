@@ -126,3 +126,9 @@ def test_import_uses_bytes_sealed_before_path_replacement(tmp_path, monkeypatch)
     root = tmp_path / "destination"
     rp.import_package(bundle, digest, root, tmp_path / "backup", lambda: None, package_owner_uid=os.getuid(), package_owner_gid=os.getgid(), install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
     assert (root / "usr/local/libexec/jax-platform-pair-exec").read_bytes() == b"sealed"
+
+
+def test_root_owned_load_rejects_writable_ancestor(tmp_path, monkeypatch):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"sealed", "0755")])
+    with pytest.raises(rp.PackageError, match="ownership"):
+        rp._trusted_ancestors(bundle)
