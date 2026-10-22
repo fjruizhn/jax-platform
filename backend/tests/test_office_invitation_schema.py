@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import ast
 import os
 import secrets
-import subprocess
 import uuid
-from pathlib import Path
 
 import aiomysql
 import pytest
@@ -17,6 +14,7 @@ from tests.entorno_de_produccion import cargar
 from virtual_office.migrations import apply_office_migrations
 from tests.test_office_mfa import _active_user, _step_up_proof
 from tests.test_office_runtime_contract import _grant_exact_runtime_acl, _runtime_pool
+from tests.fixtures.office_invitation_b44_guards import GUARD_STATEMENTS, SOURCE_COMMIT
 
 
 async def _migration_admin_pool():
@@ -217,17 +215,8 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
 
 def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_rows(client):
     """The exact reviewed b44 bodies upgrade in MariaDB, preserving evidence."""
-    source = subprocess.check_output(
-        ["git", "show", "b44dd06:backend/virtual_office/migrations.py"],
-        cwd=Path(__file__).resolve().parents[2], text=True,
-    )
-    tree = ast.parse(source)
-    ddl = ast.literal_eval(next(
-        node.value for node in tree.body if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "OFFICE_INVITATION_DDL" for target in node.targets)
-    ))
-    b44_guards = tuple(statement for statement in ddl if "guard_office_invitation" in statement)
-    assert len(b44_guards) == 4
+    assert SOURCE_COMMIT == "b44dd06cc9fe7cc88f8f83566be7c565f76e6675"
+    b44_guards = GUARD_STATEMENTS
 
     async def scenario():
         pool = await get_pool()
