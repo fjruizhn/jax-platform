@@ -10,4 +10,4 @@ Type=oneshot
 User=jaxmigrate
 WorkingDirectory=/
 LoadCredential=migrate.env:/etc/jax/migrate.env
-ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate %d/migrate.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate ${CREDENTIALS_DIRECTORY}/migrate.env

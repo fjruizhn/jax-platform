@@ -134,7 +134,7 @@ def test_platform_units_bind_both_processes_to_the_same_pair() -> None:
         assert "WorkingDirectory=/" in unit
         credential = "runtime.env" if mode == "web" else "migrate.env"
         assert f"LoadCredential={credential}:/etc/jax/{credential}" in unit
-        assert f"ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py {mode} %d/{credential}" in unit
+        assert f"ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py {mode} ${{CREDENTIALS_DIRECTORY}}/{credential}" in unit
 
 
 def test_runtime_uses_only_root_selection_and_never_inherits_checkout_paths() -> None:

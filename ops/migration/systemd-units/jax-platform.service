@@ -11,7 +11,7 @@ Type=simple
 User=jaxweb
 WorkingDirectory=/
 LoadCredential=runtime.env:/etc/jax/runtime.env
-ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web %d/runtime.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web ${CREDENTIALS_DIRECTORY}/runtime.env
 Restart=on-failure
 RestartSec=5
 
