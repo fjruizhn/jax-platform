@@ -27,10 +27,10 @@ import user_audit
 from auth.conexiones import _cortar_conexiones
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from virtual_office.mfa import (
-    MFAConfig, MFADenied, issue_login_challenge_after_password_in_cursor,
+    MFAConfig, MFADenied, MFAError, issue_login_challenge_after_password_in_cursor,
     verify_and_consume_totp_in_cursor, issue_step_up_challenge_in_cursor,
     start_first_enrollment_after_password_in_cursor, confirm_enrollment_in_cursor,
-    consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
+    recover_to_pending_enrollment_in_cursor,
     start_reenrollment_after_password_in_cursor,
     pending_enrollment_is_recovery_origin_in_cursor,
     regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
@@ -496,48 +496,48 @@ async def verify_mfa_step_up(
 
 
 @router.post("/mfa/recover")
-async def mfa_recover(req: MFARecoveryRequest, response: Response):
+async def mfa_recover(req: MFARecoveryRequest, request: Request, response: Response):
+    # Recovery has no account identifier.  The shared IP limiter applies
+    # before the code hash lookup; its email bucket is intentionally not used
+    # as an account selector.
+    retry = rate_limit.LOGIN_IP_LIMITER.hit(rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
+    if retry is not None:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail=rate_limit.DEMASIADOS_INTENTOS,
+                            headers={"Retry-After": str(max(1, math.ceil(retry))), "Cache-Control": "no-store"})
     config = _mfa_config()
     if config is None: raise _mfa_unavailable()
     denial = None
     subject_user_id = None
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        result = await consume_recovery_code_in_cursor(
-            cur, recovery_code=req.recovery_code, config=config, server_correlation_id=uuid.uuid4().bytes,
-        )
-        if isinstance(result, MFADenied): denial = result
-        else:
-            # The recovery bearer is the sole subject selector.  Re-derive
-            # its newly-created capability owner inside the same transaction;
-            # do not accept a user id from the request merely to cut sockets.
-            await cur.execute(
-                "SELECT user_id FROM office_mfa_challenge "
-                "WHERE token_hash=UNHEX(SHA2(%s,256)) FOR UPDATE", (result.token,),
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            result = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=req.recovery_code, config=config, server_correlation_id=uuid.uuid4().bytes,
             )
-            row = await cur.fetchone()
-            if row is None:
-                raise RuntimeError("recovery capability missing after consume")
-            subject_user_id = int(row[0])
+            if isinstance(result, MFADenied): denial = result
+            else:
+                await cur.execute(
+                    "SELECT user_id FROM office_mfa_recovery_receipt "
+                    "WHERE source_code_hash=UNHEX(SHA2(%s,256)) FOR UPDATE", (req.recovery_code,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise RuntimeError("recovery receipt missing after consume")
+                subject_user_id = int(row[0])
+    except MFAError:
+        raise _mfa_unavailable()
     if denial is not None: raise _mfa_denial(denial)
     await _cortar_conexiones(subject_user_id)
     response.headers["Cache-Control"] = "no-store"
-    return {"recovery_token": result.token, "expires_at": result.expires_at.isoformat()}
+    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
+            "expires_at": result.expires_at.isoformat()}
 
 
 @router.post("/mfa/recovery/enrollment/start")
-async def mfa_recovery_enrollment_start(req: MFARecoveryEnrollmentRequest, response: Response):
-    config = _mfa_config()
-    if config is None: raise _mfa_unavailable()
-    denial = None
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        result = await start_recovery_enrollment_in_cursor(
-            cur, recovery_capability_token=req.recovery_token, config=config,
-        )
-        if isinstance(result, MFADenied): denial = result
-    if denial is not None: raise _mfa_denial(denial)
-    response.headers["Cache-Control"] = "no-store"
-    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
-            "expires_at": result.expires_at.isoformat()}
+async def retired_mfa_recovery_enrollment_start():
+    """The old bearer hop is permanently unavailable after replay receipts exist."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="mfa_recovery_hop_retired",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/mfa/reenrollment/start")

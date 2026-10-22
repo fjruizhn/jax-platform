@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import json
 import os
 import secrets
 from dataclasses import dataclass
@@ -172,6 +173,15 @@ async def _append_state(cur, *, subject: int, operation: str, purpose: str, prin
 
 async def _invalidate(cur, user: int) -> None:
     await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) WHERE user_id=%s AND state IN ('ISSUED','EXHAUSTED')", (user,))
+
+
+async def _terminalize_recovery_receipts(cur, user: int) -> None:
+    """Retain a non-replayable tombstone while removing recoverable secrets."""
+    await cur.execute(
+        "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
+        "response_digest=NULL,updated_at=UTC_TIMESTAMP(6) "
+        "WHERE user_id=%s AND state IN ('CLAIMED','REPLAYABLE')", (user,),
+    )
 
 
 async def _invalidate_login_window(cur, user: int, token_version: int) -> None:
@@ -615,6 +625,162 @@ async def start_recovery_enrollment_in_cursor(cur, *, recovery_capability_token:
     return EnrollmentStart(token, secret, _utc(expiry))
 
 
+def _recovery_receipt_payload(*, code_hash: bytes, user_id: int, ceremony_id: bytes,
+                              versions: tuple[int, int], enrollment: EnrollmentStart) -> str:
+    """Canonical, authenticated lost-response package; never log its value."""
+    return json.dumps({
+        "v": 1, "code_hash": code_hash.hex(), "user_id": user_id,
+        "ceremony_id": ceremony_id.hex(), "token_version": versions[0],
+        "mfa_version": versions[1], "enrollment_token": enrollment.enrollment_id,
+        "secret": enrollment.secret, "expires_at": enrollment.expires_at.isoformat(),
+    }, separators=(",", ":"), sort_keys=True)
+
+
+def _decode_recovery_receipt(ciphertext: object, digest: object, *, code_hash: bytes,
+                             user_id: int, ceremony_id: bytes,
+                             versions: tuple[int, int]) -> EnrollmentStart | None:
+    raw = decrypt_db_secret(str(ciphertext or ""))
+    if not raw or not isinstance(digest, bytes) or not hmac.compare_digest(hashlib.sha256(raw.encode()).digest(), digest):
+        return None
+    try:
+        value = json.loads(raw)
+        expires_at = dt.datetime.fromisoformat(value["expires_at"])
+        if (value["v"] != 1 or value["code_hash"] != code_hash.hex() or value["user_id"] != user_id
+                or value["ceremony_id"] != ceremony_id.hex()
+                or (value["token_version"], value["mfa_version"]) != versions):
+            return None
+        token, secret = value["enrollment_token"], value["secret"]
+        if not isinstance(token, str) or not isinstance(secret, str) or not token or not secret:
+            return None
+        return EnrollmentStart(token, secret, _utc(expires_at))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+async def recover_to_pending_enrollment_in_cursor(cur, *, recovery_code: str, config: MFAConfig,
+                                                  server_correlation_id: bytes):
+    """Atomically consume the physical recovery code and issue its replayable package.
+
+    The receipt is deliberately selected before interpreting code state: a used
+    code is valid only when it selects the exact durable package it created.
+    """
+    cid = _cid(server_correlation_id)
+    code_hash = _hash(recovery_code)
+    await cur.execute(
+        "SELECT user_id,output_challenge_hash,ceremony_id,token_version,mfa_version,replay_until,state,response_ciphertext,response_digest "
+        "FROM office_mfa_recovery_receipt WHERE source_code_hash=%s", (code_hash,),
+    )
+    receipt = await cur.fetchone()
+    now = await _db_now(cur)
+    if receipt:
+        # The lookup only finds the subject.  Every mutating/replay path then
+        # takes the canonical user lock before the receipt lock, matching
+        # reset, disable and recovery-code regeneration.
+        user_id = int(receipt[0])
+        versions = await _user(cur, user_id)
+        await cur.execute(
+            "SELECT user_id,output_challenge_hash,ceremony_id,token_version,mfa_version,replay_until,state,response_ciphertext,response_digest "
+            "FROM office_mfa_recovery_receipt WHERE source_code_hash=%s FOR UPDATE", (code_hash,),
+        )
+        receipt = await cur.fetchone()
+        if receipt is None:
+            return MFADenied("recovery_invalid", terminal=True)
+        user_id, output_hash, ceremony, tv, mv, replay_until, state, ciphertext, digest = receipt
+        if state != "REPLAYABLE" or replay_until < now or versions != (int(tv), int(mv)) or output_hash is None:
+            if state == "REPLAYABLE":
+                await cur.execute(
+                    "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
+                    "response_digest=NULL,updated_at=UTC_TIMESTAMP(6) WHERE source_code_hash=%s AND state='REPLAYABLE'",
+                    (code_hash,),
+                )
+            return MFADenied("recovery_invalid", terminal=True)
+        await cur.execute(
+            "SELECT purpose,expected_token_version,expected_mfa_version,state,expires_at FROM office_mfa_challenge "
+            "WHERE token_hash=%s FOR UPDATE", (output_hash,),
+        )
+        challenge = await cur.fetchone()
+        await cur.execute(
+            "SELECT state,pending_enrollment_id,pending_expires_at FROM office_mfa_credential WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        credential = await cur.fetchone()
+        if (not challenge or challenge[0] != "ENROLLMENT" or challenge[3] != "ISSUED" or challenge[4] < now
+                or (int(challenge[1]), int(challenge[2])) != versions or not credential
+                or credential[0] != "PENDING" or not hmac.compare_digest(bytes(credential[1] or b""), bytes(output_hash))
+                or credential[2] is None or credential[2] < now):
+            await cur.execute(
+                "UPDATE office_mfa_recovery_receipt SET state='TERMINAL',response_ciphertext=NULL,"
+                "response_digest=NULL,updated_at=UTC_TIMESTAMP(6) WHERE source_code_hash=%s AND state='REPLAYABLE'",
+                (code_hash,),
+            )
+            return MFADenied("recovery_invalid", terminal=True)
+        replay = _decode_recovery_receipt(ciphertext, digest, code_hash=code_hash, user_id=int(user_id),
+                                          ceremony_id=bytes(ceremony), versions=versions)
+        if replay is None or not hmac.compare_digest(_hash(replay.enrollment_id), bytes(output_hash)):
+            raise MFAError("recovery_receipt_unavailable")
+        return replay
+
+    await cur.execute("SELECT user_id FROM office_mfa_recovery_code WHERE code_hash=%s", (code_hash,))
+    found = await cur.fetchone()
+    if not found:
+        return MFADenied("recovery_invalid", terminal=True)
+    user_id = int(found[0])
+    versions = await _user(cur, user_id)
+    await cur.execute("SELECT recovery_code_id,mfa_version,used_at FROM office_mfa_recovery_code WHERE code_hash=%s FOR UPDATE", (code_hash,))
+    source = await cur.fetchone()
+    if source and source[2] is not None:
+        # A concurrent request may have looked for the receipt just before
+        # the winning transaction committed it.  The code-row lock is the
+        # serialization point; after waiting, re-enter the receipt path.
+        await cur.execute("SELECT 1 FROM office_mfa_recovery_receipt WHERE source_code_hash=%s FOR UPDATE", (code_hash,))
+        if await cur.fetchone() is not None:
+            return await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=recovery_code, config=config, server_correlation_id=server_correlation_id,
+            )
+    if not source or versions is None or source[2] is not None or int(source[1]) != versions[1]:
+        return MFADenied("recovery_invalid", terminal=True)
+    ceremony = secrets.token_bytes(16)
+    await cur.execute(
+        "INSERT INTO office_mfa_recovery_receipt (source_code_hash,user_id,ceremony_id,token_version,mfa_version,replay_until,state,created_at,updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP(6),'CLAIMED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+        (code_hash, user_id, ceremony, versions[0] + 1, versions[1] + 1),
+    )
+    await cur.execute("UPDATE office_mfa_recovery_code SET used_at=UTC_TIMESTAMP(6) WHERE recovery_code_id=%s AND used_at IS NULL", (source[0],))
+    if cur.rowcount != 1:
+        raise RuntimeError("recovery code CAS lost")
+    current = (versions[0] + 1, versions[1] + 1)
+    await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s", (user_id,))
+    await cur.execute("UPDATE office_mfa_credential SET state='RECOVERY_REQUIRED',secret_ciphertext=NULL,pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,confirmed_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s", (user_id,))
+    await cur.execute("UPDATE office_mfa_recovery_code SET used_at=COALESCE(used_at,UTC_TIMESTAMP(6)) WHERE user_id=%s", (user_id,))
+    await _invalidate(cur, user_id)
+    recovery_token = _opaque()
+    recovery = await _insert_challenge(cur, user=user_id, purpose="RECOVERY", versions=current, token=recovery_token,
+                                       ttl=config.challenge_lifetime_seconds, attempts=config.challenge_max_attempts)
+    if isinstance(recovery, MFADenied):
+        raise RuntimeError("recovery challenge unexpectedly denied")
+    recovery_id = await _challenge_id(cur, _hash(recovery_token))
+    proof = await _append_proof(cur, subject=user_id, purpose="RECOVERY", token_version=current[0], mfa_version=current[1], principal="RECOVERY_CAPABILITY", actor=None, challenge_id=recovery_id, cid=cid)
+    await _append_state(cur, subject=user_id, operation="RECOVERY_CONSUME", purpose="RECOVERY", principal="RECOVERY_CAPABILITY", actor=None, challenge_id=recovery_id, previous=versions, current=current, proof_id=proof.event_id, cid=cid)
+    token, secret = _opaque(), pyotp.random_base32(length=32)
+    expiry = now + dt.timedelta(seconds=config.enrollment_lifetime_seconds)
+    enrollment = await _insert_challenge(cur, user=user_id, purpose="ENROLLMENT", versions=current, token=token,
+                                         ttl=config.enrollment_lifetime_seconds, attempts=config.challenge_max_attempts, now=now, expiry=expiry)
+    if isinstance(enrollment, MFADenied):
+        raise RuntimeError("recovery enrollment unexpectedly denied")
+    await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=UTC_TIMESTAMP(6) WHERE token_hash=%s AND state='ISSUED'", (_hash(recovery_token),))
+    if cur.rowcount != 1:
+        raise RuntimeError("recovery capability CAS lost")
+    await cur.execute("UPDATE office_mfa_credential SET state='PENDING',pending_secret_ciphertext=%s,pending_enrollment_id=%s,pending_expires_at=%s,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s AND state='RECOVERY_REQUIRED'", (encrypt_secret(secret), _hash(token), expiry, user_id))
+    if cur.rowcount != 1:
+        raise RuntimeError("recovery credential CAS lost")
+    output = EnrollmentStart(token, secret, _utc(expiry))
+    payload = _recovery_receipt_payload(code_hash=code_hash, user_id=user_id, ceremony_id=ceremony, versions=current, enrollment=output)
+    await cur.execute("UPDATE office_mfa_recovery_receipt SET output_challenge_hash=%s,replay_until=%s,state='REPLAYABLE',response_ciphertext=%s,response_digest=%s,updated_at=UTC_TIMESTAMP(6) WHERE source_code_hash=%s AND state='CLAIMED'", (_hash(token), expiry, encrypt_secret(payload), hashlib.sha256(payload.encode()).digest(), code_hash))
+    if cur.rowcount != 1:
+        raise RuntimeError("recovery receipt finalization lost")
+    return output
+
+
 async def confirm_enrollment_in_cursor(cur, *, enrollment_capability_token: str, otp: str, config: MFAConfig, server_correlation_id: bytes):
     cid = _cid(server_correlation_id)
     hashed = _hash(enrollment_capability_token)
@@ -682,6 +848,10 @@ async def confirm_enrollment_in_cursor(cur, *, enrollment_capability_token: str,
         "pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,"
         "confirmed_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s", (user_id,),
     )
+    # A recovery receipt may contain the only raw pending secret.  Erase it
+    # before the transaction makes that secret active, retaining only its
+    # tombstone so the physical code cannot start a second ceremony.
+    await _terminalize_recovery_receipts(cur, user_id)
     await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (user_id,))
     codes = tuple(_code() for _ in range(config.recovery_code_count))
     await cur.executemany(
@@ -711,6 +881,7 @@ async def regenerate_recovery_codes_after_password_in_cursor(cur, *, actor_user_
     await cur.execute("UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 WHERE user_id=%s",(actor_user_id,))
     await cur.execute("UPDATE office_mfa_credential SET pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s", (actor_user_id,))
     await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s",(actor_user_id,))
+    await _terminalize_recovery_receipts(cur, actor_user_id)
     await _invalidate(cur, actor_user_id)
     codes=tuple(_code() for _ in range(config.recovery_code_count))
     await cur.executemany("INSERT INTO office_mfa_recovery_code (user_id,mfa_version,code_hash,created_at) VALUES (%s,%s,%s,UTC_TIMESTAMP(6))",[(actor_user_id,current[1],_hash(c)) for c in codes])
@@ -736,6 +907,7 @@ async def disable_mfa_after_password_in_cursor(cur, *, actor_user_id: int, proof
         "pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,"
         "confirmed_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s", (actor_user_id,),
     )
+    await _terminalize_recovery_receipts(cur, actor_user_id)
     await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (actor_user_id,))
     await _invalidate(cur, actor_user_id)
     event = await _append_state(
@@ -851,6 +1023,7 @@ async def reset_mfa_by_office_root_in_cursor(cur, *, actor_user_id: int,
         "confirmed_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s",
         (target_user_id,),
     )
+    await _terminalize_recovery_receipts(cur, target_user_id)
     await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (target_user_id,))
     await _invalidate(cur, target_user_id)
     event = await _append_state(

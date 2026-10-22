@@ -13,8 +13,9 @@ from auth.jwt import create_access_token, create_refresh_token, decode_token
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from virtual_office.mfa import (
-    MFAConfig, MFADenied, confirm_enrollment_in_cursor,
+    EnrollmentStart, MFAConfig, MFADenied, MFAError, confirm_enrollment_in_cursor,
     consume_recovery_code_in_cursor, disable_mfa_after_password_in_cursor,
+    recover_to_pending_enrollment_in_cursor,
     issue_login_challenge_after_password_in_cursor,
     issue_step_up_challenge_in_cursor,
     regenerate_recovery_codes_after_password_in_cursor,
@@ -256,6 +257,114 @@ def test_recovery_consumes_one_code_then_reenrolls_without_minting_login_proof(c
                 cur, recovery_capability_token=capability.token, config=CONFIG,
             )
         assert isinstance(used, MFADenied)
+    client.portal.call(scenario)
+
+
+def test_recovery_code_replays_the_identical_pending_enrollment_until_confirmation(client):
+    """The physical code is the only replay key after a lost response."""
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        code = enrolled.recovery_codes[0]
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            first = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=code, config=CONFIG, server_correlation_id=b"R" * 16,
+            )
+        assert not isinstance(first, MFADenied)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            replay = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=code, config=CONFIG, server_correlation_id=b"S" * 16,
+            )
+        assert replay == first
+        assert await sql(
+            "SELECT COUNT(*) FROM office_mfa_recovery_receipt WHERE user_id=%s AND state='REPLAYABLE'",
+            (user_id,), True,
+        ) == ((1,),)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            confirmed = await confirm_enrollment_in_cursor(
+                cur, enrollment_capability_token=first.enrollment_id, otp=_otp(first.secret),
+                config=CONFIG, server_correlation_id=b"T" * 16,
+            )
+        assert confirmed.mfa_version == 3
+        assert await sql(
+            "SELECT response_ciphertext FROM office_mfa_recovery_receipt WHERE user_id=%s",
+            (user_id,), True,
+        ) == ((None,),)
+    client.portal.call(scenario)
+
+
+def test_recovery_receipt_tamper_fails_closed_and_expiry_erases_ciphertext(client):
+    async def scenario():
+        await _migrate()
+        user_id, _, enrolled = await _active_user()
+        code = enrolled.recovery_codes[0]
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=code, config=CONFIG, server_correlation_id=b"U" * 16,
+            )
+        await sql(
+            "UPDATE office_mfa_recovery_receipt SET response_ciphertext='bad' WHERE user_id=%s",
+            (user_id,),
+        )
+        with pytest.raises(MFAError):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await recover_to_pending_enrollment_in_cursor(
+                    cur, recovery_code=code, config=CONFIG, server_correlation_id=b"V" * 16,
+                )
+        # The failed replay rolls back its own transaction, so expiration is
+        # separately terminalized by a fresh request and leaves a tombstone.
+        await sql("UPDATE office_mfa_recovery_receipt SET replay_until=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE user_id=%s", (user_id,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            denied = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=code, config=CONFIG, server_correlation_id=b"W" * 16,
+            )
+        assert isinstance(denied, MFADenied)
+        assert await sql(
+            "SELECT state,response_ciphertext,response_digest FROM office_mfa_recovery_receipt WHERE user_id=%s",
+            (user_id,), True,
+        ) == (("TERMINAL", None, None),)
+    client.portal.call(scenario)
+
+
+def test_concurrent_recovery_replays_share_one_pending_package(client):
+    async def scenario():
+        await _migrate()
+        _, _, enrolled = await _active_user()
+        async def recover(correlation: bytes):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await recover_to_pending_enrollment_in_cursor(
+                    cur, recovery_code=enrolled.recovery_codes[0], config=CONFIG,
+                    server_correlation_id=correlation,
+                )
+        first, second = await asyncio.gather(recover(b"X" * 16), recover(b"Y" * 16))
+        assert not isinstance(first, MFADenied)
+        assert first == second
+    client.portal.call(scenario)
+
+
+def test_recovery_replay_and_confirmation_share_the_user_first_lock_order(client):
+    async def scenario():
+        await _migrate()
+        _, _, enrolled = await _active_user()
+        code = enrolled.recovery_codes[0]
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await recover_to_pending_enrollment_in_cursor(
+                cur, recovery_code=code, config=CONFIG, server_correlation_id=b"a" * 16,
+            )
+        async def replay():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await recover_to_pending_enrollment_in_cursor(
+                    cur, recovery_code=code, config=CONFIG, server_correlation_id=b"b" * 16,
+                )
+        async def confirm():
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await confirm_enrollment_in_cursor(
+                    cur, enrollment_capability_token=pending.enrollment_id, otp=_otp(pending.secret),
+                    config=CONFIG, server_correlation_id=b"c" * 16,
+                )
+        replayed, confirmed = await asyncio.gather(replay(), confirm())
+        assert isinstance(replayed, (EnrollmentStart, MFADenied))
+        assert not isinstance(confirmed, MFADenied)
     client.portal.call(scenario)
 
 

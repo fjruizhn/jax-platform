@@ -25,6 +25,7 @@ OFFICE_MFA_DDL = (
     "CREATE TABLE IF NOT EXISTS office_mfa_totp_use (user_id INT NOT NULL, mfa_version BIGINT NOT NULL, time_counter BIGINT NOT NULL, purpose VARCHAR(24) NOT NULL, used_at DATETIME(6) NOT NULL, PRIMARY KEY (user_id,mfa_version,time_counter), CONSTRAINT fk_office_mfa_totp_use_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT chk_office_mfa_totp_use_version CHECK (mfa_version >= 0), CONSTRAINT chk_office_mfa_totp_use_purpose CHECK (purpose IN ('LOGIN','STEP_UP','ENROLLMENT','RECOVERY'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_mfa_recovery_code (recovery_code_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, mfa_version BIGINT NOT NULL, code_hash BINARY(32) NOT NULL, used_at DATETIME(6) NULL, created_at DATETIME(6) NOT NULL, UNIQUE KEY uq_office_mfa_recovery_code_hash (code_hash), KEY idx_office_mfa_recovery_code_user (user_id,mfa_version,used_at), CONSTRAINT fk_office_mfa_recovery_code_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT chk_office_mfa_recovery_code_version CHECK (mfa_version >= 0)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_mfa_challenge (token_hash BINARY(32) NOT NULL PRIMARY KEY, challenge_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE, user_id INT NOT NULL, purpose VARCHAR(24) NOT NULL, expected_token_version BIGINT NOT NULL, expected_mfa_version BIGINT NOT NULL, attempt_count INT NOT NULL DEFAULT 0, max_attempts INT NOT NULL, expires_at DATETIME(6) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'ISSUED', used_at DATETIME(6) NULL, created_at DATETIME(6) NOT NULL, UNIQUE KEY uq_office_mfa_challenge_subject (challenge_id,user_id), KEY idx_office_mfa_challenge_user (user_id,purpose,expected_token_version,expected_mfa_version,state,expires_at), CONSTRAINT fk_office_mfa_challenge_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT chk_office_mfa_challenge_purpose CHECK (purpose IN ('LOGIN','STEP_UP','ENROLLMENT','RECOVERY')), CONSTRAINT chk_office_mfa_challenge_versions CHECK (expected_token_version >= 0 AND expected_mfa_version >= 0), CONSTRAINT chk_office_mfa_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts), CONSTRAINT chk_office_mfa_challenge_state CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED','INVALIDATED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_mfa_recovery_receipt (source_code_hash BINARY(32) NOT NULL PRIMARY KEY, user_id INT NOT NULL, output_challenge_hash BINARY(32) NULL, ceremony_id BINARY(16) NOT NULL, token_version BIGINT NOT NULL, mfa_version BIGINT NOT NULL, replay_until DATETIME(6) NOT NULL, state VARCHAR(16) NOT NULL, response_ciphertext TEXT NULL, response_digest BINARY(32) NULL, created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL, UNIQUE KEY uq_office_mfa_recovery_receipt_output (output_challenge_hash), KEY idx_office_mfa_recovery_receipt_user (user_id,state,replay_until), CONSTRAINT fk_office_mfa_recovery_receipt_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_mfa_recovery_receipt_output FOREIGN KEY (output_challenge_hash) REFERENCES office_mfa_challenge(token_hash), CONSTRAINT chk_office_mfa_recovery_receipt_versions CHECK (token_version >= 0 AND mfa_version >= 0), CONSTRAINT chk_office_mfa_recovery_receipt_state CHECK ((state='CLAIMED' AND output_challenge_hash IS NULL AND response_ciphertext IS NULL AND response_digest IS NULL) OR (state='REPLAYABLE' AND output_challenge_hash IS NOT NULL AND response_ciphertext IS NOT NULL AND response_digest IS NOT NULL) OR (state='TERMINAL' AND response_ciphertext IS NULL AND response_digest IS NULL))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, event_kind VARCHAR(24) NOT NULL, actor_user_id INT NULL, principal_kind VARCHAR(32) NOT NULL, challenge_id BIGINT UNSIGNED NULL, subject_user_id INT NULL, operation VARCHAR(40) NULL, purpose VARCHAR(24) NULL, token_version BIGINT NULL, mfa_version BIGINT NULL, previous_token_version BIGINT NULL, previous_mfa_version BIGINT NULL, proof_event_id BIGINT UNSIGNED NULL, authorization_event_id BIGINT UNSIGNED NULL, result VARCHAR(16) NOT NULL, server_correlation_id BINARY(16) NULL, occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), fence_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL, UNIQUE KEY uq_office_mfa_security_event_fence (fence_key), KEY idx_office_mfa_security_event_proof (subject_user_id,purpose,token_version,mfa_version,occurred_at,event_id), KEY idx_office_mfa_security_event_challenge (challenge_id,subject_user_id), CONSTRAINT fk_office_mfa_security_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_mfa_security_event_subject FOREIGN KEY (subject_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_mfa_security_event_challenge_subject FOREIGN KEY (challenge_id,subject_user_id) REFERENCES office_mfa_challenge(challenge_id,user_id), CONSTRAINT fk_office_mfa_security_event_proof FOREIGN KEY (proof_event_id) REFERENCES office_mfa_security_event(event_id), CONSTRAINT fk_office_mfa_security_event_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id), CONSTRAINT chk_office_mfa_security_event_shape CHECK ((event_kind='MFA_PROOF' AND operation='MFA_PROOF' AND subject_user_id IS NOT NULL AND purpose IN ('LOGIN','STEP_UP','ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result IN ('VERIFIED','DENIED') AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR (principal_kind IN ('PASSWORD_PREAUTH','RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='MFA_STATE_CHANGE' AND subject_user_id IS NOT NULL AND operation IN ('ENROLLMENT_CONFIRM','RECOVERY_CONSUME','MFA_DISABLE','MFA_RESET') AND purpose IN ('ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version >= 0 AND previous_mfa_version >= 0 AND proof_event_id IS NOT NULL AND result='RECORDED' AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL) OR (principal_kind IN ('RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='SYSTEM_FENCE' AND actor_user_id IS NULL AND principal_kind='SYSTEM_MIGRATOR' AND challenge_id IS NULL AND subject_user_id IS NULL AND operation IS NULL AND purpose IS NULL AND token_version IS NULL AND mfa_version IS NULL AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result='RECORDED' AND server_correlation_id IS NULL AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_mfa_security_event BEFORE UPDATE ON office_mfa_security_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_mfa_security_event BEFORE DELETE ON office_mfa_security_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'",
@@ -373,6 +374,61 @@ async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body
         raise RuntimeError("Office MFA triggers are missing or invalid")
 
 
+async def assert_mfa_recovery_receipt_runtime_metadata(cur) -> None:
+    """Fail closed on receipt drift: replay has no safe best-effort mode."""
+    await cur.execute(
+        "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_mfa_recovery_receipt' ORDER BY ORDINAL_POSITION"
+    )
+    expected = (
+        ("source_code_hash", "binary(32)", "NO"), ("user_id", "int(11)", "NO"),
+        ("output_challenge_hash", "binary(32)", "YES"), ("ceremony_id", "binary(16)", "NO"),
+        ("token_version", "bigint(20)", "NO"), ("mfa_version", "bigint(20)", "NO"),
+        ("replay_until", "datetime(6)", "NO"), ("state", "varchar(16)", "NO"),
+        ("response_ciphertext", "text", "YES"), ("response_digest", "binary(32)", "YES"),
+        ("created_at", "datetime(6)", "NO"), ("updated_at", "datetime(6)", "NO"),
+    )
+    if tuple(await cur.fetchall()) != expected:
+        raise RuntimeError("Office MFA recovery receipt schema is incompatible")
+    for name, columns in {
+        "PRIMARY": ("source_code_hash",),
+        "uq_office_mfa_recovery_receipt_output": ("output_challenge_hash",),
+        "idx_office_mfa_recovery_receipt_user": ("user_id", "state", "replay_until"),
+    }.items():
+        if await _index_columns(cur, "office_mfa_recovery_receipt", name) != columns:
+            raise RuntimeError("Office MFA recovery receipt index is incompatible")
+
+
+async def _preflight_legacy_recovery_in_flight(cur) -> None:
+    """Do not enable one-hop replay while old raw bearer output is stranded."""
+    # This is an upgrade gate, not a request-time validator.  Once the
+    # receipt table exists, a stopped legacy binary cannot make a new bearer
+    # hop and historical test fixtures must not make migration non-idempotent.
+    if await _table_exists(cur, "office_mfa_recovery_receipt"):
+        return
+    required = ("office_mfa_challenge", "office_mfa_credential", "office_mfa_security_event")
+    for table in required:
+        if not await _table_exists(cur, table):
+            return
+    await cur.execute(
+        "SELECT 1 FROM office_mfa_challenge WHERE purpose='RECOVERY' "
+        "AND state IN ('ISSUED','EXHAUSTED') LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError("Office MFA legacy recovery challenge remains in flight")
+    await cur.execute("SELECT 1 FROM office_mfa_credential WHERE state='RECOVERY_REQUIRED' LIMIT 1")
+    if await cur.fetchone() is not None:
+        raise RuntimeError("Office MFA legacy recovery credential remains in flight")
+    await cur.execute(
+        "SELECT 1 FROM office_mfa_credential c JOIN office_mfa_security_event e "
+        "ON e.subject_user_id=c.user_id WHERE c.state='PENDING' "
+        "AND e.event_kind='MFA_STATE_CHANGE' AND e.operation='RECOVERY_CONSUME' "
+        "AND e.result='RECORDED' LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError("Office MFA legacy recovery enrollment remains in flight")
+
+
 async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
     """Attest bootstrap's signed/unsigned foreign keys and append-only guard."""
     await cur.execute(
@@ -505,6 +561,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN account_class VARCHAR(24) NOT NULL DEFAULT 'INTERNAL', ADD CONSTRAINT chk_jax_users_account_class CHECK (account_class IN ('INTERNAL','OFFICE_INTERNAL','EXTERNAL_CLIENT'))")
     if not await _column_exists(cursor, "jax_users", "mfa_version"):
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
+    await _preflight_legacy_recovery_in_flight(cursor)
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
     ledger_existed = await _table_exists(cursor, "office_mfa_security_event")
@@ -577,6 +634,7 @@ async def apply_office_migrations(cursor) -> None:
         )
     await _assert_mfa_ledger_metadata(cursor)
     await assert_mfa_ledger_runtime_metadata(cursor)
+    await assert_mfa_recovery_receipt_runtime_metadata(cursor)
     await cursor.execute("SELECT event_id FROM office_mfa_security_event WHERE fence_key='office-mfa-fence-v1'")
     if not await cursor.fetchone():
         await cursor.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) VALUES ('SYSTEM_FENCE',NULL,'SYSTEM_MIGRATOR',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'RECORDED',NULL,'office-mfa-fence-v1',UTC_TIMESTAMP(6))")

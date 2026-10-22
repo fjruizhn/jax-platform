@@ -29,7 +29,6 @@ def _headers(client):
     ("/api/auth/mfa/step-up/verify", {"challenge_token": "á" * 43, "otp": "000000"}),
     ("/api/auth/mfa/enrollment/confirm", {"enrollment_token": "á" * 43, "otp": "000000"}),
     ("/api/auth/mfa/recover", {"recovery_code": "á" * 32}),
-    ("/api/auth/mfa/recovery/enrollment/start", {"recovery_token": "á" * 43}),
 ])
 def test_mfa_opaque_dtos_reject_non_ascii_without_echoing_secret(client, path, payload):
     headers = _headers(client) if path == "/api/auth/mfa/step-up/verify" else None
@@ -45,7 +44,6 @@ def test_mfa_opaque_dtos_reject_non_ascii_without_echoing_secret(client, path, p
     ("/api/auth/mfa/step-up/verify", {"challenge_token": "A" * 43, "otp": ["000000"]}),
     ("/api/auth/mfa/enrollment/confirm", {"enrollment_token": "A" * 43, "otp": 0}),
     ("/api/auth/mfa/recover", {"recovery_code": ["A" * 32]}),
-    ("/api/auth/mfa/recovery/enrollment/start", {"recovery_token": {"token": "A" * 43}}),
     ("/api/auth/mfa/enrollment/start", {"password": ["not-a-string"]}),
     ("/api/auth/mfa/recovery-codes/regenerate", {"password": 1}),
     ("/api/auth/mfa/disable", {"password": {"wrong": "type"}}),
@@ -85,6 +83,13 @@ def test_mfa_http_errors_and_status_success_are_never_cacheable(client, monkeypa
     status = client.get("/api/auth/mfa/status", headers=headers)
     assert status.status_code == 200
     assert status.headers["cache-control"] == "no-store"
+
+
+def test_legacy_recovery_bearer_hop_is_gone_and_not_cacheable(client):
+    response = client.post("/api/auth/mfa/recovery/enrollment/start", json={"recovery_token": "A" * 43})
+    assert response.status_code == 410
+    assert response.json() == {"detail": "mfa_recovery_hop_retired"}
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_mfa_password_routes_rate_limit_before_bcrypt(client, monkeypatch):
