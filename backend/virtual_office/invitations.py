@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import html
 import hashlib
 import hmac
 import json
 import secrets
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from crypto_secrets import clave_de_cifrado_utilizable, decrypt_db_secret, encrypt_secret
+from pymysql.err import IntegrityError, OperationalError
 from validacion import direccion_unica_valida
 
 from .audit import record_authorization_event
@@ -42,7 +45,7 @@ async def _create_invited_identity_in_cursor(cur, *, tenant_id: int, email: str,
             "INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) "
             "VALUES (%s,%s,%s,'operator','active',%s)",
             (tenant_id, email, password_hash, account_class))
-    except Exception as error:
+    except (IntegrityError, OperationalError) as error:
         # A duplicate-email race must not turn a password supplied for a new
         # identity into a write on the identity that won elsewhere.
         if getattr(error, "args", ()) and error.args[0] == 1062:
@@ -355,7 +358,7 @@ async def issue_invitation_in_cursor(
             expected_version=0, response_version=1, result_event_id=issued_event_id,
             authorization_event_id=authorization_event_id, expires_at=expires_at,
         )
-    except Exception as error:
+    except (IntegrityError, OperationalError) as error:
         if not (getattr(error, "args", ()) and error.args[0] == 1062):
             raise
         await cur.execute("ROLLBACK TO SAVEPOINT office_invitation_issue")
@@ -676,7 +679,7 @@ async def accept_invitation_in_cursor(
             "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
             "VALUES (%s,'INVITATION_BEARER_PRESENTED',%s,NULL,%s,NULL,%s,UTC_TIMESTAMP(6))",
             (invitation_id, int(issued[0]), token_hash, correlation_id))
-    except Exception as error:
+    except (IntegrityError, OperationalError) as error:
         await _translate_acceptance_deadline_guard(cur, error, expires_at=expires_at)
     bearer_event_id = int(cur.lastrowid)
     from db.connection import get_pool
@@ -730,7 +733,7 @@ async def accept_invitation_in_cursor(
             "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,occurred_at) "
             "VALUES (%s,'ACCEPTED',%s,%s,NULL,%s,%s,UTC_TIMESTAMP(6))",
             (invitation_id, bearer_event_id, accepting_user_id, outbox[0], correlation_id))
-    except Exception as error:
+    except (IntegrityError, OperationalError) as error:
         await _translate_acceptance_deadline_guard(cur, error, expires_at=expires_at)
     await cur.execute(
         "UPDATE office_invitation SET status='ACCEPTED',version=version+1,accepted_user_id=%s,accepted_at=UTC_TIMESTAMP(6) "
@@ -962,12 +965,9 @@ async def deliver_one_invitation() -> bool:
     result_code = "SMTP_UNKNOWN"
     try:
         settings = await smtp_config.cargar_settings()
+        subject, text, body_html = _invitation_email(config, delivery)
         message = smtp_config.construir_mensaje(
-            settings, delivery.recipient, "Axioma — Invitación a Oficina Virtual",
-            "Use este código en la pantalla de aceptación de la Oficina Virtual:\n\n"
-            f"{delivery.bearer_token}\n\nVence: {delivery.expires_at}",
-            "<p>Use este código en la pantalla de aceptación de la Oficina Virtual:</p>"
-            f"<p><code>{delivery.bearer_token}</code></p><p>Vence: {delivery.expires_at}</p>",
+            settings, delivery.recipient, subject, text, body_html,
         )
         message_id = str(message["Message-ID"])
         await asyncio.to_thread(smtp_config.enviar, settings, message)
@@ -992,3 +992,36 @@ async def deliver_one_invitation() -> bool:
             cur, outbox_id=delivery.outbox_id, attempt_id=delivery.attempt_id,
             relay_accepted=accepted, message_id=message_id, result_code=result_code)
     return True
+
+
+_INVITATION_EMAIL_TEMPLATES = {
+    "es": {
+        "subject": "Axioma — Invitación a Oficina Virtual",
+        "text": "Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:\n\n{url}\n\nVence: {expires_at}",
+        "html": "<p>Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:</p><p><a href=\"{url}\">Aceptar invitación</a></p><p>Vence: {expires_at}</p>",
+    },
+    "en": {
+        "subject": "Axioma — Virtual Office invitation",
+        "text": "Open this secure link to accept the Virtual Office invitation:\n\n{url}\n\nExpires: {expires_at}",
+        "html": "<p>Open this secure link to accept the Virtual Office invitation:</p><p><a href=\"{url}\">Accept invitation</a></p><p>Expires: {expires_at}</p>",
+    },
+}
+
+
+def _invitation_acceptance_url(config: InvitationConfig, bearer_token: str) -> str:
+    """Keep the bearer in the fragment so it never reaches the web server."""
+    _token_hash(bearer_token)
+    return f"{config.public_base_url}/office/invitation#{urlencode({'token': bearer_token})}"
+
+
+def _invitation_email(config: InvitationConfig, delivery: ClaimedInvitationDelivery) -> tuple[str, str, str]:
+    """Render the configured localized mail without exposing a raw bearer code."""
+    template = _INVITATION_EMAIL_TEMPLATES[config.email_locale]
+    url = _invitation_acceptance_url(config, delivery.bearer_token)
+    html_url = html.escape(url, quote=True)
+    expiry = html.escape(delivery.expires_at, quote=False)
+    return (
+        template["subject"],
+        template["text"].format(url=url, expires_at=delivery.expires_at),
+        template["html"].format(url=html_url, expires_at=expiry),
+    )

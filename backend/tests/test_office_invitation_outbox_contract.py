@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
+from email.message import EmailMessage
 import uuid
 from unittest.mock import ANY
 
+import smtp_config
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
-from virtual_office.invitation_config import InvitationConfig
+from virtual_office.invitation_config import InvitationConfig as _InvitationConfig
 from virtual_office import invitations as invitation_service
 from virtual_office.invitations import (
+    ClaimedInvitationDelivery,
+    _invitation_email,
     finalize_invitation_delivery_in_cursor,
     deliver_one_invitation,
     issue_invitation_in_cursor,
@@ -19,9 +24,76 @@ from virtual_office.invitations import (
 )
 from virtual_office.mfa import MFAConfig
 
+InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test", email_locale="es")
+
 
 _MFA_CONFIG = MFAConfig(120, 3, 300, 300, 3)
 _INVITATION_CONFIG = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50, expiry_sweep_batch_limit=50)
+
+
+def test_delivery_uses_configured_https_fragment_link_and_localized_templates(client, monkeypatch):
+    """The SMTP boundary receives a clickable fragment URL, never a raw code."""
+    issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(
+        _office_root_with_current_proof)
+    config = _InvitationConfig(
+        lifetime_seconds=60, claim_timeout_seconds=30, stale_claim_batch_limit=50,
+        expiry_sweep_batch_limit=50, public_base_url="https://virtualoffice.example.test",
+        email_locale="es")
+    captured = {}
+
+    async def fake_settings():
+        return object()
+
+    def fake_message(settings, recipient, subject, text, body_html):
+        captured.update(recipient=recipient, subject=subject, text=text, html=body_html)
+        message = EmailMessage()
+        message["Message-ID"] = "<office-invitation@example.test>"
+        return message
+
+    def fake_send(settings, message):
+        captured["sent"] = message["Message-ID"]
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", fake_settings)
+    monkeypatch.setattr(smtp_config, "construir_mensaje", fake_message)
+    monkeypatch.setattr(smtp_config, "enviar", fake_send)
+    monkeypatch.setenv("OFFICE_INVITATION_LIFETIME_SECONDS", "60")
+    monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", config.public_base_url)
+    monkeypatch.setenv("OFFICE_INVITATION_EMAIL_LOCALE", config.email_locale)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-mail-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            return await issue_invitation_in_cursor(
+                cur, actor_user_id=issuer, project_id=project_id,
+                email="mail-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
+                invitation_config=config, idempotency_key=str(uuid.uuid4()))
+
+    invitation = client.portal.call(scenario)
+    assert client.portal.call(deliver_one_invitation) is True
+    assert captured["sent"] == "<office-invitation@example.test>"
+    expected_prefix = "https://virtualoffice.example.test/office/invitation#token="
+    assert expected_prefix in captured["text"]
+    assert expected_prefix in captured["html"]
+    assert "<code>" not in captured["html"]
+    assert captured["recipient"].startswith("mail-")
+    assert invitation.invitation_id not in captured["text"]
+
+
+def test_email_templates_cover_english_and_percent_encode_fragment_tokens():
+    bearer = "a" * 42 + "+"
+    delivery = ClaimedInvitationDelivery("outbox", "attempt", "invitation", "ana@example.test", bearer, "2026-10-22T12:00:00+00:00")
+    subject, text, body_html = _invitation_email(
+        _InvitationConfig(60, 30, 50, 50, "https://virtualoffice.example.test", "en"), delivery)
+    assert subject == "Axioma — Virtual Office invitation"
+    assert "Accept invitation" in body_html
+    assert "https://virtualoffice.example.test/office/invitation#token=" + "a" * 42 + "%2B" in text
 
 
 def test_late_relay_acceptance_remains_observed_after_revocation(client):
@@ -127,6 +199,8 @@ def test_delivery_maintenance_expires_terminal_unknown_without_rewriting_transpo
     monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
     monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "1")
+    monkeypatch.setenv("OFFICE_INVITATION_PUBLIC_BASE_URL", "https://virtualoffice.example.test")
+    monkeypatch.setenv("OFFICE_INVITATION_EMAIL_LOCALE", "es")
 
     async def no_delivery(_cur):
         return None

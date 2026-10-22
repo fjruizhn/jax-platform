@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import datetime as dt
 import uuid
 
@@ -13,7 +14,7 @@ from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office import invitations as invitation_service
-from virtual_office.invitation_config import InvitationConfig
+from virtual_office.invitation_config import InvitationConfig as _InvitationConfig
 from virtual_office.invitations import (
     InvitationError,
     _decode_outbox_payload,
@@ -23,6 +24,8 @@ from virtual_office.invitations import (
     revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
+
+InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test", email_locale="es")
 
 
 _MFA = MFAConfig(120, 3, 300, 300, 3)

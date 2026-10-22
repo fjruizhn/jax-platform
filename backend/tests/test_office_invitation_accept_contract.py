@@ -4,19 +4,24 @@ from __future__ import annotations
 import inspect
 import uuid
 import asyncio
+from functools import partial
 
 import pytest
+from pymysql.err import OperationalError
 from api.virtual_office.invitations import InvitationAcceptRequest, accept_invitation
 from db.seed import _hash
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from tests.test_office_projects_api import _office_root_with_current_proof
-from virtual_office.invitation_config import InvitationConfig
+from virtual_office.invitation_config import InvitationConfig as _InvitationConfig
 from virtual_office.invitations import (
     InvitationError, _decode_outbox_payload, _proof_digest, accept_invitation_in_cursor,
-    invitation_bearer_preflight, issue_invitation_in_cursor, revoke_invitation_in_cursor,
+    _translate_acceptance_deadline_guard, invitation_bearer_preflight, issue_invitation_in_cursor,
+    revoke_invitation_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
+
+InvitationConfig = partial(_InvitationConfig, public_base_url="https://virtualoffice.example.test", email_locale="es")
 import virtual_office.invitations as invitation_service
 
 
@@ -36,6 +41,30 @@ def test_immutable_issuance_proof_supports_unbound_new_identity():
         expires_at=__import__("datetime").datetime(2026, 1, 2), authorization_event_id=6,
     )
     assert _proof_digest(target_user_id=None, **common) != _proof_digest(target_user_id=7, **common)
+
+
+def test_deadline_guard_translates_only_the_mariadb_trigger_error():
+    class Cursor:
+        async def execute(self, _query):
+            return None
+
+        async def fetchone(self):
+            return (__import__("datetime").datetime.now(__import__("datetime").timezone.utc),)
+
+    async def scenario():
+        with pytest.raises(InvitationError) as expired:
+            await _translate_acceptance_deadline_guard(
+                Cursor(), OperationalError(1644, "office invitation expiry evidence denied"),
+                expires_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+        assert expired.value.status_code == 410
+        unrelated = RuntimeError("programming defect")
+        with pytest.raises(RuntimeError) as propagated:
+            await _translate_acceptance_deadline_guard(
+                Cursor(), unrelated,
+                expires_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+        assert propagated.value is unrelated
+
+    asyncio.run(scenario())
 
 
 def test_issue_derives_an_unbound_internal_target_from_the_email(client):
