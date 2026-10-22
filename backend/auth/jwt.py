@@ -15,7 +15,8 @@ ALGORITHM = "HS256"
 # api/auth.py::refresh mida su vida contra el ajuste vigente; el access no lo
 # necesita y no cambia.
 def _crear_token(tipo: str, segundos: int, user_id: str, tenant_id: str, role: str, token_version: int,
-                 *, con_iat: bool) -> str:
+                 *, con_iat: bool, mfa_proof_event_id: int | None = None,
+                 mfa_version: int | None = None, mfa_at: int | None = None) -> str:
     ahora = int(time.time())
     payload = {
         "user_id": user_id,
@@ -27,6 +28,12 @@ def _crear_token(tipo: str, segundos: int, user_id: str, tenant_id: str, role: s
     }
     if con_iat:
         payload["iat"] = ahora
+    # Claims appear only after a real server-derived MFA receipt.  Absence is
+    # deliberately equivalent to no MFA for older Classic sessions.
+    if mfa_proof_event_id is not None:
+        payload["mfa_proof_event_id"] = int(mfa_proof_event_id)
+        payload["mfa_version"] = int(mfa_version)
+        payload["mfa_at"] = int(mfa_at)
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
 
 
@@ -34,8 +41,12 @@ def _crear_token(tipo: str, segundos: int, user_id: str, tenant_id: str, role: s
 # 2). El default 0 es el mismo valor con que se leen los tokens emitidos antes
 # de que existiera `tv` (spec §3.2), y lo usan los tests que firman para
 # user_id=1, cuya versión nunca cambia.
-def create_access_token(user_id: str, tenant_id: str, role: str, token_version: int = 0) -> str:
-    return _crear_token("access", ACCESS_EXPIRE_SECONDS, user_id, tenant_id, role, token_version, con_iat=False)
+def create_access_token(user_id: str, tenant_id: str, role: str, token_version: int = 0, *,
+                        mfa_proof_event_id: int | None = None, mfa_version: int | None = None,
+                        mfa_at: int | None = None) -> str:
+    return _crear_token("access", ACCESS_EXPIRE_SECONDS, user_id, tenant_id, role, token_version,
+                         con_iat=False, mfa_proof_event_id=mfa_proof_event_id,
+                         mfa_version=mfa_version, mfa_at=mfa_at)
 
 
 # Frente C (2026-09-16): la vida del refresh la decide el ajuste
@@ -44,8 +55,11 @@ def create_access_token(user_id: str, tenant_id: str, role: str, token_version: 
 # silencioso. `iat` permite medir la vida al renovar (api/auth.py::refresh),
 # así que acortar el ajuste alcanza a las sesiones abiertas.
 def create_refresh_token(user_id: str, tenant_id: str, role: str, token_version: int = 0, *,
-                         vida_segundos: int) -> str:
-    return _crear_token("refresh", vida_segundos, user_id, tenant_id, role, token_version, con_iat=True)
+                         vida_segundos: int, mfa_proof_event_id: int | None = None,
+                         mfa_version: int | None = None, mfa_at: int | None = None) -> str:
+    return _crear_token("refresh", vida_segundos, user_id, tenant_id, role, token_version,
+                         con_iat=True, mfa_proof_event_id=mfa_proof_event_id,
+                         mfa_version=mfa_version, mfa_at=mfa_at)
 
 
 def decode_token(token: str) -> dict:

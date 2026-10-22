@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import OfficeDecision
 
 
-async def record_authorization_event(cur, decision: OfficeDecision, *, correlation_id: str | None = None) -> None:
+async def record_authorization_event(cur, decision: OfficeDecision, *, correlation_id: str | None = None) -> int:
     """Append a decision using only canonical IDs resolved by authority.
 
     An unknown actor has no canonical authorization subject and therefore is
@@ -19,3 +19,4 @@ async def record_authorization_event(cur, decision: OfficeDecision, *, correlati
         (decision.actor_user_id, decision.operation, decision.requested_project_id, decision.project_id, decision.tenant_id,
          "ALLOWED" if decision.allowed else "DENIED", decision.code, correlation_id),
     )
+    return int(cur.lastrowid)

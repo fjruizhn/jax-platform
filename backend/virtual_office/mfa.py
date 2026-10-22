@@ -84,6 +84,7 @@ class MFAStateReceipt:
     subject_user_id: int
     token_version: int
     mfa_version: int
+    recovery_codes: tuple[str, ...] = ()
 
 
 def _hash(value: str) -> bytes: return hashlib.sha256(value.encode("ascii")).digest()
@@ -135,13 +136,28 @@ async def _append_proof(cur, *, subject: int, purpose: str, token_version: int, 
     return MFAProofReceipt(int(event_id), subject, purpose, token_version, mfa_version, _utc((await cur.fetchone())[0]))
 
 
-async def _append_state(cur, *, subject: int, operation: str, purpose: str, principal: str, actor: int | None, challenge_id: int | None, previous: tuple[int,int], current: tuple[int,int], proof_id: int, cid: bytes) -> int:
-    await cur.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) VALUES ('MFA_STATE_CHANGE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,'RECORDED',%s,NULL,UTC_TIMESTAMP(6))", (actor, principal, challenge_id, subject, operation, purpose, current[0], current[1], previous[0], previous[1], proof_id, cid))
+async def _append_state(cur, *, subject: int, operation: str, purpose: str, principal: str, actor: int | None, challenge_id: int | None, previous: tuple[int,int], current: tuple[int,int], proof_id: int, cid: bytes, authorization_event_id: int | None = None) -> int:
+    await cur.execute("INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) VALUES ('MFA_STATE_CHANGE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'RECORDED',%s,NULL,UTC_TIMESTAMP(6))", (actor, principal, challenge_id, subject, operation, purpose, current[0], current[1], previous[0], previous[1], proof_id, authorization_event_id, cid))
     return int(cur.lastrowid)
 
 
 async def _invalidate(cur, user: int) -> None:
     await cur.execute("UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) WHERE user_id=%s AND state IN ('ISSUED','EXHAUSTED')", (user,))
+
+
+async def _invalidate_login_window(cur, user: int, token_version: int) -> None:
+    """Retire only pre-success capabilities after a successful LOGIN cut.
+
+    LOGIN is deliberately the only verifier that advances ``token_version``.
+    Leaving this update until after the counter, challenge CAS and user CAS
+    means an invalid OTP cannot log out the user's other sessions.
+    """
+    await cur.execute(
+        "UPDATE office_mfa_challenge SET state='INVALIDATED',used_at=UTC_TIMESTAMP(6) "
+        "WHERE user_id=%s AND expected_token_version=%s "
+        "AND state IN ('ISSUED','EXHAUSTED')",
+        (user, token_version),
+    )
 
 
 async def _deny_attempt(cur, token_hash: bytes, count: int, maximum: int) -> MFADenied:
@@ -294,7 +310,27 @@ async def verify_and_consume_totp_in_cursor(cur, *, challenge_token: str, otp: s
     await cur.execute("UPDATE office_mfa_challenge SET state='CONSUMED',used_at=UTC_TIMESTAMP(6) WHERE token_hash=%s AND state='ISSUED'", (hashed,))
     if cur.rowcount != 1:
         raise RuntimeError("challenge CAS lost after TOTP insert")
-    return await _append_proof(cur, subject=user_id, purpose=purpose, token_version=versions[0], mfa_version=versions[1], principal="PASSWORD_PREAUTH" if purpose == "LOGIN" else "USER_SESSION", actor=None if purpose == "LOGIN" else user_id, challenge_id=int(challenge_id) if purpose == "LOGIN" else None, cid=cid)
+    if purpose == "LOGIN":
+        # The durable LOGIN proof must describe the post-login session.  A
+        # proof at T followed by a token cut to T+1 would be stale before the
+        # JWT can carry it.  Do the one and only LOGIN cut here, under the
+        # same user lock as the OTP consumption.
+        await cur.execute(
+            "UPDATE jax_users SET token_version=token_version+1,"
+            "failed_attempts=0,locked_until=NULL,last_login=NOW() "
+            "WHERE user_id=%s AND status='active' AND token_version=%s AND mfa_version=%s",
+            (user_id, versions[0], versions[1]),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("login version CAS lost after TOTP consumption")
+        current = (versions[0] + 1, versions[1])
+        await _invalidate_login_window(cur, user_id, versions[0])
+        return await _append_proof(
+            cur, subject=user_id, purpose=purpose, token_version=current[0],
+            mfa_version=current[1], principal="PASSWORD_PREAUTH", actor=None,
+            challenge_id=int(challenge_id), cid=cid,
+        )
+    return await _append_proof(cur, subject=user_id, purpose=purpose, token_version=versions[0], mfa_version=versions[1], principal="USER_SESSION", actor=user_id, challenge_id=None, cid=cid)
 
 
 async def start_first_enrollment_after_password_in_cursor(cur, *, preauthenticated_user_id: int, config: MFAConfig):
@@ -356,15 +392,35 @@ async def start_first_enrollment_after_password_in_cursor(cur, *, preauthenticat
     return EnrollmentStart(token, secret, _utc(expiry))
 
 
-async def reload_current_self_mfa_proof_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
+async def reload_current_self_mfa_verified_in_cursor(cur, *, actor_user_id: int, proof_event_id: int):
+    """Reload a current durable LOGIN/STEP_UP proof without a recency limit.
+
+    The browser claim supplies only an event reference.  Subject, principal,
+    result and both versions are re-derived under the user lock here.
+    """
     versions = await _user(cur, actor_user_id)
     if versions is None: return MFADenied("proof_invalid", terminal=True)
     await cur.execute("SELECT subject_user_id,purpose,token_version,mfa_version,occurred_at,result,principal_kind,actor_user_id FROM office_mfa_security_event WHERE event_id=%s FOR UPDATE", (proof_event_id,)); row = await cur.fetchone()
     if not row: return MFADenied("proof_invalid", terminal=True)
     subject,purpose,tv,mv,when,result,principal,actor = row; now = await _db_now(cur)
     okay = subject == actor_user_id and result == "VERIFIED" and (purpose == "LOGIN" and principal == "PASSWORD_PREAUTH" and actor is None or purpose == "STEP_UP" and principal == "USER_SESSION" and actor == actor_user_id)
-    if not okay or versions != (int(tv),int(mv)) or when > now or now - when > dt.timedelta(seconds=config.recency_seconds): return MFADenied("proof_stale", terminal=True)
+    if not okay:
+        return MFADenied("proof_invalid", terminal=True)
+    if versions != (int(tv), int(mv)) or when > now:
+        return MFADenied("proof_stale", terminal=True)
     return MFAProofReceipt(proof_event_id, actor_user_id, purpose, int(tv), int(mv), _utc(when))
+
+
+async def reload_current_self_mfa_proof_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
+    proof = await reload_current_self_mfa_verified_in_cursor(
+        cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id,
+    )
+    if isinstance(proof, MFADenied):
+        return proof
+    now = _utc(await _db_now(cur))
+    if now - proof.occurred_at > dt.timedelta(seconds=config.recency_seconds):
+        return MFADenied("proof_stale", terminal=True)
+    return proof
 
 
 async def start_reenrollment_after_password_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
@@ -600,7 +656,7 @@ async def regenerate_recovery_codes_after_password_in_cursor(cur, *, actor_user_
     codes=tuple(_code() for _ in range(config.recovery_code_count))
     await cur.executemany("INSERT INTO office_mfa_recovery_code (user_id,mfa_version,code_hash,created_at) VALUES (%s,%s,%s,UTC_TIMESTAMP(6))",[(actor_user_id,current[1],_hash(c)) for c in codes])
     event=await _append_state(cur,subject=actor_user_id,operation="RECOVERY_REGENERATE",purpose="RECOVERY",principal="USER_SESSION",actor=actor_user_id,challenge_id=None,previous=(proof.token_version,proof.mfa_version),current=current,proof_id=proof.event_id,cid=_cid(server_correlation_id))
-    return MFAStateReceipt(event,actor_user_id,*current)
+    return MFAStateReceipt(event, actor_user_id, *current, recovery_codes=codes)
 
 
 async def disable_mfa_after_password_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig, server_correlation_id: bytes):
@@ -630,3 +686,62 @@ async def disable_mfa_after_password_in_cursor(cur, *, actor_user_id: int, proof
         proof_id=proof.event_id, cid=_cid(server_correlation_id),
     )
     return MFAStateReceipt(event, actor_user_id, *current)
+
+
+async def reset_mfa_by_office_root_in_cursor(cur, *, actor_user_id: int,
+                                              target_user_id: int,
+                                              proof_event_id: int,
+                                              authorization_event_id: int,
+                                              config: MFAConfig,
+                                              server_correlation_id: bytes):
+    """Reset another user's factor after the caller's root decision was recorded.
+
+    This deliberately accepts only IDs derived by the authenticated route.  It
+    reloads the durable STEP_UP proof and locks actor then target, preserving
+    the canonical order for concurrent root resets.
+    """
+    if (type(actor_user_id) is not int or type(target_user_id) is not int
+            or actor_user_id < 1 or target_user_id < 1 or actor_user_id == target_user_id
+            or type(authorization_event_id) is not int or authorization_event_id < 1):
+        return MFADenied("mfa_reset_denied", terminal=True)
+    proof = await reload_current_self_mfa_proof_in_cursor(
+        cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id, config=config,
+    )
+    if isinstance(proof, MFADenied) or proof.purpose != "STEP_UP":
+        return MFADenied("mfa_reset_denied", terminal=True)
+    # The caller may only pass the event id returned by the same transaction's
+    # canonical resolver.  Re-read it here so a forged/stale Python object is
+    # never sufficient authority for this destructive state change.
+    await cur.execute(
+        "SELECT actor_user_id,operation,result FROM office_authorization_event "
+        "WHERE event_id=%s FOR UPDATE", (authorization_event_id,),
+    )
+    authorization = await cur.fetchone()
+    if authorization != (actor_user_id, "ADMINISTER_OFFICE_IDENTITY_SECURITY", "ALLOWED"):
+        return MFADenied("mfa_reset_denied", terminal=True)
+    target_versions = await _user(cur, target_user_id)
+    if target_versions is None:
+        return MFADenied("mfa_reset_denied", terminal=True)
+    current = (target_versions[0] + 1, target_versions[1] + 1)
+    await cur.execute(
+        "UPDATE jax_users SET token_version=token_version+1,mfa_version=mfa_version+1 "
+        "WHERE user_id=%s AND token_version=%s AND mfa_version=%s",
+        (target_user_id, target_versions[0], target_versions[1]),
+    )
+    if cur.rowcount != 1:
+        raise RuntimeError("root reset target version CAS lost")
+    await cur.execute(
+        "UPDATE office_mfa_credential SET state='DISABLED',secret_ciphertext=NULL,"
+        "pending_secret_ciphertext=NULL,pending_enrollment_id=NULL,pending_expires_at=NULL,"
+        "confirmed_at=NULL,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s",
+        (target_user_id,),
+    )
+    await cur.execute("DELETE FROM office_mfa_recovery_code WHERE user_id=%s", (target_user_id,))
+    await _invalidate(cur, target_user_id)
+    event = await _append_state(
+        cur, subject=target_user_id, operation="MFA_RESET", purpose="STEP_UP",
+        principal="USER_SESSION", actor=actor_user_id, challenge_id=None,
+        previous=target_versions, current=current, proof_id=proof.event_id,
+        authorization_event_id=authorization_event_id, cid=_cid(server_correlation_id),
+    )
+    return MFAStateReceipt(event, target_user_id, *current)

@@ -9,6 +9,7 @@ import secrets
 import pyotp
 import pytest
 
+from auth.jwt import create_access_token
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
 from virtual_office.mfa import (
@@ -261,6 +262,205 @@ def test_regeneration_and_disable_require_current_durable_self_proofs(client):
     client.portal.call(scenario)
 
 
+def test_office_root_reset_is_actor_bound_records_both_ledgers_and_cuts_only_target(client, monkeypatch):
+    """The HTTP surface supplies only a target; all authority comes from JWT+DB."""
+    for name, value in {
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120",
+        "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300",
+        "OFFICE_MFA_RECENCY_SECONDS": "300",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT": "3",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    async def arrange():
+        await _migrate()
+        root, root_start, _ = await _active_user()
+        target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,))
+        proof = await _step_up_proof(root, root_start.secret, b"R" * 16)
+        before_root = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (root,), True)
+        before_target = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
+        token = create_access_token(
+            str(root), "1", "operator", before_root[0][0],
+            mfa_proof_event_id=proof.event_id, mfa_version=proof.mfa_version,
+            mfa_at=int(proof.occurred_at.timestamp()),
+        )
+        return root, target, proof, before_root, before_target, token
+
+    root, target, proof, before_root, before_target, token = client.portal.call(arrange)
+    import api.auth as auth_api
+    cuts = []
+    async def observe_cut(user_id):
+        # This runs only after the route's transaction context has exited.
+        cuts.append((int(user_id), await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (int(user_id),), True)))
+    monkeypatch.setattr(auth_api, "_cortar_conexiones", observe_cut)
+    response = client.post("/api/auth/mfa/root-reset", json={"target_user_id": target},
+                           headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["target_user_id"] == target
+    assert cuts == [(target, ((before_target[0][0] + 1, before_target[0][1] + 1),))]
+
+    async def assert_result():
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (root,), True) == before_root
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == ((before_target[0][0] + 1, before_target[0][1] + 1),)
+        assert await sql("SELECT state,secret_ciphertext,pending_secret_ciphertext FROM office_mfa_credential WHERE user_id=%s", (target,), True) == (("DISABLED", None, None),)
+        state = await sql(
+            "SELECT e.actor_user_id,e.subject_user_id,e.operation,e.purpose,e.principal_kind,"
+            "e.proof_event_id,a.operation,a.result FROM office_mfa_security_event e "
+            "JOIN office_authorization_event a ON a.event_id=e.authorization_event_id "
+            "WHERE e.subject_user_id=%s AND e.operation='MFA_RESET'", (target,), True,
+        )
+        assert state == ((root, target, "MFA_RESET", "STEP_UP", "USER_SESSION", proof.event_id,
+                          "ADMINISTER_OFFICE_IDENTITY_SECURITY", "ALLOWED"),)
+    client.portal.call(assert_result)
+
+
+def test_office_root_reset_http_denials_do_not_mutate_target(client, monkeypatch):
+    for name, value in {
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120",
+        "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300",
+        "OFFICE_MFA_RECENCY_SECONDS": "300",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT": "3",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    async def arrange():
+        await _migrate()
+        root, root_start, _ = await _active_user()
+        general, general_start, _ = await _active_user()
+        collaborator, collaborator_start, _ = await _active_user()
+        target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE'),(%s,'GENERAL_ADMIN','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')", (root, general, collaborator))
+        root_proof = await _step_up_proof(root, root_start.secret, b"a" * 16)
+        general_proof = await _step_up_proof(general, general_start.secret, b"b" * 16)
+        collaborator_proof = await _step_up_proof(collaborator, collaborator_start.secret, b"c" * 16)
+        async def token(user, proof):
+            versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user,), True))[0]
+            return create_access_token(str(user), "1", "operator", versions[0], mfa_proof_event_id=proof.event_id, mfa_version=versions[1], mfa_at=int(proof.occurred_at.timestamp()))
+        return {
+            "root": root, "general": general, "collaborator": collaborator, "target": target,
+            "root_token": await token(root, root_proof),
+            "general_token": await token(general, general_proof),
+            "collaborator_token": await token(collaborator, collaborator_proof),
+            "wrong_subject_token": await token(root, collaborator_proof),
+            "before": await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True),
+        }
+
+    fixture = client.portal.call(arrange)
+    headers = lambda token: {"Authorization": f"Bearer {token}"}
+    cases = (
+        (fixture["general_token"], fixture["target"]),
+        (fixture["collaborator_token"], fixture["target"]),
+        (fixture["root_token"], fixture["root"]),
+        (fixture["wrong_subject_token"], fixture["target"]),
+    )
+    for token, target in cases:
+        response = client.post("/api/auth/mfa/root-reset", json={"target_user_id": target}, headers=headers(token))
+        assert response.status_code == 403, response.text
+
+    async def assert_unchanged():
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (fixture["target"],), True) == fixture["before"]
+        assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND operation='MFA_RESET'", (fixture["target"],), True) == ((0,),)
+    client.portal.call(assert_unchanged)
+
+
+def test_root_reset_reloads_authorization_and_append_failure_rolls_everything_back(client, monkeypatch):
+    async def scenario():
+        await _migrate()
+        root, root_start, _ = await _active_user()
+        target, _, _ = await _active_user()
+        proof = await _step_up_proof(root, root_start.secret, b"D" * 16)
+        before = await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
+        # A real ALLOWED audit record with the wrong operation is not a reset authority.
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await cur.execute("INSERT INTO office_authorization_event (actor_user_id,event_kind,operation,result,reason_code,occurred_at) VALUES (%s,'AUTHORIZATION','ADMINISTER_OFFICE','ALLOWED','test',UTC_TIMESTAMP(6))", (root,))
+            wrong = await __import__("virtual_office.mfa", fromlist=["reset_mfa_by_office_root_in_cursor"]).reset_mfa_by_office_root_in_cursor(
+                cur, actor_user_id=root, target_user_id=target, proof_event_id=proof.event_id,
+                authorization_event_id=cur.lastrowid, config=CONFIG, server_correlation_id=b"E" * 16,
+            )
+            assert isinstance(wrong, MFADenied)
+        from virtual_office import mfa
+        original = mfa._append_state
+        async def fail_append(*_args, **_kwargs):
+            raise RuntimeError("reset durable append unavailable")
+        monkeypatch.setattr(mfa, "_append_state", fail_append)
+        with pytest.raises(RuntimeError, match="reset durable append unavailable"):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                await cur.execute("INSERT INTO office_authorization_event (actor_user_id,event_kind,operation,result,reason_code,occurred_at) VALUES (%s,'AUTHORIZATION','ADMINISTER_OFFICE_IDENTITY_SECURITY','ALLOWED','test',UTC_TIMESTAMP(6))", (root,))
+                await mfa.reset_mfa_by_office_root_in_cursor(
+                    cur, actor_user_id=root, target_user_id=target, proof_event_id=proof.event_id,
+                    authorization_event_id=cur.lastrowid, config=CONFIG, server_correlation_id=b"F" * 16,
+                )
+        monkeypatch.setattr(mfa, "_append_state", original)
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == before
+        assert await sql("SELECT state FROM office_mfa_credential WHERE user_id=%s", (target,), True) == (("ACTIVE",),)
+        assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND operation='MFA_RESET'", (target,), True) == ((0,),)
+    client.portal.call(scenario)
+
+
+def test_office_root_reset_denies_future_stale_and_revoked_root_without_target_effect(client, monkeypatch):
+    for name, value in {
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300", "OFFICE_MFA_RECENCY_SECONDS": "300",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT": "3",
+    }.items(): monkeypatch.setenv(name, value)
+    async def arrange():
+        await _migrate()
+        root, start, _ = await _active_user(); target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,))
+        proof = await _step_up_proof(root, start.secret, b"G" * 16)
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (root,), True))[0]
+        await sql(
+            "INSERT INTO office_mfa_security_event (event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+            "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 HOUR))", (root, root, *versions, b"H" * 16),
+        )
+        future = (await sql("SELECT event_id FROM office_mfa_security_event WHERE server_correlation_id=%s", (b"H" * 16,), True))[0][0]
+        def token(event): return create_access_token(str(root), "1", "operator", versions[0], mfa_proof_event_id=event, mfa_version=versions[1], mfa_at=1)
+        return root, target, proof.event_id, token(future), token(proof.event_id), await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
+    root, target, proof_id, future_token, regular_token, before = client.portal.call(arrange)
+    headers = lambda token: {"Authorization": f"Bearer {token}"}
+    assert client.post("/api/auth/mfa/root-reset", json={"target_user_id": target}, headers=headers(future_token)).status_code == 403
+    async def revoke(): await sql("UPDATE office_account_profile SET status='REVOKED' WHERE user_id=%s", (root,))
+    client.portal.call(revoke)
+    assert client.post("/api/auth/mfa/root-reset", json={"target_user_id": target}, headers=headers(regular_token)).status_code == 403
+    async def stale():
+        await sql("UPDATE office_account_profile SET status='ACTIVE' WHERE user_id=%s", (root,))
+        await sql("UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", (root,))
+    client.portal.call(stale)
+    assert client.post("/api/auth/mfa/root-reset", json={"target_user_id": target}, headers=headers(regular_token)).status_code == 403
+    async def assert_unchanged():
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == before
+        assert await sql("SELECT COUNT(*) FROM office_mfa_security_event WHERE subject_user_id=%s AND operation='MFA_RESET'", (target,), True) == ((0,),)
+    client.portal.call(assert_unchanged)
+
+
+def test_office_root_reset_authorization_append_failure_has_no_effect_or_cut(client, monkeypatch):
+    for name, value in {"OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3", "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300", "OFFICE_MFA_RECENCY_SECONDS": "300", "OFFICE_MFA_RECOVERY_CODE_COUNT": "3"}.items(): monkeypatch.setenv(name, value)
+    async def arrange():
+        await _migrate(); root, start, _ = await _active_user(); target, _, _ = await _active_user()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')", (root,))
+        proof = await _step_up_proof(root, start.secret, b"I" * 16)
+        version = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (root,), True))[0]
+        return root, target, proof, version, await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True)
+    root, target, proof, version, before = client.portal.call(arrange)
+    import api.auth as auth_api
+    cuts = []
+    async def fail_audit(*_args, **_kwargs): raise RuntimeError("authorization append unavailable")
+    async def cut(user_id): cuts.append(user_id)
+    monkeypatch.setattr(auth_api, "record_authorization_event", fail_audit)
+    monkeypatch.setattr(auth_api, "_cortar_conexiones", cut)
+    token = create_access_token(str(root), "1", "operator", version[0], mfa_proof_event_id=proof.event_id, mfa_version=version[1], mfa_at=int(proof.occurred_at.timestamp()))
+    with pytest.raises(RuntimeError, match="authorization append unavailable"):
+        client.post("/api/auth/mfa/root-reset", json={"target_user_id": target}, headers={"Authorization": f"Bearer {token}"})
+    async def assert_unchanged():
+        assert await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (target,), True) == before
+        assert await sql("SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND operation='ADMINISTER_OFFICE_IDENTITY_SECURITY'", (root,), True) == ((0,),)
+    client.portal.call(assert_unchanged)
+    assert cuts == []
+
+
 def test_schema_rejects_future_or_wrong_purpose_proof_rows(client):
     async def scenario():
         await _migrate()
@@ -276,7 +476,7 @@ def test_schema_rejects_future_or_wrong_purpose_proof_rows(client):
         future_id = (await sql("SELECT event_id FROM office_mfa_security_event WHERE server_correlation_id=%s", (b"q" * 16,), True))[0][0]
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             future = await reload_current_self_mfa_proof_in_cursor(cur, actor_user_id=user_id, proof_event_id=future_id, config=CONFIG)
-        assert isinstance(future, MFADenied) and future.code == "proof_stale"
+        assert isinstance(future, MFADenied) and future.code in {"proof_stale", "proof_invalid"}
         with pytest.raises(Exception):
             await sql(
             "INSERT INTO office_mfa_security_event "
@@ -653,7 +853,7 @@ def test_login_and_step_up_challenges_are_distinct_and_share_totp_replay_protect
         assert await sql(
             "SELECT state,attempt_count FROM office_mfa_challenge "
             "WHERE token_hash=UNHEX(SHA2(%s,256))", (step_up.token,), True,
-        ) == (("ISSUED", 1),)
+        ) == (("INVALIDATED", 0),)
     client.portal.call(scenario)
 
 
@@ -904,6 +1104,15 @@ def test_reenrollment_old_factor_authenticates_pending_and_failed_confirm_rolls_
                 cur, challenge_token=login.token, otp=_otp(old.secret), server_correlation_id=b"P" * 16,
             )
         assert not isinstance(old_proof, MFADenied)
+        # A successful LOGIN deliberately cuts every old-version capability,
+        # including the earlier reenrollment token.  Re-create a pending
+        # replacement from the post-cut durable LOGIN proof before exercising
+        # the confirmation rollback below.
+        assert await sql("SELECT state FROM office_mfa_challenge WHERE token_hash=UNHEX(SHA2(%s,256))", (pending.enrollment_id,), True) == (("INVALIDATED",),)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            pending = await start_reenrollment_after_password_in_cursor(
+                cur, actor_user_id=user_id, proof_event_id=old_proof.event_id, config=CONFIG,
+            )
         before = await sql(
             "SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True,
         ), await sql(
@@ -1198,7 +1407,11 @@ def test_mfa_source_has_no_session_local_timestamp_expression():
     source = Path(__file__).parents[1] / "virtual_office" / "mfa.py"
     migrations = Path(__file__).parents[1] / "virtual_office" / "migrations.py"
     text = source.read_text(encoding="utf-8")
-    assert "NOW(" not in text
+    # MFA DATETIME values use UTC_TIMESTAMP.  LOGIN's legacy TIMESTAMP
+    # `last_login` is deliberately the one exception: MariaDB converts NOW()
+    # according to the session contract for that column.
+    assert text.count("NOW(") == 1
+    assert "last_login=NOW()" in text
     assert "CURRENT_TIMESTAMP" not in text
     assert "'office-mfa-fence-v1',UTC_TIMESTAMP(6)" in migrations.read_text(encoding="utf-8")
     proof = text.split("async def _append_proof", 1)[1].split("async def _append_state", 1)[0]

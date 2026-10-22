@@ -7,6 +7,7 @@ from db.connection import get_pool
 from .capabilities import ADMIN_OPERATIONS, OfficeOperation, grant_permits, operation_requires_project
 from .models import OfficeDecision
 from . import repository
+from .mfa import MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor, reload_current_self_mfa_verified_in_cursor
 
 
 def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None,
@@ -38,18 +39,73 @@ async def _cursor_from(pool):
 
 
 async def authorize_office(pool, actor_user_id: int, operation: OfficeOperation, project_id: int | None = None,
-                           recipient_group_id: int | None = None, require_recent_mfa: bool = False) -> OfficeDecision:
+                           recipient_group_id: int | None = None, require_recent_mfa: bool = False,
+                           mfa_proof_event_id: int | None = None, mfa_config: MFAConfig | None = None) -> OfficeDecision:
     """Resolve a fresh, immutable Office-only decision from database state."""
     _validate(actor_user_id, operation, project_id, recipient_group_id)
     async with _cursor_from(pool) as cur:
-        return await _authorize(cur, actor_user_id, operation, project_id, recipient_group_id, require_recent_mfa, False)
+        decision = await _authorize(cur, actor_user_id, operation, project_id, recipient_group_id, require_recent_mfa, False)
+        return await _apply_mfa_requirement(cur, decision, require_recent_mfa, mfa_proof_event_id, mfa_config)
 
 
 async def authorize_office_in_cursor(cur, actor_user_id: int, operation: OfficeOperation, project_id: int | None = None,
-                                     recipient_group_id: int | None = None, require_recent_mfa: bool = False) -> OfficeDecision:
+                                     recipient_group_id: int | None = None, require_recent_mfa: bool = False,
+                                     mfa_proof_event_id: int | None = None, mfa_config: MFAConfig | None = None) -> OfficeDecision:
     """Re-resolve under the caller's transaction locks before any mutation."""
     _validate(actor_user_id, operation, project_id, recipient_group_id)
-    return await _authorize(cur, actor_user_id, operation, project_id, recipient_group_id, require_recent_mfa, True)
+    decision = await _authorize(cur, actor_user_id, operation, project_id, recipient_group_id, require_recent_mfa, True)
+    return await _apply_mfa_requirement(cur, decision, require_recent_mfa, mfa_proof_event_id, mfa_config)
+
+
+async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_mfa: bool,
+                                 proof_event_id: int | None, config: MFAConfig | None) -> OfficeDecision:
+    """Apply the role-derived MFA rule after canonical grants are resolved.
+
+    ``require_recent_mfa`` is retained for compatible callers, but only adds a
+    requirement.  It cannot turn a role-derived requirement off.
+    """
+    if not decision.allowed:
+        return decision
+    privileged_view = (
+        decision.operation == OfficeOperation.VIEW_PROJECT.value
+        and (decision.global_role in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}
+             or decision.grant_role == "PROJECT_ADMIN")
+    )
+    # A professional approver is privileged even when their ordinary project
+    # grant says COLLABORATOR.  Resolve this current, indexed grant rather
+    # than allowing the global-role shortcut to hide it.
+    professional_view = False
+    if decision.operation == OfficeOperation.VIEW_PROJECT.value and decision.project_id is not None:
+        professional = await repository.fetch_professional_grant(
+            cur, decision.project_id, decision.actor_user_id,
+            OfficeOperation.PROFESSIONAL_ACTION, for_update=False,
+        )
+        professional_view = professional is not None and professional["status"] == "ACTIVE"
+    derived_recent = decision.operation != OfficeOperation.VIEW_PROJECT.value
+    need_verified = privileged_view or professional_view or derived_recent
+    need_recent = derived_recent or require_recent_mfa
+    if not need_verified:
+        return decision
+    if config is None or type(proof_event_id) is not int or proof_event_id < 1:
+        return _decision(False, "office_mfa_required", decision.actor_user_id,
+                         OfficeOperation(decision.operation), decision.requested_project_id,
+                         decision.tenant_id, decision.global_role,
+                         decision.audience, decision.grant_role,
+                         decision.recipient_group_id, decision.project_id)
+    proof = await (
+        reload_current_self_mfa_proof_in_cursor(
+            cur, actor_user_id=decision.actor_user_id, proof_event_id=proof_event_id, config=config,
+        ) if need_recent else reload_current_self_mfa_verified_in_cursor(
+            cur, actor_user_id=decision.actor_user_id, proof_event_id=proof_event_id,
+        )
+    )
+    if isinstance(proof, MFADenied):
+        return _decision(False, "office_mfa_required", decision.actor_user_id,
+                         OfficeOperation(decision.operation), decision.requested_project_id,
+                         decision.tenant_id, decision.global_role,
+                         decision.audience, decision.grant_role,
+                         decision.recipient_group_id, decision.project_id)
+    return decision
 
 
 async def _authorize(cur, actor, operation, project, recipient_group, require_recent_mfa, locked):
@@ -70,8 +126,6 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         return _decision(False, "office_account_class_denied", actor, operation, project, tenant)
     if profile_status != "ACTIVE" or global_role not in {"COLLABORATOR", "GENERAL_ADMIN", "OFFICE_SUPERUSER"}:
         return _decision(False, "office_profile_missing", actor, operation, project, tenant)
-    if require_recent_mfa:
-        return _decision(False, "office_mfa_required", actor, operation, project, tenant, global_role)
     if project is not None:
         scope = await repository.fetch_project_scope(cur, project, for_update=locked)
         if scope is None:

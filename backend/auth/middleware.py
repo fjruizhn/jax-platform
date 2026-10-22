@@ -88,6 +88,16 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
     # manda al login); una válida con la marca, 403 (la manda al cambio).
     if cambio_pendiente and not admite_cambio_pendiente:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CAMBIO_DE_PASSWORD_REQUERIDO)
+    proof_id = payload.get("mfa_proof_event_id")
+    mfa_version = payload.get("mfa_version")
+    mfa_at = payload.get("mfa_at")
+    # Old claims are safely no-MFA.  A partial or malformed new set is also
+    # no-MFA; a signed browser token never creates authority by parsing alone.
+    if (type(proof_id) is not int or proof_id < 1 or type(mfa_version) is not int
+            or mfa_version < 0 or type(mfa_at) is not int or mfa_at < 0):
+        proof_id = None
+        mfa_version = 0
+        mfa_at = None
     return AuthUser(
         user_id=str(user_id),
         tenant_id=str(tenant_id_base),
@@ -96,6 +106,9 @@ async def verificar_sesion(payload: dict, tipo: str, *, admite_cambio_pendiente:
         token_version=int(tv_base),
         must_change_password=bool(cambio_pendiente),
         account_class=account_class,
+        mfa_proof_event_id=proof_id,
+        mfa_version=mfa_version,
+        mfa_at=mfa_at,
     )
 
 
@@ -108,7 +121,8 @@ async def reverificar_sesion(user: AuthUser) -> AuthUser:
     `user.token_version` es la versión del token (la primera verificación exige
     que coincida con la base). Lanza lo mismo que verificar_sesion."""
     return await verificar_sesion(
-        {"type": "access", "user_id": user.user_id, "tenant_id": user.tenant_id, "tv": user.token_version},
+        {"type": "access", "user_id": user.user_id, "tenant_id": user.tenant_id, "tv": user.token_version,
+         "mfa_proof_event_id": user.mfa_proof_event_id, "mfa_version": user.mfa_version, "mfa_at": user.mfa_at},
         "access",
     )
 

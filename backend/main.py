@@ -2,7 +2,9 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from auth.office_barrier import OfficeSurfaceBarrierMiddleware
@@ -263,6 +265,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
+    """MFA bearer/OTP/password validation must never echo a submitted secret."""
+    if request.url.path.startswith("/api/auth/mfa/"):
+        return JSONResponse(
+            status_code=422, content={"detail": "mfa_invalid_request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(status_code=422, content={"detail": _exc.errors()})
 
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).

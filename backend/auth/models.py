@@ -21,6 +21,14 @@ class LoginResponse(BaseModel):
     account_class: str = "INTERNAL"
 
 
+class MFALoginChallengeResponse(BaseModel):
+    """A password-success response which intentionally carries no session."""
+    mfa_required: Literal[True] = True
+    challenge_token: str
+    expires_at: str
+    token_type: Literal["mfa_challenge"] = "mfa_challenge"
+
+
 class RefreshResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -45,3 +53,8 @@ class AuthUser(BaseModel):
     # Only verificar_sesion may mint a known class from jax_users. A direct
     # construction is unclassified and cannot pass the classic stream guard.
     account_class: Literal["INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"] | None = None
+    # These claims are advisory transport references only.  Office authority
+    # reloads the event and versions from the database before allowing work.
+    mfa_proof_event_id: int | None = None
+    mfa_version: int = 0
+    mfa_at: int | None = None

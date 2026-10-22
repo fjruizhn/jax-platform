@@ -208,7 +208,7 @@ def _llamadas_que_admiten_la_marca(arbol):
 
 
 def test_nadie_mas_admite_la_marca():
-    """Tres lugares admiten la marca: la dependencia permisiva (que usan
+    """La marca sólo cruza las superficies que pueden resolverla: la dependencia permisiva (que usan
     /me y /me/password), /refresh y /logout. Fix ronda 1 de la review: antes
     contaba el texto exacto `admite_cambio_pendiente=True`, que `= True` con
     espacios o `**{...}` esquivaban."""
@@ -229,6 +229,10 @@ def test_nadie_mas_admite_la_marca():
         # de refresh y quien tiene la marca también tiene que poder salir.
         # Cualquier otro opt-in nuevo sigue rompiendo este test.
         ("api/auth.py", "logout"),
+        # The Office barrier is not an endpoint opt-in.  It must classify a
+        # pending-password bearer before body/route work, then lets the route
+        # dependency enforce its own finite allowlist.
+        ("auth/office_barrier.py", "dispatch"),
     }
 
 
