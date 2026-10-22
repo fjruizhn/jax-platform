@@ -18,8 +18,13 @@ describe('office invitation client', () => {
     expect(api.delete).toHaveBeenCalledWith('/virtual-office/projects/12/invitations/44', { params: { expected_version: 3 }, headers: { 'Idempotency-Key': 'idempotency-2' } })
   })
 
-  it('posts the bearer only in the JSON body, never in a URL', async () => {
-    await officeInvitationsApi.accept({ token: 'opaque-bearer', password: 'new-password' })
-    expect(api.post).toHaveBeenCalledWith('/virtual-office/invitations/accept', { token: 'opaque-bearer', password: 'new-password' })
+  it('binds an existing acceptance to its captured access token, never a later store token', async () => {
+    await officeInvitationsApi.accept({ token: 'opaque-bearer' }, { accessToken: 'access-a' })
+    expect(api.post).toHaveBeenCalledWith('/virtual-office/invitations/accept', { token: 'opaque-bearer' }, { headers: { Authorization: 'Bearer access-a' } })
+  })
+
+  it('posts a new-account bearer only in the JSON body and explicitly suppresses session auth', async () => {
+    await officeInvitationsApi.accept({ token: 'opaque-bearer', password: 'new-password' }, { accessToken: null })
+    expect(api.post).toHaveBeenCalledWith('/virtual-office/invitations/accept', { token: 'opaque-bearer', password: 'new-password' }, { headers: {}, _officeInvitationNoAuth: true })
   })
 })

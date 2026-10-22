@@ -30,5 +30,9 @@ export const officeProjectsApi = {
 export const officeInvitationsApi = {
   issue: (projectId, payload, idempotencyKey) => api.post(`/virtual-office/projects/${projectId}/invitations`, payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
   revoke: (projectId, invitationId, expectedVersion, idempotencyKey) => api.delete(`/virtual-office/projects/${projectId}/invitations/${invitationId}`, { params: { expected_version: expectedVersion }, headers: { 'Idempotency-Key': idempotencyKey } }),
-  accept: (payload) => api.post('/virtual-office/invitations/accept', payload),
+  accept: (payload, { accessToken = null, signal } = {}) => api.post('/virtual-office/invitations/accept', payload, {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    ...(accessToken ? {} : { _officeInvitationNoAuth: true }),
+    ...(signal ? { signal } : {}),
+  }),
 }

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import { officeInvitationsApi } from '../api/virtualOffice'
 import PasswordInput from '../components/PasswordInput'
+import { problemaDePassword } from '../lib/reglasPassword'
 import { TAMANO_BOTON_ACCION } from '../tema/botones'
 
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
@@ -24,6 +25,8 @@ export default function OfficeInvitation() {
   const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
+  const [passwordError, setPasswordError] = useState(null)
+  const requestRef = useRef(null)
 
   // La URL de correo usa fragmento para que el bearer no llegue al servidor.
   // Tras leerlo lo quitamos además del historial visible y lo mantenemos sólo
@@ -32,30 +35,51 @@ export default function OfficeInvitation() {
     if (token && window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname)
   }, [token])
 
+  // Never let a request initiated as A finish against B. Abort is best effort
+  // at the network boundary; the server still treats a lost result as unknown.
+  useEffect(() => {
+    requestRef.current?.abort()
+    requestRef.current = null
+    setLoading(false)
+    setResult(null)
+  }, [sessionEpoch, sessionToken, user?.user_id])
+
   const useExisting = Boolean(user && sessionToken)
   const canSubmit = !sessionRestoring && token && (useExisting || (newAccount && password.length > 0 && password === confirm))
 
   async function submit(event) {
     event.preventDefault()
     if (!canSubmit || loading) return
+    const passwordProblem = !useExisting ? problemaDePassword(password) : null
+    if (passwordProblem) {
+      setPasswordError(passwordProblem)
+      return
+    }
+    if (!useExisting && password !== confirm) return
     const snapshot = { epoch: sessionEpoch, token: sessionToken, userId: user?.user_id ?? null }
     const sameSession = () => {
       const current = useJaxStore.getState()
       return current._sessionEpoch === snapshot.epoch && current.token === snapshot.token && (current.user?.user_id ?? null) === snapshot.userId
     }
+    const controller = new AbortController()
+    requestRef.current = controller
     setLoading(true)
     setResult(null)
+    setPasswordError(null)
     try {
       const payload = useExisting ? { token } : { token, password }
-      await officeInvitationsApi.accept(payload)
-      if (!sameSession()) return
+      await officeInvitationsApi.accept(payload, { accessToken: useExisting ? snapshot.token : null, signal: controller.signal })
+      if (!sameSession() || requestRef.current !== controller) return
       setPassword('')
       setConfirm('')
       setResult('accepted')
     } catch {
-      if (sameSession()) setResult('error')
+      if (sameSession() && requestRef.current === controller) setResult('error')
     } finally {
-      if (sameSession()) setLoading(false)
+      if (requestRef.current === controller) {
+        requestRef.current = null
+        if (sameSession()) setLoading(false)
+      }
     }
   }
 
@@ -73,11 +97,12 @@ export default function OfficeInvitation() {
             </> : <>
               <p className="text-sm text-texto-suave">{t.officeInvitation.newPasswordIntro}</p>
               <label className="block text-sm text-texto-suave" htmlFor="office-invitation-password">{t.officeInvitation.newPassword}
-                <PasswordInput id="office-invitation-password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" className={`${INPUT} mt-1`} required />
+                <PasswordInput id="office-invitation-password" value={password} onChange={(event) => { setPassword(event.target.value); setPasswordError(null) }} autoComplete="new-password" aria-invalid={Boolean(passwordError)} aria-describedby={passwordError ? 'office-invitation-password-error' : undefined} className={`${INPUT} mt-1`} required />
               </label>
               <label className="block text-sm text-texto-suave" htmlFor="office-invitation-password-confirm">{t.officeInvitation.confirmPassword}
                 <PasswordInput id="office-invitation-password-confirm" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" className={`${INPUT} mt-1`} required />
               </label>
+              {passwordError && <p id="office-invitation-password-error" role="alert" className="text-sm text-peligro">{passwordError === 'corta' ? t.resetPasswordShort : t.resetPasswordLong}</p>}
               {password && confirm && password !== confirm && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.passwordMismatch}</p>}
             </>}
           </>}

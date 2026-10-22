@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { I18nProvider } from '../../i18n/index.jsx'
 
@@ -62,5 +62,16 @@ describe('OfficeInvitationManager', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enviar invitación' }))
     expect(await screen.findByRole('status')).toHaveTextContent('La invitación se guardó, pero no se pudo actualizar la lista.')
     expect(screen.queryByText('No se pudo completar la operación de invitación.')).not.toBeInTheDocument()
+  })
+
+  it('renders a revoke mutation failure inside the still-active top confirmation', async () => {
+    invitations.revoke.mockRejectedValue(new Error('rejected'))
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
+    const confirm = screen.getByRole('dialog', { name: 'Revocar invitación' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Revocar invitación' }))
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent('No se pudo completar la operación de invitación.')
+    expect(screen.getByRole('dialog', { name: 'Gestionar invitaciones' }).querySelector('[data-office-invitation-content]')).toHaveAttribute('inert')
   })
 })

@@ -17,6 +17,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
   const [audience, setAudience] = useState('INTERNAL')
   const [revoke, setRevoke] = useState(null)
   const [error, setError] = useState(null)
+  const [revokeError, setRevokeError] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
   const [busy, setBusy] = useState(false)
   const issueKey = useRef(null)
@@ -54,13 +55,14 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
     revokeKey.current ??= crypto.randomUUID()
     setBusy(true)
     setError(null)
+    setRevokeError(null)
     setRefreshError(null)
     try {
       await officeInvitationsApi.revoke(projectId, revoke.id, revoke.version, revokeKey.current)
       revokeKey.current = null
       setRevoke(null)
     } catch {
-      setError(t.officeInvitation.managerError)
+      setRevokeError(t.officeInvitation.managerError)
       setBusy(false)
       return
     }
@@ -101,6 +103,7 @@ export default function OfficeInvitationManager({ projectId, invitations = [], e
     </Dialogo>}
     {revoke && <Dialogo idTitulo="office-invitation-revoke" titulo={t.officeInvitation.revoke} onCerrar={() => { if (!busy) setRevoke(null) }}>
       <p className="text-sm text-texto-suave">{t.officeInvitation.revokePrompt(revoke.email)}</p>
+      {revokeError && <p role="alert" className="mt-3 text-sm text-peligro">{revokeError}</p>}
       <div className="mt-5 flex flex-wrap justify-end gap-2">
         <button type="button" disabled={busy} onClick={() => setRevoke(null)} className={BUTTON}>{t.officeInvitation.cancel}</button>
         <button type="button" disabled={busy} onClick={confirmRevoke} className={`${TAMANO_BOTON_ACCION} rounded bg-peligro px-3 text-sobre-color disabled:opacity-60`}>{t.officeInvitation.revoke}</button>

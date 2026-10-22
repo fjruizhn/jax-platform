@@ -69,6 +69,12 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
+  // A new-account invitation must remain a bearer-only request even if an
+  // unrelated session finishes restoring between click and dispatch.
+  if (config._officeInvitationNoAuth) {
+    config._epoch = useJaxStore.getState()._sessionEpoch
+    return config
+  }
   const token = useJaxStore.getState().token
   if (token && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${token}`

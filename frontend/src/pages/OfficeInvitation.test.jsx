@@ -36,7 +36,7 @@ describe('Office invitation acceptance', () => {
     fireEvent.change(screen.getByLabelText('Contraseña nueva'), { target: { value: 'una-clave-segura' } })
     fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: 'una-clave-segura' } })
     fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
-    await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer', password: 'una-clave-segura' }))
+    await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer', password: 'una-clave-segura' }, expect.objectContaining({ accessToken: null })))
     expect(screen.getByRole('status')).toHaveTextContent('La invitación fue aceptada.')
   })
 
@@ -47,7 +47,7 @@ describe('Office invitation acceptance', () => {
     expect(screen.getByText('Vas a aceptar esta invitación con ana@example.test.')).toBeInTheDocument()
     expect(screen.queryByLabelText('Contraseña nueva')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
-    await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer' }))
+    await waitFor(() => expect(invitations.accept).toHaveBeenCalledWith({ token: 'opaque-bearer' }, expect.objectContaining({ accessToken: 'session-token' })))
   })
 
   it('waits for session restoration before choosing new-account or existing-account acceptance', async () => {
@@ -69,6 +69,20 @@ describe('Office invitation acceptance', () => {
     await act(async () => resolve({ data: { accepted: true } }))
     await waitFor(() => expect(screen.getByText('Vas a aceptar esta invitación con otra@example.test.')).toBeInTheDocument())
     expect(screen.queryByText('La invitación fue aceptada.')).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Aceptar invitación' })).toBeEnabled()
+  })
+
+  it.each([
+    ['corta', 'siete77', 'Mínimo 8 caracteres'],
+    ['larga', 'ñ'.repeat(37), 'La contraseña es demasiado larga (máximo 72 bytes; los acentos ocupan 2).'],
+  ])('rejects a %s new-account password with the shared password rule', async (_kind, password, message) => {
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Crear mi cuenta' }))
+    fireEvent.change(screen.getByLabelText('Contraseña nueva'), { target: { value: password } })
+    fireEvent.change(screen.getByLabelText('Confirmar contraseña'), { target: { value: password } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar invitación' }))
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(invitations.accept).not.toHaveBeenCalled()
   })
 
   it('fails closed when the fragment has no token', () => {
