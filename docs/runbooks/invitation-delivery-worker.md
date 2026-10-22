@@ -9,11 +9,13 @@ un snapshot completo del backend con venv propio. El worker nunca ejecuta el
 checkout `jaxsvc`-escribible. Con el SHA aprobado exacto, ejecuta como root:
 
 ```bash
+set -euo pipefail
 SHA=<sha-aprobado-de-40-hex>
 ORIGIN=https://github.com/fjruizhn/jax-platform.git
 WHEELHOUSE=/opt/axioma-office-invitation-worker-wheelhouse
 LOCK=$WHEELHOUSE/worker-requirements.lock
 SOURCE=$(mktemp -d)
+trap 'rm -rf "$SOURCE"' EXIT
 git -C "$SOURCE" init -q
 git -C "$SOURCE" remote add origin "$ORIGIN"
 GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" fetch --no-tags origin "$SHA"
@@ -31,15 +33,17 @@ install_from_audited_commit () {
 install_from_audited_commit ops/virtualoffice/invitation-worker-runtime-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-readiness 0755
 install_from_audited_commit ops/virtualoffice/install-invitation-worker-release.sh /usr/local/libexec/axioma-office-invitation-worker-install 0750
 install_from_audited_commit ops/virtualoffice/provision-invitation-worker.sh /usr/local/libexec/axioma-office-invitation-worker-provision 0750
+install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
 sudo /usr/local/libexec/axioma-office-invitation-worker-install --origin "$ORIGIN" --revision "$SHA" --wheelhouse "$WHEELHOUSE" --lock "$LOCK"
 install_from_audited_commit ops/virtualoffice/invitation-worker.service /etc/systemd/system/axioma-office-invitation-worker.service 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker.timer /etc/systemd/system/axioma-office-invitation-worker.timer 0644
-rm -rf "$SOURCE"
 systemctl daemon-reload
-sudo -u jaxinvite /usr/local/libexec/axioma-office-invitation-worker-readiness
+/usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE"
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /usr/local/libexec/axioma-office-invitation-worker-readiness
 systemd-run --wait --pipe --working-directory=/opt/axioma-office-invitation-worker/backend --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_smtp_preflight
 systemctl enable --now axioma-office-invitation-worker.timer
+/usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE" --effective
 ```
 
 El wheelhouse y `worker-requirements.lock` son una entrada de suministro separada,
@@ -62,7 +66,7 @@ worker falla antes de reclamar una fila si falta configuración de invitación o
 Salud y recuperación:
 
 ```bash
-sudo -u jaxinvite /usr/local/libexec/axioma-office-invitation-worker-readiness
+systemd-run --wait --pipe --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /usr/local/libexec/axioma-office-invitation-worker-readiness
 systemd-run --wait --pipe --working-directory=/opt/axioma-office-invitation-worker/backend --property=User=jaxinvite --property=EnvironmentFile=/etc/jax/invitation-worker.env /opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_worker_health
 systemctl status axioma-office-invitation-worker.timer axioma-office-invitation-worker.service
 ```

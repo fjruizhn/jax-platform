@@ -15,9 +15,9 @@ _CONFIG = InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test",
 def test_delivery_batch_config_is_required_and_bounded():
     with pytest.raises(ValueError):
         InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 0)
-    InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 100)
+    InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 25)
     with pytest.raises(ValueError):
-        InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 101)
+        InvitationConfig(60, 30, 10, 10, "https://virtualoffice.example.test", 26)
 
 
 def test_worker_preflight_fails_before_it_can_claim(monkeypatch):

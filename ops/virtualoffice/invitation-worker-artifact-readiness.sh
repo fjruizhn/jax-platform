@@ -31,6 +31,14 @@ grep -Fq 'chown -R root:root' "$installer"
 if [[ "$effective" == --effective ]]; then
   systemctl is-enabled axioma-office-invitation-worker.timer | grep -qx enabled
   systemctl show axioma-office-invitation-worker.service -p User | grep -Fqx 'User=jaxinvite'
+  systemctl show axioma-office-invitation-worker.service -p Group | grep -Fqx 'Group=jaxinvite'
+  systemctl show axioma-office-invitation-worker.service -p WorkingDirectory | grep -Fqx 'WorkingDirectory=/opt/axioma-office-invitation-worker/backend'
+  systemctl show axioma-office-invitation-worker.service -p ExecStart | grep -Fq 'virtual_office.invitation_delivery_worker'
+  systemctl show axioma-office-invitation-worker.service -p ExecStartPre | grep -Fq 'axioma-office-invitation-worker-readiness'
+  systemctl show axioma-office-invitation-worker.service -p EnvironmentFiles | grep -Fq '/etc/jax/invitation-worker.env'
+  systemctl show axioma-office-invitation-worker.service -p OnFailure | grep -Fq 'aviso-fallo@'
+  systemctl show axioma-office-invitation-worker.service -p UMask | grep -Fqx 'UMask=0077'
+  systemctl show axioma-office-invitation-worker.service -p TimeoutStartUSec | grep -Fqx 'TimeoutStartUSec=3h'
   systemctl show axioma-office-invitation-worker.service -p NoNewPrivileges | grep -Fqx 'NoNewPrivileges=yes'
   systemctl show axioma-office-invitation-worker.service -p PrivateDevices | grep -Fqx 'PrivateDevices=yes'
   systemctl show axioma-office-invitation-worker.service -p CapabilityBoundingSet | grep -Fqx 'CapabilityBoundingSet='

@@ -31,9 +31,8 @@ LimitCORE=0
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0077
-# SMTP limits each socket operation to 10 seconds.  A delivery uses at most
-# seven bounded protocol operations; the configuration caps a batch at 100,
-# leaving margin below this deadline for DB settlement and finalization.
+# SMTP timeouts apply per protocol exchange, including repeated AUTH
+# challenges.  A 25-row cap leaves conservative room under this deadline.
 TimeoutStartSec=3h
 KillMode=control-group
 
