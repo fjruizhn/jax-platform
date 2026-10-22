@@ -96,6 +96,33 @@ describe('MFA session boundary', () => {
     await useJaxStore.getState().restoreSession()
     expect(useJaxStore.getState().mfaRecoveryCodes).toBeNull()
   })
+  it('atomically drops A account state and object URLs when B establishes a session', () => {
+    vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+    useJaxStore.setState({
+      token: 'a', user: { user_id: 1 }, proyectoActivo: { id: 1, nombre: 'A' },
+      messages: [{ attachment: { type: 'image', base64: 'blob:a' } }],
+      activePipelines: { a: { status: 'running' } }, historial: { pipelines: [{ id: 'a' }], hasMore: true, cargando: false, error: false },
+    })
+    useJaxStore.getState().establecerSesion({ access_token: 'b', user_id: 2 })
+    const state = useJaxStore.getState()
+    expect(state.user.user_id).toBe(2)
+    expect(state.proyectoActivo).toBeNull()
+    expect(state.messages).toEqual([])
+    expect(state.activePipelines).toEqual({})
+    expect(state.historial.pipelines).toEqual([])
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a')
+  })
+  it('does not let a late A restore replace a newer MFA B session', async () => {
+    let resolveRefresh
+    api.post.mockReturnValue(new Promise((resolve) => { resolveRefresh = resolve }))
+    const restoring = useJaxStore.getState().restoreSession()
+    useJaxStore.getState().establecerSesion({ access_token: 'b', user_id: 2, account_class: 'OFFICE_INTERNAL' })
+    resolveRefresh({ data: { access_token: 'a' } })
+    await restoring
+    expect(useJaxStore.getState().token).toBe('b')
+    expect(useJaxStore.getState().user.user_id).toBe(2)
+    expect(api.get).not.toHaveBeenCalled()
+  })
 })
 
 // Mi cuenta (2026-09-12, admin usuarios etapa 4): cambiar la propia
