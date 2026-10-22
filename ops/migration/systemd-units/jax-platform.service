@@ -10,13 +10,10 @@ Wants=docker.service jax-las-manos.service
 Environment="PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Type=simple
 User=jaxweb
-WorkingDirectory=/opt/jax-platform-pair/current/jax-platform/backend
+WorkingDirectory=/
 # Runtime receives only the filtered web configuration and DML credential.
 EnvironmentFile=/etc/jax/runtime.env
-ExecStartPre=/usr/local/libexec/jax-platform-pair-artifact-readiness
-# /usr/bin/env is in ExecStart, after EnvironmentFile resolution, so a stale
-# JAX_REPO_PATH in runtime.env cannot replace the paired nucleus.
-ExecStart=/usr/bin/env JAX_REPO_PATH=/opt/jax-platform-pair/current/jax /opt/jax-platform-pair/current/jax-platform/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=${JAX_TRUSTED_PROXIES} --no-access-log --log-level warning
+ExecStart=/usr/local/libexec/jax-platform-pair-exec web
 Restart=on-failure
 RestartSec=5
 

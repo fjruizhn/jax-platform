@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import json
 import os
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-from ops.migration import pair_artifact_readiness as readiness
+_MODULE = Path(__file__).resolve().parents[2] / "ops" / "migration" / "pair_artifact_readiness.py"
+_SPEC = importlib.util.spec_from_file_location("pair_artifact_readiness", _MODULE)
+assert _SPEC and _SPEC.loader
+readiness = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(readiness)
 
 
 def _pair(tmp_path: Path) -> tuple[Path, int, int]:
@@ -81,8 +86,7 @@ def test_rejects_manifest_revision_downgrade_or_wrong_pair(tmp_path: Path) -> No
 
 def test_platform_units_bind_both_processes_to_the_same_pair() -> None:
     root = Path(__file__).resolve().parents[2]
-    for name in ("jax-platform.service", "jax-platform-migrate.service"):
+    for name, mode in (("jax-platform.service", "web"), ("jax-platform-migrate.service", "migrate")):
         unit = (root / "ops" / "migration" / "systemd-units" / name).read_text(encoding="utf-8")
-        assert "WorkingDirectory=/opt/jax-platform-pair/current/jax-platform/backend" in unit
-        assert "JAX_REPO_PATH=/opt/jax-platform-pair/current/jax /opt/jax-platform-pair/current/jax-platform/backend/.venv/bin" in unit
-        assert "ExecStartPre=/usr/local/libexec/jax-platform-pair-artifact-readiness" in unit
+        assert "WorkingDirectory=/" in unit
+        assert f"ExecStart=/usr/local/libexec/jax-platform-pair-exec {mode}" in unit
