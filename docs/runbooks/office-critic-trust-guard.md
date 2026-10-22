@@ -7,7 +7,9 @@ an approval authority. The Unix socket is fixed at
 
 **Activation is deliberately disabled.** This revision returns
 `INERT_CONTRACT_PENDING` from its readiness function and refuses `run_guard`;
-the systemd unit has no install target. A later contract must define a
+the systemd contract lives only at
+`ops/virtualoffice/contracts/office-critic-trust-guard.systemd-contract.txt`,
+outside the restore/install glob. A later contract must define a
 root-owned independent expected trigger `DEFINER` and canonical `SQL_MODE`,
 then attest both under MDL. This revision must not infer either value from the
 database or `CURRENT_USER`.
@@ -62,7 +64,7 @@ back to a web principal or a file key.
 
 ## Deployment remains closed
 
-Do not install, enable, or manually start the unit in this revision. The
+Do not install, enable, or manually start a unit in this revision. The
 future activation review must specify a root-owned `/etc/jax/office-critic-
 trust-guard.env` with the dedicated database credentials, expected
 `OFFICE_CRITIC_TRUST_GUARD_PRINCIPAL`, numeric UID allowlist, and a positive,
@@ -72,3 +74,9 @@ rejection, malformed frame, signature rejection, revoked-key race,
 database-unavailable result, and the new DEFINER/SQL_MODE contract before any
 future receipt consumer is enabled. This runbook does not authorize that
 future activation, publication, or release.
+
+The activation review also needs a real MariaDB MDL/revocation-race exercise,
+a client-side check of the server UID via `SO_PEERCRED`, a strict global
+connection/concurrency limit, and table-specific grants. Do not label the
+principal "read-only": its metadata `TRIGGER` privilege can permit DDL in
+MariaDB.

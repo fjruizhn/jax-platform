@@ -7,6 +7,7 @@ import json
 import os
 import struct
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -77,6 +78,12 @@ def test_guard_is_explicitly_inert_pending_the_activation_contract() -> None:
     assert guard.guard_readiness() == {"status": "INERT_CONTRACT_PENDING"}
     with pytest.raises(GuardConfigurationError, match="inert"):
         asyncio.run(guard.run_guard())
+
+
+def test_inert_systemd_contract_cannot_be_seen_by_the_restore_unit_glob() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert not (root / "ops/migration/systemd-units/office-critic-trust-guard.service").exists()
+    assert (root / "ops/virtualoffice/contracts/office-critic-trust-guard.systemd-contract.txt").is_file()
 
 
 def test_private_socket_uses_peer_credentials_and_never_exposes_keys(tmp_path) -> None:

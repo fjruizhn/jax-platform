@@ -1,3 +1,5 @@
+# Inert deployment contract only — not an installable systemd unit.
+# A future approved activation contract may derive a unit from this text.
 [Unit]
 Description=Axioma Office critic trust guard (private evidence verifier)
 After=network-online.target
