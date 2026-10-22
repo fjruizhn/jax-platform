@@ -27,6 +27,7 @@ MODULE_CANDIDATE_DDL = (
     "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,"
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_module_candidate_identity (module_id,module_version),"
+    "UNIQUE KEY uq_office_module_candidate_release_scope (candidate_id,origin_project_id,origin_tenant_id,module_id,module_version),"
     "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),"
     "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
     "CONSTRAINT chk_office_module_candidate_identity CHECK (module_id<>'' AND module_version<>'')"
@@ -101,6 +102,7 @@ _COLUMN_SHAPES = {
 _INDEXES = {
     ("office_module_candidate", "PRIMARY"): (True, ("candidate_id",)),
     ("office_module_candidate", "uq_office_module_candidate_identity"): (True, ("module_id", "module_version")),
+    ("office_module_candidate", "uq_office_module_candidate_release_scope"): (True, ("candidate_id", "origin_project_id", "origin_tenant_id", "module_id", "module_version")),
     ("office_module_candidate", "idx_office_module_candidate_origin"): (False, ("origin_project_id", "origin_tenant_id", "candidate_id")),
     ("office_module_candidate_revision", "PRIMARY"): (True, ("candidate_revision_id",)),
     ("office_module_candidate_revision", "uq_office_module_candidate_revision_no"): (True, ("candidate_id", "revision_no")),
@@ -121,6 +123,7 @@ _FOREIGN_KEYS = {
 _PREDECESSOR_CANDIDATE_COLUMNS = ("candidate_id", "module_id", "module_version", "created_at")
 _PREDECESSOR_EVIDENCE_FK_INDEX = "fk_office_module_candidate_evidence_revision"
 _RELEASE_IDENTITY_INDEX = ("office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity")
+_RELEASE_SCOPE_INDEX = ("office_module_candidate", "uq_office_module_candidate_release_scope")
 
 
 async def _index_set(cur) -> dict[tuple[str, str], tuple[bool, tuple[str, ...]]]:
@@ -203,6 +206,7 @@ async def _upgrade_empty_candidate_predecessor(cur) -> None:
     # schema drift into an unreviewed data migration.
     expected_indexes = dict(_INDEXES)
     expected_indexes.pop(("office_module_candidate", "idx_office_module_candidate_origin"))
+    expected_indexes.pop(_RELEASE_SCOPE_INDEX)
     expected_indexes.pop(("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"))
     expected_indexes[("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)] = (
         False, ("candidate_revision_id", "candidate_id"))
@@ -231,6 +235,7 @@ async def _upgrade_missing_release_identity_index(cur) -> None:
         raise RuntimeError("Office module candidate interrupted predecessor has rows")
     expected = dict(_INDEXES)
     expected.pop(_RELEASE_IDENTITY_INDEX)
+    expected.pop(_RELEASE_SCOPE_INDEX)
     named = ("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate")
     implicit = ("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)
     if implicit in found:
@@ -243,6 +248,24 @@ async def _upgrade_missing_release_identity_index(cur) -> None:
         "ALTER TABLE office_module_candidate_revision "
         "ADD UNIQUE KEY uq_office_module_candidate_revision_release_identity "
         "(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest)"
+    )
+
+
+async def _upgrade_missing_release_scope_index(cur) -> None:
+    """Add the one composite parent key only from the exact prior cutpoint."""
+    found = await _index_set(cur)
+    if _RELEASE_SCOPE_INDEX in found:
+        return
+    expected = dict(_INDEXES)
+    expected.pop(_RELEASE_SCOPE_INDEX)
+    # This is an additive index, but it still defines a future authority
+    # boundary.  Do not use its creation to normalize any other candidate
+    # drift, even if all existing rows would happen to fit the new key.
+    await assert_module_candidate_storage_metadata(cur, expected_indexes_override=expected)
+    await cur.execute(
+        "ALTER TABLE office_module_candidate "
+        "ADD UNIQUE KEY uq_office_module_candidate_release_scope "
+        "(candidate_id,origin_project_id,origin_tenant_id,module_id,module_version)"
     )
 _CHECKS = {
     "chk_office_module_candidate_identity", "chk_office_module_candidate_revision_payload",
@@ -283,6 +306,7 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
     for statement in MODULE_CANDIDATE_DDL:
         await cur.execute(statement)
     await _upgrade_missing_release_identity_index(cur)
+    await _upgrade_missing_release_scope_index(cur)
     await _canonicalize_evidence_foreign_key_index(cur)
     for table in _APPEND_ONLY:
         for operation in ("UPDATE", "DELETE"):
