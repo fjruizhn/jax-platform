@@ -206,3 +206,50 @@ Task3B COMPLETE: Sol mfa_cursor_service_audit SPEC APROBADO / QUALITY APROBADO e
 2026-10-22 · Codex · Public Office PR#229 exact `515fb675622850bac054ccd8db1a9ac0e7409972`: Sol APROBADO 0 BLOCK/MAJOR para seis cambios de pruebas de Host/fixtures, sin delta productivo. Raíz confirmó 69 pruebas del límite de adjuntos, 3 de subidas concurrentes, 19 del worker/tripwire (1 skip) y 3 DB de entrega/cancelación/contraseña. Dos builds del SHA dieron manifest SHA256 `27d55f8365cb524fbe03c5ee8ac08a1bb9b54643b5e90abba5eefbbd8df6b565`. Carga local aislada exacta con JAX `62b4eaff2470e40cdb9f15a520a59023fa4a05e9`, c=1/5/10, cero errores; aceptación p95 165.89/177.83/196.41ms, RPS 5.86/25.25/43.1; evidencia `/home/fruiz/encargos-codex/office-public-load-515fb67-20261022.json` SHA256 `8053b21afeb26c7002075478ef60cdf94c0aee817321b2bf2d23b58013a39ba1`. CI del SHA falló en el tripwire porque el test de cancelación usó `except CancelledError: pass`; se corrigió localmente usando `pytest.raises` y 16/16 del tripwire + 1/1 cancelación DB pasaron. Esa corrección y este traspaso requieren SHA, auditoría, build, carga y CI nuevos antes de producción. DNS público aún NXDOMAIN; vhost ausente. La ruta física auditada para aaPanel es `/opt/jax-office/virtualoffice.axioma-ia.io`, con configuración variante SHA256 `9b2b23abbe4b7157859509d53c630966743da8e9a4f95726f303196e44742547`. No hubo despliegue ni correo real. Fernando decidió: correo automático desde el primer día; las solicitudes de publicación pueden hacerlas PROJECT_ADMIN del proyecto sin MFA obligatorio, pero el recibo efectivo lo emite autoridad separada. Una solicitud necesita vínculo autoritativo proyecto→candidato; no habilitarla con candidate global sin ese binding. Alternativa descartada: enlace copiado como sustituto del correo y publicación centralizada en superusuario. Pendiente: CI verde del nuevo SHA, integración de PRs antecesores, restauración comprobada, smoke/carga/TLS/DNS de producción y contrato de solicitud de módulo separado de #351. Fuente: pruebas/artefactos citados, veredictos Sol en PR#229, decisión expresa de Fernando en sesión de hoy.
 
 2026-10-22 · Codex · PR#229 retarget a `master` para revisar el árbol unido: Sol RECHAZADO exacto `608c5092640fe651d8ec15fff5039de6a7252d62` (1 BLOCK: migrador DDL y web ejecutan backend/JAX desde árboles modificables; 1 MAJOR: workflow atribuía falsamente JAX `ca024c2` a #408). Se inició contrato de releases pareados JXP/JAX root-owned con atestación de bytes/propiedad y gate efectivo antes de activar; no se desplegó. Este commit corrige los dos PIN a JAX #409 `0ad257dd810eb1a6496a76eb84889a45b49a36be`, auditado Sol 0 BLOCK/MAJOR/MINOR, y actualiza el runbook de ingreso al destino `/opt/jax-office` verificado en aaPanel. El SHA JAX aún espera CI completa; el SHA nuevo de JXP exige nueva auditoría, builds, carga y CI. Alternativa descartada: conservar `git pull` + `chown jaxsvc` en el árbol ejecutado con DDL. Fuente: auditoría Sol exacta del árbol combinado, JAX PR#409 y topología aaPanel comprobada. Pendiente: finalizar el contrato de releases pareados, pruebas adversariales, CI, restauración y publicación autorizada.
+# Traspaso · secret-scan confiable · 2026-10-22
+
+- **Decisión (Fernando, 2026-10-22):** la Oficina pública debe seguir hasta
+  publicación con correo automático; este PR pequeño quita una barrera falsa
+  descubierta al validar #229.
+- **Hecho (Codex, 2026-10-22):** el workflow anterior `pull_request` ejecutaba
+  `scan-pr-secrets.py` y `known-secrets-ci.txt` desde el HEAD que intentaba
+  aprobar. Un PR podía alterar cualquiera de los dos. La revisión Sol del SHA
+  `0e224cd` también reprodujo omisiones por nombre de archivo y blobs NUL con
+  diff textual.
+- **Cambio:** `pull_request_target` ejecuta solo código y lista del SHA base
+  exacto, con `contents:read` y sin persistir credenciales; trae el HEAD solo
+  como objetos Git y verifica su SHA. El token tiene `statuses:write`
+  únicamente para poner pendiente y publicar el resultado `scan` en el HEAD
+  exacto; GitHub no cuenta el check propio de `pull_request_target` como
+  status requerido del PR. Conserva así el contexto requerido `scan`;
+  un workflow aparte ejecuta pruebas del scanner propuesto en `pull_request`
+  sin secretos. Scanner acotado y pruebas negativas. La lista
+  del HEAD no puede perder entradas ya conocidas.
+- **Verificación (Codex y auditor Sol, 2026-10-22):** SHA `5120ee74` pasó
+  22 pruebas focales, `no-fail-open-except`, compilación y `diff --check`.
+  Sol: APROBADO CON CAMBIOS, 0 BLOCK; queda una condición antes de sumar
+  colaboradores con escritura. El ruleset 21646089 se cambió y verificó
+  activo con `strict_required_status_checks_policy=true`, sin variar sus
+  demás parámetros. Snapshot y payload están en `~/encargos-codex/`.
+- **Secuencia:** auditoría independiente del SHA exacto de este PR; Fernando
+  integra los workflows reservados; el PR bootstrap no genera `scan` nuevo
+  desde la base vieja y requiere su integración explícita; rebasar #229 sobre
+  el nuevo master; probar un PR canario positivo y negativos (secreto en
+  ruta, binario/no UTF-8 y base nueva) observando pending → success/failure;
+  solo el `scan` emitido por `pull_request_target` posterior cuenta como
+  barrera de secretos de #229.
+- **Pendiente:** #229 sigue sin publicación y requiere CI, auditoría exacta,
+  respaldo/restauración, carga y comprobación de DNS/ingreso. El propietario
+  `@fjruizhn` está declarado en CODEOWNERS, pero el ruleset todavía no exige
+  su revisión: Fernando debe activar `require_code_owner_review` (y el piso de
+  aprobación que GitHub exija) para cambios de esta barrera antes de tratarla
+  como control autónomo contra colaboradores con escritura. Antes de sumar
+  writers, hará falta un emisor de
+  status dedicado que GitHub distinga de los workflows que ellos puedan crear.
+- **Carreras y logs:** el workflow cancela la corrida vieja por PR, compara
+  HEAD/base actuales antes de publicar success y mantiene `scan` pendiente o
+  en failure si cambia algo. Checkout está fijado al commit 11bd719… de v4.2.2.
+  El escáner anota un digest de ruta en vez de imprimir nombres que puedan
+  contener el secreto o caracteres de control.
+- **Alternativa descartada:** declarar válido el scan del HEAD de #229; el
+  contenido que se revisa podría cambiar el revisor y la referencia.
