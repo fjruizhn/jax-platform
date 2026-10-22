@@ -310,8 +310,10 @@ async def issue_invitation_in_cursor(
          now.replace(tzinfo=None), expires_at.replace(tzinfo=None)),
     )
     await cur.execute(
-        "INSERT INTO office_invitation (invitation_id,issuance_id,project_id,email_normalized,target_user_id) "
-        "VALUES (%s,%s,%s,%s,%s)", (invitation_id, issuance_id, project_id, normalized_email, target_user_id))
+        "INSERT INTO office_invitation (invitation_id,issuance_id,project_id,email_normalized,target_user_id,expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (invitation_id, issuance_id, project_id, normalized_email, target_user_id,
+         expires_at.replace(tzinfo=None)))
     await cur.execute(
         "INSERT INTO office_invitation_event (invitation_id,event_kind,causation_event_id,actor_user_id,bearer_token_hash,observed_outbox_state,correlation_id,authorization_event_id,invocation_digest,occurred_at) "
         "VALUES (%s,'ISSUED',NULL,%s,NULL,NULL,%s,%s,%s,UTC_TIMESTAMP(6))", (invitation_id, actor_user_id, correlation_id, authorization_event_id, mutation_digest))
@@ -796,6 +798,41 @@ async def settle_stale_invitation_claims_in_cursor(cur, *, config: InvitationCon
             relay_accepted=False, result_code="SMTP_STALE"):
             settled += 1
     return settled
+
+
+async def expire_stale_invitations_in_cursor(cur, *, config: InvitationConfig) -> int:
+    """Expire one bounded, indexed batch without rewriting relay history."""
+    await cur.execute(
+        "SELECT invitation_id FROM office_invitation "
+        "FORCE INDEX (idx_office_invitation_status_expiry) "
+        "WHERE status='ISSUED' AND expires_at < UTC_TIMESTAMP(6) "
+        "ORDER BY expires_at,invitation_id LIMIT %s",
+        (config.expiry_sweep_batch_limit,))
+    candidates = await cur.fetchall()
+    expired = 0
+    for (invitation_id,) in candidates:
+        # Re-read and lock the lifecycle row; a concurrent acceptance or
+        # revocation may have won after the indexed candidate scan.
+        await cur.execute(
+            "SELECT i.status,i.version,i.expires_at,s.correlation_id "
+            "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+            "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
+        row = await cur.fetchone()
+        if row is None:
+            continue
+        status, version, expires_at, correlation_id = row
+        await cur.execute(
+            "SELECT event_id FROM office_invitation_event "
+            "WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
+        issued = await cur.fetchone()
+        if issued is None:
+            raise InvitationError("office_invitation_integrity", status_code=503)
+        if await _expire_if_needed(
+            cur, invitation_id=str(invitation_id), status=status, version=int(version),
+            issued_event_id=int(issued[0]), correlation_id=correlation_id,
+            expires_at=expires_at):
+            expired += 1
+    return expired
 
 
 async def deliver_one_invitation() -> bool:
