@@ -40,3 +40,17 @@ The filesort is caused by `ORDER BY created_at` beyond the frozen index; no sche
 made in this task, and the result is reported for the serialized schema review.
 
 Parent independent run2026-10-21:11passed371warnings1.31s, disposableMariaDB33991. Not route activation or comprehensive approval.
+
+## Service fix round 1 · 2026-10-21
+
+Service-only correction of `ffb6eb529e069c547bf0702c10bec3d8c3f4858b` following the
+binding 3A2 cursor specification and Sol delivery-path ruling. It closes the recovery-origin
+escalation, fail-soft crypto, replay-budget, reenrollment, and expiry findings without schema,
+route, authorization, or provider changes. Recovery origin uses the existing current-version
+append-only `RECOVERY_CONSUME` event; no new proof protocol was introduced.
+
+Focused disposable-MariaDB `33991` validation passed: `21 passed, 603 warnings` for
+`tests/test_office_mfa.py`. The two actual budget plans use `idx_office_mfa_challenge_user`
+with `Using where; Using index` and `Using index condition`, without filesort or temporary.
+Compile and diff-whitespace checks passed. An independent adversarial review remains required
+before 3B integration or route enablement.
