@@ -281,6 +281,16 @@ def recover_incomplete(backup: Path) -> None:
         raise PackageError("RECOVERY_REQUIRED") from exc
 
 
+def recover_pending_imports(parent: Path, current: Path) -> None:
+    try:
+        entries = sorted(parent.iterdir())
+    except OSError as exc:
+        raise PackageError("RECOVERY_REQUIRED") from exc
+    for entry in entries:
+        if entry != current and entry.is_dir() and (entry / "journal.json").is_file():
+            recover_incomplete(entry)
+
+
 def _destinations(data: dict[str, object], root: Path) -> dict[str, Path]:
     declared: dict[str, Path] = {}
     for item in data["payload"]:
@@ -423,6 +433,7 @@ def main(argv: list[str]) -> int:
 
         try:
             with _exclusive_runtime_lock():
+                recover_pending_imports(backup.parent, backup)
                 _require_units_inactive()
                 import_package(package, digest, Path("/"), backup, verify, verify_restored=verify)
         finally:
