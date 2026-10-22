@@ -75,6 +75,39 @@ def test_mariadb_staging_is_bound_append_only_and_pending_contract(client) -> No
                 plan = await cur.fetchall()
                 assert plan and plan[0][5] == "idx_office_module_release_event_candidate"
                 await migrations.assert_module_publication_staging_metadata(cur)
+                await cur.execute("ALTER TABLE office_module_creative_review_event DROP FOREIGN KEY fk_office_module_creative_review_human")
+                await cur.execute("ALTER TABLE office_module_creative_review_event ADD CONSTRAINT fk_office_module_creative_review_human FOREIGN KEY (human_user_id) REFERENCES jax_users(user_id) ON UPDATE CASCADE")
+                with pytest.raises(RuntimeError, match="foreign keys are invalid"):
+                    await migrations.assert_module_publication_staging_metadata(cur)
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
+
+
+def test_mariadb_attestation_rejects_moved_check_and_lost_auto_increment(client) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_publication_attest_{uuid.uuid4().hex[:16]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await cur.execute("CREATE TABLE jax_users (user_id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await migrations.apply_module_publication_staging_migrations(cur)
+                await cur.execute("ALTER TABLE office_module_creative_review_event DROP CONSTRAINT chk_office_module_creative_review_decision")
+                await cur.execute("ALTER TABLE office_module_rights_review_event ADD CONSTRAINT chk_office_module_creative_review_decision CHECK (decision='PENDING_CONTRACT')")
+                with pytest.raises(RuntimeError, match="checks are invalid"):
+                    await migrations.assert_module_publication_staging_metadata(cur)
+                await cur.execute("ALTER TABLE office_module_rights_review_event DROP CONSTRAINT chk_office_module_creative_review_decision")
+                await cur.execute("ALTER TABLE office_module_creative_review_event ADD CONSTRAINT chk_office_module_creative_review_decision CHECK (decision='PENDING_CONTRACT')")
+                await cur.execute("ALTER TABLE office_module_creative_review_event MODIFY creative_review_event_id BIGINT UNSIGNED NOT NULL")
+                with pytest.raises(RuntimeError, match="columns.*invalid"):
+                    await migrations.assert_module_publication_staging_metadata(cur)
         finally:
             async with conn.cursor() as cur:
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
