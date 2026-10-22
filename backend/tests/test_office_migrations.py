@@ -261,7 +261,7 @@ def test_project_role_receipt_attestation_rejects_weakened_check_and_column_drif
                         "ALTER TABLE office_project_role_mutation_receipt "
                         "MODIFY request_digest CHAR(64) NOT NULL"
                     )
-                    with pytest.raises(RuntimeError, match="project role receipt.*column metadata is invalid"):
+                    with pytest.raises(RuntimeError, match="office_project_role_mutation_receipt column metadata is invalid"):
                         await apply_office_migrations(cur)
                 finally:
                     await cur.execute(f"USE `{source}`")
