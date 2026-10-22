@@ -62,6 +62,37 @@ schema_tables=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TAB
 [[ "$schema_tables" == 4 ]] || { printf '%s\n' 'Office invitation schema tables are missing' >&2; exit 1; }
 schema_columns=$(printf "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND ((TABLE_NAME='office_invitation' AND COLUMN_NAME IN ('status','version')) OR (TABLE_NAME='office_invitation_outbox' AND COLUMN_NAME IN ('outbox_id','invitation_id','state','attempt_id','attempt_count','payload_ciphertext','message_id','result_code','claimed_at','finished_at','updated_at','created_at')));\n" "$(quote "$db")" | admin_sql)
 [[ "$schema_columns" == 14 ]] || { printf '%s\n' 'Office invitation schema columns are missing' >&2; exit 1; }
+routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
+[[ "$routine_count" == 0 || "$routine_count" == 3 ]] || { printf '%s\n' 'invitation delivery routine component is incomplete' >&2; exit 1; }
+show_grants() { printf "SHOW GRANTS FOR %s;\n" "$1" | admin_sql | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047'; }
+same_grants() { [[ $(printf '%s\n' "$1" | sort) == $(printf '%s\n' "$2" | sort) ]]; }
+owner_principal="'jaxoffice_invitation_owner'@'localhost'"
+worker_usage="GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'"
+owner_usage="GRANT USAGE ON *.* TO 'jaxoffice_invitation_owner'@'localhost'"
+expected_worker_pre_routine=$'GRANT SELECT ('"'attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at'"') ON '"'$db'"'.'"'office_invitation_outbox'"' TO '"'$WORKER_DB_USER'"'@'"'$host'"'\nGRANT SELECT ON '"'$db'"'.'"'axioma_config'"' TO '"'$WORKER_DB_USER'"'@'"'$host'"'\n'"$worker_usage"
+expected_owner_pre_routine=$'GRANT SELECT, UPDATE ('"'result_code', 'state', 'finished_at', 'attempt_id', 'updated_at', 'attempt_count', 'payload_ciphertext', 'message_id', 'claimed_at'"') ON '"'$db'"'.'"'office_invitation_outbox'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT ON '"'$db'"'.'"'office_invitation_issuance'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT, UPDATE ('"'version', 'status'"') ON '"'$db'"'.'"'office_invitation'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\nGRANT SELECT, INSERT ON '"'$db'"'.'"'office_invitation_event'"' TO '"'jaxoffice_invitation_owner'"'@'"'localhost'"'\n'"$owner_usage"
+expected_worker_full="$expected_worker_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'"
+expected_owner_full="$expected_owner_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'"
+assert_existing_grants() { local principal=$1 actual; shift; actual=$(show_grants "$principal"); for expected in "$@"; do same_grants "$actual" "$expected" && return; done; printf '%s\n' 'existing invitation principal grants are not an approved state' >&2; exit 1; }
+worker_hosts=$(printf "SELECT Host FROM mysql.user WHERE User=%s ORDER BY Host;\n" "$(quote "$WORKER_DB_USER")" | admin_sql)
+if [[ -n "$worker_hosts" ]]; then
+  while IFS= read -r existing_host || [[ -n "$existing_host" ]]; do
+    [[ "$existing_host" == "$host" ]] || { printf '%s\n' 'worker principal exists at an unexpected host' >&2; exit 1; }
+  done <<< "$worker_hosts"
+fi
+principal="$(quote "$WORKER_DB_USER")@$(quote "$host")"
+exists=$(printf "SELECT COUNT(*) FROM mysql.user WHERE User=%s AND Host=%s;\n" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
+owner_exists=$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin_sql)
+[[ "$exists" == 0 || "$exists" == 1 ]] || { printf '%s\n' 'ambiguous worker principal lookup' >&2; exit 1; }
+[[ "$owner_exists" == 0 || "$owner_exists" == 1 ]] || { printf '%s\n' 'ambiguous invitation owner lookup' >&2; exit 1; }
+if [[ "$exists" == 1 ]]; then
+  if [[ "$routine_count" == 0 ]]; then assert_existing_grants "$principal" "$worker_usage" "$expected_worker_pre_routine"; fi
+fi
+if [[ "$owner_exists" == 1 ]]; then
+  owner_locked=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.account_locked')) FROM mysql.global_priv WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin_sql)
+  [[ "$owner_locked" == true ]] || { printf '%s\n' 'existing invitation owner is not locked' >&2; exit 1; }
+  if [[ "$routine_count" == 0 ]]; then assert_existing_grants "$owner_principal" "$owner_usage" "$expected_owner_pre_routine"; fi
+fi
 if [[ "$PREPARE_OS" == 1 ]]; then
   validate_system_account() {
     local account=$1 account_uid account_gid account_home account_shell account_group
@@ -91,33 +122,35 @@ secret="$SECRET_DIR/$WORKER_DB_USER.password"
 }
 password=$(<"$secret")
 [[ -n "$password" ]] || { printf '%s\n' 'worker DB secret is empty' >&2; exit 1; }
-worker_hosts=$(printf "SELECT Host FROM mysql.user WHERE User=%s ORDER BY Host;\n" "$(quote "$WORKER_DB_USER")" | admin_sql)
-if [[ -n "$worker_hosts" ]]; then
-  while IFS= read -r existing_host || [[ -n "$existing_host" ]]; do
-    [[ "$existing_host" == "$host" ]] || { printf '%s\n' 'worker principal exists at an unexpected host' >&2; exit 1; }
-  done <<< "$worker_hosts"
-fi
-principal="$(quote "$WORKER_DB_USER")@$(quote "$host")"
-exists=$(printf "SELECT COUNT(*) FROM mysql.user WHERE User=%s AND Host=%s;\n" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
-[[ "$exists" == 0 || "$exists" == 1 ]] || { printf '%s\n' 'ambiguous worker principal lookup' >&2; exit 1; }
 if [[ "$exists" == 1 ]]; then
   stored=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.authentication_string')) = PASSWORD(%s) FROM mysql.global_priv WHERE User=%s AND Host=%s;\n" "$(quote "$password")" "$(quote "$WORKER_DB_USER")" "$(quote "$host")" | admin_sql)
   [[ "$stored" == 1 ]] || { printf '%s\n' 'existing worker principal secret does not match' >&2; exit 1; }
 else
   printf "CREATE USER %s IDENTIFIED BY %s;\n" "$principal" "$(quote "$password")" | admin_sql >/dev/null
 fi
-owner_principal="'jaxoffice_invitation_owner'@'localhost'"
-printf "CREATE USER IF NOT EXISTS %s ACCOUNT LOCK;\n" "$owner_principal" | admin_sql >/dev/null
-owner_grant_count=$(printf "SHOW GRANTS FOR %s;\n" "$owner_principal" | admin_sql | grep -c '^GRANT ' || true)
-if (( owner_grant_count > 1 )); then printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$owner_principal" | admin_sql >/dev/null; fi
+if [[ "$owner_exists" == 0 ]]; then printf "CREATE USER %s ACCOUNT LOCK;\n" "$owner_principal" | admin_sql >/dev/null; fi
 # The definer owns only the three authority transitions.  It has enough table
 # privilege for the trigger-guarded statements inside them, never login.
 printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_issuance\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_outbox\` TO %s;\nGRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT UPDATE (status,version) ON \`%s\`.\`office_invitation\` TO %s;\nGRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" | admin_sql >/dev/null
-worker_grant_count=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | grep -c '^GRANT ' || true)
-if (( worker_grant_count > 1 )); then printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$principal" | admin_sql >/dev/null; fi
 printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$principal" "$db" "$principal" | admin_sql >/dev/null
-routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
-[[ "$routine_count" =~ ^[0-3]$ ]] || { printf '%s\n' 'ambiguous invitation delivery routine lookup' >&2; exit 1; }
+worker_pre_routine_grants=$(show_grants "$principal")
+expected_worker_pre_routine=$(cat <<EOF2
+GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'
+GRANT SELECT ('attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at') ON '$db'.'office_invitation_outbox' TO '$WORKER_DB_USER'@'$host'
+GRANT SELECT ON '$db'.'axioma_config' TO '$WORKER_DB_USER'@'$host'
+EOF2
+)
+if [[ "$routine_count" == 0 ]]; then [[ $(printf '%s\n' "$worker_pre_routine_grants" | sort) == $(printf '%s\n' "$expected_worker_pre_routine" | sort) ]] || { printf '%s\n' 'worker pre-routine database grants are not exact' >&2; exit 1; }; fi
+owner_pre_routine_grants=$(show_grants "$owner_principal")
+expected_owner_pre_routine=$(cat <<EOF2
+GRANT USAGE ON *.* TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('result_code', 'state', 'finished_at', 'attempt_id', 'updated_at', 'attempt_count', 'payload_ciphertext', 'message_id', 'claimed_at') ON '$db'.'office_invitation_outbox' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT ON '$db'.'office_invitation_issuance' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('version', 'status') ON '$db'.'office_invitation' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, INSERT ON '$db'.'office_invitation_event' TO 'jaxoffice_invitation_owner'@'localhost'
+EOF2
+)
+if [[ "$routine_count" == 0 ]]; then [[ $(printf '%s\n' "$owner_pre_routine_grants" | sort) == $(printf '%s\n' "$expected_owner_pre_routine" | sort) ]] || { printf '%s\n' 'owner pre-routine database grants are not exact' >&2; exit 1; }; fi
 if [[ "$routine_count" == 3 ]]; then
   # MariaDB checks EXECUTE before it runs a SQL SECURITY DEFINER body. The
   # locked definer therefore needs these exact three procedure grants too.

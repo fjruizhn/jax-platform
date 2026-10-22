@@ -24,6 +24,7 @@ EMPTY_DB=jax_invitation_empty_$(openssl rand -hex 6)
 EMPTY_DB_CREATED=0
 OWNED=0
 OLD_PRINCIPAL=0
+OWNER_FIXTURE=0
 FIXTURE_PROCEDURE=0
 JAX_DIR_BEFORE=$(stat -c '%U:%G:%a' /etc/jax)
 RELEASE=/opt/axioma-office-invitation-worker-fixture-$USER_NAME
@@ -41,6 +42,9 @@ cleanup() {
   fi
   if [[ $OLD_PRINCIPAL == 1 ]]; then
     printf "DROP USER IF EXISTS '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin >/dev/null 2>&1 || true
+  fi
+  if [[ $OWNER_FIXTURE == 1 ]]; then
+    printf "DROP USER IF EXISTS 'jaxoffice_invitation_owner'@'localhost';\n" | admin >/dev/null 2>&1 || true
   fi
   if [[ -n $HOST ]]; then
     printf "DROP USER IF EXISTS '%s'@'%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin >/dev/null 2>&1 || true
@@ -92,6 +96,8 @@ cat > "$NO_SCHEMA_ENV" <<EOF
 JAX_DB_HOST=127.0.0.1
 JAX_DB_PORT=$PORT
 JAX_DB_NAME=$EMPTY_DB
+JAX_ENVIRONMENT=testing
+OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test
 FERNET_KEY=fixture_fernet_key
 OFFICE_INVITATION_LIFETIME_SECONDS=3600
 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=60
@@ -101,9 +107,10 @@ OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10
 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test
 EOF
 NO_SCHEMA_STATE="$TEMP/no-office-schema-state"
-if "$HELPER" --env "$NO_SCHEMA_ENV" --state-root "$NO_SCHEMA_STATE" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$NO_SCHEMA_USER" --measured-grantee-host "$HOST" >/dev/null 2>&1; then
+no_schema_error=$("$HELPER" --env "$NO_SCHEMA_ENV" --state-root "$NO_SCHEMA_STATE" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$NO_SCHEMA_USER" --measured-grantee-host "$HOST" 2>&1) && {
   echo 'provisioner accepted a database without the Office invitation schema' >&2; exit 1
-fi
+}
+grep -Fqx 'Office invitation schema tables are missing' <<< "$no_schema_error" || { echo 'missing schema failed before the table gate' >&2; exit 1; }
 [[ ! -e "$NO_SCHEMA_STATE" ]] || { echo 'missing Office schema created worker state or secret' >&2; exit 1; }
 [[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin) == 0 ]] || { echo 'missing Office schema created a worker principal' >&2; exit 1; }
 printf "DROP DATABASE \`%s\`;\n" "$EMPTY_DB" | admin
@@ -113,8 +120,31 @@ EMPTY_DB_CREATED=0
 # routines and no procedure grants survive the DROP. The fixture database is
 # a disposable allowlisted container and the component is rebuilt below.
 printf "USE \`%s\`; DROP PROCEDURE IF EXISTS office_invitation_claim_next_v1; DROP PROCEDURE IF EXISTS office_invitation_expire_due_v1; DROP PROCEDURE IF EXISTS office_invitation_settle_delivery_v1;\n" "$DB" | admin
+printf "DROP USER IF EXISTS 'jaxoffice_invitation_owner'@'localhost';\nCREATE USER 'jaxoffice_invitation_owner'@'localhost' ACCOUNT UNLOCK;\n" | admin
+OWNER_FIXTURE=1
 
 run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST"; }
+owner_grants_before=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
+owner_locked_before=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.account_locked')) FROM mysql.global_priv WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin)
+[[ "$owner_locked_before" == false ]] || { echo 'fixture owner did not start unlocked' >&2; exit 2; }
+if run_helper >/dev/null 2>&1; then
+  echo 'provisioner accepted an unlocked existing owner' >&2; exit 1
+fi
+owner_grants_after=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
+owner_locked_after=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.account_locked')) FROM mysql.global_priv WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin)
+[[ "$owner_grants_after" == "$owner_grants_before" && "$owner_locked_after" == false ]] || { echo 'provisioner altered the unlocked owner' >&2; exit 1; }
+[[ $(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin) == 0 ]] || { echo 'unlocked owner failure altered delivery routines' >&2; exit 1; }
+printf "DROP USER 'jaxoffice_invitation_owner'@'localhost';\n" | admin
+OWNER_FIXTURE=0
+printf "CREATE USER '%s'@'%s' IDENTIFIED BY 'fixture-broad-secret'; GRANT SELECT ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$USER_NAME" "$HOST" "$DB" "$USER_NAME" "$HOST" | admin
+worker_grants_before=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+if run_helper >/dev/null 2>&1; then
+  echo 'provisioner accepted an existing worker with a broad grant' >&2; exit 1
+fi
+worker_grants_after=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+[[ "$worker_grants_after" == "$worker_grants_before" ]] || { echo 'provisioner altered the broad worker grants' >&2; exit 1; }
+[[ $(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | admin) == 0 ]] || { echo 'broad worker failure altered delivery routines' >&2; exit 1; }
+printf "DROP USER '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin
 if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" >/dev/null 2>&1; then
   echo 'provisioner accepted a missing measured grantee host' >&2; exit 1
 fi
@@ -209,14 +239,17 @@ for grant in \
   grep -Fqx "$grant" <<< "$grants" || { printf "missing expected grant: %s\n" "$grant" >&2; printf "%s\n" "$grants" >&2; exit 1; }
 done
 [[ $(grep -c '^GRANT ' <<< "$grants") == 6 ]]
-# An extra definer procedure grant is an authority widening. Attestation must
-# reject it, and idempotent provisioning must restore exactly the contract.
+# An extra definer procedure grant is an authority widening. Both attestation
+# and provisioning must reject it without silently revoking authority.
 printf "USE \`%s\`; CREATE PROCEDURE \`office_invitation_fixture_forbidden_v1\`() SELECT 1; GRANT EXECUTE ON PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\` TO 'jaxoffice_invitation_owner'@'localhost';\n" "$DB" "$DB" | admin
 FIXTURE_PROCEDURE=1
 if JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$INSTALLED_ATTESTOR" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST" >/dev/null 2>&1; then
   echo 'attestation accepted widened definer routine authority' >&2; exit 1
 fi
-run_helper
+if run_helper >/dev/null 2>&1; then
+  echo 'provisioner accepted widened definer authority' >&2; exit 1
+fi
+printf "REVOKE EXECUTE ON PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\` FROM 'jaxoffice_invitation_owner'@'localhost';\n" "$DB" | admin
 JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$INSTALLED_ATTESTOR" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
 printf "DROP PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\`;\n" "$DB" | admin
 FIXTURE_PROCEDURE=0
