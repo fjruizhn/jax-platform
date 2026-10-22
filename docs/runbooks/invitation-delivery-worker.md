@@ -10,7 +10,7 @@ checkout `jaxsvc`-escribible. Con el SHA aprobado exacto, ejecuta como root:
 
 ```bash
 set -euo pipefail
-SHA=<sha-aprobado-de-40-hex>
+SHA='SHA_COMPLETO_AUDITADO'
 ORIGIN=https://github.com/fjruizhn/jax-platform.git
 WHEELHOUSE=/opt/axioma-office-invitation-worker-wheelhouse
 LOCK=$WHEELHOUSE/worker-requirements.lock
@@ -31,8 +31,31 @@ read_runtime_value () {
 }
 JAX_DB_NAME=$(read_runtime_value JAX_DB_NAME)
 case "$JAX_DB_NAME" in *[!A-Za-z0-9_]*|'') exit 2 ;; esac
-MEASURED_GRANTEE_HOST=<host-medido-desde-el-cliente-de-despliegue>
+PROBE_DIR=$(sudo mktemp -d /run/axioma-office-db-probe.XXXXXXXX)
+trap 'sudo rm -rf -- "$PROBE_DIR"; rm -rf -- "$SOURCE"' EXIT
+sudo python3 - "$PROBE_DIR/client.cnf" <<'PY'
+from pathlib import Path
+import os, sys
+values = {}
+for line in Path('/etc/jax/runtime.env').read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    key, value = line.split('=', 1)
+    if key in values:
+        raise SystemExit('duplicate runtime key')
+    values[key] = value
+needed = ('JAX_DB_HOST', 'JAX_DB_PORT', 'JAX_DB_USER', 'JAX_DB_PASSWORD')
+if any(not values.get(key) or '\n' in values[key] or '\r' in values[key] for key in needed):
+    raise SystemExit('incomplete runtime DB credentials')
+path = Path(sys.argv[1])
+with path.open('x') as file:
+    os.fchmod(file.fileno(), 0o600)
+    for option, key in (('host', 'JAX_DB_HOST'), ('port', 'JAX_DB_PORT'), ('user', 'JAX_DB_USER'), ('password', 'JAX_DB_PASSWORD')):
+        file.write(f'{option}={values[key]}\n')
+PY
+MEASURED_GRANTEE_HOST=$(sudo mariadb --defaults-extra-file="$PROBE_DIR/client.cnf" --batch --skip-column-names "$JAX_DB_NAME" -e "SELECT SUBSTRING_INDEX(CURRENT_USER(),'@',-1)")
 case "$MEASURED_GRANTEE_HOST" in ''|*%*|*_*|*[!A-Za-z0-9.:-]*) exit 2 ;; esac
+sudo rm -rf -- "$PROBE_DIR"
 install_from_audited_commit () {
   src=$1 dst=$2 mode=$3 tmp=$(mktemp -d)
   GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" archive "$SHA" "$src" | tar -x -C "$tmp"
