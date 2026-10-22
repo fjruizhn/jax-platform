@@ -91,3 +91,21 @@ warnings, 2.38 seconds. No production or external action occurred.
 Parent ejecutó `cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_mfa.py tests/test_office_mfa_events.py tests/test_office_migrations.py tests/test_office_session_barrier.py`:84passed,2299fixturewarnings,6.04s antes de últimos límites/tripwire; misma matriz se repite después. Incluye sesiones -06:00/+05:30, código actual, replay, recencia y terminales. No endpoints/JWT nuevos habilitados. Pendiente scoped exactSHA spec+quality, no aprobación inferida por pruebas.
 
 Parent final tras límites UTC/tripwires:84passed,2299warnings,6.74s; git diff --check limpio.
+
+## Fix round4 — conservar causa terminal histórica
+
+2026-10-22, Codex. Al reiniciar una inscripción inicial vencida, la limpieza del
+ancla histórica exacta sólo cambia `ISSUED` a `EXPIRED`. Un `EXHAUSTED` o
+`INVALIDATED` conserva su causa, contador y `used_at`; el nuevo capability se
+emite igual después del vencimiento. La prueba parametrizada realiza los dos
+tránsitos reales: tres OTP erróneos hasta `EXHAUSTED`, y corte de
+`token_version` seguido de confirmación real hasta `INVALIDATED`; después vence
+la ventana y verifica la preservación byte a byte de esos tres campos. Antes
+del cambio falló en ambos casos al observar `EXPIRED` y un `used_at` reescrito.
+
+Validación: `cv-office-run-tests.py jxp -q tests/test_office_mfa.py -k
+historical_terminal_anchor` → 2 passed; suite MFA completa → **41 passed**
+(980 advertencias heredadas del fixture reutilizado). Sin esquema, rutas,
+protocolo, commit, push ni producción.
+
+Parent independiente fix4:86passed6.12s2341fixturewarnings, mismo comando completo de cuatro archivos. Delta producto una condición ISSUEDonly; estados terminales preservados bajo casos reales. Revisión exactSHA pendiente.

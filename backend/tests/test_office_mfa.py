@@ -538,6 +538,60 @@ def test_expired_password_pending_enrollment_restarts_but_recovery_pending_never
     client.portal.call(scenario)
 
 
+@pytest.mark.parametrize("terminal_state", ("EXHAUSTED", "INVALIDATED"))
+def test_expired_historical_terminal_anchor_keeps_its_terminal_cause(client, terminal_state):
+    """Replacing an expired first-enrollment capability cannot rewrite its history."""
+    async def scenario():
+        await _migrate()
+        user_id, _ = await crear_usuario()
+        first = await _first_enrollment(user_id)
+
+        if terminal_state == "EXHAUSTED":
+            for correlation in (b"q" * 16, b"r" * 16, b"s" * 16):
+                async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                    denied = await confirm_enrollment_in_cursor(
+                        cur, enrollment_capability_token=first.enrollment_id, otp="000000",
+                        config=CONFIG, server_correlation_id=correlation,
+                    )
+            assert isinstance(denied, MFADenied) and denied.code == "challenge_exhausted"
+        else:
+            # A token-only session cut makes the real confirmation CAS reject
+            # the capability and records INVALIDATED on the exact anchor.
+            await sql("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (user_id,))
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                denied = await confirm_enrollment_in_cursor(
+                    cur, enrollment_capability_token=first.enrollment_id, otp=_otp(first.secret),
+                    config=CONFIG, server_correlation_id=b"t" * 16,
+                )
+            assert isinstance(denied, MFADenied) and denied.code == "enrollment_version"
+
+        before = await sql(
+            "SELECT state,attempt_count,used_at FROM office_mfa_challenge "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (first.enrollment_id,), True,
+        )
+        assert before[0][0] == terminal_state and before[0][2] is not None
+        await sql(
+            "UPDATE office_mfa_challenge SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (first.enrollment_id,),
+        )
+        await sql(
+            "UPDATE office_mfa_credential SET pending_expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) "
+            "WHERE user_id=%s", (user_id,),
+        )
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            restarted = await start_first_enrollment_after_password_in_cursor(
+                cur, preauthenticated_user_id=user_id, config=CONFIG,
+            )
+        assert not isinstance(restarted, MFADenied)
+        assert restarted.enrollment_id != first.enrollment_id
+        assert await sql(
+            "SELECT state,attempt_count,used_at FROM office_mfa_challenge "
+            "WHERE token_hash=UNHEX(SHA2(%s,256))", (first.enrollment_id,), True,
+        ) == before
+
+    client.portal.call(scenario)
+
+
 def test_recovery_enrollment_insert_denial_leaves_capability_and_credential_unchanged(client, monkeypatch):
     async def scenario():
         await _migrate()

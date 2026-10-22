@@ -344,7 +344,7 @@ async def start_first_enrollment_after_password_in_cursor(cur, *, preauthenticat
         # pointer.  It may carry an older token version after a session cut.
         await cur.execute(
             "UPDATE office_mfa_challenge SET state='EXPIRED',used_at=UTC_TIMESTAMP(6) "
-            "WHERE token_hash=%s AND state IN ('ISSUED','EXHAUSTED','INVALIDATED') "
+            "WHERE token_hash=%s AND state='ISSUED' "
             "AND expires_at < %s",
             (existing[1], now),
         )
