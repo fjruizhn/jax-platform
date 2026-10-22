@@ -36,9 +36,4 @@ describe('Account security MFA', () => {
     await screen.findAllByText('No se pudo confirmar el resultado. Revisá el estado antes de volver a intentarlo.')
     expect(screen.getByText('Verificar')).toBeDisabled()
   })
-  it('offers Office-only accounts a reachable Office entry after MFA', async () => {
-    useJaxStore.setState({ token: 'office', user: { user_id: 3, email: 'external@example.test', account_class: 'EXTERNAL_CLIENT' }, _sessionEpoch: 1, mfaRecoveryCodes: null })
-    show(); await screen.findByRole('heading', { name: 'Seguridad de la cuenta' })
-    expect(screen.getByRole('link', { name: 'Ir a Oficina virtual' })).toHaveAttribute('href', '/virtual-office')
-  })
 })

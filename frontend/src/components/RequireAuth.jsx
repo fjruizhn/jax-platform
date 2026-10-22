@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useJaxStore } from '../store/useJaxStore'
 import MiCuentaModal from './MiCuentaModal'
 
@@ -23,6 +23,7 @@ export default function RequireAuth({ children, allowOfficeAccount = false }) {
   const mfaRecoveryCodes = useJaxStore((s) => s.mfaRecoveryCodes)
   const mfaRecoveryCodesOwnerId = useJaxStore((s) => s.mfaRecoveryCodesOwnerId)
   const veniaDelCambio = useRef(false)
+  const location = useLocation()
 
   useEffect(() => {
     if (obligatorio) {
@@ -35,7 +36,7 @@ export default function RequireAuth({ children, allowOfficeAccount = false }) {
   }, [obligatorio])
 
   if (sessionRestoring) return null
-  if (!token && !(allowOfficeAccount && mfaRecoveryCodes && mfaRecoveryCodesOwnerId !== null)) return <Navigate to="/login" replace />
+  if (!token && !(allowOfficeAccount && mfaRecoveryCodes && mfaRecoveryCodesOwnerId !== null)) return <Navigate to="/login" replace state={{ from: location }} />
   if (token && obligatorio) {
     return <div className="h-dvh bg-fondo"><MiCuentaModal obligatorio onCerrar={() => {}} /></div>
   }
