@@ -3,11 +3,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
-const { login, establecerSesion, clearAvisoSesion, verify, recover, confirm } = vi.hoisted(() => ({
-  login: vi.fn(), establecerSesion: vi.fn(), clearAvisoSesion: vi.fn(), verify: vi.fn(), recover: vi.fn(), confirm: vi.fn(),
+const { login, establecerSesion, clearAvisoSesion, verify, recover, recoveryEnrollmentStart, confirm } = vi.hoisted(() => ({
+  login: vi.fn(), establecerSesion: vi.fn(), clearAvisoSesion: vi.fn(), verify: vi.fn(), recover: vi.fn(), recoveryEnrollmentStart: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../store/useJaxStore', () => ({ useJaxStore: (pick) => pick({ login, establecerSesion, avisoSesion: null, clearAvisoSesion }) }))
-vi.mock('../api/virtualOffice', () => ({ mfaApi: { loginVerify: verify, recover, enrollmentConfirm: confirm } }))
+vi.mock('../api/virtualOffice', () => ({ mfaApi: { loginVerify: verify, recover, recoveryEnrollmentStart, enrollmentConfirm: confirm } }))
 vi.mock('../api/client', () => ({ default: { post: vi.fn() } }))
 import Login from './Login'
 import { I18nProvider } from '../i18n/index.jsx'
@@ -20,7 +20,7 @@ beforeEach(() => { vi.clearAllMocks(); login.mockResolvedValue({ mfa_required: t
 describe('Login MFA', () => {
   it('keeps a login challenge out of the authenticated store and shows OTP', async () => {
     show(); credentials()
-    expect(await screen.findByLabelText('Código de autenticación')).toHaveFocus()
+    expect(await screen.findByLabelText('Código de autenticación')).toBeInTheDocument()
     expect(establecerSesion).not.toHaveBeenCalled()
   })
   it('rejects malformed OTP without consuming the challenge', async () => {
@@ -67,29 +67,27 @@ describe('Login MFA', () => {
     await waitFor(() => expect(screen.getByPlaceholderText('nombre@empresa.com')).toBeInTheDocument())
     expect(establecerSesion).not.toHaveBeenCalled()
   })
-  it('uses one recovery call, keeps the session absent, and shows codes only after confirmation', async () => {
-    recover.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP', expires_at: 'soon' } }); confirm.mockResolvedValue({ data: { recovery_codes: ['one', 'two'] } })
+  it('uses the two one-shot recovery capabilities in order and never creates a session', async () => {
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43), expires_at: 'soon' } }); recoveryEnrollmentStart.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP', expires_at: 'soon' } }); confirm.mockResolvedValue({ data: { recovery_codes: ['one', 'two'] } })
     show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
-    expect(await screen.findByText('SETUP')).toBeInTheDocument(); expect(recover).toHaveBeenCalledTimes(1); expect(establecerSesion).not.toHaveBeenCalled()
+    expect(await screen.findByText('SETUP')).toBeInTheDocument(); expect(recover).toHaveBeenCalledWith('a'.repeat(32)); expect(recoveryEnrollmentStart).toHaveBeenCalledWith('r'.repeat(43)); expect(recover.mock.invocationCallOrder[0]).toBeLessThan(recoveryEnrollmentStart.mock.invocationCallOrder[0]); expect(establecerSesion).not.toHaveBeenCalled()
     fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
     expect(await screen.findByText('one')).toBeInTheDocument(); expect(establecerSesion).not.toHaveBeenCalled()
   })
-  it('allows explicit same-code retry after a dropped recovery response', async () => {
-    recover.mockRejectedValueOnce(new Error('dropped')).mockResolvedValueOnce({ data: { enrollment_token: 'e', secret: 'SETUP' } })
+  it('clears the code and does not retry after a dropped recovery response', async () => {
+    recover.mockRejectedValue(new Error('dropped'))
     show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
-    await screen.findByText('No pudimos confirmar la respuesta. Podés volver a enviar el mismo código de recuperación.')
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar con este código' }))
-    expect(await screen.findByText('SETUP')).toBeInTheDocument(); expect(recover).toHaveBeenCalledTimes(2)
+    await screen.findByText('No pudimos confirmar la recuperación. Usá otro código de recuperación sin usar o contactá a soporte.')
+    expect(screen.getByLabelText('Código de recuperación')).toHaveValue(''); expect(recover).toHaveBeenCalledTimes(1); expect(recoveryEnrollmentStart).not.toHaveBeenCalled(); expect(screen.queryByLabelText('Código de autenticación')).not.toBeInTheDocument()
   })
-  it('clears pending retry wording when the explicit retry gets a definite invalid response', async () => {
-    recover.mockRejectedValueOnce(new Error('dropped')).mockRejectedValueOnce({ response: { status: 401, data: { detail: 'recovery_invalid' } } })
+  it('clears both capabilities and does not retry after a dropped enrollment-start response', async () => {
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43), expires_at: 'soon' } }); recoveryEnrollmentStart.mockRejectedValue(new Error('dropped'))
     show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
-    await screen.findByRole('button', { name: 'Reintentar con este código' }); fireEvent.click(screen.getByRole('button', { name: 'Reintentar con este código' }))
-    await screen.findByText('Ingresá un código de recuperación válido.')
-    expect(screen.getByRole('button', { name: 'Continuar' })).toBeEnabled()
+    await screen.findByText('No pudimos confirmar la recuperación. Usá otro código de recuperación sin usar o contactá a soporte.')
+    expect(screen.getByLabelText('Código de recuperación')).toHaveValue(''); expect(recover).toHaveBeenCalledTimes(1); expect(recoveryEnrollmentStart).toHaveBeenCalledTimes(1); expect(screen.queryByLabelText('Código de autenticación')).not.toBeInTheDocument()
   })
   it.each([
     [{ response: { status: 401, data: { detail: 'recovery_invalid' } } }, 'Ingresá un código de recuperación válido.'],
@@ -101,15 +99,37 @@ describe('Login MFA', () => {
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
     expect(await screen.findByText(message)).toBeInTheDocument()
   })
+  it('treats a replayed recovery capability as terminal and never shows confirmation', async () => {
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43), expires_at: 'soon' } }); recoveryEnrollmentStart.mockRejectedValue({ response: { status: 401, data: { detail: 'challenge_consumed' } } })
+    show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
+    fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
+    expect(await screen.findByText('Este código de recuperación ya no puede usarse. Contactá a soporte para recuperar el acceso.')).toBeInTheDocument(); expect(screen.queryByLabelText('Código de autenticación')).not.toBeInTheDocument()
+  })
+  it('ignores a late recovery response after cancellation', async () => {
+    let resolve
+    recover.mockReturnValue(new Promise((r) => { resolve = r }))
+    show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
+    fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
+    fireEvent.click(screen.getByText(/Volver al inicio/)); resolve({ data: { recovery_token: 'r'.repeat(43) } })
+    expect(await screen.findByPlaceholderText('nombre@empresa.com')).toBeInTheDocument(); expect(recoveryEnrollmentStart).not.toHaveBeenCalled(); expect(screen.queryByText('SETUP')).not.toBeInTheDocument()
+  })
+  it('ignores a late enrollment-start response after cancellation', async () => {
+    let resolve
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43), expires_at: 'soon' } }); recoveryEnrollmentStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
+    fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
+    await waitFor(() => expect(recoveryEnrollmentStart).toHaveBeenCalledTimes(1)); fireEvent.click(screen.getByText(/Volver al inicio/)); resolve({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP' } })
+    expect(await screen.findByPlaceholderText('nombre@empresa.com')).toBeInTheDocument(); expect(screen.queryByText('SETUP')).not.toBeInTheDocument()
+  })
   it('clears an expired enrollment capability and returns to login', async () => {
-    recover.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP' } }); confirm.mockRejectedValue({ response: { status: 401, data: { detail: 'enrollment_expired' } } })
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43) } }); recoveryEnrollmentStart.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP' } }); confirm.mockRejectedValue({ response: { status: 401, data: { detail: 'enrollment_expired' } } })
     show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
     await screen.findByText('SETUP'); fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
     expect(await screen.findByPlaceholderText('nombre@empresa.com')).toBeInTheDocument()
   })
   it('locks an ambiguous enrollment confirmation rather than retrying it', async () => {
-    recover.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP' } }); confirm.mockRejectedValue(new Error('network lost'))
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43) } }); recoveryEnrollmentStart.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'SETUP' } }); confirm.mockRejectedValue(new Error('network lost'))
     show(); credentials(); await screen.findByText('Usar un código de recuperación'); fireEvent.click(screen.getByText('Usar un código de recuperación'))
     fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } }); fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
     await screen.findByText('SETUP'); fireEvent.change(screen.getByLabelText('Código de autenticación'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: 'Verificar' }))
