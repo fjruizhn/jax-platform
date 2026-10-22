@@ -14,16 +14,6 @@ _LEGACY_TABLES = (
     "office_module_creative_approval", "office_module_license_evidence",
     "office_module_release_revision", "office_module_release",
 )
-_LEGACY_787_COLUMNS = {
-    "office_module_release": ("release_id", "module_id", "module_version", "created_by_user_id", "created_authorization_event_id", "created_mfa_proof_event_id", "state", "current_revision_id", "effective_published_event_id", "row_version", "created_at", "updated_at"),
-    "office_module_release_revision": ("revision_id", "release_id", "revision_no", "artifact_set_digest", "manifest_schema", "manifest_digest", "manifest_bytes", "signing_key_id", "manifest_signature", "created_by_user_id", "created_at"),
-    "office_module_license_evidence": ("license_evidence_id", "revision_id", "release_id", "artifact_set_digest", "evidence_type", "evidence_digest", "evidence_bytes", "recorded_by_user_id", "recorded_at"),
-    "office_module_creative_approval": ("creative_approval_id", "revision_id", "release_id", "artifact_set_digest", "outcome", "actor_user_id", "authorization_event_id", "mfa_proof_event_id", "recorded_at"),
-    "office_module_rights_verdict": ("rights_verdict_id", "revision_id", "release_id", "artifact_set_digest", "outcome", "license_evidence_id", "license_revision_id", "license_artifact_set_digest", "license_evidence_type", "jacobs_agent_id", "jacobs_receipt_digest", "jacobs_receipt_bytes", "jacobs_signing_key_id", "jacobs_receipt_signature", "recorded_at"),
-    "office_module_creative_approval_head": ("revision_id", "approved_approval_id", "outcome", "row_version", "updated_at"),
-    "office_module_rights_verdict_head": ("revision_id", "pass_verdict_id", "outcome", "row_version", "updated_at"),
-    "office_module_published_event": ("published_event_id", "release_id", "revision_id", "artifact_set_digest", "creative_approval_id", "creative_head_revision_id", "creative_head_outcome", "rights_verdict_id", "rights_head_revision_id", "rights_head_outcome", "actor_user_id", "authorization_event_id", "mfa_proof_event_id", "recorded_at"),
-}
 _APPEND_ONLY = (
     "office_module_candidate", "office_module_candidate_revision",
     "office_module_candidate_evidence",
@@ -130,40 +120,14 @@ async def _table_exists(cur, table: str) -> bool:
     return await cur.fetchone() is not None
 
 
-async def _remove_empty_legacy_schema(cur) -> None:
-    """Remove the never-published predecessor only when it contains no rows."""
-    for table in _LEGACY_TABLES:
-        if await _table_exists(cur, table):
-            await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
-            if tuple(row[0] for row in await cur.fetchall()) != _LEGACY_787_COLUMNS[table]:
-                raise RuntimeError("Office module predecessor is not the recognized 787 shape")
-            await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
-            if await cur.fetchone() is not None:
-                raise RuntimeError("Office module predecessor contains rows; refusing destructive candidate-storage migration")
-    # Do not toggle FOREIGN_KEY_CHECKS on a connection that may return to a
-    # pool after cancellation.  Remove all legacy-to-legacy constraints first,
-    # then DROP in a normal session state.  An outside reference is evidence
-    # that this was not the isolated never-published predecessor, so fail shut.
-    await cur.execute(
-        "SELECT TABLE_NAME,CONSTRAINT_NAME,REFERENCED_TABLE_NAME "
-        "FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() "
-        "AND REFERENCED_TABLE_NAME IS NOT NULL")
-    constraints = await cur.fetchall()
-    for table, name, referenced_table in constraints:
-        if referenced_table in _LEGACY_TABLES and table not in _LEGACY_TABLES:
-            raise RuntimeError("Office module predecessor has an external foreign-key reference")
-    for table, name, referenced_table in constraints:
-        if table in _LEGACY_TABLES and referenced_table in _LEGACY_TABLES:
-            await cur.execute(f"ALTER TABLE `{table}` DROP FOREIGN KEY `{name}`")
-    for table in _LEGACY_TABLES:
-        if await _table_exists(cur, table):
-            await cur.execute(f"DROP TABLE `{table}`")
-
-
 async def apply_module_candidate_storage_migrations(cur) -> None:
     """Install inert candidate storage and attest it before readiness is stamped."""
+    # The old release-ledger spike never reached a supported migration path.
+    # Its names may also belong to another incomplete deployment, so this
+    # migrator never deletes or reshapes them.  An operator must provide a
+    # separately reviewed, data-preserving migration if any are present.
     if any([await _table_exists(cur, table) for table in _LEGACY_TABLES]):
-        await _remove_empty_legacy_schema(cur)
+        raise RuntimeError("Office module legacy tables require an explicit data-preserving migration")
     for statement in MODULE_CANDIDATE_DDL:
         await cur.execute(statement)
     for table in _APPEND_ONLY:

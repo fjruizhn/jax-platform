@@ -61,18 +61,6 @@ def test_runtime_acl_cannot_gain_candidate_update_or_delete() -> None:
     assert callable(_module_candidate_storage_metadata)
 
 
-async def _create_empty_predecessor_787_shape(cur) -> None:
-    """The old 787 table graph, including its release/revision cycle."""
-    for table, columns in candidate._LEGACY_787_COLUMNS.items():
-        definition = ",".join(
-            f"`{column}` BIGINT UNSIGNED {'NOT NULL PRIMARY KEY' if index == 0 else 'NULL'}"
-            for index, column in enumerate(columns)
-        )
-        await cur.execute(f"CREATE TABLE `{table}` ({definition}) ENGINE=InnoDB")
-    await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_revision FOREIGN KEY (current_revision_id) REFERENCES office_module_release_revision(revision_id)")
-    await cur.execute("ALTER TABLE office_module_release ADD CONSTRAINT old_release_published FOREIGN KEY (effective_published_event_id) REFERENCES office_module_published_event(published_event_id)")
-
-
 def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
@@ -106,7 +94,7 @@ def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None
     client.portal.call(scenario)
 
 
-def test_mariadb_homonymous_legacy_table_fails_before_destructive_ddl(client) -> None:
+def test_mariadb_legacy_tables_are_preserved_and_rejected_empty_or_nonempty(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_legacy_{uuid.uuid4().hex[:16]}"
@@ -115,34 +103,16 @@ def test_mariadb_homonymous_legacy_table_fails_before_destructive_ddl(client) ->
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
-                await cur.execute("CREATE TABLE office_module_release (release_id BIGINT PRIMARY KEY) ENGINE=InnoDB")
-                with pytest.raises(RuntimeError, match="recognized 787 shape"):
+                await cur.execute("CREATE TABLE office_module_release (release_id BIGINT PRIMARY KEY, unrelated VARCHAR(10) NULL) ENGINE=InnoDB")
+                with pytest.raises(RuntimeError, match="explicit data-preserving migration"):
                     await candidate.apply_module_candidate_storage_migrations(cur)
-        finally:
-            async with conn.cursor() as cur:
-                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
-            conn.close()
-    client.portal.call(scenario)
-
-
-def test_mariadb_predecessor_787_graph_resumes_after_partial_cleanup(client) -> None:
-    async def scenario() -> None:
-        source = os.environ["JAX_DB_NAME"]
-        schema = f"office_module_candidate_787_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
-                await cur.execute(f"USE `{schema}`")
-                await _create_empty_predecessor_787_shape(cur)
-                # A process can die after a committed DROP.  The next runner
-                # sees the remaining graph and reaches the same candidate DDL.
-                await cur.execute("ALTER TABLE office_module_release DROP FOREIGN KEY old_release_published")
-                await cur.execute("DROP TABLE office_module_published_event")
-                await candidate.apply_module_candidate_storage_migrations(cur)
-                await candidate.assert_module_candidate_storage_metadata(cur)
-                await cur.execute("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME LIKE 'office_module_release%'")
+                await cur.execute("SELECT COUNT(*) FROM office_module_release")
                 assert (await cur.fetchone())[0] == 0
+                await cur.execute("INSERT INTO office_module_release VALUES (1,'kept')")
+                with pytest.raises(RuntimeError, match="explicit data-preserving migration"):
+                    await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("SELECT release_id,unrelated FROM office_module_release")
+                assert await cur.fetchone() == (1, "kept")
         finally:
             async with conn.cursor() as cur:
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
