@@ -274,9 +274,9 @@ async def assert_module_candidate_storage_metadata(
         expected_indexes.pop(("office_module_candidate", "idx_office_module_candidate_origin"))
         expected_indexes.pop(("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"))
         expected_indexes[("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)] = (False, ("candidate_revision_id", "candidate_id"))
+        expected_foreign_keys.pop("fk_office_module_candidate_origin_scope")
     if expected_indexes_override is not None:
         expected_indexes = dict(expected_indexes_override)
-        expected_foreign_keys.pop("fk_office_module_candidate_origin_scope")
     for table, expected in expected_columns.items():
         await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
         rows = await cur.fetchall()

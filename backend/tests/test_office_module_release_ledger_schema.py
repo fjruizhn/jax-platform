@@ -195,6 +195,10 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                 assert (await cur.fetchone())[4] == "candidate_revision_id"
                 await cur.execute("SHOW INDEX FROM office_module_candidate_evidence WHERE Key_name='fk_office_module_candidate_evidence_revision'")
                 assert await cur.fetchone() is None
+                # The upgraded v15 schema resumes unchanged, proving the
+                # predecessor-only absence of origin_scope is not reused.
+                await candidate.apply_module_candidate_storage_migrations(cur)
+                await candidate.assert_module_candidate_storage_metadata(cur)
                 await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('predecessor','1',11,12)")
                 with pytest.raises(IntegrityError):
                     await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('wrong-scope','1',99,12)")
