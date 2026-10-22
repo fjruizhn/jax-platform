@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Provision the least-privileged OS and database principal for invitation mail.
-# Run before and after the Office migration: the locked definer must exist
-# before CREATE PROCEDURE; a second idempotent run grants EXECUTE afterwards.  It does not issue invitations and never starts the timer.
+# Run after the Office schema migration, before and after delivery-routine
+# installation: the locked definer must exist before CREATE PROCEDURE; a second
+# idempotent run grants EXECUTE afterwards. It does not issue invitations and
+# never starts the timer.
 set -euo pipefail
 umask 077
 
@@ -52,6 +54,14 @@ for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME FERNET_KEY JAX_ENVIRONMENT OFFICE
 done
 host=$MEASURED_GRANTEE_HOST; db=${cfg[JAX_DB_NAME]}
 [[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { printf '%s\n' 'unsafe database name' >&2; exit 1; }
+admin_sql() {
+  if [[ -n "$ADMIN_TRANSPORT" ]]; then "$ADMIN_TRANSPORT"; else docker exec -i mariadb-12-3-jax sh -ec 'MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)" exec mariadb -uroot --batch --skip-column-names'; fi
+}
+quote() { local q=$1; q=${q//\'/\'\'}; printf "'%s'" "$q"; }
+schema_tables=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME IN ('office_invitation','office_invitation_issuance','office_invitation_event','office_invitation_outbox');\n" "$(quote "$db")" | admin_sql)
+[[ "$schema_tables" == 4 ]] || { printf '%s\n' 'Office invitation schema tables are missing' >&2; exit 1; }
+schema_columns=$(printf "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND ((TABLE_NAME='office_invitation' AND COLUMN_NAME IN ('status','version')) OR (TABLE_NAME='office_invitation_outbox' AND COLUMN_NAME IN ('outbox_id','invitation_id','state','attempt_id','attempt_count','payload_ciphertext','message_id','result_code','claimed_at','finished_at','updated_at','created_at')));\n" "$(quote "$db")" | admin_sql)
+[[ "$schema_columns" == 14 ]] || { printf '%s\n' 'Office invitation schema columns are missing' >&2; exit 1; }
 if [[ "$PREPARE_OS" == 1 ]]; then
   validate_system_account() {
     local account=$1 account_uid account_gid account_home account_shell account_group
@@ -81,10 +91,6 @@ secret="$SECRET_DIR/$WORKER_DB_USER.password"
 }
 password=$(<"$secret")
 [[ -n "$password" ]] || { printf '%s\n' 'worker DB secret is empty' >&2; exit 1; }
-admin_sql() {
-  if [[ -n "$ADMIN_TRANSPORT" ]]; then "$ADMIN_TRANSPORT"; else docker exec -i mariadb-12-3-jax sh -ec 'MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)" exec mariadb -uroot --batch --skip-column-names'; fi
-}
-quote() { local q=$1; q=${q//\'/\'\'}; printf "'%s'" "$q"; }
 worker_hosts=$(printf "SELECT Host FROM mysql.user WHERE User=%s ORDER BY Host;\n" "$(quote "$WORKER_DB_USER")" | admin_sql)
 if [[ -n "$worker_hosts" ]]; then
   while IFS= read -r existing_host || [[ -n "$existing_host" ]]; do
@@ -120,8 +126,8 @@ if [[ "$routine_count" == 3 ]]; then
     printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$db" "$routine" "$principal" | admin_sql >/dev/null
   done
 fi
-# A pre-migration run deliberately has no EXECUTE yet; a post-migration rerun
-# is required and checked by readiness before the timer can be enabled.
+# The pre-routine run deliberately has no EXECUTE yet; a post-routine rerun is
+# required and checked by readiness before the timer can be enabled.
 client_tmp=$(mktemp "$SECRET_DIR/$WORKER_DB_USER.client.XXXXXX")
 printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' "$WORKER_DB_USER" "$password" "${cfg[JAX_DB_HOST]}" "${cfg[JAX_DB_PORT]}" > "$client_tmp"
 chmod 600 "$client_tmp"

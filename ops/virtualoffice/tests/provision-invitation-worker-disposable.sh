@@ -17,8 +17,11 @@ docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixtur
 
 TEMP=$(mktemp -d /tmp/invitation-worker-provision.XXXXXX)
 USER_NAME=officecvinvite_$(openssl rand -hex 6)
+NO_SCHEMA_USER=officecvnoschema_$(openssl rand -hex 6)
 HOST=
 OLD_HOST=old.invalid
+EMPTY_DB=jax_invitation_empty_$(openssl rand -hex 6)
+EMPTY_DB_CREATED=0
 OWNED=0
 OLD_PRINCIPAL=0
 FIXTURE_PROCEDURE=0
@@ -27,6 +30,9 @@ RELEASE=/opt/axioma-office-invitation-worker-fixture-$USER_NAME
 SUPPLY=/opt/.axioma-office-invitation-worker-supply-$USER_NAME
 admin() { docker exec -i "$CONTAINER" sh -ec 'MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'; }
 cleanup() {
+  if [[ $EMPTY_DB_CREATED == 1 ]]; then
+    printf "DROP DATABASE IF EXISTS \`%s\`;\n" "$EMPTY_DB" | admin >/dev/null 2>&1 || true
+  fi
   if [[ $FIXTURE_PROCEDURE == 1 ]]; then
     printf "DROP PROCEDURE IF EXISTS \`%s\`.\`office_invitation_fixture_forbidden_v1\`;\n" "$DB" | admin >/dev/null 2>&1 || true
   fi
@@ -35,6 +41,9 @@ cleanup() {
   fi
   if [[ $OLD_PRINCIPAL == 1 ]]; then
     printf "DROP USER IF EXISTS '%s'@'%s';\n" "$USER_NAME" "$OLD_HOST" | admin >/dev/null 2>&1 || true
+  fi
+  if [[ -n $HOST ]]; then
+    printf "DROP USER IF EXISTS '%s'@'%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin >/dev/null 2>&1 || true
   fi
   rm -rf "$RELEASE"
   rm -rf "$SUPPLY"
@@ -75,6 +84,30 @@ EOF
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
+
+printf "CREATE DATABASE \`%s\`;\n" "$EMPTY_DB" | admin
+EMPTY_DB_CREATED=1
+NO_SCHEMA_ENV="$TEMP/no-office-schema.env"
+cat > "$NO_SCHEMA_ENV" <<EOF
+JAX_DB_HOST=127.0.0.1
+JAX_DB_PORT=$PORT
+JAX_DB_NAME=$EMPTY_DB
+FERNET_KEY=fixture_fernet_key
+OFFICE_INVITATION_LIFETIME_SECONDS=3600
+OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=60
+OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=10
+OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=10
+OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10
+OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test
+EOF
+NO_SCHEMA_STATE="$TEMP/no-office-schema-state"
+if "$HELPER" --env "$NO_SCHEMA_ENV" --state-root "$NO_SCHEMA_STATE" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$NO_SCHEMA_USER" --measured-grantee-host "$HOST" >/dev/null 2>&1; then
+  echo 'provisioner accepted a database without the Office invitation schema' >&2; exit 1
+fi
+[[ ! -e "$NO_SCHEMA_STATE" ]] || { echo 'missing Office schema created worker state or secret' >&2; exit 1; }
+[[ $(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$NO_SCHEMA_USER" "$HOST" | admin) == 0 ]] || { echo 'missing Office schema created a worker principal' >&2; exit 1; }
+printf "DROP DATABASE \`%s\`;\n" "$EMPTY_DB" | admin
+EMPTY_DB_CREATED=0
 
 # Start the installation proof at the actual fresh boundary: no delivery
 # routines and no procedure grants survive the DROP. The fixture database is
