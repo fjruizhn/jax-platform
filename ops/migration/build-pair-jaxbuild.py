@@ -134,11 +134,40 @@ def extract(repo: Path, commit: str, destination: Path) -> tuple[str, list[dict[
         target_entry = entries.get(target_path)
         if target_entry is None or target_entry[0] == b"120000" or target_entry[1] not in (b"blob", b"tree"):
             die("unsafe symlink target")
-        output = destination / name
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.symlink_to(target)
         links.append({"path": name, "mode": "120000", "blob_oid": object_id.decode("ascii"), "target": target, "target_path": target_path, "target_mode": target_entry[0].decode("ascii"), "target_oid": target_entry[2].decode("ascii")})
+    reject_directory_link_cycles(links)
+    for link in links:
+        output = destination / link["path"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.symlink_to(link["target"])
     return tree, links
+
+
+def reject_directory_link_cycles(links: list[dict[str, str]]) -> None:
+    """Reject directory-link graphs whose expansion can revisit a link."""
+    directories = [link for link in links if link["target_mode"] == "040000"]
+    graph: dict[str, list[str]] = {}
+    for link in directories:
+        target = link["target_path"]
+        prefix = f"{target}/"
+        graph[link["path"]] = [other["path"] for other in directories if other["path"].startswith(prefix)]
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            die("directory symlink cycle")
+        if name in visited:
+            return
+        visiting.add(name)
+        for child in graph[name]:
+            visit(child)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in graph:
+        visit(name)
 
 
 def canonical_jax_links(links: list[dict[str, str]]) -> list[dict[str, str]]:

@@ -146,6 +146,7 @@ def verify(release: Path, *, expected_jxp: str | None = None, expected_jax: str 
         raise _reject("jax link attestation mismatch")
     if any(not _valid_link_entry(link) for link in manifest["jax_links"]):
         raise _reject("invalid jax link attestation")
+    _reject_directory_link_cycles(manifest["jax_links"])
     if not isinstance(files, list) or files != _inventory(release, owner_uid=owner_uid, owner_gid=owner_gid):
         raise _reject("artifact inventory mismatch")
     actual_links = {(item["path"], item["target"], item["target_path"])
@@ -169,6 +170,30 @@ def _valid_link_entry(item: object) -> bool:
             and isinstance(item["target_path"], str) and item["target_path"].startswith("jax/")
             and item["target_mode"] in {"100644", "100755", "040000"}
             and all(isinstance(item[key], str) and len(item[key]) == 40 and all(char in "0123456789abcdef" for char in item[key]) for key in ("blob_oid", "target_oid")))
+
+
+def _reject_directory_link_cycles(links: list[object]) -> None:
+    directories = [item for item in links if isinstance(item, dict) and item["target_mode"] == "040000"]
+    graph: dict[str, list[str]] = {}
+    for item in directories:
+        target = item["target_path"]
+        graph[item["path"]] = [other["path"] for other in directories if other["path"].startswith(f"{target}/")]
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise _reject("directory symlink cycle")
+        if name in visited:
+            return
+        visiting.add(name)
+        for child in graph[name]:
+            visit(child)
+        visiting.remove(name)
+        visited.add(name)
+
+    for name in graph:
+        visit(name)
 
 
 def main(argv: list[str]) -> int:

@@ -128,6 +128,22 @@ def _load_contract(root: Path, expected_manifest: str) -> Contract:
         if name in sealed_links or links.get(name) != item["target"]:
             fail("jax link inventory mismatch")
         sealed_links[name] = item["target"]
+    directory_links = [item for item in manifest["jax_links"] if item["target_mode"] == "040000"]
+    directory_graph = {item["path"]: [other["path"] for other in directory_links
+                                        if other["path"].startswith(f"{item['target_path']}/")]
+                       for item in directory_links}
+    visiting: set[str] = set(); visited: set[str] = set()
+    def visit_directory_link(name: str) -> None:
+        if name in visiting:
+            fail("directory symlink cycle")
+        if name in visited:
+            return
+        visiting.add(name)
+        for child in directory_graph[name]:
+            visit_directory_link(child)
+        visiting.remove(name); visited.add(name)
+    for name in directory_graph:
+        visit_directory_link(name)
     if links != sealed_links or "pair-manifest.json" in files or "pair-manifest.json" in links:
         fail("jax link inventory mismatch")
     if stat.S_IMODE(manifest_stat.st_mode) != 0o644:

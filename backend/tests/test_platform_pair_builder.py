@@ -23,6 +23,11 @@ ADOPT_SPEC = importlib.util.spec_from_loader("pair_adoption", importlib.machiner
 assert ADOPT_SPEC and ADOPT_SPEC.loader
 adoption = importlib.util.module_from_spec(ADOPT_SPEC)
 ADOPT_SPEC.loader.exec_module(adoption)
+READINESS = REPO / "ops" / "migration" / "pair_artifact_readiness.py"
+READINESS_SPEC = importlib.util.spec_from_file_location("pair_readiness", READINESS)
+assert READINESS_SPEC and READINESS_SPEC.loader
+readiness = importlib.util.module_from_spec(READINESS_SPEC)
+READINESS_SPEC.loader.exec_module(readiness)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -85,6 +90,35 @@ def test_canonical_jax_links_match_the_pair_artifact_namespace(tmp_path: Path) -
     canonical = builder.canonical_jax_links(links)
 
     assert canonical == [{**links[0], "path": "jax/linked.py", "target_path": "jax/backend/main.py"}]
+
+
+@pytest.mark.parametrize("links", [
+    [("a/loop", ".")],
+    [("a/to-b", "../b"), ("b/to-a", "../a")],
+])
+def test_extract_rejects_self_and_cross_directory_link_cycles(tmp_path: Path, links: list[tuple[str, str]]) -> None:
+    source, _ = _repository(tmp_path)
+    for path, target in links:
+        output = source / path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.symlink_to(target)
+    _git(source, "add", ".")
+    _git(source, "commit", "-qm", "directory link cycle")
+
+    with pytest.raises(SystemExit, match="directory symlink cycle"):
+        builder.extract(source, _git(source, "rev-parse", "HEAD"), tmp_path / "out")
+
+
+def test_readiness_rejects_self_and_cross_directory_link_cycles() -> None:
+    for links in (
+        [{"path": "jax/a/loop", "target_path": "jax/a", "target_mode": "040000"}],
+        [
+            {"path": "jax/a/to-b", "target_path": "jax/b", "target_mode": "040000"},
+            {"path": "jax/b/to-a", "target_path": "jax/a", "target_mode": "040000"},
+        ],
+    ):
+        with pytest.raises(readiness.PairReadinessError, match="directory symlink cycle"):
+            readiness._reject_directory_link_cycles(links)
 
 
 def test_rejects_alternate_object_database_and_dirty_checkout(tmp_path: Path) -> None:
