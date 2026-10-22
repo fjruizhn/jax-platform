@@ -8,6 +8,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SQL_FILE=${SQL_FILE:-"$SQL_FILE"}
 [[ -f $SQL_FILE && ! -L $SQL_FILE && $(stat -c %U:%G:%a "$SQL_FILE") == root:root:644 ]] || { echo "unsafe routine SQL" >&2; exit 2; }
 count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$DB" | "$ADMIN_TRANSPORT")
+already_complete=0
 case "$count" in
   0) { printf 'USE `%s`;\n' "$DB"; cat "$SQL_FILE"; } | "$ADMIN_TRANSPORT" ;;
   1)
@@ -17,6 +18,17 @@ case "$count" in
     # the mode and delimiter while emitting only the missing exact suffix.
     { sed -n '1,2p;4,6p' "$SQL_FILE"; } | { printf 'USE `%s`;\n' "$DB"; cat; } | "$ADMIN_TRANSPORT" ;;
   2) printf '%s\n' 'partial invitation delivery component is denied' >&2; exit 1 ;;
-  3) [[ -n $WORKER_HOST ]] || { echo "worker host required" >&2; exit 2; }; JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ROOT/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$WORKER_HOST" ;;
+  3) already_complete=1 ;;
   *) printf '%s\n' 'ambiguous invitation delivery component is denied' >&2; exit 1 ;;
 esac
+# MariaDB requires the locked SQL SECURITY DEFINER account to hold EXECUTE on
+# every procedure it defines. Install the routines first, then grant exactly
+# those procedures; repeated installation cannot widen that authority.
+owner_principal="'jaxoffice_invitation_owner'@'localhost'"
+for routine in office_invitation_claim_next_v1 office_invitation_expire_due_v1 office_invitation_settle_delivery_v1; do
+  printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$DB" "$routine" "$owner_principal" | "$ADMIN_TRANSPORT"
+done
+if [[ $already_complete == 1 ]]; then
+  [[ -n $WORKER_HOST ]] || { echo "worker host required" >&2; exit 2; }
+  JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ROOT/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$WORKER_HOST"
+fi

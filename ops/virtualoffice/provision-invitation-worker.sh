@@ -102,7 +102,12 @@ printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id
 routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
 [[ "$routine_count" =~ ^[0-3]$ ]] || { printf '%s\n' 'ambiguous invitation delivery routine lookup' >&2; exit 1; }
 if [[ "$routine_count" == 3 ]]; then
-  for routine in office_invitation_claim_next_v1 office_invitation_expire_due_v1 office_invitation_settle_delivery_v1; do printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$db" "$routine" "$principal" | admin_sql >/dev/null; done
+  # MariaDB checks EXECUTE before it runs a SQL SECURITY DEFINER body. The
+  # locked definer therefore needs these exact three procedure grants too.
+  for routine in office_invitation_claim_next_v1 office_invitation_expire_due_v1 office_invitation_settle_delivery_v1; do
+    printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$db" "$routine" "$owner_principal" | admin_sql >/dev/null
+    printf "GRANT EXECUTE ON PROCEDURE \`%s\`.\`%s\` TO %s;\n" "$db" "$routine" "$principal" | admin_sql >/dev/null
+  done
 fi
 # A pre-migration run deliberately has no EXECUTE yet; a post-migration rerun
 # is required and checked by readiness before the timer can be enabled.
@@ -131,4 +136,17 @@ GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WOR
 EOF2
 )
 [[ $(printf '%s\n' "$worker_grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { printf '%s\n' 'worker database grants are not exact' >&2; printf '%s\n' "$worker_grants" >&2; exit 1; }
+owner_grants=$(printf "SHOW GRANTS FOR %s;\n" "$owner_principal" | admin_sql | tr '\140' '\047')
+expected_owner=$(cat <<EOF2
+GRANT USAGE ON *.* TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('result_code', 'state', 'finished_at', 'attempt_id', 'updated_at', 'attempt_count', 'payload_ciphertext', 'message_id', 'claimed_at') ON '$db'.'office_invitation_outbox' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT ON '$db'.'office_invitation_issuance' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('version', 'status') ON '$db'.'office_invitation' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, INSERT ON '$db'.'office_invitation_event' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+EOF2
+)
+[[ $(printf '%s\n' "$owner_grants" | sort) == $(printf '%s\n' "$expected_owner" | sort) ]] || { printf '%s\n' 'delivery definer database grants are not exact' >&2; printf '%s\n' "$owner_grants" >&2; exit 1; }
 fi

@@ -18,11 +18,15 @@ TEMP=$(mktemp -d /tmp/invitation-worker-provision.XXXXXX)
 USER_NAME=officecvinvite_$(openssl rand -hex 6)
 HOST=
 OWNED=0
+FIXTURE_PROCEDURE=0
 JAX_DIR_BEFORE=$(stat -c '%U:%G:%a' /etc/jax)
 RELEASE=/opt/axioma-office-invitation-worker-fixture-$USER_NAME
 SUPPLY=/opt/.axioma-office-invitation-worker-supply-$USER_NAME
 admin() { docker exec -i "$CONTAINER" sh -ec 'MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'; }
 cleanup() {
+  if [[ $FIXTURE_PROCEDURE == 1 ]]; then
+    printf "DROP PROCEDURE IF EXISTS \`%s\`.\`office_invitation_fixture_forbidden_v1\`;\n" "$DB" | admin >/dev/null 2>&1 || true
+  fi
   if [[ $OWNED == 1 && -n $HOST ]]; then
     printf "DROP USER IF EXISTS '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin >/dev/null 2>&1 || true
   fi
@@ -72,6 +76,7 @@ chmod 600 "$ENV_FILE"
 run_helper
 "$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE"
 run_helper
+JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
 ln -s "$TEMP/state/invitation-worker.env" "$TEMP/invitation-worker-link.env"
@@ -97,6 +102,18 @@ for grant in \
   grep -Fqx "$grant" <<< "$grants" || { printf "missing expected grant: %s\n" "$grant" >&2; printf "%s\n" "$grants" >&2; exit 1; }
 done
 [[ $(grep -c '^GRANT ' <<< "$grants") == 6 ]]
+# An extra definer procedure grant is an authority widening. Attestation must
+# reject it, and idempotent provisioning must restore exactly the contract.
+printf "USE \`%s\`; CREATE PROCEDURE \`office_invitation_fixture_forbidden_v1\`() SELECT 1; GRANT EXECUTE ON PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\` TO 'jaxoffice_invitation_owner'@'localhost';\n" "$DB" "$DB" | admin
+FIXTURE_PROCEDURE=1
+if JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST" >/dev/null 2>&1; then
+  echo 'attestation accepted widened definer routine authority' >&2; exit 1
+fi
+run_helper
+JAX_INVITATION_WORKER_DB_USER="$USER_NAME" "$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh" --db "$DB" --admin-transport "$TRANSPORT" --worker-host "$HOST"
+printf "DROP PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\`;\n" "$DB" | admin
+FIXTURE_PROCEDURE=0
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE"
 # Valid lifecycle SQL must fail at privilege resolution (1142), not merely
 # because a made-up column was used.
 if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e "UPDATE office_invitation SET status='EXPIRED' WHERE invitation_id='00000000-0000-4000-8000-000000000000'" 2>"$TEMP/denied"; then

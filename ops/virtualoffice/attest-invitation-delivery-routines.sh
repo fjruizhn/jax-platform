@@ -31,15 +31,38 @@ for routine in "${!expected_create[@]}"; do
  actual=$(q "USE \`$DB\`; SHOW CREATE PROCEDURE \`$routine\`;" | sha256sum | awk '{print $1}')
  [[ $actual == "${expected_create[$routine]}" ]] || { echo 'delivery routine body drift' >&2; exit 1; }
 done
+# Both principals have closed grant sets. The locked definer needs table
+# authority plus its own three procedures; the worker can only observe the
+# queue and invoke those procedures.
+owner_grants=$(q "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';" | tr '\140' '\047')
+expected_owner=$(cat <<EOF
+GRANT USAGE ON *.* TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('result_code', 'state', 'finished_at', 'attempt_id', 'updated_at', 'attempt_count', 'payload_ciphertext', 'message_id', 'claimed_at') ON '$DB'.'office_invitation_outbox' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT ON '$DB'.'office_invitation_issuance' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, UPDATE ('version', 'status') ON '$DB'.'office_invitation' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT SELECT, INSERT ON '$DB'.'office_invitation_event' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_claim_next_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'
+EOF
+)
+[[ $(printf '%s\n' "$owner_grants" | sort) == $(printf '%s\n' "$expected_owner" | sort) ]] || { echo 'delivery definer grants are not exact' >&2; exit 1; }
 # The delivery user has configuration/outbox observation plus exactly these
 # procedures; any lifecycle/event DML is an authority escalation.
 worker=${JAX_INVITATION_WORKER_DB_USER:-jaxinvite}
 [[ $worker =~ ^[a-z][a-z0-9_]{0,31}$ ]] || { echo 'unsafe delivery worker principal' >&2; exit 1; }
-grants=$(q "SHOW GRANTS FOR '$worker'@'$WORKER_HOST';")
-printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_claim_next_v1\`" >/dev/null || { echo 'delivery claim execute absent' >&2; exit 1; }
-printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_expire_due_v1\`" >/dev/null || { echo 'delivery expire execute absent' >&2; exit 1; }
-printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_settle_delivery_v1\`" >/dev/null || { echo 'delivery settle execute absent' >&2; exit 1; }
-printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?\`" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
+grants=$(q "SHOW GRANTS FOR '$worker'@'$WORKER_HOST';" | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+expected_worker=$(cat <<EOF
+GRANT USAGE ON *.* TO '$worker'@'$WORKER_HOST'
+GRANT SELECT ('attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at') ON '$DB'.'office_invitation_outbox' TO '$worker'@'$WORKER_HOST'
+GRANT SELECT ON '$DB'.'axioma_config' TO '$worker'@'$WORKER_HOST'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_claim_next_v1' TO '$worker'@'$WORKER_HOST'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO '$worker'@'$WORKER_HOST'
+GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO '$worker'@'$WORKER_HOST'
+EOF
+)
+[[ $(printf '%s\n' "$grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { echo 'delivery worker grants are not exact' >&2; exit 1; }
+printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?['\`]" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
 # Definer is a locked, role-free capability account; inherited roles would
 # make SHOW GRANTS insufficient as an authority boundary.
 role_count=$(q "SELECT COUNT(*) FROM mysql.roles_mapping WHERE User='jaxoffice_invitation_owner' AND Host='localhost';")
