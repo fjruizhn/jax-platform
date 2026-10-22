@@ -1142,8 +1142,10 @@ jobs:
             // REMEZCLA con origin/master 39b3ef2 (2026-10-06, regla 5): master trae #203 (+4 en AdminSettings.test.jsx,
             //   piso del runner de master 1393). Base del runner de master 1393 + delta de E3 +21 = 1414.
             //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1414) {
-              console.error("PISO ROTO: se esperaban 1414 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1414 -> 1469 (Oficina Virtual, 2026-10-22): medido local y en el
+            // runner de GitHub 119836841170: 1469/0/1469, 118 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1469) {
+              console.error("PISO ROTO: se esperaban 1469 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1384,10 +1386,9 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
-          # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
-          # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
+          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
+          PIN=ed589a6e75c46adfc12b68e8757847fb946209ef
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -4958,10 +4959,9 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          # PIN = head de jax#366 (refs/pull/366/head), que trae las_manos/_procesamiento_idempotencia_db_test.py: el test de
-          # contrato de idempotencia lo lee. 0604754 es su ANCESTRO (comprobado con merge-base --is-ancestor). Al integrar
-          # jax#366, subir este pin al merge si cambia el SHA.
-          PIN=92452a6928d7137d6e103f7c6a19d79dea810c02
+          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
+          PIN=ed589a6e75c46adfc12b68e8757847fb946209ef
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
