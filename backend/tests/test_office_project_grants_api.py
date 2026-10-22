@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from tests.identidades import crear_usuario, sql
 from tests.test_office_people_api import _configure_mfa, _headers, _root_with_proof
@@ -253,3 +254,25 @@ def test_replay_refuses_drifted_office_companion(client, monkeypatch):
     )
     replay = client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
     assert (replay.status_code, replay.json()["detail"]) == (503, "office_project_grant_retryable")
+
+
+def test_concurrent_same_membership_request_has_one_receipt(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    body = {"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}
+
+    def request():
+        return client.put(f"/api/virtual-office/projects/{project}/members/{target}", json=body, headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _unused: request(), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 200]
+    assert sum(response.json()["replayed"] for response in responses) == 1
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_namespace_membership_mutation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s),"
+        "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s)",
+        (headers["Idempotency-Key"], headers["Idempotency-Key"]), True,
+    ) == ((1, 1),)
