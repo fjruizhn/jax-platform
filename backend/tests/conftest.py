@@ -1030,6 +1030,31 @@ def _freno_suelto_entre_tests():
         os.unlink(RUTA_DEL_FRENO_DE_PRUEBA)
     except FileNotFoundError:  # fail-soft: el test no puso el freno; no hay nada que quitar
         pass
+
+
+@pytest.fixture(autouse=True)
+def _retire_terminal_recovery_test_ceremonies(client):
+    """Keep intentional v7 terminal-receipt probes from poisoning next setup.
+
+    A missing readiness stamp must fail closed for this live shape in
+    production.  Tests that deliberately create it retire the capability at
+    their boundary so the following independent fixture is not a migration
+    recovery scenario.
+    """
+    yield
+    async def retire():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE office_mfa_challenge c JOIN office_mfa_credential cred "
+                    "ON cred.pending_enrollment_id=c.token_hash JOIN office_mfa_recovery_receipt r "
+                    "ON r.output_challenge_hash=c.token_hash SET c.state='INVALIDATED',c.used_at=UTC_TIMESTAMP(6) "
+                    "WHERE c.purpose='ENROLLMENT' AND c.state='ISSUED' AND cred.state='PENDING' "
+                    "AND r.state='TERMINAL'"
+                )
+    client.portal.call(retire)
     try:
         os.unlink(RUTA_DE_LA_PAUSA_DEL_EJECUTOR_DE_PRUEBA)
     except FileNotFoundError:  # fail-soft: el test no puso la pausa del Ejecutor; no hay nada que quitar
