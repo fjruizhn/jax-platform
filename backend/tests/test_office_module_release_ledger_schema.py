@@ -31,6 +31,21 @@ async def _create_project_scope(cur) -> None:
     await cur.execute("INSERT INTO jax_project_scope VALUES (11,12)")
 
 
+def _predecessor_ddl() -> tuple[str, ...]:
+    return tuple(
+        statement.replace(
+            "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,", ""
+        ).replace(
+            "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),", ""
+        ).replace(
+            "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),", ""
+        ).replace(
+            "KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),", ""
+        )
+        for statement in candidate.MODULE_CANDIDATE_DDL
+    )
+
+
 def test_candidate_storage_has_no_release_authority_surface() -> None:
     source = "\n".join(candidate.MODULE_CANDIDATE_DDL)
     for forbidden in ("PUBLISHED", "APPROVED", "PASS", "effective_", "authorization_event", "mfa_proof", "rights_verdict", "creative_approval"):
@@ -101,6 +116,19 @@ def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None
                 with pytest.raises(OperationalError, match="append-only"):
                     await cur.execute("DELETE FROM office_module_candidate_revision WHERE candidate_revision_id=%s", (revision_id,))
                 await candidate.assert_module_candidate_storage_metadata(cur)
+                # A v15 table with the old implicit FK index is resumable only
+                # when the FK is still exact.  The canonicalizer must never
+                # turn a CASCADE drift into a v15-ready schema.
+                await cur.execute(
+                    "ALTER TABLE office_module_candidate_evidence "
+                    "DROP FOREIGN KEY fk_office_module_candidate_evidence_revision,"
+                    "DROP INDEX idx_office_module_candidate_evidence_revision_candidate,"
+                    "ADD CONSTRAINT fk_office_module_candidate_evidence_revision "
+                    "FOREIGN KEY (candidate_revision_id,candidate_id) "
+                    "REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id) ON DELETE CASCADE"
+                )
+                with pytest.raises(RuntimeError, match="foreign key.*invalid"):
+                    await candidate.apply_module_candidate_storage_migrations(cur)
         finally:
             async with conn.cursor() as cur:
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
@@ -144,17 +172,8 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
                 await cur.execute(f"USE `{schema}`")
                 await _create_project_scope(cur)
-                for statement in candidate.MODULE_CANDIDATE_DDL:
-                    predecessor = statement.replace(
-                        "origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,", ""
-                    ).replace(
-                        "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),", ""
-                    ).replace(
-                        "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),", ""
-                    ).replace(
-                        "KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),", ""
-                    )
-                    await cur.execute(predecessor)
+                for statement in _predecessor_ddl():
+                    await cur.execute(statement)
                 for table in candidate._APPEND_ONLY:
                     for operation in ("UPDATE", "DELETE"):
                         await cur.execute(
@@ -186,6 +205,42 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                 await cur.execute("ALTER TABLE office_module_candidate ADD UNIQUE KEY rogue_final_module (module_id)")
                 with pytest.raises(RuntimeError, match="index set is invalid"):
                     await candidate.assert_module_candidate_storage_metadata(cur)
+        finally:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
+
+
+@pytest.mark.parametrize("state", ("nonempty", "partial"))
+def test_mariadb_predecessor_rows_or_partial_set_fail_without_origin_alter(client, state: str) -> None:
+    async def scenario() -> None:
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_module_candidate_reject_{state}_{uuid.uuid4().hex[:12]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
+                await cur.execute(f"USE `{schema}`")
+                await _create_project_scope(cur)
+                statements = _predecessor_ddl()
+                for statement in statements[:1] if state == "partial" else statements:
+                    await cur.execute(statement)
+                if state == "nonempty":
+                    for table in candidate._APPEND_ONLY:
+                        for operation in ("UPDATE", "DELETE"):
+                            await cur.execute(
+                                f"CREATE TRIGGER no_{operation.lower()}_{table} BEFORE {operation} ON {table} "
+                                f"FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'"
+                            )
+                    await cur.execute("INSERT INTO office_module_candidate (module_id,module_version) VALUES ('historic','1')")
+                    expected = "origin-project mapping"
+                else:
+                    expected = "partial table set"
+                with pytest.raises(RuntimeError, match=expected):
+                    await candidate.apply_module_candidate_storage_migrations(cur)
+                await cur.execute("SHOW COLUMNS FROM office_module_candidate LIKE 'origin_project_id'")
+                assert await cur.fetchone() is None
         finally:
             async with conn.cursor() as cur:
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")

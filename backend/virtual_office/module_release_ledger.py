@@ -147,6 +147,13 @@ async def _canonicalize_evidence_foreign_key_index(cur) -> None:
     expected_legacy[legacy] = (False, ("candidate_revision_id", "candidate_id"))
     if found != expected_legacy:
         return
+    # This is a narrowly defined interrupted-v13 state, not a repair path.
+    # Before replacing its implicit index, attest every other table invariant,
+    # including the exact foreign-key target and RESTRICT actions.  Otherwise
+    # an attacker could pair the familiar implicit index with a substituted FK
+    # and have this v15 migration normalize it into a trusted schema.
+    await assert_module_candidate_storage_metadata(
+        cur, expected_indexes_override=expected_legacy)
     await cur.execute(
         "ALTER TABLE office_module_candidate_evidence "
         "DROP FOREIGN KEY fk_office_module_candidate_evidence_revision,"
@@ -252,6 +259,7 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
 async def assert_module_candidate_storage_metadata(
     cur, *, allow_redacted_trigger_body: bool = False,
     expected_candidate_columns: tuple[str, ...] | None = None,
+    expected_indexes_override: dict[tuple[str, str], tuple[bool, tuple[str, ...]]] | None = None,
 ) -> None:
     """Fail closed on table, index, FK, CHECK, or trigger substitution."""
     expected_columns = dict(_TABLE_COLUMNS)
@@ -266,6 +274,8 @@ async def assert_module_candidate_storage_metadata(
         expected_indexes.pop(("office_module_candidate", "idx_office_module_candidate_origin"))
         expected_indexes.pop(("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"))
         expected_indexes[("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)] = (False, ("candidate_revision_id", "candidate_id"))
+    if expected_indexes_override is not None:
+        expected_indexes = dict(expected_indexes_override)
         expected_foreign_keys.pop("fk_office_module_candidate_origin_scope")
     for table, expected in expected_columns.items():
         await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
