@@ -148,6 +148,8 @@ def validate_release_receipt(value: Any, *, module_package_digest: str, project_
     for name in ("module_package_digest",):
         if not isinstance(value[name], str) or not _HEX.fullmatch(value[name]): raise ReleaseReceiptRejected("release receipt digest is invalid")
     fields = ("module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
+    if any(type(item) is not int or item <= 0 for item in (project_id, tenant_id, human_approval_id, critic_rights_id)):
+        raise ReleaseReceiptRejected("release receipt expected authority inputs are invalid")
     expected = (module_package_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
     if any(type(value[field]) is not int or value[field] <= 0 for field in fields[1:]) or tuple(value[field] for field in fields) != expected: raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
     signer = value["office_release_signer"]
@@ -178,6 +180,10 @@ async def _apply_inert_release_v2_locked(cur) -> None:
     stamp_exists = await cur.fetchone() is not None
     if present == set(TABLES):
         await assert_inert_release_v2_metadata(cur)
+        if not stamp_exists:
+            for table in TABLES:
+                await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
+                if await cur.fetchone() is not None: raise RuntimeError("inert release v2 pre-stamp tables have rows")
         await _ensure_release_stamp(cur)
         return
     if stamp_exists:
@@ -198,6 +204,10 @@ async def _assert_release_stamp(cur) -> None:
     if await cur.fetchall() != (("component","varchar(64)","NO",None,"","ascii","ascii_bin"),("version","varchar(16)","NO",None,"","ascii","ascii_bin"),("created_at","datetime(6)","NO","current_timestamp(6)","",None,None)): raise RuntimeError("inert release v2 stamp columns are invalid")
     await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,INDEX_TYPE,SUB_PART,COLLATION,IGNORED FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (STAMP_TABLE,))
     if await cur.fetchall() != (("PRIMARY",0,"component","BTREE",None,"A","NO"),): raise RuntimeError("inert release v2 stamp index is invalid")
+    await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (STAMP_TABLE,))
+    if await cur.fetchall(): raise RuntimeError("inert release v2 stamp foreign keys are invalid")
+    await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (STAMP_TABLE,))
+    if await cur.fetchall(): raise RuntimeError("inert release v2 stamp triggers are invalid")
     await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME=%s AND tc.CONSTRAINT_TYPE='CHECK'", (STAMP_TABLE,))
     if await cur.fetchall() != (("chk_office_module_release_v2_stamp", f"`component` = '{_STAMP_COMPONENT}' and `version` = '{_STAMP_VERSION}'"),): raise RuntimeError("inert release v2 stamp check is invalid")
     await cur.execute(f"SELECT component,version FROM {STAMP_TABLE}")
