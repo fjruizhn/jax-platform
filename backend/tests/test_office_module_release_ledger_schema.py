@@ -9,6 +9,7 @@ import uuid
 import aiomysql
 import pytest
 from pymysql.err import DataError, IntegrityError, OperationalError
+from db_connect_config import db_connect_timeout_seconds
 
 
 _MODULE_PATH = Path(__file__).parents[1] / "virtual_office" / "module_release_ledger.py"
@@ -67,7 +68,7 @@ def test_mariadb_candidate_storage_is_append_only_and_hash_bound(client) -> None
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
@@ -100,7 +101,7 @@ def test_mariadb_legacy_tables_are_preserved_and_rejected_empty_or_nonempty(clie
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_legacy_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
@@ -126,7 +127,7 @@ def test_mariadb_metadata_rejects_noop_append_only_trigger(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_drift_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
@@ -147,7 +148,7 @@ def test_mariadb_metadata_rejects_weakened_hash_check(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_check_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
@@ -168,7 +169,7 @@ def test_mariadb_metadata_rejects_check_clause_on_decoy_table(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_decoy_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
@@ -189,7 +190,7 @@ def test_mariadb_mediumblob_boundary_matches_declared_cap(client) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
         schema = f"office_module_candidate_bound_{uuid.uuid4().hex[:16]}"
-        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4")
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]), user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"], db=source, autocommit=True, charset="utf8mb4", connect_timeout=db_connect_timeout_seconds())
         try:
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4")
