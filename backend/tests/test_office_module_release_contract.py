@@ -1,6 +1,7 @@
 from __future__ import annotations
 import importlib.util, os, sys
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 spec = importlib.util.spec_from_file_location("release_contract", Path(__file__).parents[1] / "virtual_office" / "module_release_contract.py")
@@ -80,3 +81,39 @@ def test_rejects_unhashable_mode_in_inventory(tmp_path):
     artifact["entries"][0]["mode"] = []
     with pytest.raises(module.ModuleReleaseContractRejected):
         module.validate_artifact_set(artifact)
+
+def test_rejects_boolean_schema_version(tmp_path):
+    file(tmp_path); artifact = module.build_artifact_set(tmp_path)
+    artifact["schema_version"] = True
+    with pytest.raises(module.ModuleReleaseContractRejected):
+        module.validate_artifact_set(artifact)
+
+def test_closes_root_fd_when_root_identity_changes(tmp_path, monkeypatch):
+    file(tmp_path); real_fstat = module.os.fstat; before = len(os.listdir("/proc/self/fd")); calls = 0
+    def swapped(fd):
+        nonlocal calls
+        calls += 1
+        result = real_fstat(fd)
+        return SimpleNamespace(st_dev=result.st_dev + 1, st_ino=result.st_ino) if calls == 1 else result
+    monkeypatch.setattr(module.os, "fstat", swapped)
+    with pytest.raises(module.ModuleReleaseContractRejected, match="root changed"):
+        module.build_artifact_set(tmp_path)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+@pytest.mark.parametrize("kind", ["root", "child"])
+def test_closes_owned_fd_when_fstat_fails(tmp_path, monkeypatch, kind):
+    if kind == "child":
+        (tmp_path / "child").mkdir(); file(tmp_path / "child")
+    else:
+        file(tmp_path)
+    real_fstat = module.os.fstat; before = len(os.listdir("/proc/self/fd")); calls = 0
+    def failing(fd):
+        nonlocal calls
+        calls += 1
+        if (kind == "root" and calls == 1) or (kind == "child" and calls == 3):
+            raise OSError("injected fstat failure")
+        return real_fstat(fd)
+    monkeypatch.setattr(module.os, "fstat", failing)
+    with pytest.raises(module.ModuleReleaseContractRejected, match="cannot be inspected safely"):
+        module.build_artifact_set(tmp_path)
+    assert len(os.listdir("/proc/self/fd")) == before

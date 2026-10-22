@@ -55,7 +55,8 @@ def _stable(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
 
 
 def _frame(fd: int, parts: tuple[str, ...], budget: list[int]) -> dict[str, Any]:
-    before = os.fstat(fd)
+    try: before = os.fstat(fd)
+    except OSError as error: raise ModuleReleaseContractRejected("artifact directory cannot be inspected safely") from error
     try:
         names = []
         with os.scandir(fd) as listing:
@@ -81,16 +82,15 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try: root_fd = os.open(root_path, dir_flags)
     except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be opened safely") from error
+    owned_fds = {root_fd}
     stack: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []; folded: set[str] = set()
     total = 0; directories = 1; budget = [0]
     try:
-        opened_root = os.fstat(root_fd)
+        try: opened_root = os.fstat(root_fd)
+        except OSError as error: raise ModuleReleaseContractRejected("artifact root cannot be inspected safely") from error
         if (opened_root.st_dev, opened_root.st_ino) != (root_stat.st_dev, root_stat.st_ino): _reject("artifact root changed before traversal")
-        try: stack.append(_frame(root_fd, (), budget))
-        except Exception:
-            os.close(root_fd)
-            raise
+        stack.append(_frame(root_fd, (), budget))
         while stack:
             current = stack[-1]
             if current["index"] == len(current["names"]):
@@ -106,7 +106,7 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
                 except OSError as error:
                     raise ModuleReleaseContractRejected("artifact directory cannot be read safely") from error
                 if names_after != current["names"] or after.st_mtime_ns != current["before"].st_mtime_ns or after.st_ctime_ns != current["before"].st_ctime_ns: _reject("artifact directory changed during traversal")
-                os.close(current["fd"]); stack.pop(); continue
+                os.close(current["fd"]); owned_fds.discard(current["fd"]); stack.pop(); continue
             name = current["names"][current["index"]]; current["index"] += 1
             path = _path(current["parts"] + (name,))
             try: before = os.stat(name, dir_fd=current["fd"], follow_symlinks=False)
@@ -116,13 +116,12 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
                 if directories >= _MAX_DIRECTORIES: _reject("artifact exceeds directory count limit")
                 try: child_fd = os.open(name, dir_flags, dir_fd=current["fd"])
                 except OSError as error: raise ModuleReleaseContractRejected(f"artifact directory cannot be opened safely: {path}") from error
-                opened = os.fstat(child_fd)
-                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino): os.close(child_fd); _reject(f"artifact directory changed during traversal: {path}")
+                owned_fds.add(child_fd)
+                try: opened = os.fstat(child_fd)
+                except OSError as error: raise ModuleReleaseContractRejected(f"artifact directory cannot be inspected safely: {path}") from error
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino): _reject(f"artifact directory changed during traversal: {path}")
                 directories += 1
-                try: child_frame = _frame(child_fd, current["parts"] + (name,), budget)
-                except Exception:
-                    os.close(child_fd)
-                    raise
+                child_frame = _frame(child_fd, current["parts"] + (name,), budget)
                 stack.append(child_frame); continue
             if not stat.S_ISREG(before.st_mode): _reject(f"artifact contains non-regular file: {path}")
             if before.st_nlink != 1: _reject(f"artifact contains hard-linked file: {path}")
@@ -147,8 +146,8 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
             folded.add(key); total += count
             entries.append({"path": path, "size": count, "mode": f"{mode:04o}", "digest": f"sha256:{hashed.hexdigest()}"})
     finally:
-        for current in stack:
-            try: os.close(current["fd"])
+        for fd in owned_fds:
+            try: os.close(fd)
             except OSError: pass
     if not entries: _reject("artifact must contain at least one file")
     entries.sort(key=lambda entry: entry["path"].encode())
@@ -158,7 +157,7 @@ def build_artifact_set(root: str | Path) -> dict[str, Any]:
 
 def validate_artifact_set(artifact_set: dict[str, Any]) -> None:
     if not isinstance(artifact_set, dict): _reject("artifact set must be an object")
-    if set(artifact_set) != {"schema_version", "domain", "entries", "root_digest"} or artifact_set.get("schema_version") != 1 or artifact_set.get("domain") != _DOMAIN: _reject("artifact set is not artifact-set/v1")
+    if set(artifact_set) != {"schema_version", "domain", "entries", "root_digest"} or type(artifact_set.get("schema_version")) is not int or artifact_set.get("schema_version") != 1 or artifact_set.get("domain") != _DOMAIN: _reject("artifact set is not artifact-set/v1")
     entries = artifact_set.get("entries")
     if not isinstance(entries, list) or not entries or len(entries) > _MAX_FILES: _reject("artifact inventory has invalid entry count")
     paths: list[str] = []; total = 0
