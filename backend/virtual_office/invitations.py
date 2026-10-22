@@ -174,7 +174,7 @@ async def issue_invitation_in_cursor(
         proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
     await cur.execute(
-        "SELECT tenant_id,status,namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
+        "SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
     scope = await cur.fetchone()
     if scope is None or scope[1] != "ACTIVE" or scope[2] != "OFFICE_CONFIDENTIAL":
         raise InvitationError("office_invitation_target_denied", status_code=409)
