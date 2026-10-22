@@ -365,51 +365,79 @@ def test_predecessor_receipt_guard_upgrades_idempotently(client):
 def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(client):
     """A legal 2e receipt row must block upgrade before its guard is replaced."""
     async def scenario():
-        pool = await get_pool()
+        source = os.environ['JAX_DB_NAME']
+        schema = f"office_invitation_history_{uuid.uuid4().hex[:16]}"
+        pool = await _migration_admin_pool()
+        await _require_test_ddl_principal(pool, create_user=False)
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await apply_office_migrations(cur)
-                issuer, enrollment, _ = await _active_user()
-                proof = await _step_up_proof(issuer, enrollment.secret, b"H" * 16)
-                await cur.execute(
-                    "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
-                    (issuer,),
-                )
-                invitation_id, _, issued_event_id, _ = await _seed_pending_invitation(
-                    cur, issuer=issuer, proof_event_id=proof.event_id,
-                    serial=f"historical-receipt-{uuid.uuid4().hex}", target_user_id=issuer,
-                )
-                await cur.execute(
-                    "SELECT i.project_id,s.issuance_authorization_event_id,s.expires_at "
-                    "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
-                    "WHERE i.invitation_id=%s",
-                    (invitation_id,),
-                )
-                project_id, authorization_event_id, expiry = await cur.fetchone()
-                await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
-                await cur.execute(_RECEIPT_GUARD_2E86051)
-                await cur.execute("DROP TRIGGER no_update_office_invitation_event")
-                await cur.execute(
-                    "UPDATE office_invitation_event SET authorization_event_id=NULL,invocation_digest=NULL WHERE event_id=%s",
-                    (issued_event_id,),
-                )
-                await cur.execute(
-                    "CREATE TRIGGER no_update_office_invitation_event BEFORE UPDATE ON office_invitation_event "
-                    "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'"
-                )
-                await cur.execute(
-                    "INSERT INTO office_invitation_mutation_receipt "
-                    "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,expected_version,response_version,result_event_id,authorization_event_id,response_contract,expires_at,created_at) "
-                    "VALUES (%s,UNHEX(REPEAT('ce',32)),'ISSUE',%s,%s,%s,0,1,%s,%s,'office-invitation-mutation-response/v1',%s,UTC_TIMESTAMP(6))",
-                    (str(uuid.uuid4()), issuer, project_id, invitation_id, issued_event_id, authorization_event_id, expiry),
-                )
-                with pytest.raises(RuntimeError, match='receipt history lacks causal event binding'):
+                try:
+                    await cur.execute(
+                        f"SELECT event_id,subject_user_id FROM `{source}`.office_mfa_security_event "
+                        "WHERE event_kind='MFA_PROOF' AND principal_kind='USER_SESSION' "
+                        "AND challenge_id IS NULL LIMIT 1"
+                    )
+                    proof = await cur.fetchone()
+                    if proof is None:
+                        pytest.skip("requires a seeded USER_SESSION MFA proof")
+                    proof_event_id, issuer = proof
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_project_membership', 'jax_project_membership_event',
+                        'jax_namespace_membership_mutation_request',
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"INSERT INTO `{schema}`.jax_tenants SELECT * FROM `{source}`.jax_tenants")
+                    await cur.execute(f"INSERT INTO `{schema}`.jax_users SELECT * FROM `{source}`.jax_users WHERE user_id=%s", (issuer,))
+                    await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
-                await cur.execute(
-                    "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
-                    "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
-                )
-                assert (await cur.fetchone())[0] == _RECEIPT_GUARD_2E86051.split(" FOR EACH ROW ", 1)[1]
+                    await cur.execute(
+                        f"INSERT INTO office_mfa_security_event SELECT * FROM `{source}`.office_mfa_security_event WHERE event_id=%s",
+                        (proof_event_id,),
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')",
+                        (issuer,),
+                    )
+                    invitation_id, _, issued_event_id, _ = await _seed_pending_invitation(
+                        cur, issuer=issuer, proof_event_id=proof_event_id,
+                        serial=f"historical-receipt-{uuid.uuid4().hex}", target_user_id=issuer,
+                    )
+                    await cur.execute(
+                        "SELECT i.project_id,s.issuance_authorization_event_id,s.expires_at "
+                        "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+                        "WHERE i.invitation_id=%s",
+                        (invitation_id,),
+                    )
+                    project_id, authorization_event_id, expiry = await cur.fetchone()
+                    await cur.execute("DROP TRIGGER guard_office_invitation_mutation_receipt_insert")
+                    await cur.execute(_RECEIPT_GUARD_2E86051)
+                    await cur.execute("DROP TRIGGER no_update_office_invitation_event")
+                    await cur.execute(
+                        "UPDATE office_invitation_event SET authorization_event_id=NULL,invocation_digest=NULL WHERE event_id=%s",
+                        (issued_event_id,),
+                    )
+                    await cur.execute(
+                        "CREATE TRIGGER no_update_office_invitation_event BEFORE UPDATE ON office_invitation_event "
+                        "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'"
+                    )
+                    await cur.execute(
+                        "INSERT INTO office_invitation_mutation_receipt "
+                        "(idempotency_key,request_digest,operation,actor_user_id,project_id,invitation_id,expected_version,response_version,result_event_id,authorization_event_id,response_contract,expires_at,created_at) "
+                        "VALUES (%s,UNHEX(REPEAT('ce',32)),'ISSUE',%s,%s,%s,0,1,%s,%s,'office-invitation-mutation-response/v1',%s,UTC_TIMESTAMP(6))",
+                        (str(uuid.uuid4()), issuer, project_id, invitation_id, issued_event_id, authorization_event_id, expiry),
+                    )
+                    with pytest.raises(RuntimeError, match='receipt history lacks causal event binding'):
+                        await apply_office_migrations(cur)
+                    await cur.execute(
+                        "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                        "AND TRIGGER_NAME='guard_office_invitation_mutation_receipt_insert'"
+                    )
+                    assert (await cur.fetchone())[0] == _RECEIPT_GUARD_2E86051.split(" FOR EACH ROW ", 1)[1]
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
     client.portal.call(scenario)
 
 
