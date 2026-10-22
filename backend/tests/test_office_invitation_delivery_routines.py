@@ -18,6 +18,7 @@ import pytest
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
+from virtual_office import invitations as invitation_service
 from virtual_office.invitations import issue_invitation_in_cursor
 from virtual_office.invitation_config import InvitationConfig
 from virtual_office.mfa import MFAConfig
@@ -97,11 +98,12 @@ async def _claim(worker: str) -> tuple[str, str | None, str | None]:
         connection.close()
 
 
-async def _settle(worker: str, outbox_id: str, attempt_id: str) -> str:
+async def _settle(worker: str, outbox_id: str, attempt_id: str, result: str = "SMTP_ACCEPTED") -> str:
     connection = await _worker_connection(worker)
     try:
         async with connection.cursor() as cur:
-            await cur.execute("CALL office_invitation_settle_delivery_v1(%s,%s,'SMTP_ACCEPTED',%s,@d)", (outbox_id, attempt_id, "<routine-test@example.test>"))
+            receipt = "<routine-test@example.test>" if result == "SMTP_ACCEPTED" else None
+            await cur.execute("CALL office_invitation_settle_delivery_v1(%s,%s,%s,%s,@d)", (outbox_id, attempt_id, result, receipt))
             while await cur.nextset():
                 pass
             await cur.execute("SELECT @d")
@@ -119,6 +121,15 @@ async def _expire_due(worker: str) -> int:
                 pass
             await cur.execute("SELECT @expired")
             return int((await cur.fetchone())[0])
+    finally:
+        connection.close()
+
+
+async def _settle_stale(worker: str, config: InvitationConfig) -> int:
+    connection = await _worker_connection(worker)
+    try:
+        async with connection.cursor() as cur:
+            return await invitation_service.settle_stale_invitation_claims_v1_in_cursor(cur, config=config)
     finally:
         connection.close()
 
@@ -163,6 +174,18 @@ def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
                 connection.close()
 
         assert client.portal.call(direct_lifecycle_write_is_denied) == 1142
+
+        crashed_invitation = client.portal.call(_seed_issued_invitation, issuer, proof_event_id)
+        crash_disposition, crash_outbox, crash_attempt = client.portal.call(_claim, worker)
+        assert crash_disposition == "CLAIMED"
+        assert crash_outbox and crash_attempt
+        short_lease = InvitationConfig(3600, 1, 10, 10, "https://virtualoffice.example.test", 1)
+        client.portal.call(asyncio.sleep, 1.1)
+        assert client.portal.call(_settle_stale, worker, short_lease) == 1
+        assert client.portal.call(sql, "SELECT state,result_code,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (crash_outbox,), True) == (("UNKNOWN", "SMTP_STALE", None),)
+        assert client.portal.call(sql, "SELECT COUNT(*) FROM office_invitation_event WHERE invitation_id=%s AND event_kind='DELIVERY_OBSERVED'", (crashed_invitation,), True) == ((0,),)
+        assert client.portal.call(_settle, worker, crash_outbox, crash_attempt) == "APPLIED"
+        assert client.portal.call(sql, "SELECT state,result_code,message_id FROM office_invitation_outbox WHERE outbox_id=%s", (crash_outbox,), True) == (("SMTP_ACCEPTED", "SMTP_ACCEPTED", "<routine-test@example.test>"),)
 
         expiry_config = InvitationConfig(1, 60, 10, 10, "https://virtualoffice.example.test")
         expired_invitation = client.portal.call(_seed_issued_invitation, issuer, proof_event_id, expiry_config)
