@@ -5,7 +5,7 @@ parameter, query parameter, response field, or logging value.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
@@ -23,10 +23,8 @@ router = APIRouter(prefix="/api/virtual-office")
 
 
 class InvitationIssueRequest(BaseModel):
-    target_user_id: int = Field(gt=0)
     email: str = Field(min_length=3, max_length=320)
-    target_account_class: str
-    recipient_group_id: int | None = Field(default=None, gt=0)
+    audience: str
 
 
 class InvitationAcceptRequest(BaseModel):
@@ -58,9 +56,8 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             invitation = await issue_invitation_in_cursor(
-                cur, actor_user_id=actor, project_id=project_id, target_user_id=payload.target_user_id,
-                email=payload.email, target_account_class=payload.target_account_class,
-                recipient_group_id=payload.recipient_group_id, proof_event_id=user.mfa_proof_event_id,
+                cur, actor_user_id=actor, project_id=project_id, email=payload.email,
+                audience=payload.audience, proof_event_id=user.mfa_proof_event_id,
                 mfa_config=mfa_config, invitation_config=invitation_config,
             )
     except InvitationError as error:
@@ -68,13 +65,15 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
     return {"invitation_id": invitation.invitation_id, "expires_at": invitation.expires_at.isoformat()}
 
 
-@router.delete("/invitations/{invitation_id}")
-async def revoke_invitation(invitation_id: str, user: AuthUser = Depends(get_current_user)):
+@router.delete("/projects/{project_id}/invitations/{invitation_id}")
+async def revoke_invitation(project_id: int, invitation_id: str, expected_version: int = Query(ge=1),
+                            user: AuthUser = Depends(get_current_user)):
     actor = _actor_id(user)
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             replayed = await revoke_invitation_in_cursor(
-                cur, actor_user_id=actor, invitation_id=invitation_id,
+                cur, actor_user_id=actor, project_id=project_id, invitation_id=invitation_id,
+                expected_version=expected_version,
                 proof_event_id=user.mfa_proof_event_id,
                 mfa_config=load_mfa_config_from_environment(),
             )

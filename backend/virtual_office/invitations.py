@@ -26,6 +26,40 @@ from .membership_receipts import invitation_acceptance_digest, write_invitation_
 from .mfa import MFADenied, MFAConfig, reload_current_self_mfa_proof_in_cursor
 
 
+async def _create_invited_identity_in_cursor(cur, *, tenant_id: int, email: str,
+                                             account_class: str, password_hash: str) -> int:
+    """Create only the bearer-bound identity, never a general signup user."""
+    import user_audit
+    await cur.execute("SELECT tenant_id,status FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+    tenant = await cur.fetchone()
+    if tenant is None or tenant[1] != "active":
+        raise InvitationError("office_invitation_invalid", status_code=403)
+    await cur.execute("SELECT user_id FROM jax_users WHERE BINARY email=BINARY %s FOR UPDATE", (email,))
+    if await cur.fetchone() is not None:
+        raise InvitationError("office_invitation_existing_session_required", status_code=409)
+    try:
+        await cur.execute(
+            "INSERT INTO jax_users (tenant_id,email,password_hash,role,status,account_class) "
+            "VALUES (%s,%s,%s,'operator','active',%s)",
+            (tenant_id, email, password_hash, account_class))
+    except Exception as error:
+        # A duplicate-email race must not turn a password supplied for a new
+        # identity into a write on the identity that won elsewhere.
+        if getattr(error, "args", ()) and error.args[0] == 1062:
+            raise InvitationError("office_invitation_existing_session_required", status_code=409) from error
+        raise
+    user_id = int(cur.lastrowid)
+    await user_audit.registrar(cur, user_id, user_id, "create", {"email": email, "role": "operator"})
+    await user_audit.registrar(cur, user_id, user_id, "password_reset_completed", None)
+    credential_audit_id = int(cur.lastrowid)
+    await cur.execute(
+        "INSERT INTO office_account_profile "
+        "(user_id,global_role,status,version,bound_by_user_id,credential_audit_id,created_at,updated_at) "
+        "VALUES (%s,'COLLABORATOR','ACTIVE',1,%s,%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+        (user_id, user_id, credential_audit_id))
+    return user_id
+
+
 class InvitationError(RuntimeError):
     """A stable, token-safe domain error for the HTTP boundary."""
     def __init__(self, code: str, *, status_code: int = 409):
@@ -56,7 +90,7 @@ def _token_hash(token: str) -> bytes:
 
 
 def _proof_digest(*, token_hash: bytes, email: str, tenant_id: int, project_id: int,
-                  recipient_group_id: int | None, target_user_id: int, account_class: str,
+                  recipient_group_id: int | None, target_user_id: int | None, account_class: str,
                   actor_user_id: int, profile_version: int, grant_version: int,
                   proof_event_id: int, mfa_version: int, issued_at: dt.datetime,
                   expires_at: dt.datetime, authorization_event_id: int) -> bytes:
@@ -122,48 +156,45 @@ async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
 
 
 async def issue_invitation_in_cursor(
-    cur, *, actor_user_id: int, project_id: int, target_user_id: int,
-    email: str, target_account_class: str, recipient_group_id: int | None,
+    cur, *, actor_user_id: int, project_id: int, email: str, audience: str,
     proof_event_id: int | None, mfa_config: MFAConfig | None,
     invitation_config: InvitationConfig,
 ) -> IssuedInvitation:
-    """Issue to an existing, compatible identity and queue encrypted delivery."""
-    if type(actor_user_id) is not int or type(project_id) is not int or type(target_user_id) is not int:
+    """Derive the target and audience server-side, then queue delivery."""
+    if type(actor_user_id) is not int or type(project_id) is not int:
         raise InvitationError("office_invitation_invalid", status_code=422)
     if mfa_config is None or type(proof_event_id) is not int or proof_event_id < 1:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     normalized_email = _normalize_email(email)
-    if target_account_class not in {"OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+    if audience not in {"INTERNAL", "CLIENT_PUBLISHED"}:
         raise InvitationError("office_invitation_target_denied", status_code=409)
-    if ((target_account_class == "OFFICE_INTERNAL" and recipient_group_id is not None)
-            or (target_account_class == "EXTERNAL_CLIENT" and not isinstance(recipient_group_id, int))):
-        raise InvitationError("office_invitation_target_denied", status_code=409)
+    target_account_class = "OFFICE_INTERNAL" if audience == "INTERNAL" else "EXTERNAL_CLIENT"
     decision, proof, profile_version, grant_version = await _issuer_snapshot(
         cur, actor_user_id=actor_user_id, project_id=project_id,
         proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
     await cur.execute(
-        "SELECT u.tenant_id,u.email,u.account_class,u.status,t.status,p.status "
-        "FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
-        "LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s FOR UPDATE",
-        (target_user_id,),
-    )
-    target = await cur.fetchone()
-    if (target is None or target[1] != normalized_email or target[2] != target_account_class
-            or target[3] != "active" or target[4] != "active" or target[5] != "ACTIVE"):
-        raise InvitationError("office_invitation_target_denied", status_code=409)
-    tenant_id = int(target[0])
-    await cur.execute(
         "SELECT tenant_id,status,namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
     scope = await cur.fetchone()
-    if scope is None or int(scope[0]) != tenant_id or scope[1] != "ACTIVE" or scope[2] != "OFFICE_CONFIDENTIAL":
+    if scope is None or scope[1] != "ACTIVE" or scope[2] != "OFFICE_CONFIDENTIAL":
         raise InvitationError("office_invitation_target_denied", status_code=409)
-    if target_account_class == "EXTERNAL_CLIENT":
+    tenant_id = int(scope[0])
+    await cur.execute(
+        "SELECT user_id,tenant_id,account_class,status FROM jax_users WHERE BINARY email=BINARY %s FOR UPDATE",
+        (normalized_email,))
+    target = await cur.fetchone()
+    target_user_id = None if target is None else int(target[0])
+    if target is not None and (int(target[1]) != tenant_id or target[2] != target_account_class or target[3] != "active"):
+        raise InvitationError("office_invitation_target_denied", status_code=409)
+    recipient_group_id = None
+    if audience == "CLIENT_PUBLISHED":
         await cur.execute(
-            "SELECT recipient_group_id FROM office_recipient_group WHERE recipient_group_id=%s AND project_id=%s "
-            "AND group_kind='CLIENT' AND status='ACTIVE' FOR UPDATE", (recipient_group_id, project_id))
-        if await cur.fetchone() is None:
+            "SELECT recipient_group_id FROM office_recipient_group WHERE project_id=%s "
+            "AND group_kind='CLIENT' AND status='ACTIVE' FOR UPDATE", (project_id,))
+        group = await cur.fetchone()
+        if group is None:
             raise InvitationError("office_invitation_target_denied", status_code=409)
+        recipient_group_id = int(group[0])
     now = await _db_now(cur)
     expires_at = now + dt.timedelta(seconds=invitation_config.lifetime_seconds)
     token = secrets.token_urlsafe(32)
@@ -187,7 +218,7 @@ async def issue_invitation_in_cursor(
         "(issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'COLLABORATOR',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (issuance_id, token_hash, normalized_email, tenant_id, project_id, recipient_group_id, target_user_id,
-         target_account_class, "INTERNAL" if target_account_class == "OFFICE_INTERNAL" else "CLIENT_PUBLISHED",
+         target_account_class, audience,
          actor_user_id, profile_version, grant_version, proof.event_id, proof.mfa_version,
          proof.occurred_at.replace(tzinfo=None), authorization_event_id, proof_digest, correlation_id,
          now.replace(tzinfo=None), expires_at.replace(tzinfo=None)),
@@ -206,23 +237,26 @@ async def issue_invitation_in_cursor(
 
 
 async def revoke_invitation_in_cursor(
-    cur, *, actor_user_id: int, invitation_id: str, proof_event_id: int | None,
+    cur, *, actor_user_id: int, project_id: int, invitation_id: str, expected_version: int,
+    proof_event_id: int | None,
     mfa_config: MFAConfig | None,
 ) -> bool:
     """Revoke an unconsumed invitation and let the DB guard cancel delivery."""
-    if mfa_config is None or type(proof_event_id) is not int:
+    if mfa_config is None or type(proof_event_id) is not int or type(expected_version) is not int or expected_version < 1:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     await cur.execute(
         "SELECT i.status,i.version,i.project_id,s.correlation_id FROM office_invitation i "
         "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
         "WHERE i.invitation_id=%s FOR UPDATE", (invitation_id,))
     invitation = await cur.fetchone()
-    if invitation is None:
+    if invitation is None or int(invitation[2]) != project_id:
         raise InvitationError("office_invitation_not_found", status_code=404)
     if invitation[0] == "REVOKED":
         return True
     if invitation[0] != "ISSUED":
         raise InvitationError("office_invitation_terminal")
+    if int(invitation[1]) != expected_version:
+        raise InvitationError("office_invitation_version_conflict")
     await _issuer_snapshot(cur, actor_user_id=actor_user_id, project_id=int(invitation[2]),
                            proof_event_id=proof_event_id, mfa_config=mfa_config)
     await cur.execute(
@@ -238,7 +272,7 @@ async def revoke_invitation_in_cursor(
     await cur.execute(
         "UPDATE office_invitation SET status='REVOKED',version=version+1,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) "
         "WHERE invitation_id=%s AND status='ISSUED' AND version=%s",
-        (actor_user_id, invitation_id, int(invitation[1])))
+        (actor_user_id, invitation_id, expected_version))
     if cur.rowcount != 1:
         raise InvitationError("office_invitation_retryable", status_code=503)
     return False
