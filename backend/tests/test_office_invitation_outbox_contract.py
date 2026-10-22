@@ -1,6 +1,7 @@
 """Real-MariaDB delivery-finalization contracts for Office invitations."""
 from __future__ import annotations
 
+import asyncio
 import uuid
 from unittest.mock import ANY
 
@@ -115,3 +116,58 @@ def test_stale_lease_can_refine_only_its_same_attempt_to_relay_accepted(client):
         return await sql("SELECT state,attempt_id,message_id FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,), True)
 
     assert client.portal.call(scenario) == (("SMTP_ACCEPTED", ANY, "<late@example.test>"),)
+
+
+def test_stale_settler_and_revoke_race_on_one_fenced_invitation_without_deadlock(client):
+    """Both paths lock invitation then outbox; the winner cannot strand the other at 1213."""
+    issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(
+        _office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-stale-revoke-race-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+                  (project_id, issuer, issuer))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitation = await issue_invitation_in_cursor(
+                cur, actor_user_id=issuer, project_id=project_id,
+                email="stale-revoke-race-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
+                invitation_config=_INVITATION_CONFIG, idempotency_key=str(uuid.uuid4()))
+            outbox_id = await _outbox_id(cur, invitation.invitation_id)
+            await cur.execute(
+                "UPDATE office_invitation_outbox SET state='CLAIMED',attempt_id=%s,attempt_count=1,"
+                "claimed_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 31 SECOND),updated_at=UTC_TIMESTAMP(6) "
+                "WHERE outbox_id=%s", (str(uuid.uuid4()), outbox_id))
+
+        start = asyncio.Event()
+
+        async def settle():
+            await start.wait()
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await settle_stale_invitation_claims_in_cursor(cur, config=_INVITATION_CONFIG)
+
+        async def revoke():
+            await start.wait()
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await revoke_invitation_in_cursor(
+                    cur, actor_user_id=issuer, project_id=project_id,
+                    invitation_id=invitation.invitation_id, expected_version=1,
+                    proof_event_id=proof_event_id, mfa_config=_MFA_CONFIG,
+                    idempotency_key=str(uuid.uuid4()))
+
+        settling, revoking = asyncio.create_task(settle()), asyncio.create_task(revoke())
+        start.set()
+        settled, revoked = await asyncio.wait_for(asyncio.gather(settling, revoking), timeout=10)
+        invitation_row = await sql("SELECT status,version FROM office_invitation WHERE invitation_id=%s",
+                                   (invitation.invitation_id,), True)
+        outbox_row = await sql("SELECT state,cancel_requested FROM office_invitation_outbox WHERE outbox_id=%s",
+                               (outbox_id,), True)
+        return settled, revoked, invitation_row, outbox_row
+
+    settled, revoked, invitation_row, outbox_row = client.portal.call(scenario)
+    assert settled == 1
+    assert revoked == (2, False)
+    assert invitation_row == (("REVOKED", 2),)
+    assert outbox_row == (("UNKNOWN", 1),)

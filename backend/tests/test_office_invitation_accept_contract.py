@@ -288,6 +288,48 @@ def test_revoke_replay_reauthorizes_and_new_key_cannot_revoke_terminal_invitatio
     client.portal.call(scenario)
 
 
+def test_service_receipts_bind_issue_and_revoke_to_their_own_evidence(client):
+    """The service emits the exact event authority, intent digest, and expiry it attests."""
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                               ("invitation-receipt-binding-" + uuid.uuid4().hex,))
+        await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+                  (project_id, issuer, issuer))
+        issue_key, revoke_key = str(uuid.uuid4()), str(uuid.uuid4())
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            invitation = await issue_invitation_in_cursor(
+                cur, actor_user_id=issuer, project_id=project_id,
+                email="receipt-binding-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                invitation_config=InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30),
+                idempotency_key=issue_key)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await revoke_invitation_in_cursor(
+                cur, actor_user_id=issuer, project_id=project_id,
+                invitation_id=invitation.invitation_id, expected_version=1,
+                proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                idempotency_key=revoke_key) == (2, False)
+        return await sql(
+            "SELECT r.operation,r.authorization_event_id=e.authorization_event_id,"
+            "r.request_digest=e.invocation_digest,"
+            "(r.operation='REVOKE' OR r.expires_at=s.expires_at),"
+            "r.expected_version,r.response_version "
+            "FROM office_invitation_mutation_receipt r "
+            "JOIN office_invitation i ON i.invitation_id=r.invitation_id "
+            "JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
+            "JOIN office_invitation_event e ON e.event_id=r.result_event_id "
+            "WHERE r.idempotency_key IN (%s,%s) ORDER BY r.operation",
+            (issue_key, revoke_key), True)
+
+    assert client.portal.call(scenario) == (
+        ("ISSUE", 1, 1, 1, 0, 1),
+        ("REVOKE", 1, 1, 1, 1, 2),
+    )
+
+
 def test_bearer_acceptance_creates_only_the_invited_identity(client, monkeypatch):
     for name, value in {
         "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120",
