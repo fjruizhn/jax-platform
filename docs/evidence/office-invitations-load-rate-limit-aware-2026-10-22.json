@@ -8,26 +8,26 @@
     "JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN": "10000/60",
     "scope": "isolated local benchmark process only"
   },
-  "database": "jax_memory_test_a219c223",
+  "database": "jax_memory_test_a219c224",
   "degradation": {
     "accept": "not observed through c=10",
-    "issue_accept": "c=10: p95 29.85ms > 3x baseline 6.88ms",
-    "issue_revoke": "c=10: p95 28.63ms > 3x baseline 5.17ms",
-    "list": "c=5: p95 11.83ms > 3x baseline 3.83ms",
-    "revoke": "c=5: p95 11.74ms > 3x baseline 3.82ms"
+    "issue_accept": "c=5: p95 16.15ms > 3x baseline 5.17ms",
+    "issue_revoke": "c=5: p95 45.14ms > 3x baseline 5.8ms",
+    "list": "c=5: p95 13.62ms > 3x baseline 4.02ms",
+    "revoke": "c=5: p95 55.06ms > 3x baseline 4.01ms"
   },
   "levels": [
     {
       "accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 204.22,
+        "max_ms": 202.26,
         "n": 4,
         "ok": 4,
-        "p50_ms": 157.11,
-        "p95_ms": 204.22,
-        "p99_ms": 204.22,
-        "rps": 5.56,
+        "p50_ms": 155.93,
+        "p95_ms": 202.26,
+        "p99_ms": 202.26,
+        "rps": 5.55,
         "statuses": {
           "200": 4
         }
@@ -36,13 +36,13 @@
       "issue_accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 6.88,
+        "max_ms": 5.17,
         "n": 4,
         "ok": 4,
-        "p50_ms": 4.29,
-        "p95_ms": 6.88,
-        "p99_ms": 6.88,
-        "rps": 200.14,
+        "p50_ms": 4.14,
+        "p95_ms": 5.17,
+        "p99_ms": 5.17,
+        "rps": 217.28,
         "statuses": {
           "200": 4
         }
@@ -50,13 +50,13 @@
       "issue_revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 5.17,
+        "max_ms": 5.8,
         "n": 4,
         "ok": 4,
-        "p50_ms": 3.56,
-        "p95_ms": 5.17,
-        "p99_ms": 5.17,
-        "rps": 242.1,
+        "p50_ms": 4.19,
+        "p95_ms": 5.8,
+        "p99_ms": 5.8,
+        "rps": 206.24,
         "statuses": {
           "200": 4
         }
@@ -64,13 +64,13 @@
       "list": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 3.83,
+        "max_ms": 4.02,
         "n": 4,
         "ok": 4,
-        "p50_ms": 3.54,
-        "p95_ms": 3.83,
-        "p99_ms": 3.83,
-        "rps": 5.25,
+        "p50_ms": 3.76,
+        "p95_ms": 4.02,
+        "p99_ms": 4.02,
+        "rps": 260.54,
         "statuses": {
           "200": 4
         }
@@ -78,13 +78,13 @@
       "revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 3.82,
+        "max_ms": 4.01,
         "n": 4,
         "ok": 4,
-        "p50_ms": 3.11,
-        "p95_ms": 3.82,
-        "p99_ms": 3.82,
-        "rps": 298.48,
+        "p50_ms": 3.81,
+        "p95_ms": 4.01,
+        "p99_ms": 4.01,
+        "rps": 259.89,
         "statuses": {
           "200": 4
         }
@@ -94,13 +94,13 @@
       "accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 175.31,
+        "max_ms": 211.31,
         "n": 20,
         "ok": 20,
-        "p50_ms": 157.84,
-        "p95_ms": 171.56,
-        "p99_ms": 175.31,
-        "rps": 26.99,
+        "p50_ms": 160.91,
+        "p95_ms": 205.71,
+        "p99_ms": 211.31,
+        "rps": 19.49,
         "statuses": {
           "200": 20
         }
@@ -109,13 +109,13 @@
       "issue_accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 15.62,
+        "max_ms": 17.68,
         "n": 20,
         "ok": 20,
-        "p50_ms": 12.06,
-        "p95_ms": 13.19,
-        "p99_ms": 15.62,
-        "rps": 396.72,
+        "p50_ms": 12.22,
+        "p95_ms": 16.15,
+        "p99_ms": 17.68,
+        "rps": 357.67,
         "statuses": {
           "200": 20
         }
@@ -123,13 +123,13 @@
       "issue_revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 14.68,
+        "max_ms": 48.5,
         "n": 20,
         "ok": 20,
-        "p50_ms": 10.8,
-        "p95_ms": 12.31,
-        "p99_ms": 14.68,
-        "rps": 422.51,
+        "p50_ms": 36.41,
+        "p95_ms": 45.14,
+        "p99_ms": 48.5,
+        "rps": 125.74,
         "statuses": {
           "200": 20
         }
@@ -137,13 +137,13 @@
       "list": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 13.86,
+        "max_ms": 15.91,
         "n": 20,
         "ok": 20,
-        "p50_ms": 10.15,
-        "p95_ms": 11.83,
-        "p99_ms": 13.86,
-        "rps": 23.73,
+        "p50_ms": 10.63,
+        "p95_ms": 13.62,
+        "p99_ms": 15.91,
+        "rps": 415.54,
         "statuses": {
           "200": 20
         }
@@ -151,13 +151,13 @@
       "revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 13.53,
+        "max_ms": 61.3,
         "n": 20,
         "ok": 20,
-        "p50_ms": 9.62,
-        "p95_ms": 11.74,
-        "p99_ms": 13.53,
-        "rps": 462.46,
+        "p50_ms": 35.48,
+        "p95_ms": 55.06,
+        "p99_ms": 61.3,
+        "rps": 125.89,
         "statuses": {
           "200": 20
         }
@@ -167,13 +167,13 @@
       "accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 200.71,
+        "max_ms": 377.46,
         "n": 40,
         "ok": 40,
-        "p50_ms": 164.7,
-        "p95_ms": 192.26,
-        "p99_ms": 200.71,
-        "rps": 44.63,
+        "p50_ms": 217.8,
+        "p95_ms": 284.29,
+        "p99_ms": 377.46,
+        "rps": 19.42,
         "statuses": {
           "200": 40
         }
@@ -182,13 +182,13 @@
       "issue_accept": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 35.16,
+        "max_ms": 51.32,
         "n": 40,
         "ok": 40,
-        "p50_ms": 26.57,
-        "p95_ms": 29.85,
-        "p99_ms": 35.16,
-        "rps": 356.21,
+        "p50_ms": 32.92,
+        "p95_ms": 46.57,
+        "p99_ms": 51.32,
+        "rps": 260.5,
         "statuses": {
           "200": 40
         }
@@ -196,13 +196,13 @@
       "issue_revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 31.64,
+        "max_ms": 170.39,
         "n": 40,
         "ok": 40,
-        "p50_ms": 25.33,
-        "p95_ms": 28.63,
-        "p99_ms": 31.64,
-        "rps": 371.0,
+        "p50_ms": 108.91,
+        "p95_ms": 130.83,
+        "p99_ms": 170.39,
+        "rps": 83.43,
         "statuses": {
           "200": 40
         }
@@ -210,13 +210,13 @@
       "list": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 29.29,
+        "max_ms": 177.77,
         "n": 40,
         "ok": 40,
-        "p50_ms": 22.29,
-        "p95_ms": 24.75,
-        "p99_ms": 29.29,
-        "rps": 35.99,
+        "p50_ms": 44.28,
+        "p95_ms": 160.98,
+        "p99_ms": 177.77,
+        "rps": 131.35,
         "statuses": {
           "200": 40
         }
@@ -224,13 +224,13 @@
       "revoke": {
         "error_details": [],
         "errors": 0,
-        "max_ms": 26.41,
+        "max_ms": 174.0,
         "n": 40,
         "ok": 40,
-        "p50_ms": 20.59,
-        "p95_ms": 23.01,
-        "p99_ms": 26.41,
-        "rps": 454.52,
+        "p50_ms": 108.13,
+        "p95_ms": 154.02,
+        "p99_ms": 174.0,
+        "rps": 79.96,
         "statuses": {
           "200": 40
         }
@@ -240,16 +240,18 @@
   "notes": [
     "real loopback ASGI HTTP",
     "real auth and MFA",
-    "outbox bearer decrypted only from the isolated disposable database",
-    "guardrail 429 is reported separately from capacity"
+    "outbox bearer decrypted only from the isolated disposable database"
   ],
-  "run_id": "d12b8f9b",
+  "run_id": "a7e5b97d",
   "schema": "office-invitation-load/v1",
   "seed": {
     "active_invitations": 100,
     "method": "real issue endpoint"
   },
-  "source_revision": "e4b2e1c7732bfb0cd919fe9cfba800898a288e32",
+  "source_revisions": {
+    "jax": "62b4eaff2470e40cdb9f15a520a59023fa4a05e9",
+    "jax_platform": "f4bbbaa059e281207cca8a395bf3844654996467"
+  },
   "workers_per_level": {
     "concurrent_users": "c",
     "operations_per_user": 4
