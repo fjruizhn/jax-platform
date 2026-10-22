@@ -93,11 +93,21 @@ def test_exact_empty_v16_engine_upgrades_but_rows_or_drift_fail_closed(client):
                 for trigger in ("guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"):
                     await cur.execute("SELECT 1 FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=%s", (trigger,))
                     assert await cur.fetchone() == (1,)
+                # A crash after trigger 2 resumes, then a rerun is idempotent.
                 await cur.execute("DROP TRIGGER guard_office_engine_delete")
+                await cur.execute("DROP TRIGGER guard_office_engine_update")
+                await apply_office_migrations(cur)
+                await apply_office_migrations(cur)
+                # A crash after trigger 1 also resumes.
+                await cur.execute("DROP TRIGGER guard_office_engine_update")
+                await cur.execute("DROP TRIGGER guard_office_engine_delete")
+                await apply_office_migrations(cur)
+                # A non-prefix set is never repaired opportunistically.
+                await cur.execute("DROP TRIGGER guard_office_engine_insert")
                 with pytest.raises(RuntimeError, match="v17 cutpoint is not exact and empty"):
                     await apply_office_migrations(cur)
-                await cur.execute("DROP TRIGGER guard_office_engine_insert")
                 await cur.execute("DROP TRIGGER guard_office_engine_update")
+                await cur.execute("DROP TRIGGER guard_office_engine_delete")
                 await apply_office_migrations(cur)
                 for trigger in ("guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"):
                     await cur.execute(f"DROP TRIGGER {trigger}")

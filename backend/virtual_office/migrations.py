@@ -46,6 +46,11 @@ _OFFICE_ENGINE_INSERT_GUARD = (
 _OFFICE_ENGINE_DELETE_GUARD = (
     "BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_engine rows are never deleted'; END"
 )
+_OFFICE_ENGINE_TRIGGER_METADATA = {
+    "guard_office_engine_insert": ("BEFORE", "INSERT", "ROW", _OFFICE_ENGINE_INSERT_GUARD),
+    "guard_office_engine_update": ("BEFORE", "UPDATE", "ROW", _OFFICE_ENGINE_UPDATE_GUARD),
+    "guard_office_engine_delete": ("BEFORE", "DELETE", "ROW", _OFFICE_ENGINE_DELETE_GUARD),
+}
 OFFICE_ENGINE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_engine ("
     "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
@@ -1875,16 +1880,27 @@ async def _prepare_office_engine_v17_cutpoint(cur) -> None:
         expected = {name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_CHECKS.items()}
         if checks != expected:
             raise RuntimeError("check drift")
-        await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
-        triggers = {row[0] for row in await cur.fetchall()}
-        expected_triggers = {"guard_office_engine_insert", "guard_office_engine_update", "guard_office_engine_delete"}
-        if triggers == expected_triggers:
-            return
-        if triggers:
+        await cur.execute(
+            "SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
+        )
+        triggers = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
+        expected_names = tuple(_OFFICE_ENGINE_TRIGGER_METADATA)
+        names = tuple(name for name in expected_names if name in triggers)
+        if set(triggers) != set(names) or names not in ((), expected_names[:1], expected_names[:2], expected_names):
             raise RuntimeError("trigger drift")
-        await cur.execute("SELECT COUNT(*) FROM office_engine")
-        if tuple(await cur.fetchone() or ()) != (0,):
-            raise RuntimeError("nonempty triggerless cutpoint")
+        if triggers != {name: _OFFICE_ENGINE_TRIGGER_METADATA[name] for name in names}:
+            raise RuntimeError("trigger body drift")
+        if names == expected_names:
+            return
+        if names:
+            await cur.execute("SELECT COUNT(*) FROM office_engine WHERE enabled<>0 OR activation_epoch<>0 OR version<>1")
+            if tuple(await cur.fetchone() or ()) != (0,):
+                raise RuntimeError("invalid rows at trigger cutpoint")
+        else:
+            await cur.execute("SELECT COUNT(*) FROM office_engine")
+            if tuple(await cur.fetchone() or ()) != (0,):
+                raise RuntimeError("nonempty triggerless cutpoint")
     except RuntimeError as error:
         raise RuntimeError("Office engine catalogue v17 cutpoint is not exact and empty") from error
 
@@ -1919,12 +1935,7 @@ async def assert_office_engine_runtime_metadata(cur) -> None:
         "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
     )
     triggers = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
-    expected_triggers = {
-        "guard_office_engine_insert": ("BEFORE", "INSERT", "ROW", _OFFICE_ENGINE_INSERT_GUARD),
-        "guard_office_engine_update": ("BEFORE", "UPDATE", "ROW", _OFFICE_ENGINE_UPDATE_GUARD),
-        "guard_office_engine_delete": ("BEFORE", "DELETE", "ROW", _OFFICE_ENGINE_DELETE_GUARD),
-    }
-    if triggers != expected_triggers:
+    if triggers != _OFFICE_ENGINE_TRIGGER_METADATA:
         raise RuntimeError("Office engine catalogue triggers are invalid")
 
 
