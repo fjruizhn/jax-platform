@@ -1,5 +1,6 @@
 """Pure safeguards for the Office invitation load harness."""
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,52 @@ def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_p
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_IP"] == "10000/60"
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN"] == "10000/60"
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS"] == "20000"
+    assert env["FRONTEND_ORIGIN"] == "http://127.0.0.1:54321"
+
+
+@pytest.mark.parametrize("base", ["http://example.test", "https://127.0.0.1:54321", "http://127.0.0.1:54321/path"])
+def test_browser_origin_rejects_noncanonical_or_nonloopback_asgi_urls(base):
+    with pytest.raises(RuntimeError, match="canonical loopback"):
+        oi.browser_origin(base)
+
+
+def test_authenticated_client_sends_canonical_origin_on_every_unsafe_request(monkeypatch):
+    class Response:
+        status_code = 200
+        def __init__(self, body): self.body = body
+        def raise_for_status(self): pass
+        def json(self): return self.body
+
+    class Client:
+        calls = []
+        def __init__(self, **_kwargs): pass
+        async def post(self, path, **kwargs):
+            self.calls.append((path, kwargs["headers"]))
+            responses = {
+                "/api/auth/mfa/enrollment/start": {"secret": "secret", "enrollment_token": "enroll"},
+                "/api/auth/mfa/enrollment/confirm": {},
+                "/api/auth/mfa/login/verify": {"access_token": "mfa-access"},
+            }
+            if path == "/api/auth/login":
+                return Response({"access_token": "password-access"} if len(self.calls) == 1 else {"challenge_token": "challenge"})
+            return Response(responses[path])
+
+    class Totp:
+        def __init__(self, _secret): pass
+        def now(self): return "123456"
+
+    async def no_wait(_seconds): pass
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=Client))
+    monkeypatch.setitem(sys.modules, "pyotp", types.SimpleNamespace(TOTP=Totp))
+    monkeypatch.setattr(oi.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(oi.time, "time", lambda: 0.0)
+    client, headers = __import__("asyncio").run(
+        oi.authenticated_client("http://127.0.0.1:54321", "load@example.invalid", "password"))
+
+    assert client is not None
+    assert all(call_headers["Origin"] == "http://127.0.0.1:54321" for _, call_headers in Client.calls)
+    assert headers == {"Origin": "http://127.0.0.1:54321", "Authorization": "Bearer mfa-access"}
 
 
 def test_sequential_workers_never_overlap_operations_within_a_user():

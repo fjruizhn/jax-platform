@@ -43,6 +43,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pymysql
 
@@ -244,11 +245,27 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def browser_origin(base: str) -> str:
+    """Derive the canonical Origin that the local browser-facing ASGI host expects."""
+    parsed = urlsplit(base)
+    if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}
+            or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+        raise RuntimeError("Office load ASGI base must be a canonical loopback HTTP origin")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    origin = f"http://{host}"
+    if parsed.port is not None:
+        origin = f"{origin}:{parsed.port}"
+    if base != origin:
+        raise RuntimeError("Office load ASGI base must be a canonical loopback HTTP origin")
+    return origin
+
+
 def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, str], bytes]:
+    origin = browser_origin(f"http://127.0.0.1:{port}")
     env = dict(os.environ)
     env.update(cfg, JAX_DB_NAME=cfg["JAX_OFFICE_LOAD_DB"], JAX_JWT_SECRET=secrets.token_urlsafe(48),
                FERNET_KEY=base64.urlsafe_b64encode(os.urandom(32)).decode(),
-               JAX_PLATFORM_URL=f"http://127.0.0.1:{port}",
+               JAX_PLATFORM_URL=origin, FRONTEND_ORIGIN=origin,
                # Configuration validates the canonical public origin even
                # though this harness never sends an email or opens that URL.
                OFFICE_INVITATION_PUBLIC_BASE_URL="https://virtualoffice.example.test",
@@ -305,26 +322,27 @@ async def authenticated_client(base: str, email: str, password: str):
     import httpx
     import pyotp
     client = httpx.AsyncClient(base_url=base, timeout=30, follow_redirects=False)
-    login = await client.post("/api/auth/login", json={"email": email, "password": password})
+    browser_headers = {"Origin": browser_origin(base)}
+    login = await client.post("/api/auth/login", json={"email": email, "password": password}, headers=browser_headers)
     login.raise_for_status()
     access = login.json()["access_token"]
-    enroll = await client.post("/api/auth/mfa/enrollment/start", json={"password": password}, headers={"Authorization": f"Bearer {access}"})
+    enroll = await client.post("/api/auth/mfa/enrollment/start", json={"password": password}, headers={**browser_headers, "Authorization": f"Bearer {access}"})
     enroll.raise_for_status()
     enrollment = enroll.json()
     totp = pyotp.TOTP(enrollment["secret"])
     enrollment_otp = totp.now()
-    confirm = await client.post("/api/auth/mfa/enrollment/confirm", json={"enrollment_token": enrollment["enrollment_token"], "otp": enrollment_otp})
+    confirm = await client.post("/api/auth/mfa/enrollment/confirm", json={"enrollment_token": enrollment["enrollment_token"], "otp": enrollment_otp}, headers=browser_headers)
     confirm.raise_for_status()
-    login = await client.post("/api/auth/login", json={"email": email, "password": password})
+    login = await client.post("/api/auth/login", json={"email": email, "password": password}, headers=browser_headers)
     login.raise_for_status()
     challenge = login.json()
     # MFA deliberately rejects reuse of a TOTP counter.  Enrollment consumed
     # this counter, so wait for the next actual clock interval rather than
     # fabricating a proof or weakening the replay guard for a load test.
     await asyncio.sleep(max(.1, 30 - (time.time() % 30) + .1))
-    verified = await client.post("/api/auth/mfa/login/verify", json={"challenge_token": challenge["challenge_token"], "otp": totp.now()})
+    verified = await client.post("/api/auth/mfa/login/verify", json={"challenge_token": challenge["challenge_token"], "otp": totp.now()}, headers=browser_headers)
     verified.raise_for_status()
-    return client, {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    return client, {**browser_headers, "Authorization": f"Bearer {verified.json()['access_token']}"}
 
 
 def outbox_tokens(cfg: dict[str, str], fernet_key: bytes, ids: list[str]) -> dict[str, str]:
