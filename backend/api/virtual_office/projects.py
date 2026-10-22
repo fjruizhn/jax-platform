@@ -292,14 +292,10 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
     )
     await cur.execute(
         "SELECT p.id,p.name,p.description,s.tenant_id,s.version FROM projects p "
-        "JOIN jax_project_scope s ON s.project_id=p.id "
-        "WHERE p.id=%s AND s.authorization_namespace='OFFICE_CONFIDENTIAL' "
-        "AND s.status='ACTIVE'",
+        "JOIN jax_project_scope s ON s.project_id=p.id WHERE p.id=%s",
         (project_id,),
     )
     row = await cur.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="office_project_not_found")
     # The recipient group is relevant only for external callers.  Resolve it
     # from the server-owned relationship; callers never submit it as a query
     # parameter capable of selecting another client's publication.
@@ -314,11 +310,11 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         recipient_group_id=None if relation is None else int(relation[0]),
         mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
-    if not decision.allowed:
-        # Do not turn a guessed confidential project id into an authority
-        # oracle.  A caller with a live Office identity sees a generic deny;
-        # unprovisioned callers are handled by the middleware/profile paths.
-        raise HTTPException(status_code=403, detail="office_project_access_denied")
+    if row is None or not decision.allowed:
+        # Keep absent, inactive, non-Office and inaccessible scopes
+        # indistinguishable.  It runs even for an absent scope, preserving
+        # the canonical authority/audit path for every request.
+        raise HTTPException(status_code=404, detail="office_project_not_found")
     try:
         manage_invitations = await can_manage_invitations_in_cursor(
             cur, actor_user_id=actor_user_id, project_id=project_id,
