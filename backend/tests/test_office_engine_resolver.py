@@ -101,30 +101,43 @@ def test_real_db_mutants_for_route_and_egress_fields_fail_closed(client):
                 digest = engine_binding_fingerprint(engine_key="glm", model_ref=1, transport="http_openai_compat", allowed_data_classifications=frozenset(("SYSTEM_SMOKE",)), provider_fingerprint=provider_fp, model_fingerprint=model_fp, credential_fingerprint=credential_fp, engine_enabled=1, activation_epoch=1, version=1)
                 await cur.execute("INSERT INTO office_engine VALUES (%s,%s,1,%s,%s,%s,1,1,1)", ("glm", "office.engine.glm", "http_openai_compat", '["SYSTEM_SMOKE"]', digest))
                 assert (await resolve_office_engine_in_cursor(cur, engine_key="glm", data_classification="SYSTEM_SMOKE")).engine_key == "glm"
+                # The fixture pool is autocommit, so each UPDATE ends the
+                # savepoint transaction. Restore each field explicitly instead
+                # of rolling back a savepoint MariaDB has already discarded.
+                # The second assertion proves the restore returned to the
+                # approved binding before the next mutation.
                 mutations = (
-                    ("UPDATE provider SET base_url=%s", ("https://changed.example",)),
-                    ("UPDATE provider SET auth_type=%s", ("oauth",)),
-                    ("UPDATE provider SET api_key_transport=%s", ("header-x-api-key",)),
-                    ("UPDATE provider SET status=%s", ("disabled",)),
-                    ("UPDATE provider SET is_local=1", ()),
-                    ("UPDATE model SET model_id=%s", ("changed",)),
-                    ("UPDATE model SET status=%s", ("disabled",)),
-                    ("UPDATE model SET is_alias=1", ()),
-                    ("UPDATE model SET context_window=1", ()),
-                    ("UPDATE model SET supports_tool_use=0", ()),
-                    ("UPDATE model SET supports_structured_output=0", ()),
-                    ("UPDATE model SET max_tokens_param=%s", ("limit",)),
-                    ("UPDATE model SET max_output_tokens=1", ()),
-                    ("UPDATE model SET input_modalities=%s", ("image",)),
-                    ("UPDATE credential SET encrypted_value=%s", ("changed-ciphertext",)),
+                    ("UPDATE provider SET base_url=%s", ("https://changed.example",), "UPDATE provider SET base_url=%s", ("https://a\x1f.example",)),
+                    ("UPDATE provider SET auth_type=%s", ("oauth",), "UPDATE provider SET auth_type=%s", ("api_key",)),
+                    ("UPDATE provider SET api_key_transport=%s", ("header-x-api-key",), "UPDATE provider SET api_key_transport=%s", ("bearer",)),
+                    ("UPDATE provider SET status=%s", ("disabled",), "UPDATE provider SET status=%s", ("active",)),
+                    ("UPDATE provider SET is_local=1", (), "UPDATE provider SET is_local=0", ()),
+                    ("UPDATE model SET model_id=%s", ("changed",), "UPDATE model SET model_id=%s", ("m\x1f1",)),
+                    ("UPDATE model SET status=%s", ("disabled",), "UPDATE model SET status=%s", ("available",)),
+                    ("UPDATE model SET is_alias=1", (), "UPDATE model SET is_alias=0", ()),
+                    ("UPDATE model SET context_window=1", (), "UPDATE model SET context_window=8192", ()),
+                    ("UPDATE model SET supports_tool_use=0", (), "UPDATE model SET supports_tool_use=1", ()),
+                    ("UPDATE model SET supports_structured_output=0", (), "UPDATE model SET supports_structured_output=1", ()),
+                    ("UPDATE model SET max_tokens_param=%s", ("limit",), "UPDATE model SET max_tokens_param=%s", ("max_tokens",)),
+                    ("UPDATE model SET max_output_tokens=1", (), "UPDATE model SET max_output_tokens=2048", ()),
+                    ("UPDATE model SET input_modalities=%s", ("image",), "UPDATE model SET input_modalities=%s", ("text",)),
+                    ("UPDATE credential SET encrypted_value=%s", ("changed-ciphertext",), "UPDATE credential SET encrypted_value=%s", ("ciphertext",)),
                 )
-                for statement, params in mutations:
-                    await cur.execute("SAVEPOINT engine_mutant")
-                    await cur.execute(statement, params)
-                    with pytest.raises(OfficeEngineUnavailable):
-                        await resolve_office_engine_in_cursor(cur, engine_key="glm", data_classification="SYSTEM_SMOKE")
-                    await cur.execute("ROLLBACK TO SAVEPOINT engine_mutant")
-                    await cur.execute("RELEASE SAVEPOINT engine_mutant")
+                try:
+                    for statement, params, restore, restore_params in mutations:
+                        await cur.execute(statement, params)
+                        with pytest.raises(OfficeEngineUnavailable):
+                            await resolve_office_engine_in_cursor(cur, engine_key="glm", data_classification="SYSTEM_SMOKE")
+                        await cur.execute(restore, restore_params)
+                        assert (await resolve_office_engine_in_cursor(
+                            cur, engine_key="glm", data_classification="SYSTEM_SMOKE"
+                        )).engine_key == "glm"
+                finally:
+                    # A pool retains sessions.  Without this cleanup the next
+                    # test can inherit these shadow relations instead of the
+                    # fixture's durable catalogue.
+                    for relation in ("office_engine", "credential", "model", "provider"):
+                        await cur.execute(f"DROP TEMPORARY TABLE IF EXISTS {relation}")
 
     client.portal.call(scenario)
 
