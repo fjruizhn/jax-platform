@@ -112,6 +112,11 @@ open(sys.argv[1],'w').write(json.dumps(dict(zip(('release','jax_platform_revisio
 PY
 touch "$root/.runtime.lock"; chown root:root "$root/.runtime.lock"; chmod 0644 "$root/.runtime.lock"
 systemctl daemon-reload
+# Exercise the validator against PID1's D-Bus view before activation.  The
+# source units are the exact files just installed, while `busctl` reports the
+# effective argv that systemd retained (including credential syntax).
+python3 /workspace/ops/migration/artifact_readiness.py "$root/releases/predecessor" \
+  --units-dir /workspace/ops/migration/systemd-units busctl
 
 # SIGKILL after publish leaves the durable PRE_DDL journal and the candidate
 # selected.  A second real invocation must stop the units, recover predecessor,
