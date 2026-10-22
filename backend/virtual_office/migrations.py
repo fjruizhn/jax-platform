@@ -78,6 +78,14 @@ _MODULE_PUBLICATION_STAGING_FKS = {
 _MODULE_PUBLICATION_STAGING_CHECKS = {
     "chk_office_module_creative_review_decision": "decision='PENDING_CONTRACT'", "chk_office_module_creative_head_version": "head_version>=1", "chk_office_module_rights_review_staging": "critic_invocation_ref<>'' AND verification_state='PENDING_CONTRACT' AND decision='PENDING_CONTRACT'", "chk_office_module_rights_head_version": "head_version>=1", "chk_office_module_release_event_staging": "decision_state='PENDING_CONTRACT' AND canonical_receipt_sha256 IS NULL AND canonical_receipt_signature IS NULL AND canonical_receipt_key_id IS NULL", "chk_office_module_release_head": "head_version>=1 AND status='PENDING_CONTRACT'",
 }
+_MODULE_PUBLICATION_STAGING_CHECK_TABLES = {
+    "chk_office_module_creative_review_decision": "office_module_creative_review_event",
+    "chk_office_module_creative_head_version": "office_module_creative_review_head",
+    "chk_office_module_rights_review_staging": "office_module_rights_review_event",
+    "chk_office_module_rights_head_version": "office_module_rights_review_head",
+    "chk_office_module_release_event_staging": "office_module_release_event",
+    "chk_office_module_release_head": "office_module_release",
+}
 
 
 def _module_publication_expected_indexes(table: str):
@@ -87,6 +95,18 @@ def _module_publication_expected_indexes(table: str):
         if not any(columns[:len(local)] == local for _unique, columns in expected.values()):
             expected[name] = (False, local)
     return expected
+
+
+def _module_publication_expected_column_metadata(table: str):
+    """COLUMN metadata is authority metadata: defaults and AUTO_INCREMENT matter."""
+    result = []
+    for name, column_type, nullable in _MODULE_PUBLICATION_STAGING_COLUMNS[table]:
+        result.append((name, column_type, nullable,
+                       "current_timestamp(6)" if name == "occurred_at" else ("NULL" if nullable == "YES" else None),
+                       "auto_increment" if table in _MODULE_PUBLICATION_STAGING_EVENT_TABLES and name == _MODULE_PUBLICATION_STAGING_COLUMNS[table][0][0] else "",
+                       "ascii" if column_type.startswith("varchar") else None,
+                       "ascii_bin" if column_type.startswith("varchar") else None))
+    return tuple(result)
 
 
 async def apply_module_publication_staging_migrations(cursor) -> None:
@@ -109,8 +129,9 @@ async def assert_module_publication_staging_metadata(cursor, *, allow_redacted_t
         await cursor.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if tuple(await cursor.fetchone() or ()) != ("InnoDB",):
             raise RuntimeError(f"Office module publication staging engine {table} is invalid")
-        await cursor.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
-        if tuple(tuple(row) for row in await cursor.fetchall()) != expected_columns:
+        await cursor.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+        found_columns = tuple(tuple(row) for row in await cursor.fetchall())
+        if found_columns != _module_publication_expected_column_metadata(table):
             raise RuntimeError(f"Office module publication staging columns for {table} are invalid")
         await cursor.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
         found_indexes = {}
@@ -122,20 +143,26 @@ async def assert_module_publication_staging_metadata(cursor, *, allow_redacted_t
             raise RuntimeError(f"Office module publication staging indexes for {table} are invalid")
     if not await _index_exists(cursor, "office_module_candidate_revision", "uq_office_module_candidate_revision_release_identity"):
         raise RuntimeError("Office module publication revision identity index is absent")
-    await cursor.execute("SELECT TABLE_NAME,CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME LIKE 'office_module_%' AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY TABLE_NAME,CONSTRAINT_NAME,ORDINAL_POSITION")
+    await cursor.execute("SELECT k.TABLE_NAME,k.CONSTRAINT_NAME,k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME WHERE k.CONSTRAINT_SCHEMA=DATABASE() AND k.TABLE_NAME LIKE 'office_module_%' AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.TABLE_NAME,k.CONSTRAINT_NAME,k.ORDINAL_POSITION")
     found_fks = {}
-    for table, name, column, target, target_column in await cursor.fetchall():
-        local, current_target, remote = found_fks.get((table, name), ([], target, []))
-        found_fks[(table, name)] = ([*local, column], current_target, [*remote, target_column])
+    for table, name, column, target, target_column, target_schema, update_rule, delete_rule in await cursor.fetchall():
+        local, current_target, remote, current_schema, current_update, current_delete = found_fks.get((table, name), ([], target, [], target_schema, update_rule, delete_rule))
+        found_fks[(table, name)] = ([*local, column], current_target, [*remote, target_column], current_schema, current_update, current_delete)
     expected_fks = {(table, name): value for table, values in _MODULE_PUBLICATION_STAGING_FKS.items() for name, value in values.items()}
-    normalized_fks = {(table, name): (tuple(local), target, tuple(remote)) for (table, name), (local, target, remote) in found_fks.items() if table in _MODULE_PUBLICATION_STAGING_FKS}
-    if normalized_fks != expected_fks:
+    await cursor.execute("SELECT DATABASE()")
+    schema = (await cursor.fetchone())[0]
+    normalized_fks = {(table, name): (tuple(local), target, tuple(remote)) for (table, name), (local, target, remote, target_schema, update_rule, delete_rule) in found_fks.items() if table in _MODULE_PUBLICATION_STAGING_FKS}
+    if (normalized_fks != expected_fks
+            or any(target_schema != schema or update_rule != "RESTRICT" or delete_rule != "RESTRICT"
+                   for (table, _name), (_local, _target, _remote, target_schema, update_rule, delete_rule) in found_fks.items()
+                   if table in _MODULE_PUBLICATION_STAGING_FKS)):
         raise RuntimeError("Office module publication staging foreign keys are invalid")
     await cursor.execute("SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME LIKE 'office_module_%' AND tc.CONSTRAINT_TYPE='CHECK'")
-    found_checks = {name: clause for table, name, clause in await cursor.fetchall() if table in _MODULE_PUBLICATION_STAGING_COLUMNS}
+    found_checks = {(table, name): clause for table, name, clause in await cursor.fetchall() if table in _MODULE_PUBLICATION_STAGING_COLUMNS}
     def normalized(clause):
         return re.sub(r"[\s`]", "", str(clause).lower()).strip("()")
-    if {name: normalized(clause) for name, clause in found_checks.items()} != {name: normalized(clause) for name, clause in _MODULE_PUBLICATION_STAGING_CHECKS.items()}:
+    expected_checks = {(table, name): normalized(_MODULE_PUBLICATION_STAGING_CHECKS[name]) for name, table in _MODULE_PUBLICATION_STAGING_CHECK_TABLES.items()}
+    if {key: normalized(clause) for key, clause in found_checks.items()} != expected_checks:
         raise RuntimeError("Office module publication staging checks are invalid")
     for table in _MODULE_PUBLICATION_STAGING_EVENT_TABLES:
         await cursor.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
