@@ -74,6 +74,20 @@ def test_rejects_extra_missing_symlink_and_writable_nodes(tmp_path: Path) -> Non
             _verify(root, uid, gid)
 
 
+def test_allows_only_sealed_internal_jax_symlink_targets(tmp_path: Path) -> None:
+    root, uid, gid = _pair(tmp_path)
+    target = root / "jax" / "jax" / "memory.py"
+    link = root / "jax" / "las_manos_memory.py"
+    link.symlink_to("jax/memory.py")
+    manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8"))
+    manifest["files"] = readiness._inventory(root, owner_uid=uid, owner_gid=gid)
+    (root / readiness.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    _verify(root, uid, gid)
+    link.unlink(); link.symlink_to("/etc/passwd")
+    with pytest.raises(readiness.PairReadinessError):
+        _verify(root, uid, gid)
+
+
 def test_rejects_manifest_revision_downgrade_or_wrong_pair(tmp_path: Path) -> None:
     root, uid, gid = _pair(tmp_path)
     manifest = json.loads((root / readiness.MANIFEST).read_text(encoding="utf-8"))

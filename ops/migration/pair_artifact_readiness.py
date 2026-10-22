@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import stat
 import sys
 from pathlib import Path
@@ -63,6 +64,22 @@ def _inventory(root: Path, *, owner_uid: int, owner_gid: int = 0) -> list[dict[s
         for name in [*dirs, *files]:
             path = current / name
             if path.is_symlink() and _allowed_symlink(root, path):
+                continue
+            if path.is_symlink():
+                node = path.lstat()
+                relative = _safe_relative(root, path)
+                target = os.readlink(path)
+                target_relative = posixpath.normpath(posixpath.join(posixpath.dirname(relative), target))
+                if (not relative.startswith("jax/") or not target or target.startswith("/") or "\x00" in target
+                        or target_relative == "." or target_relative.startswith("../") or not target_relative.startswith("jax/")):
+                    raise _reject(f"unsafe node {path}")
+                target_node = root / target_relative
+                target_stat = _check_node(target_node, owner_uid=owner_uid, owner_gid=owner_gid)
+                if stat.S_ISLNK(target_stat.st_mode):
+                    raise _reject(f"unsafe node {path}")
+                entries.append({"path": relative, "mode": "120000", "target": target,
+                                "target_path": target_relative,
+                                "target_mode": f"{stat.S_IMODE(target_stat.st_mode):04o}"})
                 continue
             node = _check_node(path, owner_uid=owner_uid, owner_gid=owner_gid)
             if stat.S_ISDIR(node.st_mode):
