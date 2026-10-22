@@ -13,7 +13,7 @@ const validMembers = (data, projectId) => data && data.project_id === projectId 
 // The people endpoint is server-authorized and intentionally unavailable to a
 // project-only administrator. Those administrators use the email invitation
 // flow, which creates the recipient's membership when accepted.
-export default function OfficeProjectMembershipManager({ projectId, canAssignProjectAdmin = false, onForbidden }) {
+export default function OfficeProjectMembershipManager({ projectId, canBrowsePeople = false, canAssignProjectAdmin = false, onForbidden }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [people, setPeople] = useState(null)
@@ -30,17 +30,19 @@ export default function OfficeProjectMembershipManager({ projectId, canAssignPro
     if (!open) return
     let active = true
     setPeople(null); setMembers(null); setNextCursor(null); setError(null)
-    officePeopleApi.list({ limit: 100 }).then(({ data }) => {
-      if (active && validPeople(data)) setPeople(data.people)
-      else if (active) setError(t.virtualOffice.members.error)
-    }).catch(async (err) => {
-      if (!active) return
-      if (err?.response?.status === 403) {
-        setError(t.virtualOffice.members.forbidden)
-        await onForbidden?.()
-      }
-      else setError(t.virtualOffice.members.error)
-    })
+    if (canBrowsePeople) {
+      officePeopleApi.list({ limit: 100 }).then(({ data }) => {
+        if (active && validPeople(data)) setPeople(data.people)
+        else if (active) setError(t.virtualOffice.members.error)
+      }).catch(async (err) => {
+        if (!active) return
+        if (err?.response?.status === 403) {
+          setError(t.virtualOffice.members.forbidden)
+          await onForbidden?.()
+        }
+        else setError(t.virtualOffice.members.error)
+      })
+    }
 
     async function loadMembers(cursor = 0, append = false) {
       if (membersLoading.current) return
@@ -63,7 +65,7 @@ export default function OfficeProjectMembershipManager({ projectId, canAssignPro
     }
     loadMembers()
     return () => { active = false; membersLoading.current = false }
-  }, [open, projectId])
+  }, [open, projectId, canBrowsePeople])
 
   function close() { if (!busy) { intent.current = null; setOpen(false); setTarget(''); setRole('COLLABORATOR'); setError(null) } }
   async function grant(event) {
@@ -154,16 +156,16 @@ export default function OfficeProjectMembershipManager({ projectId, canAssignPro
   }
 
   return <>
-    <button type="button" onClick={() => setOpen(true)} className={`${BUTTON} mt-3`}>{t.virtualOffice.members.open}</button>
-    {open && <Dialogo idTitulo="office-project-members" titulo={t.virtualOffice.members.title} onCerrar={close}>
-      <form onSubmit={grant} className="space-y-3">
+    <button type="button" onClick={() => setOpen(true)} className={`${BUTTON} mt-3`}>{canBrowsePeople ? t.virtualOffice.members.open : t.virtualOffice.members.manage}</button>
+    {open && <Dialogo idTitulo="office-project-members" titulo={canBrowsePeople ? t.virtualOffice.members.title : t.virtualOffice.members.currentTitle} onCerrar={close}>
+      {canBrowsePeople ? <form onSubmit={grant} className="space-y-3">
         <p className="text-sm text-texto-suave">{t.virtualOffice.members.intro}</p>
         {people === null && !error && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
         {people && <label className="block text-sm text-texto-suave" htmlFor="office-project-member">{t.virtualOffice.members.person}<select id="office-project-member" required disabled={busy} value={target} onChange={(event) => { setTarget(event.target.value); setError(null) }} className={`${INPUT} mt-1`}><option value="">{t.virtualOffice.members.choose}</option>{people.map((person) => <option key={person.user_id} value={person.user_id}>{person.email}</option>)}</select></label>}
         {canAssignProjectAdmin ? <label className="block text-sm text-texto-suave" htmlFor="office-project-member-role">{t.virtualOffice.members.role}<select id="office-project-member-role" disabled={busy} value={role} onChange={(event) => setRole(event.target.value)} className={`${INPUT} mt-1`}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select></label> : <p className="text-sm text-texto-suave">{t.virtualOffice.members.collaboratorOnly}</p>}
         {error && <p role="alert" className="text-sm text-peligro">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2"><button type="button" disabled={busy} onClick={close} className={BUTTON}>{t.virtualOffice.cancel}</button><button disabled={busy || !target || !people} className={`${TAMANO_BOTON_ACCION} rounded bg-accion px-3 text-sobre-color disabled:opacity-60`}>{busy ? t.virtualOffice.members.granting : t.virtualOffice.members.grant}</button></div>
-      </form>
+      </form> : <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-texto-suave">{t.virtualOffice.members.invitationOnly}</p><button type="button" onClick={close} className={BUTTON}>{t.virtualOffice.close}</button></div>}
       <section className="mt-6 border-t border-borde pt-4" aria-label={t.virtualOffice.members.currentTitle}>
         <h3 className="text-sm font-semibold text-texto">{t.virtualOffice.members.currentTitle}</h3>
         {members === null && !error && <p role="status" className="mt-2 text-sm text-texto-suave">{t.virtualOffice.members.loading}</p>}
