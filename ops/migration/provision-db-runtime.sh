@@ -447,7 +447,7 @@ write_atomic() { local destination=$1 content=$2 temp parent; parent=$(dirname "
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   runtime_content=
   for key in "${!CFG[@]}"; do
-    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
+    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
     runtime_content+="$key=${CFG[$key]}"$'\n'
   done
   runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
