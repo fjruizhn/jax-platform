@@ -178,6 +178,28 @@ def test_module_publication_request_is_project_admin_only_and_has_no_implicit_mf
     client.portal.call(scenario)
 
 
+def test_module_publication_request_does_not_bypass_exact_grant_for_office_superuser(client):
+    async def scenario():
+        fixture = await _seed_office_fixture()
+        operation = OfficeOperation.REQUEST_MODULE_PUBLICATION
+        await _sql(
+            "UPDATE office_account_profile SET global_role='OFFICE_SUPERUSER' WHERE user_id=%s",
+            (fixture["actor"],),
+        )
+        # The same-tenant root still has only a COLLABORATOR grant, so it
+        # cannot request publication by virtue of its global role.
+        denied = await authorize_office(None, fixture["actor"], operation, fixture["project"])
+        assert denied.code == "office_grant_insufficient"
+        await _sql(
+            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
+            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
+        )
+        allowed = await authorize_office(None, fixture["actor"], operation, fixture["project"])
+        assert allowed.allowed is True
+        assert allowed.code == "office_project_admin_publication_request"
+    client.portal.call(scenario)
+
+
 def test_module_publication_request_fails_closed_without_exact_active_internal_project_admin(client):
     async def scenario():
         fixture = await _seed_office_fixture()
