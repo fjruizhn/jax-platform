@@ -77,7 +77,7 @@ def _require_durable_idempotency(idempotency_key: str) -> str:
 def _invitation_rate_key(bearer_token: str) -> str:
     """Return a domain-separated limiter key without retaining the bearer.
 
-    The login limiter needs a stable per-bearer bucket in addition to the IP
+    The invitation limiter needs a stable per-bearer bucket in addition to the IP
     bucket, but the invitation capability itself must never become a raw
     in-memory key or an accidental diagnostic value.
     """
@@ -203,7 +203,7 @@ async def accept_invitation(payload: InvitationAcceptRequest,
         # Bound CPU before the untrusted password reaches bcrypt.  The bearer
         # itself is opaque and is only represented by a domain-separated
         # digest in the limiter, never returned or retained as a raw key.
-        rate_limit.check_login_rate(request, _invitation_rate_key(payload.token))
+        rate_limit.check_invitation_accept_rate(request, _invitation_rate_key(payload.token))
         if not await invitation_bearer_preflight(payload.token):
             raise HTTPException(status_code=403, detail="office_invitation_invalid")
         if payload.password is None:
