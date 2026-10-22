@@ -746,10 +746,15 @@ async def finalize_invitation_delivery_in_cursor(
     await cur.execute(
         "UPDATE office_invitation_outbox SET state=%s,payload_ciphertext=NULL,message_id=%s,result_code=%s,"
         "finished_at=UTC_TIMESTAMP(6),updated_at=IF(UTC_TIMESTAMP(6)>updated_at,UTC_TIMESTAMP(6),DATE_ADD(updated_at,INTERVAL 1 MICROSECOND)) "
-        "WHERE outbox_id=%s AND state='CLAIMED' AND attempt_id=%s",
-        (state, message_id if relay_accepted else None, code, outbox_id, attempt_id))
+        "WHERE outbox_id=%s AND state=%s AND attempt_id=%s",
+        (state, message_id if relay_accepted else None, code, outbox_id, row[1], attempt_id))
     if cur.rowcount != 1:
         return False
+    # Lease expiry is an operational marker, not an observed transport fact:
+    # the in-flight thread may still refine it to SMTP_ACCEPTED.  A real
+    # ambiguous relay result remains terminal and receives its one evidence row.
+    if state == "UNKNOWN" and code == "SMTP_STALE":
+        return True
     await cur.execute("SELECT event_id,correlation_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
     issued = await cur.fetchone()
     if issued is None:
