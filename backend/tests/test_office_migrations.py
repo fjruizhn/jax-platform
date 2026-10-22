@@ -10,7 +10,13 @@ import aiomysql
 import pytest
 
 from virtual_office.migrations import apply_office_migrations
-from virtual_office.migrations import _CANONICAL_AUDIT_SHAPE, _is_canonical_audit_shape
+from virtual_office.migrations import (
+    _CANONICAL_AUDIT_SHAPE,
+    _CANONICAL_MFA_CHECK_DIGESTS,
+    _check_clause,
+    _check_digest,
+    _is_canonical_audit_shape,
+)
 
 
 def test_audit_check_comparison_preserves_binary_literal_case():
@@ -438,4 +444,158 @@ def test_mfa_v4_incompatible_evidence_fails_preflight_without_rewrite_or_readine
                     await cur.execute("SET SESSION FOREIGN_KEY_CHECKS=1")
                     await cur.execute(f"USE `{source}`")
                     await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+    client.portal.call(scenario)
+
+
+# Exact v4 evidence from ec09e22, retained here so this recovery test does not
+# depend on an ignored planning fixture or a historical checkout at runtime.
+_V4_MFA_CHECK_SQL = {
+    "credential": "CHECK ((state='PENDING' AND secret_ciphertext IS NULL AND pending_secret_ciphertext IS NOT NULL AND pending_enrollment_id IS NOT NULL AND pending_expires_at IS NOT NULL) OR (state='ACTIVE' AND secret_ciphertext IS NOT NULL AND pending_secret_ciphertext IS NULL AND pending_enrollment_id IS NULL AND pending_expires_at IS NULL) OR (state IN ('RECOVERY_REQUIRED','DISABLED') AND secret_ciphertext IS NULL AND pending_secret_ciphertext IS NULL AND pending_enrollment_id IS NULL AND pending_expires_at IS NULL))",
+    "challenge": "CHECK (state IN ('ISSUED','CONSUMED','EXHAUSTED','EXPIRED'))",
+    "fence": "CHECK ((event_kind='SYSTEM_FENCE' AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1') OR (event_kind IN ('MFA_PROOF','MFA_STATE_CHANGE') AND fence_key IS NULL))",
+    "shape": "CHECK ((event_kind='MFA_PROOF' AND operation='MFA_PROOF' AND subject_user_id IS NOT NULL AND purpose IN ('LOGIN','STEP_UP','ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result IN ('VERIFIED','DENIED') AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR (principal_kind IN ('PASSWORD_PREAUTH','RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='MFA_STATE_CHANGE' AND subject_user_id IS NOT NULL AND operation IN ('ENROLLMENT_CONFIRM','RECOVERY_CONSUME','MFA_DISABLE','MFA_RESET') AND purpose IN ('ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version >= 0 AND previous_mfa_version >= 0 AND proof_event_id IS NOT NULL AND result='RECORDED' AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL) OR (principal_kind IN ('RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='SYSTEM_FENCE' AND actor_user_id IS NULL AND principal_kind='SYSTEM_MIGRATOR' AND challenge_id IS NULL AND subject_user_id IS NULL AND operation IS NULL AND purpose IS NULL AND token_version IS NULL AND mfa_version IS NULL AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result='RECORDED' AND server_correlation_id IS NULL AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1'))",
+    "truth": "CHECK (COALESCE((BINARY event_kind=BINARY 'SYSTEM_FENCE' AND actor_user_id IS NULL AND BINARY principal_kind=BINARY 'SYSTEM_MIGRATOR' AND challenge_id IS NULL AND subject_user_id IS NULL AND operation IS NULL AND purpose IS NULL AND token_version IS NULL AND mfa_version IS NULL AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND BINARY result=BINARY 'RECORDED' AND server_correlation_id IS NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1') OR (BINARY event_kind=BINARY 'MFA_PROOF' AND subject_user_id IS NOT NULL AND BINARY operation=BINARY 'MFA_PROOF' AND (BINARY purpose=BINARY 'LOGIN' OR BINARY purpose=BINARY 'STEP_UP' OR BINARY purpose=BINARY 'ENROLLMENT' OR BINARY purpose=BINARY 'RECOVERY') AND token_version IS NOT NULL AND token_version>=0 AND mfa_version IS NOT NULL AND mfa_version>=0 AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND (BINARY result=BINARY 'VERIFIED' OR BINARY result=BINARY 'DENIED') AND server_correlation_id IS NOT NULL AND fence_key IS NULL AND ((BINARY principal_kind=BINARY 'USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR ((BINARY principal_kind=BINARY 'PASSWORD_PREAUTH' OR BINARY principal_kind=BINARY 'RECOVERY_CAPABILITY' OR BINARY principal_kind=BINARY 'ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (BINARY event_kind=BINARY 'MFA_STATE_CHANGE' AND subject_user_id IS NOT NULL AND (BINARY operation=BINARY 'ENROLLMENT_CONFIRM' OR BINARY operation=BINARY 'RECOVERY_CONSUME' OR BINARY operation=BINARY 'MFA_DISABLE' OR BINARY operation=BINARY 'MFA_RESET') AND (BINARY purpose=BINARY 'ENROLLMENT' OR BINARY purpose=BINARY 'RECOVERY') AND token_version IS NOT NULL AND token_version>=0 AND mfa_version IS NOT NULL AND mfa_version>=0 AND previous_token_version IS NOT NULL AND previous_token_version>=0 AND previous_mfa_version IS NOT NULL AND previous_mfa_version>=0 AND proof_event_id IS NOT NULL AND BINARY result=BINARY 'RECORDED' AND server_correlation_id IS NOT NULL AND fence_key IS NULL AND ((BINARY principal_kind=BINARY 'USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR ((BINARY principal_kind=BINARY 'RECOVERY_CAPABILITY' OR BINARY principal_kind=BINARY 'ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))),FALSE))",
+}
+
+_V4_MFA_CHECK_DIGESTS = {
+    "chk_office_mfa_security_event_fence": "2d6660b9a27057373a0ad21bbd9439aecae1c45288b562da51c4940fc28d28cf",
+    "chk_office_mfa_security_event_shape": "8920714b7142b37c55ffc599c0a205bda7c16c1eab5cc30ca172a4aa1dca2ae4",
+    "chk_office_mfa_security_event_truth": "a1f06b9717b4349ec37bc52ff16013e9653668b84771e66eb63ab93d4f3a291d",
+}
+_V4_CREDENTIAL_DIGEST = "62aabe4d405a17df1389ad19c54d2380074d85346a1a9e09bc905e296e96e01c"
+_V4_CHALLENGE_DIGEST = "873de927db998ad7d6664ee6e849c3b09f6f3ec57afd20f1316fc90d8784eb9a"
+
+
+@pytest.mark.parametrize(
+    ("target", "timing"),
+    (
+        ("credential", "before"), ("credential", "after"),
+        ("challenge", "before"), ("challenge", "after"),
+        ("ledger", "before"), ("ledger", "after"),
+        ("all", None),
+    ),
+)
+def test_mfa_v4_check_upgrade_is_atomic_across_real_disconnects(target, timing, client):
+    """A disconnected caller sees only exact v4 or exact v5 CHECK contracts."""
+    async def digests(cur):
+        return {
+            "credential": _check_digest(await _check_clause(cur, "chk_office_mfa_credential_shape")),
+            "challenge": _check_digest(await _check_clause(cur, "chk_office_mfa_challenge_state")),
+            **{
+                name: _check_digest(await _check_clause(cur, name))
+                for name in _V4_MFA_CHECK_DIGESTS
+            },
+        }
+
+    async def scenario():
+        from db.connection import get_pool
+
+        source = os.environ["JAX_DB_NAME"]
+        assert re.fullmatch(r"[A-Za-z0-9_]+", source)
+        schema = f"office_mfa_check_matrix_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        conn = None
+        cur = None
+        try:
+            conn = await pool.acquire()
+            cur = await conn.cursor()
+            await cur.execute(f"CREATE DATABASE `{schema}`")
+            for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+            await cur.execute(f"USE `{schema}`")
+            await apply_office_migrations(cur)
+            await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+            await cur.execute(
+                "ALTER TABLE office_mfa_credential DROP CONSTRAINT chk_office_mfa_credential_shape, "
+                "ADD CONSTRAINT chk_office_mfa_credential_shape " + _V4_MFA_CHECK_SQL["credential"]
+            )
+            await cur.execute(
+                "ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state, "
+                "ADD CONSTRAINT chk_office_mfa_challenge_state " + _V4_MFA_CHECK_SQL["challenge"]
+            )
+            await cur.execute(
+                "ALTER TABLE office_mfa_security_event "
+                "DROP CONSTRAINT chk_office_mfa_security_event_shape, "
+                "DROP CONSTRAINT chk_office_mfa_security_event_truth, "
+                "ADD CONSTRAINT chk_office_mfa_security_event_shape " + _V4_MFA_CHECK_SQL["shape"] + ", "
+                "ADD CONSTRAINT chk_office_mfa_security_event_truth " + _V4_MFA_CHECK_SQL["truth"]
+            )
+            assert await digests(cur) == {
+                "credential": _V4_CREDENTIAL_DIGEST,
+                "challenge": _V4_CHALLENGE_DIGEST,
+                **_V4_MFA_CHECK_DIGESTS,
+            }
+
+            if timing is None:
+                await apply_office_migrations(cur)
+            else:
+                needles = {
+                    "credential": "ALTER TABLE office_mfa_credential DROP CONSTRAINT chk_office_mfa_credential_shape",
+                    "challenge": "ALTER TABLE office_mfa_challenge DROP CONSTRAINT chk_office_mfa_challenge_state",
+                    "ledger": "ALTER TABLE office_mfa_security_event DROP CONSTRAINT chk_office_mfa_security_event_shape",
+                }
+
+                class DisconnectAtAtomicAlter:
+                    def __init__(self, delegate):
+                        self._delegate = delegate
+                        self.calls = 0
+
+                    async def execute(self, statement, *args):
+                        if needles[target] in statement:
+                            self.calls += 1
+                            if timing == "before":
+                                raise ConnectionError("injected pre-ALTER disconnect")
+                            result = await self._delegate.execute(statement, *args)
+                            raise ConnectionError("injected post-ALTER disconnect")
+                        return await self._delegate.execute(statement, *args)
+
+                    def __getattr__(self, name):
+                        return getattr(self._delegate, name)
+
+                injected = DisconnectAtAtomicAlter(cur)
+                with pytest.raises(ConnectionError, match="disconnect"):
+                    await apply_office_migrations(injected)
+                assert injected.calls == 1
+                await cur.close()
+                cur = None
+                conn.close()
+                pool.release(conn)
+                conn = await pool.acquire()
+                cur = await conn.cursor()
+                await cur.execute(f"USE `{schema}`")
+                interrupted = await digests(cur)
+                assert interrupted["credential"] in (_V4_CREDENTIAL_DIGEST, "8f6da6c31260662ef5833b216f54b834491089325e817ae1ceb7547f3935d8c9")
+                assert interrupted["challenge"] in (_V4_CHALLENGE_DIGEST, "2ea7f4621b9352e2c26ae6f5bf2826ccbcd3bda1c748fe0b1dcf6ae625444dc3")
+                assert interrupted["chk_office_mfa_security_event_fence"] == _V4_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_fence"]
+                ledger_pair = (
+                    interrupted["chk_office_mfa_security_event_shape"],
+                    interrupted["chk_office_mfa_security_event_truth"],
+                )
+                assert ledger_pair in (
+                    (_V4_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_shape"], _V4_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_truth"]),
+                    (_CANONICAL_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_shape"], _CANONICAL_MFA_CHECK_DIGESTS["chk_office_mfa_security_event_truth"]),
+                )
+                await cur.execute("SELECT 1 FROM office_schema_revision WHERE component='virtual-office'")
+                assert await cur.fetchone() is None
+                await apply_office_migrations(cur)
+
+            assert await digests(cur) == {
+                "credential": "8f6da6c31260662ef5833b216f54b834491089325e817ae1ceb7547f3935d8c9",
+                "challenge": "2ea7f4621b9352e2c26ae6f5bf2826ccbcd3bda1c748fe0b1dcf6ae625444dc3",
+                **_CANONICAL_MFA_CHECK_DIGESTS,
+            }
+        finally:
+            if cur is not None:
+                await cur.close()
+            if conn is not None:
+                pool.release(conn)
+            cleanup = await pool.acquire()
+            cleanup_cur = await cleanup.cursor()
+            try:
+                await cleanup_cur.execute(f"USE `{source}`")
+                await cleanup_cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            finally:
+                await cleanup_cur.close()
+                pool.release(cleanup)
+
     client.portal.call(scenario)

@@ -17,3 +17,31 @@ Fresh ledger creation now emits the full v5 fence, shape, and truth CHECK set in
 Round2 current behavior: MariaDB DDL has implicit commits, so CHECK replacement relies on one atomic InnoDB `ALTER TABLE` and exact all-old/all-new metadata, never a DML record. Credential and challenge preflight their exact predecessors; missing or mixed CHECKs fail closed. The index migration recognizes only exact v4 or exact temporary-v5 metadata, uses one comma-separated `ALTER TABLE DROP INDEX ..., RENAME INDEX ...`, and resumes only the legacy temporary-only physical state. The earlier frozen service `Using filesort` observation is historical only: service candidate `27502dd` removed the obsolete ordering query.
 
 Actual serial command: `python3 /home/fruiz/.local/share/codex-workspaces/office-20261020/cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_migrations.py tests/test_office_mfa_events.py` → **22 passed**, 1354 inherited fixture/idempotent-DDL warnings, 3.52 seconds, disposable loopback MariaDB 33991. Tests cover fresh CREATE and post-CREATE crash retry, a legacy challenge without any ledger, v4 normal upgrade, all injected CHECK/index interruption states, unknown-state refusal/no readiness, no-rewrite preflight, SQL-positive complete ACTIVE pending bundle and INVALIDATED, three partial-bundle negatives, runtime tampering, ledger shapes/FKs, and EXPLAIN index coverage. The `Using filesort` finding is historical only: frozen service candidate `27502dd` removed the obsolete ordering query. The FK mutation probe temporarily sets `FOREIGN_KEY_CHECKS=0` only to install an intentionally wrong test constraint, restores it immediately, and restores the canonical FK before exit.
+
+## Matrix status correction · 2026-10-21
+
+This historical report does **not** establish the requested v4 CHECK successful-upgrade plus
+before/after-real-ALTER disconnect matrix. That matrix remains an open completion requirement;
+the earlier 22-test count must not be read as coverage for it.
+
+## CHECK interruption matrix · 2026-10-21
+
+The completion matrix is now exercised in a fresh, owned MariaDB schema cloned only for its
+JAX prerequisite tables. The test embeds the exact ec09e22 v4 credential, challenge, ledger
+shape and ledger truth clauses; it does not load a planning fixture or historical checkout at
+runtime. It downgrades a canonical fresh schema to those measured v4 clauses, then verifies the
+current migrator's exact v5 digests after a successful all-old upgrade.
+
+Six injected cases proxy only the corresponding real atomic `ALTER TABLE`: credential,
+challenge, and the coupled ledger shape/truth alteration, immediately before and immediately
+after MariaDB executes it. Each fault closes the cursor and connection, asserts no runtime
+readiness stamp, opens a new connection, and accepts only an exact v4 or v5 contract. The ledger
+fence remains fixed and shape/truth must be an all-old or all-new pair. A retry on that new
+connection reaches the complete canonical v5 digest set. Runtime readiness is owned by the
+platform runner, so the test only asserts its absence before retry. This establishes
+the requested seven-case SQL matrix; it does not make a claim about service behavior.
+
+Verified on the disposable loopback MariaDB 33991:
+`python3 /home/fruiz/.local/share/codex-workspaces/office-20261020/cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_migrations.py -k 'mfa_v4_check_upgrade_is_atomic_across_real_disconnects'` → **7 passed**, 287 inherited warnings, 1.39 seconds.
+
+`python3 /home/fruiz/.local/share/codex-workspaces/office-20261020/cv-office-run-tests.py jxp -q --disable-warnings tests/test_office_migrations.py tests/test_office_mfa_events.py` → **29 passed**, 1501 inherited warnings, 4.23 seconds.
