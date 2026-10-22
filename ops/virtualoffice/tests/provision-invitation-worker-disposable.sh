@@ -87,11 +87,11 @@ grants=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | se
 for grant in \
   "GRANT USAGE ON *.* TO '$USER_NAME'@'$HOST'" \
   "GRANT SELECT ON '$DB'.'axioma_config' TO '$USER_NAME'@'$HOST'" \
-  "GRANT SELECT (outbox_id, invitation_id, state, attempt_id, claimed_at, created_at) ON '$DB'.'office_invitation_outbox' TO '$USER_NAME'@'$HOST'" \
+  "GRANT SELECT ('attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at') ON '$DB'.'office_invitation_outbox' TO '$USER_NAME'@'$HOST'" \
   "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_claim_next_v1' TO '$USER_NAME'@'$HOST'" \
   "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO '$USER_NAME'@'$HOST'" \
   "GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO '$USER_NAME'@'$HOST'"; do
-  grep -Fqx "$grant" <<< "$grants"
+  grep -Fqx "$grant" <<< "$grants" || { printf "missing expected grant: %s\n" "$grant" >&2; printf "%s\n" "$grants" >&2; exit 1; }
 done
 [[ $(grep -c '^GRANT ' <<< "$grants") == 6 ]]
 # Valid lifecycle SQL must fail at privilege resolution (1142), not merely
