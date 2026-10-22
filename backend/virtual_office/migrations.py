@@ -21,9 +21,9 @@ RUNTIME_COMPONENT = "virtual-office"
 # The readiness stamp is deliberately coupled to the normalized table ACL.
 # A changed privilege body must force the migrator to restamp before a web
 # process can consider the schema/runtime pair ready.
-# v12 binds the per-table write contract after v11 introduced the pending
-# publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v12-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+# v13 adds the inert critic trust-anchor schema; its digest still binds the
+# unchanged per-table web write contract and forces a migrator restamp.
+RUNTIME_REVISION = f"office-runtime-v13-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical
@@ -2078,3 +2078,5 @@ async def apply_office_migrations(cursor) -> None:
     from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
     await apply_module_candidate_storage_migrations(cursor)
     await apply_module_publication_staging_migrations(cursor)
+    from virtual_office.module_critic_trust import apply_critic_trust_anchor_migrations
+    await apply_critic_trust_anchor_migrations(cursor)

@@ -18,6 +18,8 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from .module_critic_trust import TrustedCriticKey
+
 _DOMAIN = "axioma.office.critic-invocation-receipt"
 _KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -40,6 +42,7 @@ class VerifiedCriticReceipt:
     artifact_set_digest: bytes
     decision: str
     key_id: str
+    critic_principal: str
     issued_at: datetime
     expires_at: datetime
     canonical_bytes: bytes
@@ -79,15 +82,16 @@ def _digest(value: object, field: str) -> bytes:
     return bytes.fromhex(value[7:])
 
 
-def verify_critic_receipt(receipt: object, resolve_public_key: Callable[[str], bytes | None], *, now: datetime) -> VerifiedCriticReceipt:
+def verify_critic_receipt(receipt: object, resolve_trusted_key: Callable[[str], TrustedCriticKey | None], *, expected_principal: str, now: datetime) -> VerifiedCriticReceipt:
     """Verify a domain-separated critic envelope using an injected resolver.
 
-    No fallback key source exists.  An absent or malformed resolver result is
-    rejected, which keeps production unavailable until a separate trust-key
-    registry has its own authority contract.
+    No fallback key source exists.  The caller names the critic principal it
+    expects; a key for another principal never becomes interchangeable.
     """
     if now.tzinfo is None or now.utcoffset() != timedelta(0):
         _reject("verification clock is not UTC")
+    if not isinstance(expected_principal, str) or _KEY.fullmatch(expected_principal) is None:
+        _reject("expected critic principal is invalid")
     required = {"domain", "schema_version", "operation", "invocation_ref", "candidate", "decision", "issued_at", "expires_at", "key_id", "signature"}
     if not isinstance(receipt, dict) or set(receipt) != required:
         _reject("critic receipt shape is invalid")
@@ -119,14 +123,27 @@ def verify_critic_receipt(receipt: object, resolve_public_key: Callable[[str], b
     if len(signature) != 64:
         _reject("critic receipt signature length is invalid")
     try:
-        key_bytes = resolve_public_key(key_id)
+        trusted_key = resolve_trusted_key(key_id)
     except Exception as error:
         raise CriticReceiptRejected("critic receipt signing key is unavailable") from error
-    if not isinstance(key_bytes, bytes) or len(key_bytes) != 32:
+    if not isinstance(trusted_key, TrustedCriticKey):
+        _reject("critic receipt signing key is untrusted")
+    if (
+        trusted_key.key_id != key_id
+        or trusted_key.principal_ref != expected_principal
+        or trusted_key.purpose != "rights.review"
+        or trusted_key.algorithm != "Ed25519"
+        or not isinstance(trusted_key.public_key, bytes) or len(trusted_key.public_key) != 32
+        or trusted_key.revoked_at is not None
+        or not isinstance(trusted_key.not_before, datetime) or not isinstance(trusted_key.not_after, datetime)
+        or trusted_key.not_before.tzinfo is None or trusted_key.not_after.tzinfo is None
+        or trusted_key.not_before.utcoffset() != timedelta(0) or trusted_key.not_after.utcoffset() != timedelta(0)
+        or issued_at < trusted_key.not_before or expires_at > trusted_key.not_after
+    ):
         _reject("critic receipt signing key is untrusted")
     canonical = _canonical(unsigned)
     try:
-        Ed25519PublicKey.from_public_bytes(key_bytes).verify(signature, canonical)
+        Ed25519PublicKey.from_public_bytes(trusted_key.public_key).verify(signature, canonical)
     except (ValueError, InvalidSignature) as error:
         raise CriticReceiptRejected("critic receipt signature is invalid") from error
-    return VerifiedCriticReceipt(invocation_ref, candidate["candidate_id"], candidate["candidate_revision_id"], manifest_sha256, artifact_set_digest, unsigned["decision"], key_id, issued_at, expires_at, canonical, signature, hashlib.sha256(canonical).digest())
+    return VerifiedCriticReceipt(invocation_ref, candidate["candidate_id"], candidate["candidate_revision_id"], manifest_sha256, artifact_set_digest, unsigned["decision"], key_id, trusted_key.principal_ref, issued_at, expires_at, canonical, signature, hashlib.sha256(canonical).digest())

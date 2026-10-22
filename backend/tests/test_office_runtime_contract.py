@@ -111,6 +111,7 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
         "office_module_creative_review_event", "office_module_creative_review_head",
         "office_module_rights_review_event", "office_module_rights_review_head",
         "office_module_release_event", "office_module_release",
+        "office_trusted_critic_key", "office_trusted_critic_key_revocation",
     ):
         assert protected not in grants
     assert "INSERT" in grants["office_authorization_event"]
@@ -148,6 +149,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
             assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_trusted_critic_key () VALUES ()") == 1142
             assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
             assert await _errno(runtime, "DROP TABLE office_schema_revision") == 1142
@@ -468,29 +470,15 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v11 marker cannot certify the v12 per-table INSERT contract."""
+    """A v12 marker cannot certify the v13 critic trust-anchor contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v12-")
-        # v11 used the checked-in v1 table contract.  Do not fabricate a v11
-        # marker by retaining the v2 digest: that state was never a deployable
-        # predecessor and would not exercise the actual migration boundary.
-        v1_manifest = (
-            Path(__file__).resolve().parents[2]
-            / "ops" / "migration" / "runtime-table-privileges-v1.txt"
-        )
-        v1_rows = [
-            line.strip() for line in v1_manifest.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-        predecessor = (
-            "office-runtime-v11-runtime-table-privileges-v1-"
-            + sha256("\n".join(v1_rows).encode("ascii")).hexdigest()[:16]
-        )
+        assert SCHEMA_REVISION.startswith("office-runtime-v13-")
+        predecessor = "office-runtime-v12-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
