@@ -253,3 +253,14 @@ Task3B COMPLETE: Sol mfa_cursor_service_audit SPEC APROBADO / QUALITY APROBADO e
   contener el secreto o caracteres de control.
 - **Alternativa descartada:** declarar válido el scan del HEAD de #229; el
   contenido que se revisa podría cambiar el revisor y la referencia.
+
+2026-10-22 · Codex · PR #229 restore/ingress BLOCK fixes: una restauración de
+un dump anterior ya no intenta provisionar el runtime Office antes de que sus
+tablas existan. `provision-db-runtime.sh --migrator-only` crea únicamente el
+principal y `migrate.env` del migrador; `restore-hall9000.sh` instala las units,
+ejecuta la migración una vez y entonces provisiona el runtime web. El fixture
+MariaDB desechable cubrió ambas fases y terminó verde. El vhost ahora sirve
+`/opt/jax-office/virtualoffice.axioma-ia.io/current/dist`; el validador exige
+que la directiva nginx `root` coincida con el `site-root/current/dist` recibido.
+Los fixtures root de validador e instalador pasaron. Commit local pendiente de
+integración por la sesión raíz; no se publicó ni se desplegó.

@@ -7,6 +7,7 @@ set -euo pipefail
 umask 077
 
 MODE=apply
+MIGRATOR_ONLY=0
 ENV_FILE=/etc/jax/.env
 RUNTIME_ENV=/etc/jax/runtime.env
 MIGRATE_ENV=/etc/jax/migrate.env
@@ -20,11 +21,12 @@ MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privi
 V1_MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privileges-v1.txt"
 
 usage() {
-  printf '%s\n' 'usage: provision-db-runtime.sh [--plan] [--state-root DIR] [--admin-transport PATH] [--env FILE] --measured-grantee-host HOST [--skip-os-identities]'
+  printf '%s\n' 'usage: provision-db-runtime.sh [--plan] [--migrator-only] [--state-root DIR] [--admin-transport PATH] [--env FILE] --measured-grantee-host HOST [--skip-os-identities]'
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --plan) MODE=plan ;;
+    --migrator-only) MIGRATOR_ONLY=1 ;;
     --env) ENV_FILE=${2:?}; shift ;;
     --runtime-env) RUNTIME_ENV=${2:?}; shift ;;
     --migrate-env) MIGRATE_ENV=${2:?}; shift ;;
@@ -135,6 +137,10 @@ verify_runtime_manifest_tables() {
 }
 
 if [ "$MODE" = plan ]; then
+  if [ "$MIGRATOR_ONLY" = 1 ]; then
+    note "plan: provision only $MIGRATE_USER@$HOST (migration DDL) and root-only migrate.env"
+    exit 0
+  fi
   note "plan: preserve legacy principal; provision $RUNTIME_USER@$HOST (schema SELECT plus named table DML) and $MIGRATE_USER@$HOST (migration DDL)"
   note "plan: write root-only runtime.env and migrate.env; web=jaxweb migrator=jaxmigrate artifact=/srv/jax-prod"
   exit 0
@@ -171,21 +177,25 @@ new_secret() { openssl rand -base64 48 | tr -d '\n'; }
 if [ ! -d "$SECRET_DIR" ]; then mkdir -p "$SECRET_DIR"; chown root:root "$SECRET_DIR"; chmod 700 "$SECRET_DIR"
 else stat -c '%U:%G:%a' "$SECRET_DIR" | grep -qx 'root:root:700' || die "dedicated secret directory permissions are unsafe"
 fi
-runtime_secret_file=$(password_file_for "$RUNTIME_USER")
 migrate_secret_file=$(password_file_for "$MIGRATE_USER")
-runtime_exists=$(principal_exists "$RUNTIME_USER")
 migrate_exists=$(principal_exists "$MIGRATE_USER")
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  runtime_secret_file=$(password_file_for "$RUNTIME_USER")
+  runtime_exists=$(principal_exists "$RUNTIME_USER")
+fi
 
-if { [ "$runtime_exists" = 1 ] && [ ! -f "$runtime_secret_file" ]; } || { [ "$migrate_exists" = 1 ] && [ ! -f "$migrate_secret_file" ]; }; then
+if { [ "$MIGRATOR_ONLY" = 0 ] && [ "$runtime_exists" = 1 ] && [ ! -f "$runtime_secret_file" ]; } || { [ "$migrate_exists" = 1 ] && [ ! -f "$migrate_secret_file" ]; }; then
   die "an existing database principal lacks its root-only secret file; refusing to alter it"
 fi
-if { [ "$runtime_exists" = 0 ] && [ -f "$runtime_secret_file" ]; } || { [ "$migrate_exists" = 0 ] && [ -f "$migrate_secret_file" ]; }; then
+if { [ "$MIGRATOR_ONLY" = 0 ] && [ "$runtime_exists" = 0 ] && [ -f "$runtime_secret_file" ]; } || { [ "$migrate_exists" = 0 ] && [ -f "$migrate_secret_file" ]; }; then
   note "converging a missing database principal from its existing root-only secret file"
 fi
 
-if [ -f "$runtime_secret_file" ]; then runtime_password=$(read_secret "$runtime_secret_file"); else runtime_password=$(new_secret); fi
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  if [ -f "$runtime_secret_file" ]; then runtime_password=$(read_secret "$runtime_secret_file"); else runtime_password=$(new_secret); fi
+  [ -f "$runtime_secret_file" ] || write_secret "$runtime_secret_file" "$runtime_password"
+fi
 if [ -f "$migrate_secret_file" ]; then migrate_password=$(read_secret "$migrate_secret_file"); else migrate_password=$(new_secret); fi
-[ -f "$runtime_secret_file" ] || write_secret "$runtime_secret_file" "$runtime_password"
 [ -f "$migrate_secret_file" ] || write_secret "$migrate_secret_file" "$migrate_password"
 
 verify_password() {
@@ -193,7 +203,7 @@ verify_password() {
   stored=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.authentication_string')) = PASSWORD(%s) FROM mysql.global_priv WHERE User=%s AND Host=%s;\n" "$(sql_quote "$pass")" "$(sql_quote "$user")" "$(sql_quote "$HOST")" | admin_sql) || die "could not verify principal secret"
   [[ "$stored" == 1 ]] || die "existing database principal secret does not match; refusing to alter it"
 }
-[ "$runtime_exists" = 0 ] || verify_password "$RUNTIME_USER" "$runtime_password"
+[ "$MIGRATOR_ONLY" = 1 ] || [ "$runtime_exists" = 0 ] || verify_password "$RUNTIME_USER" "$runtime_password"
 [ "$migrate_exists" = 0 ] || verify_password "$MIGRATE_USER" "$migrate_password"
 
 create_missing() {
@@ -365,11 +375,12 @@ migrator_grant_state() {
   printf new
 }
 
-create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"
+if [ "$MIGRATOR_ONLY" = 0 ]; then create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"; fi
 create_missing "$MIGRATE_USER" "$migrate_password" "$migrate_exists"
-verify_runtime_manifest_tables
-runtime_state=$(runtime_grant_state)
-case "$runtime_state" in
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  verify_runtime_manifest_tables
+  runtime_state=$(runtime_grant_state)
+  case "$runtime_state" in
     new) ;;
     new-prefix:*)
       prefix_count=${runtime_state#new-prefix:}
@@ -417,7 +428,8 @@ case "$runtime_state" in
       printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke mixed v1/v2 runtime schema INSERT"
       ;;
     *) die "runtime principal is neither the exact legacy nor new grant state" ;;
-esac
+  esac
+fi
 migrate_state=$(migrator_grant_state)
 case "$migrate_state" in
   new) ;;
@@ -425,20 +437,22 @@ case "$migrate_state" in
   *) die "migration principal is neither the exact new nor create-only grant state" ;;
 esac
 verify_migrator_grants
-[ "$(runtime_grant_state)" = new ] || die "runtime principal table privilege set is not exact"
+[ "$MIGRATOR_ONLY" = 1 ] || [ "$(runtime_grant_state)" = new ] || die "runtime principal table privilege set is not exact"
 
 verify_login() { local user=$1 pass=$2 temp current; temp=$(mktemp "${SECRET_DIR}/login.XXXXXX"); printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' "$user" "$pass" "${CFG[JAX_DB_HOST]}" "${CFG[JAX_DB_PORT]}" > "$temp"; chmod 600 "$temp"; current=$(mariadb "--defaults-extra-file=$temp" --batch --skip-column-names "$DB" -e 'SELECT CURRENT_USER()') || die "principal login failed"; rm -f "$temp"; [[ "$current" == "$user@$HOST" ]] || die "principal login resolved to an unexpected grantee"; }
-verify_login "$RUNTIME_USER" "$runtime_password"
+if [ "$MIGRATOR_ONLY" = 0 ]; then verify_login "$RUNTIME_USER" "$runtime_password"; fi
 verify_login "$MIGRATE_USER" "$migrate_password"
 
 write_atomic() { local destination=$1 content=$2 temp parent; parent=$(dirname "$destination"); [ -d "$parent" ] || mkdir -p "$parent"; temp=$(mktemp "${destination}.tmp.XXXXXX"); printf '%s' "$content" > "$temp"; chown root:root "$temp"; chmod 600 "$temp"; mv -f "$temp" "$destination"; }
-runtime_content=
-for key in "${!CFG[@]}"; do
-  case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
-  runtime_content+="$key=${CFG[$key]}"$'\n'
-done
-runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
-runtime_content+="JAX_DB_PASSWORD=$runtime_password"$'\n'
+if [ "$MIGRATOR_ONLY" = 0 ]; then
+  runtime_content=
+  for key in "${!CFG[@]}"; do
+    case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
+    runtime_content+="$key=${CFG[$key]}"$'\n'
+  done
+  runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
+  runtime_content+="JAX_DB_PASSWORD=$runtime_password"$'\n'
+fi
 migrate_content="JAX_DB_HOST=${CFG[JAX_DB_HOST]}"$'\n'
 migrate_content+="JAX_DB_PORT=${CFG[JAX_DB_PORT]}"$'\n'
 migrate_content+="JAX_DB_NAME=$DB"$'\n'
@@ -447,17 +461,19 @@ migrate_content+="JAX_DB_PASSWORD=$migrate_password"$'\n'
 for key in JAX_REPO_PATH JAX_EJECUTOR_INVENTARIO; do [[ -v "CFG[$key]" ]] && migrate_content+="$key=${CFG[$key]}"$'\n'; done
 migrate_content+="JAX_MIGRATE_DB_READINESS_ATTEMPTS=${CFG[JAX_MIGRATE_DB_READINESS_ATTEMPTS]:-12}"$'\n'
 migrate_content+="JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=${CFG[JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS]:-10}"$'\n'
-write_atomic "$RUNTIME_ENV" "$runtime_content"
+if [ "$MIGRATOR_ONLY" = 0 ]; then write_atomic "$RUNTIME_ENV" "$runtime_content"; fi
 write_atomic "$MIGRATE_ENV" "$migrate_content"
 
 if [ "$PREPARE_OS" = 1 ]; then
-  for os_user in jaxweb jaxmigrate; do
+  os_users=(jaxmigrate)
+  [ "$MIGRATOR_ONLY" = 0 ] && os_users+=(jaxweb)
+  for os_user in "${os_users[@]}"; do
     if ! getent passwd "$os_user" >/dev/null; then useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin "$os_user"; fi
   done
   install -d -m 0755 -o root -g root /srv/jax-prod
 fi
 
-if [ "$PREPARE_OS" = 1 ]; then for unit in jax-platform.service jax-platform-migrate.service; do
+if [ "$PREPARE_OS" = 1 ] && [ "$MIGRATOR_ONLY" = 0 ]; then for unit in jax-platform.service jax-platform-migrate.service; do
   dropin_dir="/etc/systemd/system/$unit.d"
   [ -d "$dropin_dir" ] || continue
   expected_user=jaxweb; [ "$unit" = jax-platform-migrate.service ] && expected_user=jaxmigrate
@@ -466,7 +482,9 @@ if [ "$PREPARE_OS" = 1 ]; then for unit in jax-platform.service jax-platform-mig
   fi
 done
 fi
-if [ "$PREPARE_OS" = 1 ]; then
+if [ "$MIGRATOR_ONLY" = 1 ]; then
+  note "provisioned migration DB and OS identity only; run the migration before provisioning the web runtime"
+elif [ "$PREPARE_OS" = 1 ]; then
   note "provisioned dedicated DB and OS identities; install units then verify effective systemd drop-ins before activation"
 else
   note "provisioned dedicated DB identities; OS identity preparation was skipped by explicit fixture mode"

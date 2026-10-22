@@ -62,6 +62,12 @@ absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') 
 OWNED=1
 
 run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_migrator_only() { "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
+run_migrator_only
+test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$WEB" "$HOST" | admin)" = 0
+test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
+test ! -e "$TEMP/state/runtime.env"
+test -f "$TEMP/state/migrate.env"
 run_helper
 run_helper
 test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$WEB.password")" = root:root:600

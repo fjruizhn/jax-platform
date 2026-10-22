@@ -103,6 +103,7 @@ ops/virtualoffice/validate-public-ingress.sh offline \
   --releases-root /opt/jax-office/virtualoffice.axioma-ia.io/releases \
   --release /opt/jax-office/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
   --expected-source-sha SHA_DE_FUENTE_AUDITADO \
+  --nginx-root /opt/jax-office/virtualoffice.axioma-ia.io/current/dist \
   --nginx-user www
 ```
 

@@ -116,6 +116,7 @@ verify_operational_chain "$releases_root" 'releases parent'
 [[ $(sha256sum "$target/manifest.json" | awk '{print $1}') == "$expected_manifest_sha256" ]] || die 'installed manifest differs from independently audited manifest digest'
 "$validator" offline \
   --config "$config" --site-root "$site_root" --releases-root "$releases_root" \
-  --release "$target" --expected-source-sha "$expected_source_sha" --nginx-user "$nginx_user"
+  --release "$target" --expected-source-sha "$expected_source_sha" \
+  --nginx-root "$site_root/current/dist" --nginx-user "$nginx_user"
 trap - EXIT
 printf 'immutable public release installed: %s\n' "$target"

@@ -31,6 +31,9 @@ good=1111111111111111111111111111111111111111
 bad=2222222222222222222222222222222222222222
 untrusted=3333333333333333333333333333333333333333
 mkdir -p "$fixture/built" "$fixture/site/releases"
+config="$fixture/virtualoffice.axioma-ia.io.conf"
+sed "s|    root /opt/jax-office/virtualoffice.axioma-ia.io/current/dist;|    root $fixture/site/current/dist;|" "$root/virtualoffice.axioma-ia.io.conf" > "$config"
+chown root:root "$config"; chmod 644 "$config"
 make_built_release "$good"
 chown -R nobody:nogroup "$fixture/built"
 chown -R root:root "$fixture/site"
