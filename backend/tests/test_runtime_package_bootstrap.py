@@ -7,6 +7,10 @@ def test_runtime_importer_executes_only_audited_bootstrap_and_validator() -> Non
     bootstrap = (root / "ops/migration/runtime_package.py").read_text(encoding="utf-8")
 
     assert "--expected-package-digest" in installer
+    # Bash parses $11 as ${1}1; all six option/value pairs must retain their positions.
+    assert "${11} == --effective-validator-sha256" in installer
+    assert "VALIDATOR=${10}" in installer
+    assert "VALIDATOR_DIGEST=${12}" in installer
     assert "--bootstrap-sha256" in installer
     assert "--effective-validator-sha256" in installer
     assert '"/proc/self/fd/$bootstrap_fd" import' in installer

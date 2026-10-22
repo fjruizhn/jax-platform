@@ -10,7 +10,7 @@ if [[ $(/usr/bin/id -u) != 0 || $# != 12 ]]; then
   exit 2
 fi
 
-[[ $1 == --package && $3 == --expected-package-digest && $5 == --bootstrap && $7 == --bootstrap-sha256 && $9 == --effective-validator && $11 == --effective-validator-sha256 ]] || {
+[[ $1 == --package && $3 == --expected-package-digest && $5 == --bootstrap && $7 == --bootstrap-sha256 && $9 == --effective-validator && ${11} == --effective-validator-sha256 ]] || {
   echo 'invalid runtime bootstrap arguments' >&2
   exit 2
 }
@@ -18,8 +18,8 @@ PACKAGE=$2
 PACKAGE_DIGEST=$4
 BOOTSTRAP=$6
 BOOTSTRAP_DIGEST=$8
-VALIDATOR=$10
-VALIDATOR_DIGEST=$12
+VALIDATOR=${10}
+VALIDATOR_DIGEST=${12}
 
 [[ $PACKAGE == /* && -d $PACKAGE && ! -L $PACKAGE ]] || { echo 'package must be an absolute directory' >&2; exit 1; }
 for digest in "$PACKAGE_DIGEST" "$BOOTSTRAP_DIGEST" "$VALIDATOR_DIGEST"; do
