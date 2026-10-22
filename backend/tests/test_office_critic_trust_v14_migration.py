@@ -228,16 +228,19 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                                 "UPDATE office_trusted_critic_key_revocation SET revoked_at=revoked_at WHERE key_id='key-preserved'",
                                 "DELETE FROM office_trusted_critic_key_revocation WHERE key_id='key-preserved'",
                             )
-                            definer = contract.trigger_definer
-                            for name, table, operation, statement in trust._trigger_definitions():
+                            original_definitions = trust._trigger_definitions
+                            for name, table, operation, statement in original_definitions():
                                 for contender_cur, dml in zip(contender_cursors, dmls):
                                     await assert_append_error(contender_cur, dml)
                                 await blocker_cur.execute("START TRANSACTION")
                                 await blocker_cur.execute(f"SELECT 1 FROM `{table}` LIMIT 0 LOCK IN SHARE MODE")
-                                replacing = asyncio.create_task(replacer_cur.execute(
-                                    f"CREATE OR REPLACE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
-                                    f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
-                                ))
+                                # Route the contested DDL through the production
+                                # helper; a DROP+CREATE regression therefore cannot
+                                # satisfy this test with copied SQL.
+                                monkeypatch.setattr(
+                                    trust, "_trigger_definitions", lambda tables=trust._APPEND_ONLY, definition=(name, table, operation, statement): (definition,),
+                                )
+                                replacing = asyncio.create_task(trust._replace_v14_triggers(replacer_cur, contract))
                                 for _ in range(100):
                                     await cur.execute("SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=%s", (replacer_id,))
                                     state = (await cur.fetchone() or ("",))[0] or ""
@@ -268,6 +271,7 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                                     await assert_append_error(task, allow_deadlock=True)
                                 for dml in dmls:
                                     await assert_append_error(fresh_cur, dml)
+                            monkeypatch.setattr(trust, "_trigger_definitions", original_definitions)
                         finally:
                             for contender_cur in contender_cursors:
                                 await contender_cur.close()
