@@ -584,17 +584,21 @@ async def finalize_invitation_delivery_in_cursor(
     if row is None or row[1] != "CLAIMED" or row[2] != attempt_id:
         return False
     invitation_id = str(row[0])
-    state = "SMTP_ACCEPTED" if relay_accepted else "UNKNOWN"
+    # A concurrent acceptance/revocation may fence a claimed sender after it
+    # has handed the message to SMTP.  That terminal result must not revive a
+    # cancelled invitation or retain its bearer payload.
+    cancelled = bool(row[3])
+    state = "CANCELLED" if cancelled else ("SMTP_ACCEPTED" if relay_accepted else "UNKNOWN")
     if relay_accepted and (not isinstance(message_id, str) or not message_id or len(message_id) > 320 or not message_id.isascii()):
         raise InvitationError("office_invitation_integrity", status_code=503)
-    code = ("SMTP_ACCEPTED" if relay_accepted else (result_code or "SMTP_UNKNOWN"))
+    code = "INVITATION_TERMINATED" if cancelled else ("SMTP_ACCEPTED" if relay_accepted else (result_code or "SMTP_UNKNOWN"))
     if not isinstance(code, str) or not code.isascii() or not 1 <= len(code) <= 64:
         raise InvitationError("office_invitation_integrity", status_code=503)
     await cur.execute(
         "UPDATE office_invitation_outbox SET state=%s,payload_ciphertext=NULL,message_id=%s,result_code=%s,"
         "finished_at=UTC_TIMESTAMP(6),updated_at=IF(UTC_TIMESTAMP(6)>updated_at,UTC_TIMESTAMP(6),DATE_ADD(updated_at,INTERVAL 1 MICROSECOND)) "
         "WHERE outbox_id=%s AND state='CLAIMED' AND attempt_id=%s",
-        (state, message_id if relay_accepted else None, code, outbox_id, attempt_id))
+        (state, message_id if relay_accepted and not cancelled else None, code, outbox_id, attempt_id))
     if cur.rowcount != 1:
         return False
     await cur.execute("SELECT event_id,correlation_id FROM office_invitation_event WHERE invitation_id=%s AND event_kind='ISSUED' FOR UPDATE", (invitation_id,))
