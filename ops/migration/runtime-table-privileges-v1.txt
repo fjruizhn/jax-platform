@@ -1,0 +1,28 @@
+# Runtime table-level UPDATE/DELETE contract, version 1.
+#
+# SELECT and INSERT remain schema-level privileges.  Every row below is a
+# table that production request/background-worker SQL mutates with UPDATE
+# and/or DELETE.  The list is sorted bytewise so the provisioner and runtime
+# guard can compare it deterministically.  Append-only Office evidence and
+# schema readiness are deliberately absent.
+axioma_config UPDATE
+catalogo_sync_config UPDATE
+catalogo_sync_ejecucion UPDATE,DELETE
+conversations UPDATE
+credential UPDATE
+ejecutor_mision UPDATE
+ejecutor_turno UPDATE
+facet_binding UPDATE
+facts UPDATE
+governed_output_outbox UPDATE
+jacobs_pipelines UPDATE
+jax_users UPDATE
+model UPDATE
+model_binding_proposal UPDATE
+motor UPDATE
+office_mfa_challenge UPDATE
+office_mfa_credential UPDATE
+office_mfa_recovery_code UPDATE,DELETE
+password_reset_tokens UPDATE,DELETE
+project_documents UPDATE
+shadow_messages UPDATE

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from db.runtime_privileges import MANIFEST_VERSION, runtime_table_privilege_digest
 
 OFFICE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_account_profile (user_id INT NOT NULL PRIMARY KEY, global_role VARCHAR(24) NOT NULL DEFAULT 'COLLABORATOR', status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', version BIGINT NOT NULL DEFAULT 1, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), CONSTRAINT fk_office_account_profile_user FOREIGN KEY (user_id) REFERENCES jax_users(user_id), CONSTRAINT chk_office_account_profile_role CHECK (global_role IN ('COLLABORATOR','GENERAL_ADMIN','OFFICE_SUPERUSER')), CONSTRAINT chk_office_account_profile_status CHECK (status IN ('ACTIVE','REVOKED'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -16,7 +17,10 @@ OFFICE_DDL = (
 )
 
 RUNTIME_COMPONENT = "virtual-office"
-RUNTIME_REVISION = "office-runtime-v6-bootstrap-state"
+# The readiness stamp is deliberately coupled to the normalized table ACL.
+# A changed privilege body must force the migrator to restamp before a web
+# process can consider the schema/runtime pair ready.
+RUNTIME_REVISION = f"office-runtime-v7-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -499,6 +503,9 @@ async def stamp_office_runtime_revision(cur) -> None:
 
 async def apply_office_migrations(cursor) -> None:
     """Apply only Office-owned additive DDL after JAX's namespace migration."""
+    # Parse the shared manifest before any DDL.  A malformed/ambiguous ACL
+    # must not leave a new schema revision that a web process could trust.
+    runtime_table_privilege_digest()
     if not await _column_exists(cursor, "jax_project_scope", "authorization_namespace"):
         raise RuntimeError("JAX authorization_namespace migration is required before Virtual Office")
     if not await _column_exists(cursor, "jax_users", "account_class"):

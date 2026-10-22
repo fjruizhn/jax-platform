@@ -7,6 +7,7 @@ from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
 from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
 from virtual_office.migrations import assert_mfa_ledger_runtime_metadata
 from virtual_office.migrations import assert_bootstrap_runtime_metadata
+from .runtime_privileges import runtime_table_privilege_map
 
 FENCE_KEY = "office-audit-fence-v1"
 FENCE_PRINCIPAL = "system:office-schema-migrator"
@@ -88,11 +89,11 @@ async def _revision(cur):
 
 
 _CURRENT_GRANTEE = "CONCAT(\"'\",SUBSTRING_INDEX(CURRENT_USER(),'@',1),\"'@'\",SUBSTRING_INDEX(CURRENT_USER(),'@',-1),\"'\")"
-_RUNTIME_DML = frozenset(("SELECT", "INSERT", "UPDATE", "DELETE"))
+_RUNTIME_SCHEMA_PRIVILEGES = frozenset(("SELECT", "INSERT"))
 
 
 async def _effective_privilege_guard(cur) -> None:
-    """Require only the exact DML schema grant for the connected principal.
+    """Require the exact schema/table split for the connected principal.
 
     Metadata is queried by CURRENT_USER(), never by an application username or
     a parsed SHOW GRANTS string.
@@ -117,11 +118,27 @@ async def _effective_privilege_guard(cur) -> None:
     if global_privileges != {("USAGE", "NO")}:
         raise RuntimeDbContractError("runtime database principal has non-DML global privilege")
     schema_privileges = await privileges("SCHEMA_PRIVILEGES", " AND TABLE_SCHEMA=DATABASE()")
-    if schema_privileges != {(privilege, "NO") for privilege in _RUNTIME_DML}:
-        raise RuntimeDbContractError("runtime database principal does not have exact DML schema privileges")
-    table_privileges = await privileges("TABLE_PRIVILEGES", " AND TABLE_SCHEMA=DATABASE()")
-    if table_privileges:
-        raise RuntimeDbContractError("runtime database principal has table-specific privileges")
+    if schema_privileges != {(privilege, "NO") for privilege in _RUNTIME_SCHEMA_PRIVILEGES}:
+        raise RuntimeDbContractError("runtime database principal does not have exact schema privileges")
+    await cur.execute(
+        "SELECT TABLE_NAME,PRIVILEGE_TYPE,IS_GRANTABLE FROM information_schema.TABLE_PRIVILEGES "
+        "WHERE GRANTEE=" + _CURRENT_GRANTEE + " AND TABLE_SCHEMA=DATABASE() "
+        "ORDER BY TABLE_NAME,PRIVILEGE_TYPE"
+    )
+    expected_table_privileges = {
+        (table, privilege, "NO")
+        for table, privileges_for_table in runtime_table_privilege_map().items()
+        for privilege in privileges_for_table
+    }
+    actual_table_privileges = {
+        (str(_row(row, 0)), str(_row(row, 1)), str(_row(row, 2)))
+        for row in await cur.fetchall()
+    }
+    if actual_table_privileges != expected_table_privileges:
+        raise RuntimeDbContractError("runtime database principal does not have exact table privileges")
+    column_privileges = await privileges("COLUMN_PRIVILEGES", " AND TABLE_SCHEMA=DATABASE()")
+    if column_privileges:
+        raise RuntimeDbContractError("runtime database principal has column-specific privileges")
     # MariaDB has no INFORMATION_SCHEMA.ROUTINE_PRIVILEGES relation, and a
     # DML-only principal cannot read mysql.procs_priv. ROUTINES only exposes
     # routines visible to the effective account, so any visible routine is an
@@ -397,6 +414,29 @@ async def _bootstrap_append_only_probe(pool) -> None:
     raise RuntimeDbContractError("Office bootstrap canary contention did not settle")
 
 
+async def _bootstrap_privilege_denied_probe(pool) -> None:
+    """Prove the ACL denies writes before trigger behavior is considered.
+
+    ``office_bootstrap_state`` can be empty during the first ceremony, so the
+    predicate deliberately matches no row.  MariaDB still checks UPDATE and
+    DELETE privilege before evaluating it; only errno 1142 proves that the
+    append-only table did not accidentally receive a table grant.
+    """
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for statement in (
+                "UPDATE office_bootstrap_state SET completed_at=completed_at WHERE ceremony_key='__runtime_acl_probe__'",
+                "DELETE FROM office_bootstrap_state WHERE ceremony_key='__runtime_acl_probe__'",
+            ):
+                try:
+                    await cur.execute(statement)
+                except aiomysql.OperationalError as error:
+                    if getattr(error, "args", (None,))[0] != 1142:
+                        raise RuntimeDbContractError("Office bootstrap ACL did not reject canonically") from error
+                else:
+                    raise RuntimeDbContractError("Office bootstrap ACL permitted a mutation")
+
+
 async def assert_runtime_db_contract(pool) -> None:
     """Verify revision, canonical fence, trigger metadata and DML behavior."""
     async with pool.acquire() as conn:
@@ -419,3 +459,4 @@ async def assert_runtime_db_contract(pool) -> None:
     else:
         await _mfa_pristine_ledger_probe(pool)
     await _bootstrap_append_only_probe(pool)
+    await _bootstrap_privilege_denied_probe(pool)

@@ -9,6 +9,12 @@ import aiomysql
 import pytest
 
 from db.runtime_contract import FENCE_KEY, SCHEMA_REVISION, RuntimeDbContractError, assert_runtime_db_contract
+from db.runtime_privileges import (
+    MANIFEST_VERSION,
+    load_runtime_table_privileges,
+    runtime_table_privilege_digest,
+    runtime_table_privilege_map,
+)
 from virtual_office.migrations import apply_office_migrations, stamp_office_runtime_revision
 
 
@@ -31,6 +37,28 @@ async def _errno(pool, statement: str) -> int:
             return int(error.value.args[0])
 
 
+async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
+    """Grant the checked-in runtime ACL to a disposable test principal."""
+    await cur.execute(f"GRANT SELECT, INSERT ON `{database}`.* TO `{user}`@'%'")
+    for table, privileges in runtime_table_privilege_map().items():
+        await cur.execute(
+            f"GRANT {', '.join(sorted(privileges))} ON `{database}`.`{table}` TO `{user}`@'%'"
+        )
+
+
+def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evidence():
+    rows = load_runtime_table_privileges()
+    assert MANIFEST_VERSION == "runtime-table-privileges-v1"
+    assert [table for table, _ in rows] == sorted(table for table, _ in rows)
+    assert runtime_table_privilege_digest() == "8a1e2dab78b05d60f38617763ba4b145bf5a2bfa5698a7f0fbc265cc20fbb25a"
+    grants = runtime_table_privilege_map()
+    for protected in (
+        "office_authorization_event", "office_bootstrap_state",
+        "office_mfa_security_event", "office_schema_revision",
+    ):
+        assert protected not in grants
+
+
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
     async def scenario():
         from db.connection import get_pool
@@ -47,7 +75,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                 async with conn.cursor() as cur:
                     await apply_office_migrations(cur)
                     await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await _grant_exact_runtime_acl(cur, database, user)
                     await cur.execute(f"CREATE USER `{unusual_user}`@'%%' IDENTIFIED BY %s", (password,))
                     await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{unusual_user}`@'%'")
             runtime = await _runtime_pool(user, password)
@@ -79,7 +107,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                     await cur.execute(f"REVOKE SELECT ON *.* FROM `{user}`@'%'")
                     await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%' WITH GRANT OPTION")
             runtime = await _runtime_pool(user, password)
-            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+            with pytest.raises(RuntimeDbContractError, match="exact schema privileges"):
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             async with admin.acquire() as conn:
@@ -97,7 +125,7 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                     await cur.execute(f"DROP PROCEDURE `{routine}`")
                     await cur.execute(f"GRANT DROP ON `{database}`.* TO `{user}`@'%'")
             runtime = await _runtime_pool(user, password)
-            with pytest.raises(RuntimeDbContractError, match="exact DML schema privileges"):
+            with pytest.raises(RuntimeDbContractError, match="exact schema privileges"):
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             async with admin.acquire() as conn:
@@ -233,7 +261,7 @@ def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(clien
                 await cur.execute("SELECT COUNT(*) FROM office_mfa_security_event WHERE event_kind='MFA_PROOF'")
                 assert (await cur.fetchone())[0] == 0
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{schema}`.* TO `{user}`@'%'")
+                await _grant_exact_runtime_acl(cur, schema, user)
                 await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
                 await cur.execute(
                     "CREATE TRIGGER no_update_office_mfa_security_event BEFORE UPDATE "
@@ -274,7 +302,7 @@ def test_runtime_bootstrap_probe_rejects_redacted_same_name_noop_triggers(client
                 async with conn.cursor() as cur:
                     await apply_office_migrations(cur)
                     await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await _grant_exact_runtime_acl(cur, database, user)
                     await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
                     await cur.execute("DROP TRIGGER no_delete_office_bootstrap_state")
                     await cur.execute(
@@ -331,7 +359,7 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{schema}`.* TO `{user}`@'%'")
+                await _grant_exact_runtime_acl(cur, schema, user)
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:

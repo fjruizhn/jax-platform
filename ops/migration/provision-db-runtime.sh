@@ -16,6 +16,7 @@ PREPARE_OS=1
 ADMIN_CONTAINER="${JAX_DB_ADMIN_CONTAINER:-mariadb-12-3-jax}"
 ADMIN_SECRET_FILE="${JAX_DB_ADMIN_SECRET_FILE:-/run/secrets/mariadb_root_password}"
 ADMIN_TRANSPORT=
+MANIFEST_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-table-privileges-v1.txt"
 
 usage() {
   printf '%s\n' 'usage: provision-db-runtime.sh [--plan] [--state-root DIR] [--admin-transport PATH] [--env FILE] --measured-grantee-host HOST [--skip-os-identities]'
@@ -78,8 +79,29 @@ DB=${CFG[JAX_DB_NAME]}
 [[ "$RUNTIME_USER" =~ ^[A-Za-z0-9_]{1,32}$ && "$MIGRATE_USER" =~ ^[A-Za-z0-9_]{1,32}$ ]] || die "invalid database principal name"
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
 
+declare -a RUNTIME_TABLES=()
+declare -A RUNTIME_TABLE_PRIVILEGES=()
+load_runtime_manifest() {
+  [[ -r "$MANIFEST_FILE" ]] || die "runtime table privilege manifest is not readable"
+  local line table privileges extra previous=
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    read -r table privileges extra <<< "$line"
+    [[ -n "$table" && -n "$privileges" && -z ${extra:-} ]] || die "runtime table privilege manifest is malformed"
+    [[ "$table" =~ ^[a-z][a-z0-9_]{0,63}$ ]] || die "runtime table privilege manifest has invalid table"
+    [[ "$privileges" =~ ^(UPDATE|DELETE)(,(UPDATE|DELETE))?$ ]] || die "runtime table privilege manifest has invalid privileges"
+    [[ "$table" != office_authorization_event && "$table" != office_mfa_security_event && "$table" != office_bootstrap_state && "$table" != office_schema_revision ]] || die "runtime table privilege manifest grants a protected table"
+    [[ -z "$previous" || "$table" > "$previous" ]] || die "runtime table privilege manifest is not ordered"
+    previous=$table
+    RUNTIME_TABLES+=("$table")
+    RUNTIME_TABLE_PRIVILEGES["$table"]=$privileges
+  done < "$MANIFEST_FILE"
+  [ "${#RUNTIME_TABLES[@]}" -gt 0 ] || die "runtime table privilege manifest is empty"
+}
+load_runtime_manifest
+
 if [ "$MODE" = plan ]; then
-  note "plan: preserve legacy principal; provision $RUNTIME_USER@$HOST (DML) and $MIGRATE_USER@$HOST (migration DDL)"
+  note "plan: preserve legacy principal; provision $RUNTIME_USER@$HOST (SELECT/INSERT schema plus table UPDATE/DELETE) and $MIGRATE_USER@$HOST (migration DDL)"
   note "plan: write root-only runtime.env and migrate.env; web=jaxweb migrator=jaxmigrate artifact=/srv/jax-prod"
   exit 0
 fi
@@ -145,32 +167,66 @@ create_missing() {
   [ "$exists" = 0 ] || return 0
   printf 'CREATE USER %s@%s IDENTIFIED BY %s;\n' "$(sql_quote "$user")" "$(sql_quote "$HOST")" "$(sql_quote "$pass")" | admin_sql >/dev/null || die "could not create database principal"
 }
+normalize_set() { printf '%s\n' "$1" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sort -u | paste -sd, -; }
+show_grants() { printf 'SHOW GRANTS FOR %s@%s;\n' "$(sql_quote "$1")" "$(sql_quote "$HOST")" | admin_sql | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047'; }
+
+verify_migrator_grants() {
+  local grants schema_line actual_set expected_set
+  grants=$(show_grants "$MIGRATE_USER") || die "could not inspect migration grants"
+  printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$MIGRATE_USER'@'$HOST'" >/dev/null || die "migration principal lacks exact global USAGE"
+  schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$") || die "migration principal lacks exact schema grants"
+  [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || die "migration principal has ambiguous schema grants"
+  actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  [ "$actual_set" = "$expected_set" ] || die "migration principal schema privilege set is not exact"
+  [ "$(printf '%s\n' "$grants" | grep -c '^GRANT ')" -eq 2 ] || die "migration principal has extra grants, roles, routines, columns, or grant option"
+}
+
+runtime_grant_state() {
+  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count
+  grants=$(show_grants "$RUNTIME_USER") || die "could not inspect runtime grants"
+  printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$RUNTIME_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
+  schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$"); [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+  actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
+  legacy_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE')
+  expected_count=$((2 + ${#RUNTIME_TABLES[@]})); actual_count=$(printf '%s\n' "$grants" | grep -c '^GRANT ')
+  if [ "$actual_set" = "$legacy_set" ] && [ "$actual_count" -eq 2 ]; then printf legacy; return; fi
+  [ "$actual_set" = "$(normalize_set 'SELECT, INSERT')" ] && [ "$actual_count" -eq "$expected_count" ] || { printf invalid; return; }
+  for table in "${RUNTIME_TABLES[@]}"; do
+    privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+    line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$")
+    [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+    actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+    [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { printf invalid; return; }
+  done
+  printf new
+}
+
 create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"
 create_missing "$MIGRATE_USER" "$migrate_password" "$migrate_exists"
-
-grant_new() {
-  local user=$1 privileges=$2 exists=$3
-  [ "$exists" = 0 ] || return 0
-  printf 'GRANT %s ON `%s`.* TO %s@%s;\n' "$privileges" "$DB" "$(sql_quote "$user")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant database principal"
-}
-grant_new "$RUNTIME_USER" 'SELECT, INSERT, UPDATE, DELETE' "$runtime_exists"
-grant_new "$MIGRATE_USER" 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES' "$migrate_exists"
-
-verify_grants() {
-  local user=$1 expected=$2 grants normalized schema_line actual_set expected_set
-  grants=$(printf 'SHOW GRANTS FOR %s@%s;\n' "$(sql_quote "$user")" "$(sql_quote "$HOST")" | admin_sql) || die "could not inspect grants"
-  normalized=$(printf '%s\n' "$grants" | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
-  printf '%s\n' "$normalized" | grep -Fx "GRANT USAGE ON *.* TO '$user'@'$HOST'" >/dev/null || die "principal lacks exact global USAGE"
-  schema_line=$(printf '%s\n' "$normalized" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$user'@'$HOST'$") || die "principal lacks exact schema grants"
-  [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || die "principal has ambiguous schema grants"
-  actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}
-  actual_set=$(printf '%s\n' "$actual_set" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sort -u | paste -sd, -)
-  expected_set=$(printf '%s\n' "$expected" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sort -u | paste -sd, -)
-  [ "$actual_set" = "$expected_set" ] || die "principal schema privilege set is not exact"
-  [ "$(printf '%s\n' "$normalized" | grep -c '^GRANT ')" -eq 2 ] || die "principal has extra grants, roles, or grant option; refusing to modify it"
-}
-verify_grants "$RUNTIME_USER" 'SELECT, INSERT, UPDATE, DELETE'
-verify_grants "$MIGRATE_USER" 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES'
+if [ "$runtime_exists" = 0 ]; then
+  printf 'GRANT SELECT, INSERT ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime schema privileges"
+  for table in "${RUNTIME_TABLES[@]}"; do
+    printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant runtime table privileges"
+  done
+else
+  case "$(runtime_grant_state)" in
+    new) ;;
+    legacy)
+      # Add the narrow table grants before revoking broad schema DML.
+      for table in "${RUNTIME_TABLES[@]}"; do
+        printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge runtime table privileges"
+      done
+      printf 'REVOKE UPDATE, DELETE ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke legacy runtime schema privileges"
+      ;;
+    *) die "runtime principal is neither the exact legacy nor new grant state" ;;
+  esac
+fi
+if [ "$migrate_exists" = 0 ]; then
+  printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal"
+fi
+verify_migrator_grants
+[ "$(runtime_grant_state)" = new ] || die "runtime principal table privilege set is not exact"
 
 verify_login() { local user=$1 pass=$2 temp current; temp=$(mktemp "${SECRET_DIR}/login.XXXXXX"); printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' "$user" "$pass" "${CFG[JAX_DB_HOST]}" "${CFG[JAX_DB_PORT]}" > "$temp"; chmod 600 "$temp"; current=$(mariadb "--defaults-extra-file=$temp" --batch --skip-column-names "$DB" -e 'SELECT CURRENT_USER()') || die "principal login failed"; rm -f "$temp"; [[ "$current" == "$user@$HOST" ]] || die "principal login resolved to an unexpected grantee"; }
 verify_login "$RUNTIME_USER" "$runtime_password"
