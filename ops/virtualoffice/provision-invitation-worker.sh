@@ -117,3 +117,18 @@ for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME FERNET_KEY OFFICE_INVITATION_LIFE
 printf 'JAX_DB_USER=%s\nJAX_DB_PASSWORD=%s\n' "$WORKER_DB_USER" "$password" >> "$env_tmp"
 chown root:root "$env_tmp"; chmod 600 "$env_tmp"; mv -f "$env_tmp" "$STATE_ROOT/invitation-worker.env"
 printf '%s\n' 'invitation worker principal and env provisioned; install audited units, daemon-reload, then enable timer separately'
+if [[ "$routine_count" == 3 ]]; then
+# Full grant sets are a contract.  Count alone is insufficient because a
+# different sixth privilege can change authority.
+worker_grants=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | tr '\140' '\047')
+expected_worker=$(cat <<EOF2
+GRANT USAGE ON *.* TO '$WORKER_DB_USER'@'$host'
+GRANT SELECT ('attempt_id', 'outbox_id', 'invitation_id', 'state', 'created_at', 'claimed_at') ON '$db'.'office_invitation_outbox' TO '$WORKER_DB_USER'@'$host'
+GRANT SELECT ON '$db'.'axioma_config' TO '$WORKER_DB_USER'@'$host'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'
+GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'
+EOF2
+)
+[[ $(printf '%s\n' "$worker_grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { printf '%s\n' 'worker database grants are not exact' >&2; exit 1; }
+fi
