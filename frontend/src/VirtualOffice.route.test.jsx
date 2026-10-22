@@ -1,16 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { I18nProvider } from './i18n/index.jsx'
 import { useJaxStore } from './store/useJaxStore'
 
 vi.mock('./apariencia/sincronizarApariencia', () => ({ sincronizarApariencia: vi.fn(() => Promise.resolve()) }))
 const session = vi.hoisted(() => vi.fn())
+const bootstrap = vi.hoisted(() => vi.fn())
 const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn() }))
 vi.mock('./api/client', () => ({ default: { get: vi.fn(() => new Promise(() => {})), post: vi.fn(() => new Promise(() => {})) } }))
 vi.mock('./api/virtualOffice', () => ({
   mfaApi: { status: vi.fn(() => new Promise(() => {})) },
-  officeSessionApi: { read: session },
+  officeSessionApi: { read: session, bootstrap },
   officeProjectsApi: projects,
 }))
 
@@ -44,6 +45,22 @@ describe('Virtual Office route', () => {
     render(<I18nProvider><App /></I18nProvider>)
     await waitFor(() => expect(window.location.pathname).toBe('/account/security'))
     expect(screen.queryByRole('heading', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+  })
+
+  it('lets the initial administrator activate Office with the current password and enters with the new token', async () => {
+    session.mockResolvedValueOnce({ data: {
+      state: 'BOOTSTRAP_REQUIRED',
+      identity: { user_id: 8, tenant_id: 4, account_class: 'INTERNAL', global_role: null },
+      bootstrap: { method: 'CURRENT_PASSWORD', target_user_id: 8 },
+    } }).mockResolvedValue(allowed())
+    bootstrap.mockResolvedValue({ data: { state: 'ACTIVE', target_user_id: 8, verification_method: 'PASSWORD_REAUTH', access_token: 'fresh-office-token' } })
+    render(<I18nProvider><App /></I18nProvider>)
+    expect(await screen.findByRole('heading', { name: 'Activar Oficina virtual' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'password-actual' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Activar oficina' }))
+    await waitFor(() => expect(bootstrap).toHaveBeenCalledWith({ current_password: 'password-actual' }))
+    expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
+    expect(useJaxStore.getState().token).toBe('fresh-office-token')
   })
 
   it('leaves an external account neutral even when entry is server-approved', async () => {

@@ -19,6 +19,7 @@ export const mfaApi = {
 // tardía de otra identidad; nunca para conceder acceso.
 export const officeSessionApi = {
   read: () => api.get('/virtual-office/session'),
+  bootstrap: (payload) => api.post('/virtual-office/bootstrap', payload),
 }
 
 export const officeProjectsApi = {

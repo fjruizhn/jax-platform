@@ -33,6 +33,9 @@ const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
   // El bearer de invitación puede consumirse aunque una respuesta se pierda.
   // Es una capacidad pública, no una sesión que un refresh pueda recuperar.
   '/virtual-office/invitations/accept',
+  // Promover la primera cuenta Office revoca esta misma sesión. Un 401 es una
+  // contraseña incorrecta, no una señal para refrescar y reenviar el POST.
+  '/virtual-office/bootstrap',
 ]
 
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de
