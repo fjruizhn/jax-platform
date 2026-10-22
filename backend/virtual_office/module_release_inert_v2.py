@@ -26,9 +26,9 @@ FORBIDDEN_RUNTIME_TABLES = frozenset(TABLES)
 
 DDL = (
     "CREATE TABLE IF NOT EXISTS office_module_artifact_snapshot_v2 ("
-    "snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,module_package_digest BINARY(32) NOT NULL,client_artifact_set_digest BINARY(32) NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
-    "UNIQUE KEY uq_office_module_snapshot_v2 (snapshot_id,candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,client_artifact_set_digest,project_id,tenant_id),KEY idx_office_module_snapshot_v2_revision (candidate_revision_id,candidate_id,manifest_sha256,client_artifact_set_digest),KEY idx_office_module_snapshot_v2_scope (project_id,tenant_id,snapshot_id),"
-    "CONSTRAINT fk_office_module_snapshot_v2_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,client_artifact_set_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_snapshot_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT chk_office_module_snapshot_v2_digest CHECK (OCTET_LENGTH(module_package_digest)=32 AND OCTET_LENGTH(client_artifact_set_digest)=32 AND module_package_digest<>client_artifact_set_digest)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+    "snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,module_package_digest BINARY(32) NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_module_snapshot_v2 (snapshot_id,candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,project_id,tenant_id),KEY idx_office_module_snapshot_v2_revision (candidate_revision_id,candidate_id,manifest_sha256,module_package_digest),KEY idx_office_module_snapshot_v2_scope (project_id,tenant_id,snapshot_id),"
+    "CONSTRAINT fk_office_module_snapshot_v2_revision FOREIGN KEY (candidate_revision_id,candidate_id,manifest_sha256,module_package_digest) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest),CONSTRAINT fk_office_module_snapshot_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT chk_office_module_snapshot_v2_digest CHECK (OCTET_LENGTH(module_package_digest)=32)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
     "CREATE TABLE IF NOT EXISTS office_module_publication_request_v2 ("
     "publication_request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,snapshot_id BIGINT UNSIGNED NOT NULL,project_id INT NOT NULL,tenant_id INT NOT NULL,requested_by_user_id INT NOT NULL,mfa_proof_event_id BIGINT UNSIGNED NULL,state VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_module_request_v2 (publication_request_id,snapshot_id,project_id,tenant_id),KEY idx_office_module_request_v2_snapshot (snapshot_id),KEY idx_office_module_request_v2_scope (project_id,tenant_id,created_at),KEY idx_office_module_request_v2_user (requested_by_user_id),KEY idx_office_module_request_v2_mfa (mfa_proof_event_id),CONSTRAINT fk_office_module_request_v2_snapshot FOREIGN KEY (snapshot_id) REFERENCES office_module_artifact_snapshot_v2(snapshot_id),CONSTRAINT fk_office_module_request_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT fk_office_module_request_v2_user FOREIGN KEY (requested_by_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_module_request_v2_mfa FOREIGN KEY (mfa_proof_event_id) REFERENCES office_mfa_security_event(event_id),CONSTRAINT chk_office_module_request_v2_state CHECK (state='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
@@ -53,7 +53,7 @@ DDL = (
 # authority edge, index, or moved CHECK.
 _DDL_BY_TABLE = {re.search(r"CREATE TABLE IF NOT EXISTS ([a-z0-9_]+)", statement).group(1): statement for statement in DDL}
 _EXPECTED_COLUMNS = {
-    "office_module_artifact_snapshot_v2": ("snapshot_id","candidate_revision_id","candidate_id","manifest_sha256","module_package_digest","client_artifact_set_digest","project_id","tenant_id","created_at"),
+    "office_module_artifact_snapshot_v2": ("snapshot_id","candidate_revision_id","candidate_id","manifest_sha256","module_package_digest","project_id","tenant_id","created_at"),
     "office_module_publication_request_v2": ("publication_request_id","snapshot_id","project_id","tenant_id","requested_by_user_id","mfa_proof_event_id","state","created_at"),
     "office_module_creative_approval_v2": ("creative_approval_id","publication_request_id","human_user_id","mfa_proof_event_id","decision","created_at"),
     "office_module_rights_verdict_v2": ("rights_verdict_id","publication_request_id","critic_principal","evidence_set_sha256","verification_state","decision","created_at"),
@@ -99,7 +99,6 @@ class ReleaseReceiptRejected(ValueError): pass
 @dataclass(frozen=True)
 class BoundReleaseReceipt:
     module_package_digest: str
-    client_artifact_set_digest: str
     project_id: int
     tenant_id: int
     creative_approval_id: int
@@ -108,16 +107,16 @@ class BoundReleaseReceipt:
 
 _HEX = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
-def validate_release_receipt(value: Any, *, module_package_digest: str, client_artifact_set_digest: str, project_id: int, tenant_id: int, human_approval_id: int, critic_rights_id: int, human_principal: str) -> BoundReleaseReceipt:
+def validate_release_receipt(value: Any, *, module_package_digest: str, project_id: int, tenant_id: int, human_approval_id: int, critic_rights_id: int, human_principal: str) -> BoundReleaseReceipt:
     """Pure structural binding only; it verifies neither signatures nor rights."""
-    if not isinstance(value, dict) or set(value) != {"domain", "module_package_digest", "client_artifact_set_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id", "office_release_signer"}:
+    if not isinstance(value, dict) or set(value) != {"domain", "module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id", "office_release_signer"}:
         raise ReleaseReceiptRejected("release receipt shape is invalid")
-    if value["domain"] != "approval-record/v1": raise ReleaseReceiptRejected("release receipt domain is invalid")
+    if value["domain"] != "axioma.office.module-release-receipt/v1": raise ReleaseReceiptRejected("release receipt domain is invalid")
     if any(key in value for key in ("authorized_by", "model", "selector")): raise ReleaseReceiptRejected("release receipt has forbidden authority")
-    for name in ("module_package_digest", "client_artifact_set_digest"):
+    for name in ("module_package_digest",):
         if not isinstance(value[name], str) or not _HEX.fullmatch(value[name]): raise ReleaseReceiptRejected("release receipt digest is invalid")
-    fields = ("module_package_digest", "client_artifact_set_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
-    expected = (module_package_digest, client_artifact_set_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
+    fields = ("module_package_digest", "project_id", "tenant_id", "creative_approval_id", "rights_verdict_id")
+    expected = (module_package_digest, project_id, tenant_id, human_approval_id, critic_rights_id)
     if tuple(value[field] for field in fields) != expected: raise ReleaseReceiptRejected("release receipt does not bind its authority inputs")
     signer = value["office_release_signer"]
     if not isinstance(signer, str) or not signer.startswith("office-release:") or signer == human_principal: raise ReleaseReceiptRejected("release signer is not distinct Office authority")
