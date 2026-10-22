@@ -1144,8 +1144,10 @@ jobs:
             //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
             // 1414 -> 1469 (Oficina Virtual, 2026-10-22): medido local y en el
             // runner de GitHub 119836841170: 1469/0/1469, 118 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1469) {
-              console.error("PISO ROTO: se esperaban 1469 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1469 -> 1501 (invitaciones Office, 2026-10-22): medido en el runner
+            // de GitHub 119942966889 y 119943131447: 1501/0/1501, 121 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1501) {
+              console.error("PISO ROTO: se esperaban 1501 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
