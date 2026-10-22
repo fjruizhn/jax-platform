@@ -92,6 +92,25 @@ def test_legacy_recovery_bearer_hop_is_gone_and_not_cacheable(client):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_recovery_uses_its_own_rate_bucket_before_code_lookup(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    import api.auth as auth_api
+
+    class Bucket:
+        def __init__(self, retry): self.retry, self.keys = retry, []
+        def hit(self, key): self.keys.append(key); return self.retry
+        def reset(self): pass
+
+    login, recovery = Bucket(None), Bucket(30.0)
+    monkeypatch.setattr(auth_api.rate_limit, "LOGIN_IP_LIMITER", login)
+    monkeypatch.setattr(auth_api.rate_limit, "MFA_RECOVERY_IP_LIMITER", recovery)
+    response = client.post("/api/auth/mfa/recover", json={"recovery_code": "A" * 32})
+    assert response.status_code == 429
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["retry-after"] == "30"
+    assert recovery.keys and not login.keys
+
+
 def test_mfa_password_routes_rate_limit_before_bcrypt(client, monkeypatch):
     """The existing canonical limiter rejects before any password hash work."""
     _mfa_env(monkeypatch)
