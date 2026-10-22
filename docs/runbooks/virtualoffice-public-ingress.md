@@ -130,13 +130,26 @@ CI verde, pruebas de autorización y MFA, respaldo restaurado, carga medida,
 revisión de cookies/origen/CSRF, verificación externa TLS/DNS, y el acto de
 producción autorizado.
 
-Además, antes de emitir invitaciones o enlaces de recuperación hay que fijar
-en el entorno del backend, sin subir secretos:
+Además, antes de arrancar el backend con la protección de navegador de
+`office-public-auth-hardening`, hay que fijar en su `EnvironmentFile` los
+orígenes y hosts explícitos. Los valores operacionales se verifican contra la
+topología vigente; el ejemplo de abajo supone que el ingreso privado sigue
+siendo `172.16.20.11` y que el origen clásico sigue en `axioma-ia.io`:
 
 ```text
-FRONTEND_ORIGIN=https://virtualoffice.axioma-ia.io
+JAX_ENVIRONMENT=production
+JAX_PUBLIC_HOST_ORIGIN_BINDINGS=axioma-ia.io=https://axioma-ia.io;virtualoffice.axioma-ia.io=https://virtualoffice.axioma-ia.io
+JAX_OPERATIONAL_TRUSTED_HOSTS=172.16.20.5
+JAX_TRUSTED_PROXIES=172.16.20.11
+JAX_REFRESH_COOKIE_SECURE=true
+FRONTEND_ORIGIN=https://axioma-ia.io
+OFFICE_PUBLIC_ORIGIN=https://virtualoffice.axioma-ia.io
 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.axioma-ia.io
 ```
 
-El valor actual de esos ajustes no se infiere de este repositorio. Debe
-verificarse en el servicio que atiende JAX antes de cualquier reinicio.
+La configuración de Uvicorn debe confiar sólo en la IP privada del ingreso
+(`--proxy-headers --forwarded-allow-ips=172.16.20.11`), conservar un solo
+worker y superar su prueba de readiness. Respaldar y probar la restauración del
+`EnvironmentFile` y del drop-in de systemd antes de cualquier reinicio.
+Comprobar los valores efectivos del servicio: los valores de este ejemplo no
+constituyen por sí solos una lectura de producción.
