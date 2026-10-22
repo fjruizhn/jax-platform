@@ -23,7 +23,7 @@ from .authority import authorize_office_in_cursor
 from .capabilities import OfficeOperation
 from .invitation_config import InvitationConfig
 from .membership_receipts import invitation_acceptance_digest, write_invitation_acceptance_receipt
-from .mfa import MFADenied, MFAConfig, reload_current_self_mfa_proof_in_cursor
+from .mfa import MFADenied, MFAConfig, load_mfa_config_from_environment, reload_current_self_mfa_proof_in_cursor
 
 
 async def _create_invited_identity_in_cursor(cur, *, tenant_id: int, email: str,
@@ -281,13 +281,16 @@ async def revoke_invitation_in_cursor(
 class _InvitationAcceptanceAuthorizer:
     """Trusted JXP proof resolver used only by JAX's typed capability call."""
     def __init__(self, *, invitation_id: str, issuer_user_id: int, target_user_id: int,
-                 target_tenant_id: int, project_id: int, mfa_version: int):
+                 target_tenant_id: int, project_id: int, mfa_version: int,
+                 proof_event_id: int, mfa_config: MFAConfig):
         self.invitation_id = invitation_id
         self.issuer_user_id = issuer_user_id
         self.target_user_id = target_user_id
         self.target_tenant_id = target_tenant_id
         self.project_id = project_id
         self.mfa_version = mfa_version
+        self.proof_event_id = proof_event_id
+        self.mfa_config = mfa_config
         self.authorization_event_id: int | None = None
 
     async def authorize_membership_in_transaction(self, cursor, *, actor_user_id: int,
@@ -311,6 +314,7 @@ class _InvitationAcceptanceAuthorizer:
             raise AuthorizationDenied("Office invitation issuer proof is no longer current")
         decision = await authorize_office_in_cursor(
             cursor, self.issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, self.project_id,
+            require_recent_mfa=True, mfa_proof_event_id=self.proof_event_id, mfa_config=self.mfa_config,
         )
         if not decision.allowed:
             raise AuthorizationDenied("Office invitation issuer authority is no longer current")
@@ -443,9 +447,13 @@ async def accept_invitation_in_cursor(
     from jax.memory.project_authority import (NamespacedMemberKind, NamespaceMembershipExecution,
                                               NamespaceMembershipExecutionKind, ProjectAuthorityAdmin,
                                               ProjectNamespace)
+    acceptance_mfa_config = load_mfa_config_from_environment()
+    if acceptance_mfa_config is None:
+        raise InvitationError("office_invitation_unavailable", status_code=503)
     authorizer = _InvitationAcceptanceAuthorizer(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
-        target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version))
+        target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version),
+        proof_event_id=int(proof_event_id), mfa_config=acceptance_mfa_config)
     result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
         cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),
         target_user_id=accepting_user_id, namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
