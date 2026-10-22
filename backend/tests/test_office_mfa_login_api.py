@@ -443,6 +443,28 @@ def test_auth_validation_does_not_treat_empty_form_login_as_safe_json(client):
     assert response.json() == {"detail": "auth_invalid_request"}
 
 
+def test_empty_login_validation_uses_parsed_error_body_without_rereading_request():
+    """The public malformed-login path must not parse a body a second time."""
+    from fastapi.exceptions import RequestValidationError
+    from main import _mfa_validation_error
+
+    class RequestWithoutBodyRead:
+        headers = {"content-type": "application/json"}
+        url = type("URL", (), {"path": "/api/auth/login"})()
+
+        async def body(self):
+            raise AssertionError("validation handler must use RequestValidationError.body")
+
+    exc = RequestValidationError([
+        {"type": "missing", "loc": ("body", "email"), "msg": "Field required", "input": {}},
+        {"type": "missing", "loc": ("body", "password"), "msg": "Field required", "input": {}},
+    ], body={})
+    response = asyncio.run(_mfa_validation_error(RequestWithoutBodyRead(), exc))
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "no-store"
+    assert response.body == b'{"detail":[{"type":"missing","loc":["body","email"],"msg":"Field required"},{"type":"missing","loc":["body","password"],"msg":"Field required"}]}'
+
+
 def test_reenrollment_http_preserves_active_factor_until_confirmation(client, monkeypatch):
     _mfa_env(monkeypatch)
     user_id, _email, old_secret = client.portal.call(_active_factor_user)

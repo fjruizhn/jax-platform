@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -280,15 +279,10 @@ def _errores_de_validacion_sin_entrada(errors: list[dict]) -> list[dict]:
     ]
 
 
-async def _es_login_json_vacio(request: Request) -> bool:
-    """Only the historical ``{}`` login request may receive field hints."""
+def _es_login_json_vacio(request: Request, exc: RequestValidationError) -> bool:
+    """Only the historical parsed ``{}`` login request may receive hints."""
     media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
-    if media_type != "application/json":
-        return False
-    try:
-        return json.loads(await request.body()) == {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
+    return media_type == "application/json" and type(exc.body) is dict and not exc.body
 
 
 @app.exception_handler(RequestValidationError)
@@ -303,7 +297,7 @@ async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
     if (request.url.path == "/api/auth/login"
             and errors
             and all(error.get("type") == "missing" for error in errors)
-            and await _es_login_json_vacio(request)):
+            and _es_login_json_vacio(request, _exc)):
         return JSONResponse(
             status_code=422, content={"detail": _errores_de_validacion_sin_entrada(errors)},
             headers={"Cache-Control": "no-store"},
