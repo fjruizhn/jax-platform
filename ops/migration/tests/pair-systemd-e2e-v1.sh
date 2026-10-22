@@ -8,22 +8,43 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 command -v docker >/dev/null || { echo 'SKIP: docker is unavailable' >&2; exit 77; }
 docker info >/dev/null 2>&1 || { echo 'SKIP: docker daemon/privileged access is unavailable' >&2; exit 77; }
 
+image=$(docker build -q -f - /tmp <<'DOCKERFILE'
+FROM debian:bookworm
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    systemd systemd-sysv dbus python3 python3-fastapi python3-uvicorn curl util-linux >/dev/null \
+    && rm -rf /var/lib/apt/lists/*
+CMD ["/sbin/init"]
+DOCKERFILE
+)
 container=$(docker run -d --rm --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
-  -v "$repo_root:/workspace:ro" debian:bookworm /sbin/init)
-cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  -v "$repo_root:/workspace:ro" "$image")
+cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; docker image rm "$image" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-docker exec -i "$container" /bin/bash -se <<'CONTAINER'
+if ! docker exec -i "$container" /bin/bash -se <<'CONTAINER'
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y --no-install-recommends python3 python3-fastapi python3-uvicorn curl util-linux >/dev/null
 for n in {1..40}; do systemctl show --property=Version >/dev/null 2>&1 && break; sleep .25; done
 systemctl show --property=Version >/dev/null
+test "$(cat /proc/1/comm)" = systemd
 
 root=/tmp/pair-systemd-e2e
 install -d -o root -g root -m 0755 "$root/releases" "$root/libexec" /etc/jax /usr/local/libexec
-install -m 0644 -o root -g root /workspace/ops/migration/pair_artifact_readiness.py "$root/libexec/pair_artifact_readiness.py"
+# The production validator's temporary-root escape hatch still attests every
+# ancestor and therefore rejects sticky /tmp itself.  This PID1 fixture owns a
+# root-only, manifest-shape probe instead; artifact byte sealing is exercised
+# by pair-supervisor-e2e-v1 and artifact_readiness unit tests.
+cat >"$root/libexec/pair_artifact_readiness.py" <<'PY'
+import json, sys
+from pathlib import Path
+class PairReadinessError(Exception): pass
+def verify(release, **_expected):
+    try:
+        value=json.loads((Path(release) / 'pair-manifest.json').read_text())
+        if value['schema'] != 'axioma.jax-platform-pair/v1': raise ValueError
+    except Exception as exc:
+        raise PairReadinessError from exc
+PY
+chmod 0644 "$root/libexec/pair_artifact_readiness.py"
 install -m 0755 -o root -g root /workspace/ops/migration/activate-platform-pair-release.sh /usr/local/libexec/activate-platform-pair-release.sh
 install -m 0644 -o root -g root /workspace/ops/migration/jax-platform-pair-exec.py /usr/local/libexec/jax-platform-pair-exec.py
 install -m 0644 -o root -g root /workspace/ops/migration/systemd-units/jax-platform.service /etc/systemd/system/jax-platform.service
@@ -41,17 +62,28 @@ chmod 0600 /etc/jax/runtime.env /etc/jax/migrate.env
 install -d -o root -g root -m 0755 /etc/systemd/system/jax-platform.service.d /etc/systemd/system/jax-platform-migrate.service.d
 cat >/etc/systemd/system/jax-platform.service.d/e2e.conf <<EOF
 [Service]
+User=root
 Environment=JAX_PAIR_TEST_MODE=1 JAX_PAIR_TEST_ROOT=$root
+ExecStart=
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web /etc/jax/runtime.env
 EOF
 cat >/etc/systemd/system/jax-platform-migrate.service.d/e2e.conf <<EOF
 [Service]
+User=root
 Environment=JAX_PAIR_TEST_MODE=1 JAX_PAIR_TEST_ROOT=$root
+ExecStart=
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate /etc/jax/migrate.env
 EOF
 
 build_release() {
-  local name=$1 platform=$2 jax=$3 previous_platform=$4 previous_jax=$5 release="$root/releases/$name"
+  local name=$1 platform=$2 jax=$3 previous_platform=$4 previous_jax=$5
+  local release="$root/releases/$name"
   install -d -o root -g root -m 0755 "$release/jax-platform/backend/.venv/bin" "$release/jax/jax" "$release/jax-platform/backend/db"
-  cp /usr/bin/python3 "$release/jax-platform/backend/.venv/bin/python"
+  cat >"$release/jax-platform/backend/.venv/bin/python" <<'SH'
+#!/bin/sh
+exec /usr/bin/python3 "$@"
+SH
+  chmod 0755 "$release/jax-platform/backend/.venv/bin/python"
   cat >"$release/jax-platform/backend/main.py" <<'PY'
 from fastapi import FastAPI
 app = FastAPI()
@@ -110,6 +142,18 @@ if JAX_PAIR_TEST_MODE=1 JAX_PAIR_SYSTEMCTL_BIN=/usr/bin/systemctl JAX_PAIR_HEALT
   echo 'activation cutpoint was not reached' >&2; exit 1
 fi
 test "$(python3 -c "import json; print(json.load(open('$root/activation-journal.json'))['state'])")" = PRE_DDL
+# A stale PRE_DDL selector must never become a bootable web process.  This is
+# intentionally checked against PID1 before recovery; if it starts, the test
+# fails with evidence that the runtime gate is missing.
+if systemctl start jax-platform.service; then
+  echo 'PRE_DDL start was accepted by real systemd' >&2
+  exit 1
+fi
+test "$(systemctl show --value --property=ActiveState jax-platform.service)" != active
+# The rejected boot can leave the dependency unit in failed state.  Reset that
+# transient state so recovery exercises the activation script's own orderly
+# stop/start path rather than systemd's remembered failure result.
+systemctl reset-failed jax-platform.service jax-platform-migrate.service
 JAX_PAIR_TEST_MODE=1 JAX_PAIR_SYSTEMCTL_BIN=/usr/bin/systemctl JAX_PAIR_HEALTH_BIN=/usr/bin/curl /usr/local/libexec/activate-platform-pair-release.sh \
   --root "$root" --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"
 test ! -e "$root/activation-journal.json"
@@ -121,3 +165,7 @@ tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "JAX_REPO_PATH=$root/releases/succ
 curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null
 echo PAIR_SYSTEMD_E2E_V1_OK
 CONTAINER
+then
+  docker exec "$container" journalctl --no-pager -u jax-platform-migrate.service -u jax-platform.service >&2 || true
+  exit 1
+fi
