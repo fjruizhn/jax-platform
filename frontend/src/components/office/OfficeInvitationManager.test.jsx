@@ -60,6 +60,20 @@ describe('OfficeInvitationManager', () => {
     await waitFor(() => expect(invitations.list).toHaveBeenCalledTimes(2))
   })
 
+  it('does not resend an unconfirmed email and prepares a new invitation only after revocation', async () => {
+    invitations.list.mockResolvedValue({ data: { invitations: [{ ...firstPage.data.invitations[0], delivery_state: 'UNKNOWN', delivery_result_code: 'SMTP_UNKNOWN' }], next_cursor: null } })
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar invitaciones' }))
+    expect(await screen.findByText(/No se pudo confirmar la entrega/)).toBeInTheDocument()
+    expect(screen.getByText('El servidor de correo no confirmó la entrega. Revocá esta invitación antes de enviar una nueva.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Revocar invitación para ana@example.test' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Revocar invitación' })).getByRole('button', { name: 'Revocar invitación' }))
+    await waitFor(() => expect(invitations.revoke).toHaveBeenCalledTimes(1))
+    expect(invitations.issue).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Correo electrónico')).toHaveValue('ana@example.test')
+    expect(await screen.findByRole('alert')).toHaveTextContent('La invitación sin confirmación fue revocada.')
+  })
+
   it('closes and revalidates authority after a forbidden list response', async () => {
     const onForbidden = vi.fn().mockResolvedValue(undefined)
     invitations.list.mockRejectedValue({ response: { status: 403 } })
