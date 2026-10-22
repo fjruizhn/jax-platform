@@ -9,7 +9,7 @@ def test_runtime_importer_executes_only_audited_bootstrap_and_validator() -> Non
     assert "--expected-package-digest" in installer
     assert "--bootstrap-sha256" in installer
     assert "--effective-validator-sha256" in installer
-    assert '"$BOOTSTRAP" import' in installer
+    assert '"/proc/self/fd/$bootstrap_fd" import' in installer
     assert "$PACKAGE/artifact_readiness.py" not in installer
     assert "RECOVERY_REQUIRED" in bootstrap
     assert '"/usr/bin/systemctl", "daemon-reload"' in bootstrap

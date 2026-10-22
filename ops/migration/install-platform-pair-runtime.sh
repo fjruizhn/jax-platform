@@ -31,11 +31,12 @@ for program in "$BOOTSTRAP" "$VALIDATOR"; do
     exit 1
   }
 done
-[[ $(/usr/bin/sha256sum -- "$BOOTSTRAP" | /usr/bin/awk '{print $1}') == "$BOOTSTRAP_DIGEST" ]] || { echo 'bootstrap digest mismatch' >&2; exit 1; }
+exec {bootstrap_fd}<"$BOOTSTRAP"
+[[ $(/usr/bin/sha256sum -- "/proc/self/fd/$bootstrap_fd" | /usr/bin/awk '{print $1}') == "$BOOTSTRAP_DIGEST" ]] || { echo 'bootstrap digest mismatch' >&2; exit 1; }
 
 backup_parent=/var/lib/jax-platform-pair/runtime-imports
 /usr/bin/install -d -o root -g root -m 0700 "$backup_parent"
 backup=$(/usr/bin/mktemp -d "$backup_parent/runtime.XXXXXXXX")
-exec /usr/bin/python3 -I -S "$BOOTSTRAP" import \
+exec /usr/bin/python3 -I -S "/proc/self/fd/$bootstrap_fd" import \
   --package "$PACKAGE" --expected-package-digest "$PACKAGE_DIGEST" --backup "$backup" \
   --effective-validator "$VALIDATOR" --effective-validator-sha256 "$VALIDATOR_DIGEST"
