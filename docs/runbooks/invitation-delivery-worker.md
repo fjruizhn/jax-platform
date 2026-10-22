@@ -35,6 +35,19 @@ install_from_audited_commit ops/virtualoffice/install-invitation-worker-release.
 install_from_audited_commit ops/virtualoffice/provision-invitation-worker.sh /usr/local/libexec/axioma-office-invitation-worker-provision 0750
 install_from_audited_commit ops/virtualoffice/invitation-worker-artifact-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness 0750
 sudo /usr/local/libexec/axioma-office-invitation-worker-provision --env /etc/jax/runtime.env
+test ! -L "$WHEELHOUSE"
+if [[ ! -e "$WHEELHOUSE" ]]; then
+  SUPPLY_STAGE=$(mktemp -d /opt/.axioma-office-invitation-wheelhouse.XXXXXX)
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" archive "$SHA" ops/virtualoffice/worker-requirements.lock | tar -x -C "$SUPPLY_STAGE"
+  mv "$SUPPLY_STAGE/ops/virtualoffice/worker-requirements.lock" "$SUPPLY_STAGE/worker-requirements.lock"
+  rm -r "$SUPPLY_STAGE/ops"
+  chown jaxbuild:jaxbuild "$SUPPLY_STAGE" "$SUPPLY_STAGE/worker-requirements.lock"
+  chmod 0755 "$SUPPLY_STAGE"
+  runuser -u jaxbuild -- python3.14 -m pip download --no-cache-dir --only-binary=:all: --require-hashes --no-deps --dest "$SUPPLY_STAGE" -r "$SUPPLY_STAGE/worker-requirements.lock"
+  chown -R root:root "$SUPPLY_STAGE"
+  mv "$SUPPLY_STAGE" "$WHEELHOUSE"
+fi
+test -f "$LOCK" && test ! -L "$LOCK"
 sudo /usr/local/libexec/axioma-office-invitation-worker-install --origin "$ORIGIN" --revision "$SHA" --wheelhouse "$WHEELHOUSE" --lock "$LOCK"
 install_from_audited_commit ops/virtualoffice/invitation-worker.service /etc/systemd/system/axioma-office-invitation-worker.service 0644
 install_from_audited_commit ops/virtualoffice/invitation-worker.timer /etc/systemd/system/axioma-office-invitation-worker.timer 0644
@@ -46,11 +59,13 @@ systemctl enable --now axioma-office-invitation-worker.timer
 /usr/local/libexec/axioma-office-invitation-worker-artifact-readiness "$SOURCE" --effective
 ```
 
-El wheelhouse y `worker-requirements.lock` son una entrada de suministro separada,
-root-owned, sin enlaces y sin escritura de grupo/otros. El lock contiene cada
-wheel con `--hash=sha256:`; el instalador ejecuta `pip --no-index --require-hashes
---no-deps` como `jaxinvite`, nunca como root. Sin esa entrada auditada no se crea
-ni habilita el release.
+El wheelhouse se construye como `jaxbuild` a partir del lock del SHA auditado,
+con Python 3.14 y solo ruedas cuyos hashes aparecen en el lock. Después queda
+`root:root`; el instalador revisa recursivamente tipos, enlaces, propietario y
+permisos, y ejecuta `pip --no-index --require-hashes --no-deps` como `jaxbuild`.
+Si ya existe el directorio de suministro, se conserva y el instalador exige que
+su lock coincida byte a byte con el del release. Una actualización del lock
+requiere preparar otro wheelhouse auditado antes de instalar.
 
 El provisionador crea el usuario de sistema y principal MariaDB `jaxinvite`. El
 principal recibe solamente SELECT para configuración y las tablas necesarias para
