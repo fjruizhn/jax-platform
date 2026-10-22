@@ -93,7 +93,7 @@ def lineas_diff(args):
                 proceso.kill()
                 proceso.communicate()
                 fallar("linea del diff demasiado grande (FAIL-CLOSED).")
-            yield linea.decode("utf-8", "replace").rstrip("\n")
+            yield linea.rstrip(b"\n")
         if proceso.wait() != 0:
             fallar("git fallo durante el diff (FAIL-CLOSED).")
 
@@ -105,7 +105,14 @@ def cargar():
         crudo = open(LISTA, encoding="utf-8").read()
     except OSError as exc:
         fallar(f"no se pudo leer la lista (FAIL-CLOSED): {exc.strerror}", f"  {LISTA}")
+    return parsear_lista(crudo)
+
+
+def parsear_lista(crudo):
+    if len(crudo.encode("utf-8")) > MAX_LIST_BYTES:
+        fallar("la lista supera su límite de tamaño (FAIL-CLOSED).")
     entradas = []
+    vistas = set()
     for num, linea in enumerate(crudo.splitlines(), 1):
         linea = linea.strip()
         if not linea or linea.startswith("#"):
@@ -114,7 +121,11 @@ def cargar():
         if len(p) != 3 or not re.fullmatch(r"[0-9a-f]{32}", p[0]) or not re.fullmatch(r"[0-9a-f]{64}", p[1]):
             fallar("la lista no parsea (FAIL-CLOSED).",
                    f"  {LISTA}:{num} no tiene la forma '<salt-hex> <scrypt-hex> <etiqueta>'")
-        entradas.append((bytes.fromhex(p[0]), p[1], p[2]))
+        entrada = (bytes.fromhex(p[0]), p[1], p[2])
+        if entrada in vistas:
+            fallar("la lista contiene entradas duplicadas (FAIL-CLOSED).")
+        vistas.add(entrada)
+        entradas.append(entrada)
         if len(entradas) > MAX_ENTRIES:
             fallar("la lista supera su límite de entradas (FAIL-CLOSED).")
     if not entradas:
@@ -130,6 +141,15 @@ def tokens_de(texto):
             vistos.add(t)
             vistos.add(t.strip("-_./\\"))
     return {t for t in vistos if len(t) >= MIN_TOKEN}
+
+
+def atributo_diff(ruta):
+    salida = git(["check-attr", "-z", "diff", "--", ruta], binario=True)
+    partes = salida.split(b"\x00")
+    if (len(partes) != 4 or partes[0] != ruta.encode("utf-8", "surrogateescape")
+            or partes[1] != b"diff" or partes[3] != b""):
+        fallar("git check-attr no devolvió una respuesta exacta (FAIL-CLOSED).")
+    return partes[2]
 
 
 def comparar_entrada(entrada, tokens):
@@ -165,14 +185,11 @@ def main():
     # La lista del HEAD nunca decide contra qué se compara. Tampoco puede
     # quitar entradas para debilitar el escaneo de los PR siguientes.
     try:
-        anterior = {linea.strip() for linea in open(LISTA, encoding="utf-8")
-                    if linea.strip() and not linea.lstrip().startswith("#")}
-        nueva = git(["show", f"{head}:ops/ci/known-secrets-ci.txt"])
-        actuales = {linea.strip() for linea in nueva.splitlines()
-                    if linea.strip() and not linea.lstrip().startswith("#")}
-    except (OSError, UnicodeError) as exc:
+        nueva = git(["show", f"{head}:ops/ci/known-secrets-ci.txt"], binario=True)
+        actuales = parsear_lista(nueva.decode("utf-8"))
+    except UnicodeError as exc:
         fallar(f"no se pudo verificar continuidad de la lista (FAIL-CLOSED): {exc}")
-    if not anterior.issubset(actuales):
+    if not set(entradas).issubset(set(actuales)):
         fallar("el PR elimina o altera entradas conocidas de la lista (FAIL-CLOSED).")
 
     # token -> todos los archivos que lo introducen. El KDF se hace una vez
@@ -197,13 +214,16 @@ def main():
                    "  Se falla en vez de truncar: el mapa que conserva todas las rutas tambien debe ser acotado.")
 
     for a in archivos:
-        agregar_candidato(a, a)
-        for componente in a.split("/"):
-            agregar_candidato(componente, a)
+        for token in tokens_de(a):
+            agregar_candidato(token, a)
+        for componente in re.split(r"[./\\]", a):
+            for token in tokens_de(componente):
+                agregar_candidato(token, a)
 
-    for linea in lineas_diff(["diff", "--unified=0", "--no-color",
-                             "--no-ext-diff", "--diff-filter=ACMRT",
+    for cruda in lineas_diff(["diff", "--unified=0", "--no-color",
+                             "--no-ext-diff", "--no-textconv", "--diff-filter=ACMRT",
                              f"{base}...{head}"]):
+        linea = cruda.decode("utf-8", "replace")
         if linea.startswith("diff --git "):
             archivo, en_hunk = None, False
         elif linea.startswith("+++ ") and not en_hunk:
@@ -217,14 +237,22 @@ def main():
                 con_texto.add(archivo)
             for t in tokens_de(linea[1:]):
                 agregar_candidato(t, archivo)
+            for run in RUNS.findall(cruda[1:]):
+                for t in tokens_de(run.decode("ascii")):
+                    agregar_candidato(t, archivo)
 
-    # Un blob con NUL puede recibir un hunk textual si .gitattributes fuerza
-    # diff; ese hunk no prueba que mostró el contenido entero del blob.
+    # Un blob con NUL o bytes no UTF-8 puede recibir un hunk textual aunque
+    # el parser de texto no vea todos sus bytes. Se escanea entero en ese caso;
+    # el texto UTF-8 normal usa hunks para no reprobar secretos ya existentes.
     # También se leen enteros los archivos sin hunk (binarios o diff apagado).
     for a in archivos:
         crudo = git(["show", f"{head}:{a}"], binario=True)
-        if a in con_texto and b"\x00" not in crudo:
-            continue
+        if a in con_texto and b"\x00" not in crudo and atributo_diff(a) == b"unspecified":
+            try:
+                crudo.decode("utf-8")
+                continue
+            except UnicodeDecodeError:
+                pass
         for run in RUNS.findall(crudo):
             for t in tokens_de(run.decode("ascii", "replace")):
                 agregar_candidato(t, a)

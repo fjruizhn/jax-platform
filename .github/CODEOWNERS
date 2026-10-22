@@ -1,0 +1,5 @@
+# La barrera de secretos solo puede cambiar con revisión de su propietario.
+/.github/workflows/secret-scan.yml @fjruizhn
+/.github/workflows/secret-scan-tests.yml @fjruizhn
+/ops/ci/scan-pr-secrets.py @fjruizhn
+/ops/ci/known-secrets-ci.txt @fjruizhn

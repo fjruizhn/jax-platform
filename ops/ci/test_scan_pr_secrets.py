@@ -46,13 +46,16 @@ def _ejecutar(monkeypatch, escaner, archivos, diff, entradas):
             return ("\0".join(archivos) + "\0").encode()
         if args[0] == "show":
             if args[1].endswith(":ops/ci/known-secrets-ci.txt"):
-                return Path(escaner.LISTA).read_text(encoding="utf-8")
+                return Path(escaner.LISTA).read_bytes()
             return b""
         raise AssertionError(f"git no esperado: {args}")
 
     monkeypatch.setattr(escaner, "git", git_falso)
-    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(diff.splitlines()))
+    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
+        line.encode("utf-8") for line in diff.splitlines()))
     monkeypatch.setattr(escaner, "cargar", lambda: entradas)
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _crudo: entradas)
+    monkeypatch.setattr(escaner, "atributo_diff", lambda _ruta: b"unspecified")
     monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
     return escaner.main()
 
@@ -119,14 +122,15 @@ def test_binario_sin_hunk_tambien_se_compara(monkeypatch, capsys, escaner):
             return b"imagen.bin\0"
         if args[0] == "show":
             if args[1].endswith(":ops/ci/known-secrets-ci.txt"):
-                return Path(escaner.LISTA).read_text(encoding="utf-8")
+                return Path(escaner.LISTA).read_bytes()
             return b"\x00prefix token-binario suffix\xff"
         raise AssertionError(f"git no esperado: {args}")
 
     monkeypatch.setattr(escaner, "git", git_falso)
     monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
-        "diff --git a/imagen.bin b/imagen.bin\nBinary files differ".splitlines()))
+        x.encode() for x in "diff --git a/imagen.bin b/imagen.bin\nBinary files differ".splitlines()))
     monkeypatch.setattr(escaner, "cargar", lambda: [(b"a" * 16, "coincide", "binario")])
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _crudo: [(b"a" * 16, "coincide", "binario")])
     monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
     monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
         "coincide" if token == b"token-binario" else "no"))
@@ -179,6 +183,15 @@ def test_nombre_de_archivo_vacio_tambien_se_escanea(monkeypatch, capsys, escaner
     assert "file=directorio/token-conocido" in capsys.readouterr().out
 
 
+def test_nombre_de_archivo_con_extension_extrae_token(monkeypatch, capsys, escaner):
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        _ejecutar(monkeypatch, escaner, ["directorio/token-conocido.txt"], "",
+                  [(b"a" * 16, "coincide", "nombre")])
+    assert "file=directorio/token-conocido.txt" in capsys.readouterr().out
+
+
 def test_nombre_con_salto_de_linea_se_parsea_completo(monkeypatch, capsys, escaner):
     monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
         "coincide" if token == b"token-conocido" else "no"))
@@ -194,20 +207,110 @@ def test_nul_forzado_textual_escanea_blob_completo(monkeypatch, capsys, escaner)
             return b"archivo.bin\0"
         if args[0] == "show":
             if args[1].endswith(":ops/ci/known-secrets-ci.txt"):
-                return Path(escaner.LISTA).read_text(encoding="utf-8")
+                return Path(escaner.LISTA).read_bytes()
             return b"visible\0token-conocido\0"
         raise AssertionError(args)
 
     monkeypatch.setattr(escaner, "git", git_falso)
     monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
-        _diff(("archivo.bin", "visible")).splitlines()))
+        x.encode() for x in _diff(("archivo.bin", "visible")).splitlines()))
     monkeypatch.setattr(escaner, "cargar", lambda: [(b"a" * 16, "coincide", "blob")])
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _crudo: [(b"a" * 16, "coincide", "blob")])
     monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
     monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
         "coincide" if token == b"token-conocido" else "no"))
     with pytest.raises(SystemExit):
         escaner.main()
     assert "file=archivo.bin" in capsys.readouterr().out
+
+
+def test_blob_no_utf8_forzado_textual_escanea_bytes_crudos(monkeypatch, capsys, escaner):
+    def git_falso(args, binario=False):
+        if args[:2] == ["diff", "--name-only"]:
+            return b"archivo.bin\0"
+        if args[0] == "show":
+            if args[1].endswith(":ops/ci/known-secrets-ci.txt"):
+                return Path(escaner.LISTA).read_bytes()
+            return b"visible\xfftoken-conocido\xff"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(escaner, "git", git_falso)
+    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
+        x.encode() for x in _diff(("archivo.bin", "visible")).splitlines()))
+    monkeypatch.setattr(escaner, "atributo_diff", lambda _ruta: b"unspecified")
+    monkeypatch.setattr(escaner, "cargar", lambda: [(b"a" * 16, "coincide", "blob")])
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _crudo: [(b"a" * 16, "coincide", "blob")])
+    monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        escaner.main()
+    assert "file=archivo.bin" in capsys.readouterr().out
+
+
+def test_atributo_diff_forzado_escanea_blob_completo(monkeypatch, capsys, escaner):
+    entradas = [(b"a" * 16, "coincide", "blob")]
+
+    def git_falso(args, binario=False):
+        if args[:2] == ["diff", "--name-only"]:
+            return b"archivo.txt\0"
+        if args[0] == "show":
+            return b"lista" if args[1].endswith(":ops/ci/known-secrets-ci.txt") else b"visible token-conocido"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(escaner, "git", git_falso)
+    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
+        x.encode() for x in _diff(("archivo.txt", "visible")).splitlines()))
+    monkeypatch.setattr(escaner, "cargar", lambda: entradas)
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _raw: entradas)
+    monkeypatch.setattr(escaner, "atributo_diff", lambda _ruta: b"set")
+    monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        escaner.main()
+    assert "file=archivo.txt" in capsys.readouterr().out
+
+
+def test_ascii_delimitado_por_emoji_en_hunk_se_detecta(monkeypatch, capsys, escaner):
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    with pytest.raises(SystemExit):
+        _ejecutar(monkeypatch, escaner, ["archivo.txt"],
+                  _diff(("archivo.txt", "🔒token-conocido🔒")),
+                  [(b"a" * 16, "coincide", "unicode")])
+    assert "file=archivo.txt" in capsys.readouterr().out
+
+
+def test_secreto_historico_no_modificado_no_falla(monkeypatch, escaner):
+    entradas = [(b"a" * 16, "coincide", "historico")]
+
+    def git_falso(args, binario=False):
+        if args[:2] == ["diff", "--name-only"]:
+            return b"archivo.txt\0"
+        if args[0] == "show":
+            return b"lista" if args[1].endswith(":ops/ci/known-secrets-ci.txt") else b"token-conocido\nvisible nuevo\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(escaner, "git", git_falso)
+    monkeypatch.setattr(escaner, "lineas_diff", lambda _args: iter(
+        x.encode() for x in _diff(("archivo.txt", "visible nuevo")).splitlines()))
+    monkeypatch.setattr(escaner, "cargar", lambda: entradas)
+    monkeypatch.setattr(escaner, "parsear_lista", lambda _raw: entradas)
+    monkeypatch.setattr(escaner, "atributo_diff", lambda _ruta: b"unspecified")
+    monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
+    monkeypatch.setattr(escaner.hashlib, "scrypt", lambda token, **_k: _Digest(
+        "coincide" if token == b"token-conocido" else "no"))
+    assert escaner.main() == 0
+
+
+def test_lista_head_malformada_o_sobredimensionada_falla(monkeypatch, escaner):
+    with pytest.raises(SystemExit):
+        escaner.parsear_lista("aa" * 16 + " " + "bb" * 32 + " valida\nmalformada\n")
+    monkeypatch.setattr(escaner, "MAX_ENTRIES", 1)
+    with pytest.raises(SystemExit):
+        escaner.parsear_lista("aa" * 16 + " " + "bb" * 32 + " uno\n" +
+                              "cc" * 16 + " " + "dd" * 32 + " dos\n")
 
 
 def test_lista_con_demasiadas_entradas_falla_aunque_no_haya_tokens(monkeypatch, tmp_path, escaner):
@@ -225,7 +328,7 @@ def test_lista_no_puede_quitar_entrada_conocida(monkeypatch, tmp_path, escaner):
     lista.write_text("aa" * 16 + " " + "bb" * 32 + " entrada\n", encoding="utf-8")
     monkeypatch.setattr(escaner, "LISTA", str(lista))
     monkeypatch.setattr(escaner, "git", lambda args, binario=False:
-                        b"ops/ci/known-secrets-ci.txt\0" if args[:2] == ["diff", "--name-only"] else "")
+                        b"ops/ci/known-secrets-ci.txt\0" if args[:2] == ["diff", "--name-only"] else b"")
     monkeypatch.setattr(sys, "argv", [str(RUTA), "base", "head"])
     with pytest.raises(SystemExit):
         escaner.main()
