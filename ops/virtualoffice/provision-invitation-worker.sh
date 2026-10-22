@@ -90,11 +90,14 @@ else
   printf "CREATE USER %s IDENTIFIED BY %s;\n" "$principal" "$(quote "$password")" | admin_sql >/dev/null
 fi
 owner_principal="'jaxoffice_invitation_owner'@'localhost'"
-printf "CREATE USER IF NOT EXISTS %s ACCOUNT LOCK;\nREVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$owner_principal" "$owner_principal" | admin_sql >/dev/null
+printf "CREATE USER IF NOT EXISTS %s ACCOUNT LOCK;\n" "$owner_principal" | admin_sql >/dev/null
+owner_grant_count=$(printf "SHOW GRANTS FOR %s;\n" "$owner_principal" | admin_sql | grep -c '^GRANT ' || true)
+if (( owner_grant_count > 1 )); then printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$owner_principal" | admin_sql >/dev/null; fi
 # The definer owns only the three authority transitions.  It has enough table
 # privilege for the trigger-guarded statements inside them, never login.
 printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_issuance\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT SELECT ON \`%s\`.\`office_invitation_outbox\` TO %s;\nGRANT INSERT ON \`%s\`.\`office_invitation_event\` TO %s;\nGRANT UPDATE (status,version) ON \`%s\`.\`office_invitation\` TO %s;\nGRANT UPDATE (state,attempt_id,attempt_count,payload_ciphertext,message_id,result_code,claimed_at,finished_at,updated_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" "$db" "$owner_principal" | admin_sql >/dev/null
-printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$principal" | admin_sql >/dev/null || true
+worker_grant_count=$(printf "SHOW GRANTS FOR %s;\n" "$principal" | admin_sql | grep -c '^GRANT ' || true)
+if (( worker_grant_count > 1 )); then printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM %s;\n" "$principal" | admin_sql >/dev/null; fi
 printf "GRANT SELECT ON \`%s\`.\`axioma_config\` TO %s;\nGRANT SELECT (outbox_id,invitation_id,state,attempt_id,claimed_at,created_at) ON \`%s\`.\`office_invitation_outbox\` TO %s;\n" "$db" "$principal" "$db" "$principal" | admin_sql >/dev/null
 routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
 [[ "$routine_count" =~ ^[0-3]$ ]] || { printf '%s\n' 'ambiguous invitation delivery routine lookup' >&2; exit 1; }
