@@ -1,148 +1,205 @@
-"""Browser-facing authentication boundary controls.
-
-The proxy and Uvicorn configuration are deliberately separate from this ASGI
-layer.  This module only trusts the request headers that reached it and keeps
-the refresh cookie host-only by never accepting a Domain attribute.
-"""
+"""Host-bound browser authentication controls for public surfaces."""
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 
 class BrowserSecurityConfigError(RuntimeError):
-    """A public browser deployment has incomplete or unsafe configuration."""
+    """Public browser configuration is incomplete or unsafe."""
 
 
 @dataclass(frozen=True)
 class BrowserSecurityConfig:
-    allowed_origins: frozenset[str]
-    allowed_hosts: tuple[str, ...]
+    host_origins: MappingProxyType
+    office_origin: str | None
     cookie_secure: bool
+    trusted_proxies: tuple[str, ...]
+
+    @property
+    def allowed_hosts(self) -> tuple[str, ...]:
+        return tuple(self.host_origins)
 
 
-def _is_production() -> bool:
-    return os.getenv("JAX_ENVIRONMENT", "development").strip().lower() == "production"
+def _environment() -> str:
+    value = os.getenv("JAX_ENVIRONMENT", "").strip().lower()
+    if value not in {"production", "development", "test"}:
+        raise BrowserSecurityConfigError("JAX_ENVIRONMENT must be production, development, or test")
+    return value
 
 
-def _csv(name: str) -> tuple[str, ...]:
-    raw = os.getenv(name, "")
-    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+def _validate_origin(value: str, *, production: bool) -> tuple[str, str]:
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+            or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port):
+        raise BrowserSecurityConfigError("public origins must be exact scheme and host pairs")
+    if production and parsed.scheme != "https":
+        raise BrowserSecurityConfigError("production public origins must use HTTPS")
+    canonical = f"{parsed.scheme}://{parsed.hostname}"
+    if value != canonical:
+        raise BrowserSecurityConfigError("public origins must be canonical exact origins")
+    return parsed.hostname, canonical
+
+
+def _bindings_from_environment(*, production: bool) -> dict[str, str]:
+    raw = os.getenv("JAX_PUBLIC_HOST_ORIGIN_BINDINGS", "").strip()
+    if not raw:
+        if production:
+            raise BrowserSecurityConfigError("production requires JAX_PUBLIC_HOST_ORIGIN_BINDINGS")
+        legacy = os.getenv("FRONTEND_ORIGIN", "").strip()
+        if not legacy:
+            return {}
+        host, origin = _validate_origin(legacy, production=False)
+        return {host: origin}
+    bindings: dict[str, str] = {}
+    for item in raw.split(";"):
+        host, separator, origin = item.strip().partition("=")
+        if not separator or not host or not origin:
+            raise BrowserSecurityConfigError("JAX_PUBLIC_HOST_ORIGIN_BINDINGS uses host=origin pairs")
+        origin_host, canonical_origin = _validate_origin(origin.strip(), production=production)
+        host = host.strip().lower()
+        if host != origin_host or host in bindings:
+            raise BrowserSecurityConfigError("each public host must bind once to its own exact origin")
+        bindings[host] = canonical_origin
+    return bindings
+
+
+def _trusted_proxies(*, production: bool) -> tuple[str, ...]:
+    values = tuple(value.strip() for value in os.getenv("JAX_TRUSTED_PROXIES", "").split(",") if value.strip())
+    if production and not values:
+        raise BrowserSecurityConfigError("production requires JAX_TRUSTED_PROXIES")
+    try:
+        for value in values:
+            ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise BrowserSecurityConfigError("JAX_TRUSTED_PROXIES must contain literal IP addresses") from exc
     if len(values) != len(set(values)):
-        raise BrowserSecurityConfigError(f"{name} contains duplicate values")
+        raise BrowserSecurityConfigError("JAX_TRUSTED_PROXIES contains duplicates")
     return values
 
 
-def _validate_origin(value: str) -> str:
-    parsed = urlsplit(value)
-    if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username
-            or parsed.password or parsed.path or parsed.query or parsed.fragment):
-        raise BrowserSecurityConfigError("JAX_PUBLIC_ALLOWED_ORIGINS must contain exact HTTP origins")
-    if value != f"{parsed.scheme}://{parsed.netloc}":
-        raise BrowserSecurityConfigError("JAX_PUBLIC_ALLOWED_ORIGINS must be canonical exact origins")
-    return value
-
-
-def _validate_host(value: str) -> str:
-    allowed = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-")
-    if (not value or value == "*" or value.startswith((".", "-")) or value.endswith(".")
-            or any(char not in allowed for char in value) or value != value.lower()):
-        raise BrowserSecurityConfigError("JAX_PUBLIC_ALLOWED_HOSTS must contain lowercase host names")
-    return value
-
-
-def _cookie_secure_from_environment() -> bool:
+def _cookie_secure_from_environment(*, production: bool) -> bool:
     raw = os.getenv("JAX_REFRESH_COOKIE_SECURE")
     if raw is None:
-        return _is_production()
+        if production:
+            raise BrowserSecurityConfigError("production requires JAX_REFRESH_COOKIE_SECURE=true")
+        return False
     normalized = raw.strip().lower()
     if normalized not in {"true", "false"}:
         raise BrowserSecurityConfigError("JAX_REFRESH_COOKIE_SECURE must be true or false")
     secure = normalized == "true"
-    if _is_production() and not secure:
+    if production and not secure:
         raise BrowserSecurityConfigError("production refresh cookies must be Secure")
     return secure
 
 
 def load_browser_security_config() -> BrowserSecurityConfig:
-    origins = _csv("JAX_PUBLIC_ALLOWED_ORIGINS")
-    hosts = _csv("JAX_PUBLIC_ALLOWED_HOSTS")
-    if _is_production() and (not origins or not hosts):
-        raise BrowserSecurityConfigError(
-            "production requires JAX_PUBLIC_ALLOWED_ORIGINS and JAX_PUBLIC_ALLOWED_HOSTS")
-    # Local and legacy deployments keep their explicit FRONTEND_ORIGIN until
-    # the public deployment supplies the stricter public allowlist.  In
-    # production there is no such fallback: missing configuration stops boot.
-    if not origins and not _is_production():
-        legacy_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
-        origins = (legacy_origin,) if legacy_origin else ()
+    environment = _environment()
+    production = environment == "production"
+    bindings = _bindings_from_environment(production=production)
+    office_origin = os.getenv("OFFICE_PUBLIC_ORIGIN", "").strip() or None
+    if production and office_origin is None:
+        raise BrowserSecurityConfigError("production requires OFFICE_PUBLIC_ORIGIN")
+    if office_origin is not None:
+        office_host, office_origin = _validate_origin(office_origin, production=production)
+        if bindings.get(office_host) != office_origin:
+            raise BrowserSecurityConfigError("OFFICE_PUBLIC_ORIGIN must match a declared host-origin binding")
     return BrowserSecurityConfig(
-        allowed_origins=frozenset(_validate_origin(origin) for origin in origins),
-        allowed_hosts=tuple(_validate_host(host) for host in hosts),
-        cookie_secure=_cookie_secure_from_environment(),
+        host_origins=MappingProxyType(bindings), office_origin=office_origin,
+        cookie_secure=_cookie_secure_from_environment(production=production),
+        trusted_proxies=_trusted_proxies(production=production),
     )
 
 
 def refresh_cookie_secure() -> bool:
-    """Read strict cookie policy at each writer so test and dev configs stay explicit."""
-    return _cookie_secure_from_environment()
+    return load_browser_security_config().cookie_secure
 
 
 def password_reset_origin(account_class: str) -> str:
-    """Select a reset origin from the canonical account class, never Host.
-
-    Office identities are intentionally isolated from the classic frontend.
-    A missing Office origin is an operational misconfiguration, not a reason
-    to mint a password-reset capability pointing at the wrong surface.
-    """
-    variable = ("OFFICE_PUBLIC_ORIGIN" if account_class in {"OFFICE_INTERNAL", "EXTERNAL_CLIENT"}
-                else "FRONTEND_ORIGIN")
-    value = os.getenv(variable, "").strip()
-    if not value:
-        raise BrowserSecurityConfigError(f"{variable} is required for password reset links")
-    return _validate_origin(value)
+    config = load_browser_security_config()
+    if account_class in {"OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+        if config.office_origin is None:
+            raise BrowserSecurityConfigError("OFFICE_PUBLIC_ORIGIN is required for Office password reset links")
+        return config.office_origin
+    classic = os.getenv("FRONTEND_ORIGIN", "").strip()
+    host, origin = _validate_origin(classic, production=_environment() == "production")
+    if config.host_origins.get(host) != origin:
+        raise BrowserSecurityConfigError("FRONTEND_ORIGIN must match a declared host-origin binding")
+    return origin
 
 
 def set_refresh_cookie(response: Response, value: str, *, max_age: int) -> None:
-    response.set_cookie(
-        key="refresh_token", value=value, httponly=True, secure=refresh_cookie_secure(),
-        max_age=max_age, samesite="lax", path="/",
-    )
+    response.set_cookie(key="refresh_token", value=value, httponly=True, secure=refresh_cookie_secure(),
+                        max_age=max_age, samesite="lax", path="/")
 
 
 def delete_refresh_cookie(response: Response) -> None:
-    response.delete_cookie(
-        key="refresh_token", httponly=True, secure=refresh_cookie_secure(),
-        samesite="lax", path="/",
-    )
+    response.delete_cookie(key="refresh_token", httponly=True, secure=refresh_cookie_secure(),
+                           samesite="lax", path="/")
+
+
+def _request_host(request: Request) -> str:
+    return request.url.hostname or ""
 
 
 class BrowserOriginGuard(BaseHTTPMiddleware):
-    """Reject cross-origin unsafe browser requests before route handling.
-
-    A bearer client can omit Origin.  A browser request that supplies Origin
-    must match exactly, and a cookie-authenticated unsafe request may not omit
-    it because that would make a CSRF decision from an absent signal.
-    """
-
     _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
-    def __init__(self, app, *, allowed_origins: frozenset[str]):
+    def __init__(self, app, *, host_origins: dict[str, str]):
         super().__init__(app)
-        self._allowed_origins = allowed_origins
+        self._host_origins = dict(host_origins)
 
     async def dispatch(self, request: Request, call_next):
         if request.method in self._SAFE_METHODS:
             return await call_next(request)
         origin = request.headers.get("origin")
-        if origin is not None and origin not in self._allowed_origins:
+        expected = self._host_origins.get(_request_host(request))
+        if origin is not None and origin != expected:
             return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
         if request.cookies.get("refresh_token") is not None and origin is None:
             return JSONResponse({"detail": "origin_required"}, status_code=403)
         return await call_next(request)
+
+
+class HostBoundCORSMiddleware(BaseHTTPMiddleware):
+    """Credentialed CORS only for the Origin belonging to the request Host."""
+
+    _METHODS = "GET, POST, PUT, DELETE"
+    _HEADERS = frozenset({"authorization", "content-type", "idempotency-key"})
+
+    def __init__(self, app, *, host_origins: dict[str, str]):
+        super().__init__(app)
+        self._host_origins = dict(host_origins)
+
+    def _matches(self, request: Request) -> bool:
+        return request.headers.get("origin") == self._host_origins.get(_request_host(request))
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
+            if not self._matches(request):
+                return PlainTextResponse("Disallowed CORS origin", status_code=403)
+            requested = {name.strip().lower() for name in request.headers.get("access-control-request-headers", "").split(",") if name.strip()}
+            if not requested.issubset(self._HEADERS):
+                return PlainTextResponse("Disallowed CORS headers", status_code=400)
+            origin = request.headers["origin"]
+            return Response(status_code=200, headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": self._METHODS,
+                "Access-Control-Allow-Headers": ", ".join(sorted(self._HEADERS)),
+                "Vary": "Origin",
+            })
+        response = await call_next(request)
+        if self._matches(request):
+            response.headers["Access-Control-Allow-Origin"] = request.headers["origin"]
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers.append("Vary", "Origin")
+        return response

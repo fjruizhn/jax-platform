@@ -323,6 +323,7 @@ SELLO_DEL_MODULO_AL_IMPORTARSE = (
 # prueba salvo que el .env traiga los reales.
 os.environ.setdefault("JAX_SEED_SUPERADMIN_EMAIL", "superadmin-semilla@example.invalid")
 os.environ.setdefault("JAX_SEED_TENANT_NAME", "Tenant de la semilla de prueba")
+os.environ.setdefault("JAX_ENVIRONMENT", "test")
 # Browser-origin guards need a real browser origin in the DB suite.  Production
 # keeps its configured FRONTEND_ORIGIN; isolated CI gets TestClient's host.
 os.environ.setdefault("FRONTEND_ORIGIN", "http://testserver")
@@ -538,7 +539,7 @@ def client():
     main.assert_runtime_db_contract = _admin_fixture_runtime_guard
     app = main.app
 
-    with TestClient(app) as c:
+    with TestClient(app, base_url=os.environ["FRONTEND_ORIGIN"]) as c:
         # TestClient otherwise omits Origin even for unsafe browser requests.
         # Individual adversarial tests can override this header explicitly.
         c.headers.update({"Origin": os.environ["FRONTEND_ORIGIN"]})

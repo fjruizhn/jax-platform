@@ -209,7 +209,7 @@ def _ruta_sola():
     """La ruta real con su dependencia de auth, SIN el middleware de subidas:
     su 401 es la referencia.
 
-    Envuelta en el MISMO CORSMiddleware de main.app (su configuración real, no
+    Envuelta en el MISMO HostBoundCORSMiddleware de main.app (su configuración real, no
     una copia): en producción la ruta y el middleware responden los dos por
     dentro de CORS, y lo que se compara es lo que ve el cliente. Starlette
     1.7.0 (2026-09-23) agrega `Vary: Origin` a toda respuesta CORS; con una
@@ -217,10 +217,10 @@ def _ruta_sola():
     sin que el middleware hubiera cambiado."""
     import api.upload as upload_mod
     import main
-    from starlette.middleware.cors import CORSMiddleware
+    from auth.browser_security import HostBoundCORSMiddleware
     app = FastAPI()
     app.include_router(upload_mod.router)
-    [cors] = [m for m in main.app.user_middleware if m.cls is CORSMiddleware]
+    [cors] = [m for m in main.app.user_middleware if m.cls is HostBoundCORSMiddleware]
     app.add_middleware(cors.cls, *cors.args, **cors.kwargs)
     return app
 
@@ -332,10 +332,10 @@ def test_la_app_monta_el_middleware_dentro_de_cors():
     """CORS tiene que envolver al 429 (si no, el navegador de otro origen no
     lo puede leer); en la lista de Starlette, el primero es el de afuera."""
     import main
-    from fastapi.middleware.cors import CORSMiddleware
+    from auth.browser_security import HostBoundCORSMiddleware
     clases = [m.cls for m in main.app.user_middleware]
     assert mod.LimiteDeSubidas in clases
-    assert clases.index(CORSMiddleware) < clases.index(mod.LimiteDeSubidas)
+    assert clases.index(HostBoundCORSMiddleware) < clases.index(mod.LimiteDeSubidas)
 
 
 # ------------------------------------------------------ por HTTP (con DB)

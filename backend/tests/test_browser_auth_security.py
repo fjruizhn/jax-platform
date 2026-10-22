@@ -1,9 +1,11 @@
 """Browser boundary controls for the public Office surface.
 
-The production change these tests protect is a permissive Origin decision or
-an inconsistent refresh cookie attribute.  Either lets a sibling site submit
-a cookie-authenticated unsafe request, or leaves a session cookie behind.
+The production changes protected here reject a classic origin at the Office
+host, startup without an explicit production mode, and a proxy command that
+would trust forwarded headers from arbitrary peers.
 """
+
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -11,31 +13,63 @@ from fastapi.testclient import TestClient
 import pytest
 
 
-def _app(*, origins=("https://virtualoffice.axioma-ia.io",)):
-    from auth.browser_security import BrowserOriginGuard
+OFFICE_HOST = "virtualoffice.axioma-ia.io"
+OFFICE_ORIGIN = f"https://{OFFICE_HOST}"
+CLASSIC_HOST = "axioma-ia.io"
+CLASSIC_ORIGIN = f"https://{CLASSIC_HOST}"
 
+
+def _app():
+    from auth.browser_security import BrowserOriginGuard, HostBoundCORSMiddleware
+
+    bindings = {CLASSIC_HOST: CLASSIC_ORIGIN, OFFICE_HOST: OFFICE_ORIGIN}
     app = FastAPI()
-    app.add_middleware(BrowserOriginGuard, allowed_origins=frozenset(origins))
+    app.add_middleware(HostBoundCORSMiddleware, host_origins=bindings)
+    app.add_middleware(BrowserOriginGuard, host_origins=bindings)
 
     @app.post("/api/auth/logout")
     async def logout():
         return JSONResponse({"ok": True})
 
+    @app.get("/api/auth/me")
+    async def me():
+        return JSONResponse({"ok": True})
+
     return app
 
 
-def test_cookie_unsafe_request_rejects_sibling_origin():
+def test_classic_origin_cannot_submit_cookie_request_to_office_host():
     response = TestClient(_app()).post(
         "/api/auth/logout",
-        headers={"Origin": "https://sibling.axioma-ia.io", "Cookie": "refresh_token=present"},
+        headers={"Host": OFFICE_HOST, "Origin": CLASSIC_ORIGIN, "Cookie": "refresh_token=present"},
     )
     assert response.status_code == 403
     assert response.json() == {"detail": "origin_not_allowed"}
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_matching_office_origin_receives_credentialed_cors_only_at_office_host():
+    response = TestClient(_app()).post(
+        "/api/auth/logout",
+        headers={"Host": OFFICE_HOST, "Origin": OFFICE_ORIGIN, "Cookie": "refresh_token=present"},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == OFFICE_ORIGIN
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_cross_host_preflight_is_rejected_before_it_advertises_credentials():
+    response = TestClient(_app()).options(
+        "/api/auth/logout",
+        headers={"Host": OFFICE_HOST, "Origin": CLASSIC_ORIGIN, "Access-Control-Request-Method": "POST"},
+    )
+    assert response.status_code == 403
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_cookie_unsafe_request_rejects_missing_origin():
     response = TestClient(_app()).post(
-        "/api/auth/logout", headers={"Cookie": "refresh_token=present"}
+        "/api/auth/logout", headers={"Host": OFFICE_HOST, "Cookie": "refresh_token=present"}
     )
     assert response.status_code == 403
     assert response.json() == {"detail": "origin_required"}
@@ -43,17 +77,9 @@ def test_cookie_unsafe_request_rejects_missing_origin():
 
 def test_bearer_unsafe_request_without_origin_stays_available_to_non_browser_clients():
     response = TestClient(_app()).post(
-        "/api/auth/logout", headers={"Authorization": "Bearer capability"}
+        "/api/auth/logout", headers={"Host": OFFICE_HOST, "Authorization": "Bearer capability"}
     )
     assert response.status_code == 200
-
-
-def test_any_present_origin_must_match_exact_allowlist_even_without_cookie():
-    response = TestClient(_app()).post(
-        "/api/auth/logout", headers={"Origin": "null", "Authorization": "Bearer capability"}
-    )
-    assert response.status_code == 403
-    assert response.json() == {"detail": "origin_not_allowed"}
 
 
 def test_refresh_cookie_set_and_delete_share_browser_security_attributes(monkeypatch):
@@ -78,53 +104,53 @@ def test_refresh_cookie_set_and_delete_share_browser_security_attributes(monkeyp
     assert "max-age=0" in delete.lower()
 
 
-def test_development_keeps_the_existing_frontend_origin_when_no_public_override_exists(monkeypatch):
-    from auth.browser_security import load_browser_security_config
+def _production_environment(monkeypatch, bindings=f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}={OFFICE_ORIGIN}"):
+    monkeypatch.setenv("JAX_ENVIRONMENT", "production")
+    monkeypatch.setenv("JAX_PUBLIC_HOST_ORIGIN_BINDINGS", bindings)
+    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", OFFICE_ORIGIN)
+    monkeypatch.setenv("JAX_REFRESH_COOKIE_SECURE", "true")
+    monkeypatch.setenv("JAX_TRUSTED_PROXIES", "127.0.0.1")
 
-    monkeypatch.setenv("JAX_ENVIRONMENT", "development")
-    monkeypatch.setenv("FRONTEND_ORIGIN", "http://localhost:5173")
-    monkeypatch.delenv("JAX_PUBLIC_ALLOWED_ORIGINS", raising=False)
-    monkeypatch.delenv("JAX_PUBLIC_ALLOWED_HOSTS", raising=False)
-    assert load_browser_security_config().allowed_origins == frozenset({"http://localhost:5173"})
+
+@pytest.mark.parametrize("environment", (None, "typo"))
+def test_public_security_config_requires_explicit_production_mode(monkeypatch, environment):
+    from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config
+
+    _production_environment(monkeypatch)
+    if environment is None:
+        monkeypatch.delenv("JAX_ENVIRONMENT", raising=False)
+    else:
+        monkeypatch.setenv("JAX_ENVIRONMENT", environment)
+    with pytest.raises(BrowserSecurityConfigError):
+        load_browser_security_config()
 
 
 @pytest.mark.parametrize(
-    ("account_class", "expected"),
+    "bindings, office_origin",
     [
-        ("INTERNAL", "https://axioma-ia.io"),
-        ("OFFICE_INTERNAL", "https://virtualoffice.axioma-ia.io"),
-        ("EXTERNAL_CLIENT", "https://virtualoffice.axioma-ia.io"),
+        (f"{OFFICE_HOST}=http://{OFFICE_HOST}", f"http://{OFFICE_HOST}"),
+        (f"{CLASSIC_HOST}={CLASSIC_ORIGIN};{OFFICE_HOST}=https://other.example.test", OFFICE_ORIGIN),
     ],
 )
-def test_password_reset_origin_comes_from_canonical_account_class_config(monkeypatch, account_class, expected):
-    from auth.browser_security import password_reset_origin
-
-    monkeypatch.setenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
-    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://virtualoffice.axioma-ia.io")
-    assert password_reset_origin(account_class) == expected
-
-
-def test_office_password_reset_fails_closed_without_its_public_origin(monkeypatch):
-    from auth.browser_security import BrowserSecurityConfigError, password_reset_origin
-
-    monkeypatch.delenv("OFFICE_PUBLIC_ORIGIN", raising=False)
-    with pytest.raises(BrowserSecurityConfigError):
-        password_reset_origin("OFFICE_INTERNAL")
-
-
-@pytest.mark.parametrize("environment, env", [
-    ("production", {}),
-    ("production", {"JAX_PUBLIC_ALLOWED_ORIGINS": "not-a-url", "JAX_PUBLIC_ALLOWED_HOSTS": "virtualoffice.axioma-ia.io"}),
-    ("production", {"JAX_PUBLIC_ALLOWED_ORIGINS": "https://virtualoffice.axioma-ia.io", "JAX_PUBLIC_ALLOWED_HOSTS": "https://virtualoffice.axioma-ia.io"}),
-    ("production", {"JAX_PUBLIC_ALLOWED_ORIGINS": "https://virtualoffice.axioma-ia.io", "JAX_PUBLIC_ALLOWED_HOSTS": "*"}),
-])
-def test_public_browser_config_fails_closed_when_invalid(monkeypatch, environment, env):
+def test_production_rejects_insecure_or_unbound_office_origin(monkeypatch, bindings, office_origin):
     from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config
 
-    monkeypatch.setenv("JAX_ENVIRONMENT", environment)
-    for key in ("JAX_PUBLIC_ALLOWED_ORIGINS", "JAX_PUBLIC_ALLOWED_HOSTS"):
-        monkeypatch.delenv(key, raising=False)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
+    _production_environment(monkeypatch, bindings)
+    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", office_origin)
     with pytest.raises(BrowserSecurityConfigError):
         load_browser_security_config()
+
+
+def test_production_requires_a_literal_trusted_proxy_address(monkeypatch):
+    from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config
+
+    _production_environment(monkeypatch)
+    monkeypatch.setenv("JAX_TRUSTED_PROXIES", "*")
+    with pytest.raises(BrowserSecurityConfigError):
+        load_browser_security_config()
+
+
+def test_versioned_service_enables_proxy_headers_only_for_configured_proxies():
+    unit = (Path(__file__).resolve().parents[2] / "ops/migration/systemd-units/jax-platform.service").read_text()
+    assert "--proxy-headers" in unit
+    assert "--forwarded-allow-ips=${JAX_TRUSTED_PROXIES}" in unit

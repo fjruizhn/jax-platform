@@ -204,6 +204,10 @@ def test_recuperacion_office_entrega_el_enlace_en_su_origen_publico(client, monk
     monkeypatch.setattr(auth_mod, "_send_reset_email", lambda _s, _to, link: enviados.append(link))
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://classic.example.test")
     monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://office.example.test")
+    monkeypatch.setenv(
+        "JAX_PUBLIC_HOST_ORIGIN_BINDINGS",
+        "classic.example.test=https://classic.example.test;office.example.test=https://office.example.test",
+    )
     email = _email()
     user_id = client.portal.call(
         _crear_con_hash, email, bcrypt.hashpw(b"clave-x", bcrypt.gensalt(rounds=4)).decode())
