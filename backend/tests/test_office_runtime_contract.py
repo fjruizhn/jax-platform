@@ -234,6 +234,146 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
     client.portal.call(scenario)
 
 
+def test_restricted_runtime_principal_executes_office_http_mutations(client, monkeypatch):
+    """The HTTP handlers, not a zero-row probe, use the restricted principal.
+
+    The application pool is closed before the credential switch.  Therefore
+    every ``get_pool`` captured by Office modules and every ``transaccion``
+    opened by these requests creates a connection as this disposable runtime
+    user.  Setup and final inspection remain on the test administrator pool.
+    """
+    from tests.identidades import crear_usuario, sql
+    from tests.test_office_people_api import _configure_mfa, _headers, _root_with_proof
+
+    _configure_mfa(monkeypatch)
+    database = os.environ["JAX_DB_NAME"]
+    original_credentials = {
+        name: os.environ[name]
+        for name in ("JAX_DB_USER", "JAX_DB_PASSWORD")
+    }
+    tag = uuid.uuid4().hex[:16]
+    runtime_user = f"office_http_rt_{tag}"
+    runtime_password = f"Office{uuid.uuid4().hex}"
+    denied_runtime_user = f"office_http_no_update_{tag}"
+    denied_runtime_password = f"Office{uuid.uuid4().hex}"
+
+    # Do not borrow aiomysql internals.  The migration call needs the same
+    # cursor lifetime as its DDL, so seed the test data in one portal coroutine.
+    async def seed():
+        from db.connection import get_pool
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute(f"CREATE USER `{runtime_user}`@'%%' IDENTIFIED BY %s", (runtime_password,))
+                await _grant_exact_runtime_acl(cur, database, runtime_user)
+                await cur.execute(f"CREATE USER `{denied_runtime_user}`@'%%' IDENTIFIED BY %s", (denied_runtime_password,))
+                await _grant_exact_runtime_acl(cur, database, denied_runtime_user)
+                await cur.execute(
+                    f"REVOKE UPDATE ON `{database}`.`office_project_grant` FROM `{denied_runtime_user}`@'%'"
+                )
+        root, token_version, mfa_version, proof = await _root_with_proof()
+        target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        denied_target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (denied_target,))
+        project = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("office-runtime-http-" + tag,),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project,),
+        )
+        delegate, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (delegate,))
+        profile_target, _ = await crear_usuario()
+        audit_id = await sql(
+            "INSERT INTO user_admin_audit (actor_user_id,target_user_id,action,detail,ts) "
+            "VALUES (%s,%s,'password_reset_completed',JSON_OBJECT('source','runtime-http'),UTC_TIMESTAMP(6))",
+            (profile_target, profile_target),
+        )
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status,bound_by_user_id,credential_audit_id) "
+            "VALUES (%s,'COLLABORATOR','ACTIVE',%s,%s)",
+            (profile_target, root, audit_id),
+        )
+        return root, token_version, mfa_version, proof, project, target, denied_target, delegate, profile_target
+
+    async def close_application_pool():
+        from db.connection import close_pool
+        await close_pool()
+
+    async def cleanup_principal():
+        from db.connection import get_pool
+
+        async with (await get_pool()).acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
+                await cur.execute(f"DROP USER IF EXISTS `{denied_runtime_user}`@'%'")
+
+    root, tv, mv, proof, project, target, denied_target, delegate, profile_target = client.portal.call(seed)
+    headers = _headers(root, tv, mv, proof)
+    try:
+        monkeypatch.setenv("JAX_DB_USER", runtime_user)
+        monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
+        client.portal.call(close_application_pool)
+
+        granted = client.put(
+            f"/api/virtual-office/projects/{project}/members/{target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert granted.status_code == 200, granted.text
+        revoked = client.delete(
+            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert revoked.status_code == 200, revoked.text
+        profile = client.delete(
+            f"/api/virtual-office/people/{profile_target}/profile?expected_version=1", headers=headers,
+        )
+        assert profile.status_code == 200, profile.text
+        delegation = client.put(
+            f"/api/virtual-office/people/{delegate}/delegation",
+            json={"expected_version": 0}, headers=headers,
+        )
+        assert delegation.status_code == 200, delegation.text
+
+        # A second principal differs by precisely one required UPDATE grant.
+        # It can create the initial membership, but the HTTP revoke must fail
+        # closed when it reaches the companion CAS.
+        client.portal.call(close_application_pool)
+        monkeypatch.setenv("JAX_DB_USER", denied_runtime_user)
+        monkeypatch.setenv("JAX_DB_PASSWORD", denied_runtime_password)
+        granted_without_update = client.put(
+            f"/api/virtual-office/projects/{project}/members/{denied_target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert granted_without_update.status_code == 200, granted_without_update.text
+        denied_revoke = client.delete(
+            f"/api/virtual-office/projects/{project}/members/{denied_target}?expected_version=1",
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert denied_revoke.status_code == 503
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        assert client.portal.call(
+            sql,
+            "SELECT status,version FROM office_project_grant WHERE project_id=%s AND user_id=%s",
+            (project, denied_target), True,
+        ) == (("ACTIVE", 1),)
+    finally:
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        client.portal.call(cleanup_principal)
+        client.portal.call(close_application_pool)
+
+
 def test_failed_late_platform_migration_never_leaves_office_ready(client, monkeypatch):
     async def scenario():
         from db.connection import get_pool
