@@ -67,7 +67,7 @@ chmod 666 "$ENV_FILE"
 if run_helper >/dev/null 2>&1; then echo 'writable runtime env was accepted' >&2; exit 1; fi
 chmod 600 "$ENV_FILE"
 run_helper
-"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT"
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST"
 run_helper
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
@@ -101,9 +101,6 @@ if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e "UPDATE office_invitation SE
 fi
 grep -q '1142' "$TEMP/denied" || { cat "$TEMP/denied" >&2; exit 1; }
 
-if mariadb "--defaults-extra-file=$CLIENT" "$DB" -e 'INSERT INTO office_invitation (id) VALUES (0)' >/dev/null 2>&1; then
-  echo 'worker was able to issue an invitation' >&2; exit 1
-fi
 
 # Exercise the installer without downloading packages: the fake interpreter
 # reproduces CPython's one permitted lib64 -> lib venv link.

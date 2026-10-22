@@ -39,11 +39,11 @@ grants=$(q "SHOW GRANTS FOR '$worker'@'$WORKER_HOST';")
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_claim_next_v1\`" >/dev/null || { echo 'delivery claim execute absent' >&2; exit 1; }
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_expire_due_v1\`" >/dev/null || { echo 'delivery expire execute absent' >&2; exit 1; }
 printf '%s\n' "$grants" | grep -F "EXECUTE ON PROCEDURE \`$DB\`.\`office_invitation_settle_delivery_v1\`" >/dev/null || { echo 'delivery settle execute absent' >&2; exit 1; }
-printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
+printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?\`" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
 # Definer is a locked, role-free capability account; inherited roles would
 # make SHOW GRANTS insufficient as an authority boundary.
 role_count=$(q "SELECT COUNT(*) FROM mysql.roles_mapping WHERE User='jaxoffice_invitation_owner' AND Host='localhost';")
 [[ $role_count == 0 ]] || { echo 'delivery definer roles denied' >&2; exit 1; }
 # No additional delivery-named stored program may be executable by the worker.
-visible=$(q "SELECT COUNT(*) FROM information_schema.ROUTINE_PRIVILEGES WHERE ROUTINE_SCHEMA='$DB' AND GRANTEE LIKE CONCAT(\"'\",'$worker',\"'@%\") AND PRIVILEGE_TYPE='EXECUTE';")
+visible=$(printf '%s\n' "$grants" | grep -c 'EXECUTE ON PROCEDURE')
 [[ $visible == 3 ]] || { echo 'delivery worker routine privilege set is not exact' >&2; exit 1; }
