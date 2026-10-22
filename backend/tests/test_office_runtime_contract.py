@@ -573,7 +573,7 @@ def test_runtime_metadata_denies_stamped_schema_without_terminal_membership_rece
                 async with conn.cursor() as cur:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -611,7 +611,7 @@ def test_migrator_rejects_mfa_trigger_that_only_protects_the_fence(client):
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
-                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model"):
                     await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
                 await cur.execute(f"INSERT INTO `{schema}`.`jax_users` SELECT * FROM `{database}`.`jax_users`")
                 await cur.execute(f"USE `{schema}`")
@@ -744,7 +744,7 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
-                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model"):
                     await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
