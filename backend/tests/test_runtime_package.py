@@ -225,3 +225,22 @@ def test_runtime_lock_is_the_launcher_pair_lock() -> None:
 
 def test_runtime_package_contains_all_root_pair_helpers() -> None:
     assert {"helpers/adopt-pair-root.py", "helpers/bootstrap-pair-predecessor.py", "helpers/build-pair-jaxbuild.py", "helpers/pair-build-supervisor.py"}.issubset(rp._HELPERS)
+
+def test_root_helpers_install_with_declared_modes_and_rollback(tmp_path):
+    bundle, digest = package(tmp_path, [])
+    root = tmp_path / 'destination'
+    old = root / 'usr/local/libexec/adopt-pair-root.py'
+    old.parent.mkdir(parents=True); old.write_bytes(b'old'); old.chmod(0o700)
+    with pytest.raises(RuntimeError):
+        rp.import_package(bundle, digest, root, tmp_path / 'backup',
+                          lambda _: (_ for _ in ()).throw(RuntimeError('effective')),
+                          package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                          install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert old.read_bytes() == b'old'
+    assert old.stat().st_mode & 0o777 == 0o700
+    rp.import_package(bundle, digest, root, tmp_path / 'success', lambda _: None,
+                      package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                      install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    for path in ('adopt-pair-root.py', 'bootstrap-pair-predecessor.py', 'build-pair-jaxbuild.py', 'pair-build-supervisor.py'):
+        installed = root / 'usr/local/libexec' / path
+        assert installed.is_file() and installed.stat().st_mode & 0o777 == 0o755
