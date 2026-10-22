@@ -37,7 +37,7 @@ def _membership_receipt_digest(*, operation: str, actor_user_id: int,
                                target_tenant_id: int, project_id: int,
                                target_user_id: int, expected_version: int,
                                grant_role: str | None, audience: str | None,
-                               execution_kind: str = "INTERACTIVE_USER") -> str:
+                               execution_kind: str = "INTERACTIVE_USER") -> bytes:
     """Hash the complete Office request, including its optimistic version.
 
     The JAX request digest intentionally has a narrower responsibility.  This
@@ -51,7 +51,7 @@ def _membership_receipt_digest(*, operation: str, actor_user_id: int,
         "operation": operation, "project_id": project_id,
         "target_tenant_id": target_tenant_id, "target_user_id": target_user_id,
     }, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
+    return hashlib.sha256(canonical).digest()
 
 
 async def _locked_membership_receipt(cur, *, idempotency_key: str):
@@ -81,7 +81,7 @@ async def _assert_receipt_companion(cur, *, project_id: int, target_user_id: int
             raise HTTPException(status_code=503, detail="office_project_grant_retryable")
 
 
-async def _write_membership_receipt(cur, *, idempotency_key: str, digest: str,
+async def _write_membership_receipt(cur, *, idempotency_key: str, digest: bytes,
                                     operation: str, actor_user_id: int, target_tenant_id: int,
                                     project_id: int, target_user_id: int, expected_version: int,
                                     grant_role: str | None, audience: str | None, result,
@@ -94,8 +94,8 @@ async def _write_membership_receipt(cur, *, idempotency_key: str, digest: str,
         relation_id, relation_version, recipient_group_id = map(int, relation)
     await cur.execute(
         "INSERT INTO office_membership_mutation_receipt "
-        "(namespace,idempotency_key,request_digest,operation,actor_user_id,target_tenant_id,project_id,target_user_id,expected_version,grant_role,audience,execution_kind,jax_membership_id,jax_event_id,office_grant_version,office_grant_status,external_relation_id,external_relation_version,recipient_group_id,authorization_event_id) "
-        "VALUES ('OFFICE_CONFIDENTIAL',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'INTERACTIVE_USER',%s,%s,%s,%s,%s,%s,%s,%s)",
+        "(namespace,idempotency_key,request_digest,operation,actor_user_id,target_tenant_id,project_id,target_user_id,expected_version,grant_role,audience,execution_kind,jax_membership_id,jax_event_id,office_grant_version,office_grant_status,external_relation_id,external_relation_version,recipient_group_id,authorization_event_id,created_at) "
+        "VALUES ('OFFICE_CONFIDENTIAL',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'INTERACTIVE_USER',%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
         (idempotency_key, digest, operation, actor_user_id, target_tenant_id,
          project_id, target_user_id, expected_version, grant_role, audience,
          result.membership_id, result.event_id, office_grant_version, office_grant_status,
@@ -283,7 +283,7 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
                 grant_role=payload.grant_role, audience=payload.audience)
             receipt = await _locked_membership_receipt(cur, idempotency_key=idempotency_key)
             if receipt is not None:
-                if (not result.replayed or str(receipt[0]) != digest
+                if (not result.replayed or receipt[0] != digest
                         or str(receipt[1]) != result.membership_id or str(receipt[2]) != result.event_id):
                     raise HTTPException(status_code=409, detail="office_project_grant_idempotency_conflict")
                 await _assert_receipt_companion(
@@ -410,7 +410,7 @@ async def revoke_project_member(project_id: int, target_user_id: int,
                     target_tenant_id=target_tenant_id, project_id=project_id,
                     target_user_id=target_user_id, expected_version=expected_version,
                     grant_role=str(receipt[8]), audience=str(receipt[9]))
-                if (not result.replayed or str(receipt[0]) != digest
+                if (not result.replayed or receipt[0] != digest
                         or str(receipt[1]) != result.membership_id or str(receipt[2]) != result.event_id):
                     raise HTTPException(status_code=409, detail="office_project_grant_idempotency_conflict")
                 await _assert_receipt_companion(

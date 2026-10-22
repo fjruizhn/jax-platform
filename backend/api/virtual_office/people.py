@@ -166,8 +166,8 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
         authorization_event_id = await record_authorization_event(cur, decision)
         await cur.execute(
             "INSERT INTO office_profile_revocation_event "
-            "(actor_user_id,target_user_id,action,version_before,version_after,reason_code,authorization_event_id) "
-            "VALUES (%s,%s,'REVOKE_PROFILE',%s,%s,'office_profile_revoke',%s)",
+            "(actor_user_id,target_user_id,action,version_before,version_after,reason_code,authorization_event_id,occurred_at) "
+            "VALUES (%s,%s,'REVOKE_PROFILE',%s,%s,'office_profile_revoke',%s,UTC_TIMESTAMP(6))",
             (actor_user_id, target_user_id, expected_version, expected_version + 1, authorization_event_id),
         )
         await cur.execute("UPDATE office_account_profile SET status='REVOKED',version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE user_id=%s AND status='ACTIVE' AND version=%s", (target_user_id, expected_version))
