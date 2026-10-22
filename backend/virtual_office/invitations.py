@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import json
 import secrets
 import uuid
@@ -183,11 +184,12 @@ async def issue_invitation_in_cursor(
     await cur.execute(
         "INSERT INTO office_invitation_issuance "
         "(issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'COLLABORATOR',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6),%s)",
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'COLLABORATOR',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (issuance_id, token_hash, normalized_email, tenant_id, project_id, recipient_group_id, target_user_id,
          target_account_class, "INTERNAL" if target_account_class == "OFFICE_INTERNAL" else "CLIENT_PUBLISHED",
          actor_user_id, profile_version, grant_version, proof.event_id, proof.mfa_version,
-         proof.occurred_at.replace(tzinfo=None), authorization_event_id, proof_digest, correlation_id, expires_at.replace(tzinfo=None)),
+         proof.occurred_at.replace(tzinfo=None), authorization_event_id, proof_digest, correlation_id,
+         now.replace(tzinfo=None), expires_at.replace(tzinfo=None)),
     )
     await cur.execute(
         "INSERT INTO office_invitation (invitation_id,issuance_id,project_id,email_normalized,target_user_id) "
@@ -302,17 +304,19 @@ async def accept_invitation_in_cursor(
     """Consume one bearer through JAX and the Office companion atomically."""
     token_hash = _token_hash(bearer_token)
     await cur.execute(
-        "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,"
+        "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,s.email_normalized,"
         "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_proof_event_id,"
-        "s.issuer_mfa_version,s.issuer_mfa_at,s.issuance_authorization_event_id,s.token_hash,s.expires_at,s.correlation_id "
+        "s.issuer_profile_version,s.issuer_grant_version,s.issuer_mfa_version,s.issuer_mfa_at,"
+        "s.issuance_authorization_event_id,s.proof_digest,s.token_hash,s.issued_at,s.expires_at,s.correlation_id "
         "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
         "WHERE s.token_hash=%s FOR UPDATE", (token_hash,))
     row = await cur.fetchone()
     if row is None:
         raise InvitationError("office_invitation_invalid", status_code=403)
-    (invitation_id, status, version, project_id, target_user_id, issuer_user_id, tenant_id,
-     account_class, grant_role, audience, group_id, proof_event_id, issuer_mfa_version,
-     issuer_mfa_at, issuance_auth_id, stored_hash, expires_at, correlation_id) = row
+    (invitation_id, status, version, project_id, target_user_id, issuer_user_id, tenant_id, issued_email,
+     account_class, grant_role, audience, group_id, proof_event_id,
+     issuer_profile_version, issuer_grant_version, issuer_mfa_version, issuer_mfa_at,
+     issuance_auth_id, stored_proof_digest, stored_hash, issued_at, expires_at, correlation_id) = row
     if stored_hash != token_hash or target_user_id is None or int(target_user_id) != accepting_user_id:
         raise InvitationError("office_invitation_invalid", status_code=403)
     if status == "ACCEPTED":
@@ -332,6 +336,18 @@ async def accept_invitation_in_cursor(
     if (accepting is None or accepting[0] != normalized or int(accepting[1]) != int(tenant_id)
             or accepting[2] != account_class or accepting[3] != "active"):
         raise InvitationError("office_invitation_invalid", status_code=403)
+    issued_at_utc = issued_at.replace(tzinfo=dt.timezone.utc) if issued_at.tzinfo is None else issued_at.astimezone(dt.timezone.utc)
+    expires_at_utc = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
+    if not hmac.compare_digest(
+        _proof_digest(token_hash=token_hash, email=issued_email, tenant_id=int(tenant_id), project_id=int(project_id),
+                      recipient_group_id=group_id, target_user_id=accepting_user_id, account_class=account_class,
+                      actor_user_id=int(issuer_user_id), profile_version=int(issuer_profile_version),
+                      grant_version=int(issuer_grant_version), proof_event_id=int(proof_event_id),
+                      mfa_version=int(issuer_mfa_version), issued_at=issued_at_utc,
+                      expires_at=expires_at_utc, authorization_event_id=int(issuance_auth_id)),
+        stored_proof_digest,
+    ):
+        raise InvitationError("office_invitation_integrity", status_code=503)
     # Proof event is immutable issuance evidence, then the callback below
     # reauthorizes the issuer from current Office state without minting a new
     # user session or treating a request boolean as authority.
