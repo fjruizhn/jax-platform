@@ -136,7 +136,7 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
         if table == "office_module_release":
             await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
             columns = {row[0] for row in await cur.fetchall()}
-            if {"candidate_id", "head_version", "release_event_id", "status"} <= columns:
+            if columns == {"candidate_id", "head_version", "release_event_id", "candidate_revision_id", "manifest_sha256", "artifact_set_digest", "status"}:
                 continue
         raise RuntimeError("Office module legacy tables require an explicit data-preserving migration")
     for statement in MODULE_CANDIDATE_DDL:
