@@ -23,9 +23,9 @@ expected_params=$'office_invitation_claim_next_v1\t1\tOUT\tp_disposition\tvarcha
 # SHOW CREATE is the body authority, including handler order and transition
 # conditions. Hash the server's tab-separated canonical output.
 declare -A expected_create=(
- [office_invitation_claim_next_v1]=22f2525cead832652a79b2e723ff93a5ec539d4ec6acb7a7340cb2514e8f666a
+ [office_invitation_claim_next_v1]=097e55aac42e0735ad8284053e663c90dfa354c455aefb5411fc07b75e7eaf0b
  [office_invitation_expire_due_v1]=dc7b3e0f0478b9cb61379c65572e57420fdae31e7b5bac5abcf1a7bc6e6ff29b
- [office_invitation_settle_delivery_v1]=b5d0cccfe1bf0cd77105663a031c34c7d9d4c67fd7fd2d0c8122411acb0bf0b5
+ [office_invitation_settle_delivery_v1]=6fbe652d342915dbc9cd62e46c3eeeb3c478f77d809f23c1716ec0b751c40414
 )
 for routine in "${!expected_create[@]}"; do
  actual=$(q "USE \`$DB\`; SHOW CREATE PROCEDURE \`$routine\`;" | sha256sum | awk '{print $1}')
