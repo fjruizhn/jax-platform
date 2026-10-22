@@ -953,13 +953,38 @@ async def _upgrade_invitation_expiry_materialization(cur) -> None:
     if await cur.fetchone() is not None:
         raise RuntimeError("Office invitation expiry materialization is incompatible; historic evidence is not rewritten")
     await cur.execute("ALTER TABLE office_invitation MODIFY COLUMN expires_at DATETIME(6) NOT NULL")
-    if not await _index_exists(cur, "office_invitation", "idx_office_invitation_status_expiry"):
-        await cur.execute("ALTER TABLE office_invitation ADD KEY idx_office_invitation_status_expiry (status,expires_at,invitation_id)")
-    if not await _index_exists(cur, "office_invitation", "idx_office_invitation_project_live"):
+    # MariaDB may retain the project-live key name while shortening the key
+    # after a predecessor drops ``expires_at``.  Resume only that exact,
+    # measured partial state.  A homonymous key with another shape could be
+    # an operator's constraint or an unknown history, so it fails closed.
+    status_name = "idx_office_invitation_status_expiry"
+    status_columns = ("status", "expires_at", "invitation_id")
+    if not await _index_exists(cur, "office_invitation", status_name):
+        await cur.execute(
+            "ALTER TABLE office_invitation ADD KEY "
+            "idx_office_invitation_status_expiry (status,expires_at,invitation_id)"
+        )
+    elif not await _index_has_exact_shape(cur, "office_invitation", status_name, status_columns):
+        raise RuntimeError("Office invitation status-expiry index is incompatible; historic evidence is not rewritten")
+
+    project_name = "idx_office_invitation_project_live"
+    project_columns = ("project_id", "status", "expires_at", "invitation_id")
+    predecessor_columns = ("project_id", "status", "invitation_id")
+    if not await _index_exists(cur, "office_invitation", project_name):
         await cur.execute(
             "ALTER TABLE office_invitation ADD KEY "
             "idx_office_invitation_project_live (project_id,status,expires_at,invitation_id)"
         )
+    elif await _index_has_exact_shape(cur, "office_invitation", project_name, project_columns):
+        return
+    elif await _index_has_exact_shape(cur, "office_invitation", project_name, predecessor_columns):
+        await cur.execute("ALTER TABLE office_invitation DROP INDEX idx_office_invitation_project_live")
+        await cur.execute(
+            "ALTER TABLE office_invitation ADD KEY "
+            "idx_office_invitation_project_live (project_id,status,expires_at,invitation_id)"
+        )
+    else:
+        raise RuntimeError("Office invitation project-live index is incompatible; historic evidence is not rewritten")
 
 
 async def _upgrade_invitation_outbox_stale_index(cur) -> None:
