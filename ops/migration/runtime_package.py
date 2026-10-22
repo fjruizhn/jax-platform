@@ -45,3 +45,15 @@ def restore(paths, backup):
    if p.exists(): p.unlink()
   else:
    p.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(q,p)
+
+def import_package(bundle, digest, destinations, backup, fail_after=None):
+ data=validate(bundle,digest); snapshot(destinations,backup); swaps=0
+ try:
+  for item in data['payload']:
+   dest=destinations[item['path']]; source=bundle/item['path']
+   if source.is_symlink() or item['path'] not in destinations: raise PackageError('destination role')
+   stage=dest.with_name(dest.name+'.stage'); stage.parent.mkdir(parents=True,exist_ok=True)
+   shutil.copy2(source,stage); os.replace(stage,dest); swaps+=1
+   if fail_after == swaps: raise PackageError('injected swap failure')
+ except BaseException:
+  restore(destinations,backup); raise

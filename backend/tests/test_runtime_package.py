@@ -16,3 +16,10 @@ def test_snapshot_restore_preserves_present_and_absent(tmp_path):
  old.write_text('new'); old.chmod(0o644); paths['unit'].write_text('newunit')
  rp.restore(paths,backup)
  assert old.read_text()=='old' and (old.stat().st_mode&0o777)==0o600 and not paths['unit'].exists()
+
+def test_import_rolls_back_after_swap(tmp_path, monkeypatch):
+ bundle=tmp_path/'bundle'; bundle.mkdir(); (bundle/'h').write_text('new')
+ monkeypatch.setattr(rp,'validate',lambda *_:{'payload':[{'path':'h'}]})
+ dest=tmp_path/'dest'; dest.write_text('old'); paths={'h':dest}
+ with pytest.raises(rp.PackageError): rp.import_package(bundle,'x',paths,tmp_path/'backup',fail_after=1)
+ assert dest.read_text()=='old'
