@@ -52,11 +52,12 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                 await apply_office_migrations(cur)
                 await cur.execute(
                     "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
-                    "AND TABLE_NAME IN ('office_invitation_issuance','office_invitation','office_invitation_event','office_invitation_outbox')"
+                    "AND TABLE_NAME IN ('office_invitation_issuance','office_invitation','office_invitation_event','office_invitation_outbox','office_invitation_mutation_receipt')"
                 )
                 assert {row[0] for row in await cur.fetchall()} == {
                     'office_invitation_issuance', 'office_invitation',
                     'office_invitation_event', 'office_invitation_outbox',
+                    'office_invitation_mutation_receipt',
                 }
                 await cur.execute(
                     "SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
@@ -74,9 +75,16 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                     "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
                     "AND TRIGGER_NAME IN ('no_update_office_invitation_issuance','no_delete_office_invitation_issuance',"
                     "'no_update_office_invitation_event','no_delete_office_invitation_event','guard_office_invitation_update',"
-                    "'guard_office_invitation_insert','guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update')"
+                    "'guard_office_invitation_insert','guard_office_invitation_event_insert','guard_office_invitation_outbox_insert','guard_office_invitation_outbox_update',"
+                    "'no_update_office_invitation_mutation_receipt','no_delete_office_invitation_mutation_receipt')"
                 )
-                assert (await cur.fetchone())[0] == 9
+                assert (await cur.fetchone())[0] == 11
+                await cur.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                    "AND TABLE_NAME='office_invitation_mutation_receipt' ORDER BY ORDINAL_POSITION")
+                assert tuple(row[0] for row in await cur.fetchall()) == (
+                    'idempotency_key', 'request_digest', 'operation', 'actor_user_id', 'project_id',
+                    'invitation_id', 'response_version', 'expires_at', 'created_at')
     client.portal.call(scenario)
 
 
@@ -174,7 +182,8 @@ def test_invitation_outbox_is_the_only_mutable_delivery_table_in_runtime_acl():
     grants = runtime_table_privilege_map()
     assert grants['office_invitation'] == frozenset({'UPDATE'})
     assert grants['office_invitation_outbox'] == frozenset({'UPDATE'})
-    for immutable in ('office_invitation_issuance', 'office_invitation_event'):
+    for immutable in ('office_invitation_issuance', 'office_invitation_event',
+                      'office_invitation_mutation_receipt'):
         assert immutable not in grants
 
 

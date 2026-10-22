@@ -20,6 +20,7 @@ _FORBIDDEN_TABLES = frozenset((
     "office_bootstrap_state",
     "office_invitation_event",
     "office_invitation_issuance",
+    "office_invitation_mutation_receipt",
     "office_mfa_security_event",
     "office_membership_mutation_receipt",
     "office_profile_revocation_event",

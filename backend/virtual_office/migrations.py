@@ -133,6 +133,22 @@ OFFICE_INVITATION_DDL = (
     "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_event_insert BEFORE INSERT ON office_invitation_event FOR EACH ROW BEGIN IF NEW.event_kind='ISSUED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND s.issued_by_user_id=NEW.actor_user_id AND NEW.correlation_id=s.correlation_id) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation issued evidence denied'; END IF; IF NEW.event_kind='INVITATION_BEARER_PRESENTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND s.token_hash=NEW.bearer_token_hash AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation bearer evidence denied'; END IF; IF NEW.event_kind='ACCEPTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event bearer ON bearer.event_id=NEW.causation_event_id JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND (i.target_user_id IS NULL OR i.target_user_id=NEW.actor_user_id) AND bearer.invitation_id=i.invitation_id AND bearer.event_kind='INVITATION_BEARER_PRESENTED' AND NEW.correlation_id=bearer.correlation_id AND o.state=NEW.observed_outbox_state) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation acceptance event denied'; END IF; IF NEW.event_kind IN ('REVOKED','EXPIRED') AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation causal evidence denied'; END IF; IF NEW.event_kind='DELIVERY_OBSERVED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event issued ON issued.event_id=NEW.causation_event_id JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id WHERE i.invitation_id=NEW.invitation_id AND issued.invitation_id=i.invitation_id AND issued.event_kind='ISSUED' AND o.state=NEW.observed_outbox_state) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation delivery evidence denied'; END IF; END",
     "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_insert BEFORE INSERT ON office_invitation_outbox FOR EACH ROW BEGIN IF NEW.state<>'QUEUED' OR NEW.attempt_id IS NOT NULL OR NEW.attempt_count<>0 OR NEW.cancel_requested<>FALSE OR NEW.payload_ciphertext IS NULL OR NEW.message_id IS NOT NULL OR NEW.result_code IS NOT NULL OR NEW.claimed_at IS NOT NULL OR NEW.finished_at IS NOT NULL OR NEW.created_at<>NEW.updated_at OR NOT EXISTS (SELECT 1 FROM office_invitation i WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox initial state denied'; END IF; END",
     "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update BEFORE UPDATE ON office_invitation_outbox FOR EACH ROW BEGIN IF NEW.outbox_id<>OLD.outbox_id OR NEW.invitation_id<>OLD.invitation_id OR NEW.created_at<>OLD.created_at OR NEW.updated_at<=OLD.updated_at THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox identity denied'; END IF; IF OLD.state='QUEUED' AND NOT ((NEW.state='CANCELLED' AND NEW.attempt_id IS NULL AND NEW.attempt_count=0 AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NOT NULL AND NEW.claimed_at IS NULL AND NEW.finished_at IS NOT NULL) OR (NEW.state='CLAIMED' AND NEW.attempt_id IS NOT NULL AND NEW.attempt_count=1 AND NEW.cancel_requested=FALSE AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at IS NOT NULL AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox claim denied'; END IF; IF OLD.state='CLAIMED' AND NOT ((NEW.state='CLAIMED' AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=FALSE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NOT NULL) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND OLD.cancel_requested=TRUE AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NOT NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal denied'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; END",
+    "CREATE TABLE IF NOT EXISTS office_invitation_mutation_receipt ("
+    "idempotency_key CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,request_digest BINARY(32) NOT NULL,"
+    "operation VARCHAR(16) NOT NULL,actor_user_id INT NOT NULL,project_id INT NOT NULL,"
+    "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,response_version BIGINT NOT NULL,"
+    "expires_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL,"
+    "UNIQUE KEY uq_office_invitation_mutation_receipt_invitation_operation (invitation_id,operation),"
+    "KEY idx_office_invitation_mutation_receipt_actor (actor_user_id,created_at,idempotency_key),"
+    "CONSTRAINT fk_office_invitation_mutation_receipt_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_invitation_mutation_receipt_project FOREIGN KEY (project_id) REFERENCES projects(id),"
+    "CONSTRAINT fk_office_invitation_mutation_receipt_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
+    "CONSTRAINT chk_office_invitation_mutation_receipt_shape CHECK (request_digest <> 0x00 AND "
+    "((operation='ISSUE' AND response_version=1 AND expires_at IS NOT NULL) OR "
+    "(operation='REVOKE' AND response_version>=2 AND expires_at IS NULL)))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_invitation_mutation_receipt BEFORE UPDATE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_mutation_receipt BEFORE DELETE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
 )
 
 
@@ -516,6 +532,36 @@ _INVITATION_COLUMNS = {
     "office_invitation_outbox": (("outbox_id","char","char(36)","NO","ascii","ascii_bin","",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("state","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'QUEUED'"),("attempt_id","char","char(36)","YES","ascii","ascii_bin","","NULL"),("attempt_count","int","int(11)","NO",None,None,"","0"),("cancel_requested","tinyint","tinyint(1)","NO",None,None,"","0"),("payload_ciphertext","mediumblob","mediumblob","YES",None,None,"","NULL"),("message_id","varchar","varchar(320)","YES","ascii","ascii_bin","","NULL"),("result_code","varchar","varchar(64)","YES","ascii","ascii_bin","","NULL"),("claimed_at","datetime","datetime(6)","YES",None,None,"","NULL"),("finished_at","datetime","datetime(6)","YES",None,None,"","NULL"),("created_at","datetime","datetime(6)","NO",None,None,"",None),("updated_at","datetime","datetime(6)","NO",None,None,"",None)),
 }
 
+# The request receipt is a companion to the invitation lifecycle, but it is
+# deliberately not folded into issuance evidence: retries are request
+# transport semantics and must not alter the proof that authorized issuance.
+_INVITATION_MUTATION_RECEIPT_COLUMNS = (
+    ("idempotency_key", "char", "char(36)"), ("request_digest", "binary", "binary(32)"),
+    ("operation", "varchar", "varchar(16)"), ("actor_user_id", "int", "int(11)"),
+    ("project_id", "int", "int(11)"), ("invitation_id", "char", "char(36)"),
+    ("response_version", "bigint", "bigint(20)"), ("expires_at", "datetime", "datetime(6)"),
+    ("created_at", "datetime", "datetime(6)"),
+)
+_INVITATION_MUTATION_RECEIPT_INDEXES = {
+    "PRIMARY": (("idempotency_key",), True),
+    "uq_office_invitation_mutation_receipt_invitation_operation": (("invitation_id", "operation"), True),
+    "idx_office_invitation_mutation_receipt_actor": (("actor_user_id", "created_at", "idempotency_key"), False),
+    "fk_office_invitation_mutation_receipt_project": (("project_id",), False),
+}
+_INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS = {
+    "fk_office_invitation_mutation_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_invitation_mutation_receipt_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"),
+    "fk_office_invitation_mutation_receipt_invitation": (("invitation_id",), "office_invitation", ("invitation_id",), "RESTRICT", "RESTRICT"),
+}
+_INVITATION_MUTATION_RECEIPT_TRIGGERS = {
+    "no_update_office_invitation_mutation_receipt": (
+        "office_invitation_mutation_receipt", "BEFORE", "UPDATE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'"),
+    "no_delete_office_invitation_mutation_receipt": (
+        "office_invitation_mutation_receipt", "BEFORE", "DELETE", "ROW",
+        "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'"),
+}
+
 
 async def _assert_columns(cur, *, table: str, expected: tuple[tuple[object, ...], ...]) -> None:
     await cur.execute(
@@ -635,6 +681,37 @@ async def assert_invitation_runtime_metadata(cur) -> None:
     )
     if await cur.fetchone() != ("case when `status` = 'ISSUED' then `email_normalized` else NULL end",):
         raise RuntimeError("Office invitation pending-email generation is invalid")
+    await _assert_invitation_mutation_receipt_runtime_metadata(cur)
+
+
+async def _assert_invitation_mutation_receipt_runtime_metadata(cur) -> None:
+    """Attest the global replay key and its immutable response binding."""
+    table = "office_invitation_mutation_receipt"
+    if not await _table_exists(cur, table):
+        raise RuntimeError("Office invitation mutation receipt is missing")
+    await cur.execute(
+        "SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+    actual_columns = tuple(await cur.fetchall())
+    expected_columns = tuple((name, data_type, column_type, "YES" if name == "expires_at" else "NO")
+                             for name, data_type, column_type in _INVITATION_MUTATION_RECEIPT_COLUMNS)
+    if actual_columns != expected_columns:
+        raise RuntimeError("Office invitation mutation receipt column metadata is invalid")
+    await _assert_indexes(cur, table=table, expected=_INVITATION_MUTATION_RECEIPT_INDEXES)
+    await _assert_foreign_keys(cur, table=table, expected=_INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS)
+    await cur.execute(
+        "SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+    if {row[0] for row in await cur.fetchall()} != set(_INVITATION_MUTATION_RECEIPT_FOREIGN_KEYS):
+        raise RuntimeError("Office invitation mutation receipt foreign key set is invalid")
+    await _assert_append_only_table_metadata(
+        cur, table=table, triggers=_INVITATION_MUTATION_RECEIPT_TRIGGERS,
+        primary_key=("idempotency_key",))
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+    if {row[0] for row in await cur.fetchall()} != {"chk_office_invitation_mutation_receipt_shape"}:
+        raise RuntimeError("Office invitation mutation receipt check set is invalid")
 
 
 async def _prepare_invitation_schema(cur) -> None:
