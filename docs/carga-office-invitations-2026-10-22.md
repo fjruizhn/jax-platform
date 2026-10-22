@@ -2,8 +2,9 @@
 
 **Tipo:** VERDAD OPERACIONAL. **Fuente:** ejecución local del arnés
 `loadtest/office_invitations.py`, resultado
-`/tmp/office-invitations-load-2b3c4d5e.json`, SHA de arnés pendiente de
-integración. No acredita rendimiento de producción.
+`docs/evidence/office-invitations-load-corrected-2026-10-22.json`
+(SHA-256 `55559512cacca43a7c2d8d9330a0ee86e8a0b41f815b35b419210bd9312e2515`).
+No acredita rendimiento de producción.
 
 ## Entorno y frontera
 
@@ -15,7 +16,8 @@ integración. No acredita rendimiento de producción.
 - El proceso ASGI real se levantó en un puerto loopback efímero. No hubo
   tráfico a DNS, vhost ni base de producción.
 - El arnés rechaza host que no sea `127.0.0.1`/`::1`, puertos 3306/3308 y un
-  puerto que no pertenezca al contenedor Docker desechable declarado.
+  puerto que no pertenezca al contenedor Docker desechable declarado con la
+  **misma dirección/IP family exacta** configurada en `JAX_DB_HOST`.
 - Cada nivel usa `c` usuarios concurrentes y cada usuario ejecuta 4
   operaciones **en serie**. Antes de medir lista se crearon 100 invitaciones
   activas mediante el endpoint real y cada lista verificó devolver 100.
@@ -46,9 +48,11 @@ umbral de GO de producción.
 
 ## Evidencia histórica rechazada
 
-La corrida anterior `jax_memory_test_1a2b3c4d`, guardada en
-`/tmp/office-invitations-load-1a2b3c4d.json`, queda como **RECHAZADA** para
-capacidad: rotulaba `c` aunque lanzaba `c × 4` operaciones de una vez,
-medía lista antes de sembrar el peor caso y agotaba el limitador compartido,
-con 429 durante aceptación. Se conserva como antecedente, no se reemplaza
-silenciosamente ni se usa para decidir publicación.
+La corrida anterior `jax_memory_test_1a2b3c4d` queda como **RECHAZADA** para
+capacidad. Su JSON original se conserva sin alteración en
+`docs/evidence/office-invitations-load-2026-10-22.json` (SHA-256
+`0bd855de77656cf8894dee8c390302b593d74beaf3c9e71d1e6af996521980bf`):
+rotulaba `c` aunque lanzaba `c × 4` operaciones de una vez, medía lista antes
+de sembrar el peor caso y agotaba el limitador compartido, con 429 durante
+aceptación. El resultado corregido usa un artefacto separado; ninguno de los
+dos se sustituye silenciosamente.

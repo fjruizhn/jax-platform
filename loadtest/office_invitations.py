@@ -62,11 +62,14 @@ def percentile(values: list[float], p: int) -> float | None:
 
 
 def summarize(latencies: list[float], statuses: dict[int | str, int], started: float,
-              error_details: list[str] | None = None) -> dict:
+              error_details: list[str] | None = None, semantic_errors: int = 0) -> dict:
     n = sum(statuses.values())
+    http_ok = sum(v for k, v in statuses.items() if k in {200, 201, 204})
     return {
-        "n": n, "ok": sum(v for k, v in statuses.items() if k in {200, 201, 204}),
-        "errors": n - sum(v for k, v in statuses.items() if k in {200, 201, 204}),
+        "n": n, "ok": max(0, http_ok - semantic_errors),
+        # A successful status is insufficient for the deliberately worst-case
+        # list: an incomplete page is a failed measurement too.
+        "errors": n - http_ok + semantic_errors,
         "statuses": {str(k): v for k, v in sorted(statuses.items(), key=lambda item: str(item[0]))},
         "rps": round(n / max(time.perf_counter() - started, 0.001), 2),
         "p50_ms": round(percentile(latencies, 50), 2) if latencies else None,
@@ -84,7 +87,7 @@ def degradation(rows: list[dict]) -> str:
     for row in rows:
         r = row["result"]
         if r["errors"]:
-            return f"c={row['concurrency']}: {r['errors']} HTTP/client errors"
+            return f"c={row['concurrency']}: {r['errors']} request/semantic errors"
         if baseline["p95_ms"] and r["p95_ms"] and r["p95_ms"] > baseline["p95_ms"] * 3:
             return f"c={row['concurrency']}: p95 {r['p95_ms']}ms > 3x baseline {baseline['p95_ms']}ms"
     return f"not observed through c={rows[-1]['concurrency']}"
@@ -94,9 +97,10 @@ def is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "::1"}
 
 
-def has_loopback_port_binding(bindings: dict, port: str) -> bool:
-    loopback = {"127.0.0.1", "::1", "[::1]"}
-    return any(binding.get("HostPort") == port and binding.get("HostIp") in loopback
+def has_exact_loopback_port_binding(bindings: dict, host: str, port: str) -> bool:
+    """Require Docker's bound address to equal the configured IP family."""
+    docker_host = "[::1]" if host == "::1" else host
+    return any(binding.get("HostPort") == port and binding.get("HostIp") == docker_host
                for values in bindings.values() if values for binding in values)
 
 
@@ -164,8 +168,8 @@ def assert_disposable_container(cfg: dict[str, str]) -> None:
         raise RuntimeError("declared Office load container is not running")
     bindings = json.loads(ports)
     wanted = str(cfg["JAX_DB_PORT"])
-    if not has_loopback_port_binding(bindings, wanted):
-        raise RuntimeError("declared container does not expose JAX_DB_PORT on loopback")
+    if not has_exact_loopback_port_binding(bindings, cfg["JAX_DB_HOST"], wanted):
+        raise RuntimeError("declared container does not expose JAX_DB_HOST/JAX_DB_PORT exactly")
 
 
 def provision(cfg: dict[str, str], run_id: str, password: str) -> tuple[int, int]:
@@ -326,7 +330,7 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
         return response, (time.perf_counter() - before) * 1000
     lists = await sequential_workers(concurrency, OPERATIONS_PER_WORKER,
                                      lambda _worker, _operation: list_once())
-    list_lat, list_errors = [], []
+    list_lat, list_errors, list_semantic_errors = [], [], 0
     list_status = {}
     for response, latency in lists:
         list_status[response.status_code] = list_status.get(response.status_code, 0) + 1
@@ -334,6 +338,7 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
             list_lat.append(latency)
             if len(response.json().get("invitations", [])) != 100:
                 list_errors.append("list did not return the seeded 100 invitations")
+                list_semantic_errors += 1
         else:
             list_errors.append(response.text[:200])
     issue_result = await batch("accept")
@@ -359,7 +364,8 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
         revoke_stats[response.status_code] = revoke_stats.get(response.status_code, 0) + 1
         if response.status_code == 200: revoke_lat.append(latency)
         else: revoke_errors.append(response.text[:200])
-    return {"concurrency": concurrency, "list": summarize(list_lat, list_status, list_started, list_errors), "issue_accept": issue_result,
+    return {"concurrency": concurrency,
+            "list": summarize(list_lat, list_status, list_started, list_errors, list_semantic_errors), "issue_accept": issue_result,
             "accept": summarize(accept_lat, accept_stats, accept_started, accept_errors), "issue_revoke": revoke_issue,
             "revoke": summarize(revoke_lat, revoke_stats, revoke_started, revoke_errors)}
 

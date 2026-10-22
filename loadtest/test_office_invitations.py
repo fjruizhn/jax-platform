@@ -14,10 +14,16 @@ def test_percentile_and_empty_summary_are_honest():
     assert oi.summarize([], {}, 0)["p95_ms"] is None
 
 
+def test_semantic_list_error_is_counted_even_when_http_status_is_200():
+    result = oi.summarize([3.0], {200: 1}, 0, ["list did not return the seeded 100 invitations"], 1)
+    assert result["ok"] == 0
+    assert result["errors"] == 1
+
+
 def test_degradation_reports_errors_before_claiming_capacity():
     rows = [{"concurrency": 1, "result": {"errors": 0, "p95_ms": 10}},
             {"concurrency": 5, "result": {"errors": 1, "p95_ms": 11}}]
-    assert "1 HTTP/client errors" in oi.degradation(rows)
+    assert "1 request/semantic errors" in oi.degradation(rows)
 
 
 @pytest.mark.parametrize("name", ["jax_memory", "jax_memory_test", "jax_memory_test_ABCDEF12", "other_a1b2c3d4"])
@@ -51,11 +57,12 @@ def test_remote_host_is_rejected_even_when_schema_and_port_look_disposable(monke
         oi.env_or_abort()
 
 
-def test_container_binding_requires_the_exact_loopback_port():
+def test_container_binding_requires_the_configured_loopback_address_family_and_port():
     bindings = {"3306/tcp": [{"HostIp": "127.0.0.1", "HostPort": "33991"}]}
-    assert oi.has_loopback_port_binding(bindings, "33991")
-    assert not oi.has_loopback_port_binding(bindings, "3308")
-    assert not oi.has_loopback_port_binding({"3306/tcp": [{"HostIp": "0.0.0.0", "HostPort": "33991"}]}, "33991")
+    assert oi.has_exact_loopback_port_binding(bindings, "127.0.0.1", "33991")
+    assert not oi.has_exact_loopback_port_binding(bindings, "::1", "33991")
+    assert not oi.has_exact_loopback_port_binding(bindings, "127.0.0.1", "3308")
+    assert not oi.has_exact_loopback_port_binding({"3306/tcp": [{"HostIp": "0.0.0.0", "HostPort": "33991"}]}, "127.0.0.1", "33991")
 
 
 def test_sequential_workers_never_overlap_operations_within_a_user():
