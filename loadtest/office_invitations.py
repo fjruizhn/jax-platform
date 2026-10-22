@@ -265,7 +265,7 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
     env = dict(os.environ)
     env.update(cfg, JAX_DB_NAME=cfg["JAX_OFFICE_LOAD_DB"], JAX_JWT_SECRET=secrets.token_urlsafe(48),
                FERNET_KEY=base64.urlsafe_b64encode(os.urandom(32)).decode(),
-               JAX_PLATFORM_URL=origin, FRONTEND_ORIGIN=origin,
+               JAX_ENVIRONMENT="test", JAX_PLATFORM_URL=origin, FRONTEND_ORIGIN=origin,
                # Configuration validates the canonical public origin even
                # though this harness never sends an email or opens that URL.
                OFFICE_INVITATION_PUBLIC_BASE_URL="https://virtualoffice.example.test",
@@ -321,8 +321,10 @@ def stop_backend(proc) -> None:
 async def authenticated_client(base: str, email: str, password: str):
     import httpx
     import pyotp
-    client = httpx.AsyncClient(base_url=base, timeout=30, follow_redirects=False)
     browser_headers = {"Origin": browser_origin(base)}
+    # Keep the Origin on every unsafe leg, including anonymous invitation
+    # acceptance.  Per-request authorization headers merge with this default.
+    client = httpx.AsyncClient(base_url=base, timeout=30, follow_redirects=False, headers=browser_headers)
     login = await client.post("/api/auth/login", json={"email": email, "password": password}, headers=browser_headers)
     login.raise_for_status()
     access = login.json()["access_token"]
@@ -406,7 +408,7 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
     tokens = await asyncio.to_thread(outbox_tokens, cfg, fernet_key, accept_ids)
     accept_started, accept_stats, accept_lat, accept_errors = time.perf_counter(), {}, [], []
     async def accept(iid: str):
-        before = time.perf_counter(); response = await client.post("/api/virtual-office/invitations/accept", json={"token": tokens[iid], "password": "Loadtest-Only-Password-123!"}); return response, (time.perf_counter()-before)*1000
+        before = time.perf_counter(); response = await client.post("/api/virtual-office/invitations/accept", headers=headers, json={"token": tokens[iid], "password": "Loadtest-Only-Password-123!"}); return response, (time.perf_counter()-before)*1000
     accepts = await sequential_workers(concurrency, OPERATIONS_PER_WORKER,
                                        lambda worker, operation: accept(accept_ids[worker * OPERATIONS_PER_WORKER + operation]))
     for response, latency in accepts:

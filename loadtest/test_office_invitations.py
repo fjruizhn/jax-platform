@@ -37,10 +37,12 @@ def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch
         def __init__(self):
             self.issued = 0
             self.issue_summary_counts = []
+            self.unsafe_headers = []
         async def get(self, _path, **_kwargs):
             clock.now += 1.0
             return Response({"invitations": [{}] * 100})
         async def post(self, path, **_kwargs):
+            self.unsafe_headers.append(_kwargs["headers"])
             if path.endswith("/invitations"):
                 self.issue_summary_counts.append(len(summary_times))
                 self.issued += 1
@@ -49,6 +51,7 @@ def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch
             clock.now += 10.0
             return Response({})
         async def delete(self, _path, **_kwargs):
+            self.unsafe_headers.append(_kwargs["headers"])
             clock.now += 10.0
             return Response({})
 
@@ -61,10 +64,11 @@ def test_run_level_finalizes_list_summary_before_issue_accept_begins(monkeypatch
     monkeypatch.setattr(oi, "summarize", capture_summary)
 
     result = __import__("asyncio").run(
-        oi.run_level(client, {}, 1, {}, b"unused", "fixture", 1))
+        oi.run_level(client, {"Origin": "http://127.0.0.1:54321"}, 1, {}, b"unused", "fixture", 1))
 
     assert summary_times[0] == 4.0
     assert client.issue_summary_counts[0] == 1
+    assert all(headers["Origin"] == "http://127.0.0.1:54321" for headers in client.unsafe_headers)
     assert result["list"] == {"errors": 0, "p95_ms": 1.0}
 
 
@@ -153,6 +157,7 @@ def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_p
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_IP"] == "10000/60"
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN"] == "10000/60"
     assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS"] == "20000"
+    assert env["JAX_ENVIRONMENT"] == "test"
     assert env["FRONTEND_ORIGIN"] == "http://127.0.0.1:54321"
 
 
@@ -171,7 +176,7 @@ def test_authenticated_client_sends_canonical_origin_on_every_unsafe_request(mon
 
     class Client:
         calls = []
-        def __init__(self, **_kwargs): pass
+        def __init__(self, **kwargs): self.default_headers = kwargs["headers"]
         async def post(self, path, **kwargs):
             self.calls.append((path, kwargs["headers"]))
             responses = {
@@ -196,7 +201,7 @@ def test_authenticated_client_sends_canonical_origin_on_every_unsafe_request(mon
     client, headers = __import__("asyncio").run(
         oi.authenticated_client("http://127.0.0.1:54321", "load@example.invalid", "password"))
 
-    assert client is not None
+    assert client.default_headers == {"Origin": "http://127.0.0.1:54321"}
     assert all(call_headers["Origin"] == "http://127.0.0.1:54321" for _, call_headers in Client.calls)
     assert headers == {"Origin": "http://127.0.0.1:54321", "Authorization": "Bearer mfa-access"}
 
