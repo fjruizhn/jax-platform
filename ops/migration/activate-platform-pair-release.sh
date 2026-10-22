@@ -172,7 +172,13 @@ web_service_effective() {
 health_deadline=$((SECONDS + 10))
 while :; do
   web_service_effective || { echo 'web service did not become healthy' >&2; exit 1; }
+  probe_pid=$pid
   if $HEALTH --fail --silent --show-error --max-time 1 http://127.0.0.1:8080/api/health >/dev/null; then
+    # The endpoint may have been served by a process which replaced the unit's
+    # MainPID while curl was in flight.  Only commit the activation if both
+    # observations identify the same effective process.
+    web_service_effective || { echo 'web service did not become healthy' >&2; exit 1; }
+    [[ $pid == "$probe_pid" ]] || { echo 'web service changed during health check' >&2; exit 1; }
     break
   fi
   (( SECONDS < health_deadline )) || { echo 'web health check timed out' >&2; exit 1; }

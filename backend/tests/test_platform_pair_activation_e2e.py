@@ -111,6 +111,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "#!/bin/sh\n"
         "count=0; [ -f \"$JAX_PAIR_TEST_HEALTH_CALLS\" ] && count=$(cat \"$JAX_PAIR_TEST_HEALTH_CALLS\")\n"
         "count=$((count + 1)); printf '%s' \"$count\" > \"$JAX_PAIR_TEST_HEALTH_CALLS\"\n"
+        "if [ \"${JAX_PAIR_TEST_SWITCH_PID:-}\" = 1 ]; then env JAX_REPO_PATH=other sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
         "[ \"$count\" -ge 3 ]\n",
         encoding="utf-8",
     )
@@ -125,6 +126,19 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     (root / "current").symlink_to("releases/" + predecessor.name)
     previous_digest = hashlib.sha256((predecessor / readiness.MANIFEST).read_bytes()).hexdigest()
     (root / "platform-pair-selection.json").write_text(json.dumps({"release": str(predecessor), "jax_platform_revision": "c" * 40, "jax_revision": "d" * 40, "manifest_sha256": previous_digest}), encoding="utf-8")
+    next_release = root / "releases" / ("e" * 40 + "-" + "f" * 40)
+    shutil.copytree(release, next_release)
+    next_manifest = json.loads((next_release / readiness.MANIFEST).read_text(encoding="utf-8"))
+    next_manifest["jax_platform_revision"] = "e" * 40
+    next_manifest["jax_revision"] = "f" * 40
+    next_attestation = json.loads((next_release / "build-attestation.json").read_text(encoding="utf-8"))
+    next_attestation["platform_commit"] = "e" * 40
+    next_attestation["jax_commit"] = "f" * 40
+    (next_release / "build-attestation.json").write_text(json.dumps(next_attestation), encoding="utf-8")
+    (next_release / "release-lineage.json").write_text(json.dumps({"schema": "axioma.pair-lineage/v1", "platform_predecessor": "a" * 40, "jax_predecessor": "b" * 40}), encoding="utf-8")
+    next_manifest["files"] = readiness._inventory(next_release, owner_uid=os.getuid(), owner_gid=os.getgid())
+    (next_release / readiness.MANIFEST).write_text(json.dumps(next_manifest), encoding="utf-8")
+    next_digest = hashlib.sha256((next_release / readiness.MANIFEST).read_bytes()).hexdigest()
     subprocess.run(["sudo", "-n", "chown", "-R", "root:root", str(root)], check=True)
     base_env = {
         "JAX_PAIR_TEST_MODE": "1",
@@ -175,11 +189,12 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
-    assert calls.read_text(encoding="utf-8").splitlines()[-23:] == [
+    assert calls.read_text(encoding="utf-8").splitlines()[-27:] == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
         "start jax-platform.service",
+        "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
@@ -190,6 +205,15 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     repeat = subprocess.run(command[:-1] + [digest], text=True, capture_output=True, check=False)
     assert repeat.returncode == 0, repeat.stderr
     assert (root / ".runtime.lock").stat().st_ino == lock_inode
+    # A different process can bind the health listener after the first state
+    # sample.  A successful HTTP response alone must not complete DDL_STARTED.
+    negative_env = dict(base_env)
+    negative_env["JAX_PAIR_TEST_RELEASE"] = str(next_release)
+    negative_command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in negative_env.items()], "JAX_PAIR_TEST_SLEEP=0", "JAX_PAIR_TEST_SWITCH_PID=1", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(next_release), "--expected-manifest-sha256", next_digest, "--previous-manifest-sha256", digest]
+    changed_pid = subprocess.run(negative_command, text=True, capture_output=True, check=False)
+    assert changed_pid.returncode != 0
+    assert "web service changed during health check" in changed_pid.stderr
+    assert json.loads((root / "activation-journal.json").read_text(encoding="utf-8"))["state"] == "DDL_STARTED"
     escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", digest], text=True, capture_output=True, check=False)
     assert escaped.returncode != 0
     assert "unsafe release" in escaped.stderr
@@ -197,7 +221,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     launcher = ["sudo", "-n", "env", "JAX_PAIR_TEST_MODE=1", f"JAX_PAIR_TEST_ROOT={root}", "JAX_REPO_PATH=/attacker/checkout", "PATH=/attacker", f"BASH_ENV={bash_env}", "LD_PRELOAD=/attacker.so", "PYTHONPATH=/attacker", "/usr/bin/python3", "-I", "-S", str(MIGRATION / "jax-platform-pair-exec.py"), "web", str(credential)]
     result = subprocess.run(launcher, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
-    assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
+    assert output.read_text(encoding="utf-8") == f"{next_release / 'jax'}|||/usr/bin:/bin"
     assert not (tmp_path / "bash-env-ran").exists()
     hostile = tmp_path / "hostile.env"; hostile.write_text("PATH=/attacker\n", encoding="utf-8")
     rejected = subprocess.run(launcher[:-1] + [str(hostile)], text=True, capture_output=True, check=False)
