@@ -10,6 +10,11 @@ receipt verification can be activated.
 An interrupted first install resumes only when it is an exact, empty,
 unstamped prefix of this module's DDL/trigger sequence. Any rows, stamp, or
 schema divergence fails closed rather than being repaired.
+
+DEFINER and SQL_MODE are environment-owned trigger metadata and intentionally
+stay outside this v13 digest: the four canonical bodies only SIGNAL, so neither
+widens their semantics. Future sensitive trigger behavior requires a versioned
+creation-policy contract before it can rely on either field.
 """
 from __future__ import annotations
 
@@ -40,14 +45,19 @@ _KEY_DDL = (
 _APPEND_ONLY = ("office_trusted_critic_key", "office_trusted_critic_key_revocation")
 _TABLE_COLUMNS = {
     "office_trusted_critic_key": (
-        ("key_id", "varchar(128)", "NO"), ("principal_ref", "varchar(128)", "NO"),
-        ("purpose", "varchar(32)", "NO"), ("algorithm", "varchar(16)", "NO"),
-        ("public_key", "binary(32)", "NO"), ("not_before", "datetime(6)", "NO"),
-        ("not_after", "datetime(6)", "YES"), ("created_at", "datetime(6)", "NO"),
+        ("key_id", "varchar(128)", "NO", None, "ascii", "ascii_bin", ""),
+        ("principal_ref", "varchar(128)", "NO", None, "ascii", "ascii_bin", ""),
+        ("purpose", "varchar(32)", "NO", None, "ascii", "ascii_bin", ""),
+        ("algorithm", "varchar(16)", "NO", None, "ascii", "ascii_bin", ""),
+        ("public_key", "binary(32)", "NO", None, None, None, ""),
+        ("not_before", "datetime(6)", "NO", None, None, None, ""),
+        ("not_after", "datetime(6)", "YES", "null", None, None, ""),
+        ("created_at", "datetime(6)", "NO", "current_timestamp(6)", None, None, ""),
     ),
     "office_trusted_critic_key_revocation": (
-        ("key_id", "varchar(128)", "NO"), ("revoked_at", "datetime(6)", "NO"),
-        ("recorded_at", "datetime(6)", "NO"),
+        ("key_id", "varchar(128)", "NO", None, "ascii", "ascii_bin", ""),
+        ("revoked_at", "datetime(6)", "NO", None, None, None, ""),
+        ("recorded_at", "datetime(6)", "NO", "current_timestamp(6)", None, None, ""),
     ),
 }
 _INDEXES = {
@@ -70,6 +80,23 @@ _PREDECESSOR_KEY_CHECK = "key_id<>''andprincipal_ref<>''andpurpose='rights.revie
 
 def _normalize_check(value: object) -> str:
     return _WS.sub("", str(value)).lower().replace("`", "")
+
+
+def _normalize_column(row) -> tuple:
+    name, column_type, nullable, default, charset, collation, extra = row
+    return (
+        name, column_type, nullable,
+        None if default is None else str(default).lower(), charset, collation, extra,
+    )
+
+
+async def _column_metadata(cur, table: str) -> tuple:
+    await cur.execute(
+        "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,CHARACTER_SET_NAME,COLLATION_NAME,EXTRA "
+        "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s "
+        "ORDER BY ORDINAL_POSITION", (table,)
+    )
+    return tuple(_normalize_column(row) for row in await cur.fetchall())
 
 
 async def apply_critic_trust_anchor_migrations(cur) -> None:
@@ -150,14 +177,10 @@ async def _resume_exact_unstamped_prefix(cur, existing) -> None:
 async def _upgrade_not_after_nullable(cur) -> None:
     """Relax only the measured v1 predecessor; unknown shape stays closed."""
     table = "office_trusted_critic_key"
-    await cur.execute(
-        "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,)
-    )
-    found = tuple(await cur.fetchall())
+    found = await _column_metadata(cur, table)
     expected = _TABLE_COLUMNS[table]
     predecessor = tuple(
-        (*column[:2], "NO") if column[0] == "not_after" else column
+        (*column[:2], "NO", None, *column[4:]) if column[0] == "not_after" else column
         for column in expected
     )
     if found == expected:
@@ -196,27 +219,27 @@ async def _assert_critic_trust_anchor_metadata(
     tables = tuple(expected_columns) if tables is None else tuple(tables)
     for table in tables:
         expected = expected_columns[table]
-        await cur.execute(
-            "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
-            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,)
-        )
-        if tuple(await cur.fetchall()) != expected:
+        if await _column_metadata(cur, table) != expected:
             raise RuntimeError(f"Office critic trust columns for {table} are invalid")
         await cur.execute(
             "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,)
         )
         if tuple(await cur.fetchone() or ()) != ("InnoDB",):
             raise RuntimeError(f"Office critic trust engine for {table} is invalid")
-    for (table, index), (unique, columns) in _INDEXES.items():
-        if table not in tables:
-            continue
+    for table in tables:
         await cur.execute(
-            "SELECT NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS "
-            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME=%s ORDER BY SEQ_IN_INDEX", (table, index)
+            "SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,)
         )
-        rows = await cur.fetchall()
-        if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
-            raise RuntimeError(f"Office critic trust index {table}.{index} is invalid")
+        found_indexes = {}
+        for index, non_unique, column in await cur.fetchall():
+            found_indexes.setdefault(index, (int(non_unique) == 0, []))[1].append(column)
+        expected_indexes = {
+            index: (unique, list(columns))
+            for (index_table, index), (unique, columns) in _INDEXES.items() if index_table == table
+        }
+        if found_indexes != expected_indexes:
+            raise RuntimeError(f"Office critic trust indexes for {table} are invalid")
     quoted_tables = ",".join(f"'{table}'" for table in tables)
     await cur.execute(
         "SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc "
@@ -233,28 +256,36 @@ async def _assert_critic_trust_anchor_metadata(
     expected_clauses = {name: clause for name, clause in expected_clauses.items() if name in expected_checks}
     if clauses != expected_clauses:
         raise RuntimeError("Office critic trust CHECK expressions are invalid")
-    if "office_trusted_critic_key_revocation" in tables:
-        await cur.execute(
-        "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE "
+    await cur.execute(
+        "SELECT k.TABLE_NAME,k.CONSTRAINT_NAME,k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,"
+        "k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE "
         "FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r "
         "ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME "
         "AND r.TABLE_NAME=k.TABLE_NAME WHERE k.CONSTRAINT_SCHEMA=DATABASE() "
-        "AND k.TABLE_NAME='office_trusted_critic_key_revocation' "
-        "AND k.REFERENCED_TABLE_SCHEMA=DATABASE() "
-        "AND k.CONSTRAINT_NAME='fk_office_trusted_critic_key_revocation_key'"
-        )
-        if tuple(await cur.fetchall()) != (("key_id", "office_trusted_critic_key", "key_id", "RESTRICT", "RESTRICT"),):
-            raise RuntimeError("Office critic trust foreign key is invalid")
+        f"AND k.TABLE_NAME IN ({quoted_tables}) AND k.REFERENCED_TABLE_NAME IS NOT NULL "
+        "ORDER BY k.TABLE_NAME,k.CONSTRAINT_NAME,k.ORDINAL_POSITION"
+    )
+    foreign_keys = tuple(await cur.fetchall())
+    expected_foreign_keys = ()
+    if "office_trusted_critic_key_revocation" in tables:
+        await cur.execute("SELECT DATABASE()")
+        database = (await cur.fetchone())[0]
+        expected_foreign_keys = ((
+            "office_trusted_critic_key_revocation", "fk_office_trusted_critic_key_revocation_key", "key_id",
+            database, "office_trusted_critic_key", "key_id", "RESTRICT", "RESTRICT",
+        ),)
+    if foreign_keys != expected_foreign_keys:
+        raise RuntimeError("Office critic trust foreign keys are invalid")
     found = {}
     for table in tables:
         await cur.execute(
-            "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+            "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,ACTION_ORDER "
             "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
         )
         found.update({row[0]: tuple(row[1:]) for row in await cur.fetchall()})
     definitions = _trigger_definitions(tables)
     expected = {
-        name: (table, "BEFORE", operation, "ROW", statement)
+        name: (table, "BEFORE", operation, "ROW", statement, 1)
         for name, table, operation, statement in definitions
     }
     if allow_trigger_prefix:

@@ -75,7 +75,10 @@ def test_mariadb_trust_anchor_is_append_only_and_attested(client) -> None:
     client.portal.call(scenario)
 
 
-@pytest.mark.parametrize("drift", ("trigger", "foreign_key", "foreign_key_cross_schema", "check"))
+@pytest.mark.parametrize("drift", (
+    "trigger", "foreign_key", "foreign_key_cross_schema", "foreign_key_cascade",
+    "check", "extra_column", "extra_index", "default_collation",
+))
 def test_existing_trust_anchor_drift_refuses_migration(client, drift: str) -> None:
     async def scenario() -> None:
         source = os.environ["JAX_DB_NAME"]
@@ -106,8 +109,21 @@ def test_existing_trust_anchor_drift_refuses_migration(client, drift: str) -> No
                         "ADD CONSTRAINT fk_office_trusted_critic_key_revocation_key "
                         f"FOREIGN KEY (key_id) REFERENCES `{foreign_schema}`.office_trusted_critic_key(key_id)"
                     )
+                elif drift == "foreign_key_cascade":
+                    await cur.execute("CREATE TABLE office_trusted_critic_key_parent (key_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+                    await cur.execute(
+                        "ALTER TABLE office_trusted_critic_key ADD CONSTRAINT fk_office_trusted_critic_key_parent "
+                        "FOREIGN KEY (key_id) REFERENCES office_trusted_critic_key_parent(key_id) ON DELETE CASCADE"
+                    )
                 else:
-                    await cur.execute("ALTER TABLE office_trusted_critic_key DROP CONSTRAINT chk_office_trusted_critic_key_shape")
+                    if drift == "extra_column":
+                        await cur.execute("ALTER TABLE office_trusted_critic_key ADD COLUMN unexpected_column INT NULL")
+                    elif drift == "extra_index":
+                        await cur.execute("ALTER TABLE office_trusted_critic_key ADD KEY idx_office_trusted_critic_key_unexpected (purpose)")
+                    elif drift == "default_collation":
+                        await cur.execute("ALTER TABLE office_trusted_critic_key MODIFY purpose VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT 'rights.review'")
+                    else:
+                        await cur.execute("ALTER TABLE office_trusted_critic_key DROP CONSTRAINT chk_office_trusted_critic_key_shape")
                 with pytest.raises(RuntimeError, match="invalid|incompatible"):
                     await trust.apply_critic_trust_anchor_migrations(cur)
         finally:
