@@ -65,6 +65,13 @@ def test_container_binding_requires_the_configured_loopback_address_family_and_p
     assert not oi.has_exact_loopback_port_binding({"3306/tcp": [{"HostIp": "0.0.0.0", "HostPort": "33991"}]}, "127.0.0.1", "33991")
 
 
+def test_container_binding_accepts_docker_ipv6_loopback_serialization():
+    assert oi.has_exact_loopback_port_binding(
+        {"3306/tcp": [{"HostIp": "::1", "HostPort": "33991"}]}, "::1", "33991")
+    assert oi.has_exact_loopback_port_binding(
+        {"3306/tcp": [{"HostIp": "[::1]", "HostPort": "33991"}]}, "::1", "33991")
+
+
 def test_sequential_workers_never_overlap_operations_within_a_user():
     active, peak, order = {}, [0], []
     async def action(worker, operation):

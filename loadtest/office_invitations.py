@@ -99,8 +99,11 @@ def is_loopback_host(host: str) -> bool:
 
 def has_exact_loopback_port_binding(bindings: dict, host: str, port: str) -> bool:
     """Require Docker's bound address to equal the configured IP family."""
-    docker_host = "[::1]" if host == "::1" else host
-    return any(binding.get("HostPort") == port and binding.get("HostIp") == docker_host
+    # Docker inspect normally serializes IPv6 HostIp as ``::1``; accept its
+    # bracketed presentation too, while retaining exact IPv4/IPv6 matching.
+    def normalized(address: object) -> object:
+        return address[1:-1] if isinstance(address, str) and address.startswith("[") and address.endswith("]") else address
+    return any(binding.get("HostPort") == port and normalized(binding.get("HostIp")) == normalized(host)
                for values in bindings.values() if values for binding in values)
 
 
