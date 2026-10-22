@@ -208,3 +208,17 @@ def test_rollback_and_crash_recovery_verify_preimport_unit_bytes(tmp_path):
                           package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
                           install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
     assert restored == old
+
+
+def test_import_rechecks_units_immediately_before_mutation(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"new", "0755")])
+    called = []
+    rp.import_package(bundle, digest, tmp_path / "destination", tmp_path / "backup", lambda _: None,
+                      before_mutate=lambda: called.append("inactive"),
+                      package_owner_uid=os.getuid(), package_owner_gid=os.getgid(),
+                      install_owner_uid=os.getuid(), install_owner_gid=os.getgid())
+    assert called == ["inactive"]
+
+
+def test_runtime_lock_is_the_launcher_pair_lock() -> None:
+    assert rp.PAIR_RUNTIME_LOCK == Path("/opt/jax-platform-pair/.runtime.lock")
