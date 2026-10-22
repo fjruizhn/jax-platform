@@ -105,6 +105,7 @@ api.interceptors.response.use(
       if (saliendo || epocaVieja) return Promise.reject(err)
     }
     if (err.response?.status === 401 && !err.config?._retried && !esAuthSinReintento) {
+      const epochDelRefresh = err.config?._epoch ?? useJaxStore.getState()._sessionEpoch
       const tokenNuevo = await tokenTrasCambioDePassword(err.config)
       if (tokenNuevo) {
         err.config._retried = true
@@ -113,11 +114,16 @@ api.interceptors.response.use(
       }
       try {
         const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true })
+        // Mientras refresh esperaba, otra identidad pudo establecerse en la
+        // misma pestaña. Ni su token A ni un reintento con él pertenecen a B.
+        if (useJaxStore.getState()._sessionEpoch !== epochDelRefresh) return Promise.reject(err)
         useJaxStore.setState({ token: data.access_token })
         err.config._retried = true
         err.config.headers.Authorization = `Bearer ${data.access_token}`
         return axios(err.config)
       } catch (refreshErr) {
+        // Tampoco un refresh viejo puede borrar/avisar la sesión posterior.
+        if (useJaxStore.getState()._sessionEpoch !== epochDelRefresh) return Promise.reject(err)
         // Nunca se borra la sesión en silencio: se deja el motivo ANTES de
         // borrar token/user. 'sesion_invalida' sólo cuando el backend lo dijo
         // explícito -- en el 401 original o en el refresh fallido -- porque
