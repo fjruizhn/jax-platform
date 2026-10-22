@@ -124,7 +124,7 @@ def test_root_changes_active_internal_role_without_touching_jax_membership(clien
         sql, "SELECT membership_id,version FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
     )
     events_before = client.portal.call(
-        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND user_id=%s", (project, target), True,
+        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND target_user_id=%s", (project, target), True,
     )
     key = str(uuid.uuid4())
     response = client.patch(
@@ -158,7 +158,7 @@ def test_root_changes_active_internal_role_without_touching_jax_membership(clien
         sql, "SELECT membership_id,version FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
     ) == before
     assert client.portal.call(
-        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND user_id=%s", (project, target), True,
+        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND target_user_id=%s", (project, target), True,
     ) == events_before
 
 
