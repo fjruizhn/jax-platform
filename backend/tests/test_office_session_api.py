@@ -77,6 +77,7 @@ def test_office_session_derives_root_capabilities_from_db_and_current_mfa(client
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
+        "state": "ACTIVE",
         "identity": {"user_id": user_id, "tenant_id": 1, "account_class": "INTERNAL", "global_role": "OFFICE_SUPERUSER"},
         "mfa": {"verified": True, "recent": True},
         "capabilities": {
@@ -85,6 +86,50 @@ def test_office_session_derives_root_capabilities_from_db_and_current_mfa(client
             "administer_identity_security": True,
         },
     }
+
+
+def test_classic_superadmin_can_bootstrap_office_with_current_password_without_mfa(client):
+    async def scenario():
+        from db.connection import get_pool
+        from virtual_office.migrations import OFFICE_BOOTSTRAP_DDL, apply_office_migrations
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
+                await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
+                await cur.execute("DROP TABLE IF EXISTS office_bootstrap_state")
+                for statement in OFFICE_BOOTSTRAP_DDL:
+                    await cur.execute(statement)
+        user_id, _ = await crear_usuario(role="superadmin", password="office-bootstrap-current-password")
+        return user_id
+
+    user_id = client.portal.call(scenario)
+    token = create_access_token(str(user_id), "1", "superadmin", 0)
+    headers = {"Authorization": "Bearer " + token}
+    entry = client.get("/api/virtual-office/session", headers=headers)
+    assert entry.status_code == 200
+    assert entry.json() == {
+        "state": "BOOTSTRAP_REQUIRED",
+        "identity": {"user_id": user_id, "tenant_id": 1, "account_class": "INTERNAL", "global_role": None},
+        "bootstrap": {"method": "CURRENT_PASSWORD", "target_user_id": user_id},
+    }
+    rejected = client.post("/api/virtual-office/bootstrap", headers=headers, json={"current_password": "wrong"})
+    assert (rejected.status_code, rejected.json()) == (401, {"detail": "bootstrap_reauth_failed"})
+    activated = client.post(
+        "/api/virtual-office/bootstrap", headers=headers,
+        json={"current_password": "office-bootstrap-current-password"},
+    )
+    assert activated.status_code == 200
+    payload = activated.json()
+    assert payload["state"] == "ACTIVE"
+    assert payload["verification_method"] == "PASSWORD_REAUTH"
+    assert payload["replay"] is False
+    assert isinstance(payload["access_token"], str)
+    assert client.get("/api/virtual-office/session", headers=headers).status_code == 401
+    fresh = {"Authorization": "Bearer " + payload["access_token"]}
+    assert client.get("/api/virtual-office/session", headers=fresh).json()["state"] == "ACTIVE"
 
 
 def test_office_session_keeps_project_admin_and_external_client_out_of_global_capabilities(client, monkeypatch):

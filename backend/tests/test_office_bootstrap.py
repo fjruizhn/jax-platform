@@ -9,7 +9,11 @@ import time
 from auth.models import AuthUser
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import crear_usuario, sql
-from virtual_office.bootstrap import _locked_current_target, bootstrap_initial_office_root
+from virtual_office.bootstrap import (
+    _locked_current_target,
+    bootstrap_initial_office_root,
+    bootstrap_initial_office_root_after_password_reauth,
+)
 from virtual_office.bootstrap import credential_self_control_in_cursor
 from virtual_office.mfa import (
     MFAConfig, confirm_enrollment_in_cursor, issue_login_challenge_after_password_in_cursor,
@@ -46,6 +50,55 @@ def test_bootstrap_credential_chain_requires_a_self_actor_and_resets_after_admin
         )
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             assert await credential_self_control_in_cursor(cur, user_id=subject) is None
+    client.portal.call(scenario)
+
+
+def test_bootstrap_password_reauth_elevates_only_the_current_classic_superadmin(client):
+    """The first Office root may use its current password without MFA."""
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
+                await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
+                await cur.execute("DROP TABLE IF EXISTS office_bootstrap_state")
+                for statement in __import__("virtual_office.migrations", fromlist=["OFFICE_BOOTSTRAP_DDL"]).OFFICE_BOOTSTRAP_DDL:
+                    await cur.execute(statement)
+        user_id, email = await crear_usuario(role="superadmin", password="current-bootstrap-password")
+        session = AuthUser(
+            user_id=str(user_id), tenant_id="1", role="superadmin", email=email,
+            token_version=0, account_class="INTERNAL",
+        )
+        receipt = await bootstrap_initial_office_root_after_password_reauth(
+            session_user=session, current_password="current-bootstrap-password",
+        )
+        assert (receipt.verification_method, receipt.identity_proof_event_id, receipt.credential_audit_id, receipt.replay) == (
+            "PASSWORD_REAUTH", None, None, False,
+        )
+        assert await sql(
+            "SELECT global_role,status FROM office_account_profile WHERE user_id=%s", (user_id,), True,
+        ) == (("OFFICE_SUPERUSER", "ACTIVE"),)
+        assert await sql(
+            "SELECT verification_method,identity_proof_event_id,credential_audit_id FROM office_bootstrap_state", (), True,
+        ) == (("PASSWORD_REAUTH", None, None),)
+        assert await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((1,),)
+        replay_session = session.model_copy(update={"token_version": 1})
+        replay = await bootstrap_initial_office_root_after_password_reauth(
+            session_user=replay_session, current_password="current-bootstrap-password",
+        )
+        assert replay.replay is True
+        assert await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True) == ((1,),)
+        denied_session = replay_session.model_copy(update={"role": "operator"})
+        try:
+            await bootstrap_initial_office_root_after_password_reauth(
+                session_user=denied_session, current_password="wrong-password",
+            )
+        except __import__("virtual_office.bootstrap", fromlist=["BootstrapDenied"]).BootstrapDenied:
+            pass
+        else:
+            raise AssertionError("bootstrap accepted a wrong current password")
     client.portal.call(scenario)
 
 

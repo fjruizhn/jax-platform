@@ -189,7 +189,7 @@ OFFICE_MFA_DDL = (
 # ``credential_audit_id`` deliberately stays signed: user_admin_audit.id is
 # BIGINT, unlike the unsigned Office MFA ledger IDs.
 OFFICE_BOOTSTRAP_DDL = (
-    "CREATE TABLE IF NOT EXISTS office_bootstrap_state (ceremony_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, target_user_id INT NOT NULL, identity_actor_user_id INT NOT NULL, identity_proof_event_id BIGINT UNSIGNED NOT NULL, credential_audit_id BIGINT NOT NULL, basis_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, completed_at DATETIME(6) NOT NULL, CONSTRAINT fk_office_bootstrap_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_actor FOREIGN KEY (identity_actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_proof FOREIGN KEY (identity_proof_event_id) REFERENCES office_mfa_security_event(event_id), CONSTRAINT fk_office_bootstrap_credential_audit FOREIGN KEY (credential_audit_id) REFERENCES user_admin_audit(id), CONSTRAINT chk_office_bootstrap_identity CHECK (target_user_id=identity_actor_user_id), CONSTRAINT chk_office_bootstrap_basis CHECK (basis_ref <> '')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_bootstrap_state (ceremony_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, target_user_id INT NOT NULL, identity_actor_user_id INT NOT NULL, identity_proof_event_id BIGINT UNSIGNED NULL, credential_audit_id BIGINT NULL, verification_method VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, basis_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, completed_at DATETIME(6) NOT NULL, CONSTRAINT fk_office_bootstrap_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_actor FOREIGN KEY (identity_actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_proof FOREIGN KEY (identity_proof_event_id) REFERENCES office_mfa_security_event(event_id), CONSTRAINT fk_office_bootstrap_credential_audit FOREIGN KEY (credential_audit_id) REFERENCES user_admin_audit(id), CONSTRAINT chk_office_bootstrap_identity CHECK (target_user_id=identity_actor_user_id), CONSTRAINT chk_office_bootstrap_basis CHECK (basis_ref <> ''), CONSTRAINT chk_office_bootstrap_verification CHECK ((verification_method='MFA' AND identity_proof_event_id IS NOT NULL AND credential_audit_id IS NOT NULL) OR (verification_method='PASSWORD_REAUTH' AND identity_proof_event_id IS NULL AND credential_audit_id IS NULL))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_bootstrap_state BEFORE UPDATE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_bootstrap_state BEFORE DELETE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
 )
@@ -1368,6 +1368,7 @@ _BOOTSTRAP_TRIGGER_METADATA = {
 _BOOTSTRAP_CHECKS = {
     "chk_office_bootstrap_identity": "`target_user_id` = `identity_actor_user_id`",
     "chk_office_bootstrap_basis": "`basis_ref` <> ''",
+    "chk_office_bootstrap_verification": "(`verification_method` = 'MFA' AND `identity_proof_event_id` IS NOT NULL AND `credential_audit_id` IS NOT NULL) OR (`verification_method` = 'PASSWORD_REAUTH' AND `identity_proof_event_id` IS NULL AND `credential_audit_id` IS NULL)",
 }
 
 _MFA_UNIQUE_INDEXES = {
@@ -1851,8 +1852,9 @@ async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body:
     if tuple(await cur.fetchall()) != (
         ("ceremony_key", "varchar(64)", "NO"), ("target_user_id", "int(11)", "NO"),
         ("identity_actor_user_id", "int(11)", "NO"),
-        ("identity_proof_event_id", "bigint(20) unsigned", "NO"),
-        ("credential_audit_id", "bigint(20)", "NO"), ("basis_ref", "varchar(128)", "NO"),
+        ("identity_proof_event_id", "bigint(20) unsigned", "YES"),
+        ("credential_audit_id", "bigint(20)", "YES"),
+        ("verification_method", "varchar(24)", "NO"), ("basis_ref", "varchar(128)", "NO"),
         ("completed_at", "datetime(6)", "NO"),
     ):
         raise RuntimeError("Office bootstrap state column metadata is invalid")
@@ -1911,6 +1913,30 @@ async def assert_bootstrap_runtime_metadata(cur, *, allow_redacted_trigger_body:
         expected = _BOOTSTRAP_TRIGGER_METADATA
     if found != expected:
         raise RuntimeError("Office bootstrap state triggers are invalid")
+
+
+async def _upgrade_bootstrap_schema(cur) -> None:
+    """Evolve the immutable bootstrap receipt without fabricating MFA proof.
+
+    Predecessor rows are real MFA ceremonies, so an added non-null default is
+    semantically exact for them.  No historic row is rewritten and the
+    append-only guards remain present throughout the migration.
+    """
+    if not await _column_exists(cur, "office_bootstrap_state", "verification_method"):
+        await cur.execute(
+            "ALTER TABLE office_bootstrap_state ADD COLUMN verification_method "
+            "VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'MFA' AFTER credential_audit_id"
+        )
+    await cur.execute(
+        "ALTER TABLE office_bootstrap_state MODIFY identity_proof_event_id BIGINT UNSIGNED NULL, "
+        "MODIFY credential_audit_id BIGINT NULL"
+    )
+    if not await _constraint_exists(cur, "chk_office_bootstrap_verification"):
+        await cur.execute(
+            "ALTER TABLE office_bootstrap_state ADD CONSTRAINT chk_office_bootstrap_verification CHECK "
+            "((verification_method='MFA' AND identity_proof_event_id IS NOT NULL AND credential_audit_id IS NOT NULL) "
+            "OR (verification_method='PASSWORD_REAUTH' AND identity_proof_event_id IS NULL AND credential_audit_id IS NULL))"
+        )
 
 
 async def _ensure_ascii_bin(cur, column: str) -> None:
@@ -2030,6 +2056,7 @@ async def apply_office_migrations(cursor) -> None:
             await cursor.execute(statement)
     for statement in OFFICE_BOOTSTRAP_DDL:
         await cursor.execute(statement)
+    await _upgrade_bootstrap_schema(cursor)
     await assert_bootstrap_runtime_metadata(cursor)
     await _prepare_invitation_schema(cursor)
     await _preflight_invitation_receipt_causal_history(cursor)
