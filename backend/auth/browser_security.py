@@ -53,7 +53,7 @@ def _validate_origin(value: str, *, production: bool) -> tuple[str, str]:
     if production:
         try:
             address = ipaddress.ip_address(host)
-        except ValueError:
+        except ValueError:  # fail-soft: strict hostname validation already completed and non-IP hosts remain valid origins
             pass
         else:
             if not address.is_global:
