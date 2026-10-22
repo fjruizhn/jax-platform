@@ -68,6 +68,18 @@ test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
 test ! -e "$TEMP/state/runtime.env"
 test -f "$TEMP/state/migrate.env"
+printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
+
+# Existing production migrators have the exact predecessor schema grant.  It
+# may gain only CREATE VIEW; any other drift remains rejected by the helper.
+printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON \`%s\`.* TO '%s'@'%s';\n" "$MIG" "$HOST" "$DB" "$MIG" "$HOST" | admin >/dev/null
+run_migrator_only
+printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
+
+printf "REVOKE CREATE VIEW ON \`%s\`.* FROM '%s'@'%s'; GRANT SELECT ON mysql.* TO '%s'@'%s';\n" "$DB" "$MIG" "$HOST" "$MIG" "$HOST" | admin >/dev/null
+if run_migrator_only; then echo 'migration privilege drift was accepted' >&2; exit 1; fi
+printf "REVOKE SELECT ON mysql.* FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_migrator_only
 run_helper
 run_helper
 test "$(stat -c '%U:%G:%a' "$TEMP/state/secrets/$WEB.password")" = root:root:600

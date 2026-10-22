@@ -221,7 +221,7 @@ verify_migrator_grants() {
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$") || die "migration principal lacks exact schema grants"
   [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] || die "migration principal has ambiguous schema grants"
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
-  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW')
   [ "$actual_set" = "$expected_set" ] || die "migration principal schema privilege set is not exact"
   [ "$(printf '%s\n' "$grants" | grep -c '^GRANT ')" -eq 2 ] || die "migration principal has extra grants, roles, routines, columns, or grant option"
 }
@@ -359,7 +359,7 @@ runtime_grant_state() {
 }
 
 migrator_grant_state() {
-  local grants schema_line actual_set expected_set grant_count
+  local grants schema_line actual_set expected_set previous_exact_set grant_count
   grants=$(show_grants "$MIGRATE_USER") || die "could not inspect migration grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$MIGRATE_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$MIGRATE_USER'@'$HOST'$" || true)
@@ -370,9 +370,14 @@ migrator_grant_state() {
   fi
   [ "$(printf '%s\n' "$schema_line" | wc -l)" -eq 1 ] && [ "$grant_count" -eq 2 ] || { printf invalid; return; }
   actual_set=${schema_line#GRANT }; actual_set=${actual_set%% ON *}; actual_set=$(normalize_set "$actual_set")
-  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
-  [ "$actual_set" = "$expected_set" ] || { printf invalid; return; }
-  printf new
+  expected_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW')
+  previous_exact_set=$(normalize_set 'SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES')
+  [ "$actual_set" = "$expected_set" ] && { printf new; return; }
+  # The only accepted predecessor is the exact schema grant emitted before
+  # views became part of the migration contract.  Upgrade it with the one
+  # missing capability; every other difference stays fail-closed.
+  [ "$actual_set" = "$previous_exact_set" ] && { printf 'upgrade-create-view'; return; }
+  printf invalid
 }
 
 if [ "$MIGRATOR_ONLY" = 0 ]; then create_missing "$RUNTIME_USER" "$runtime_password" "$runtime_exists"; fi
@@ -433,7 +438,8 @@ fi
 migrate_state=$(migrator_grant_state)
 case "$migrate_state" in
   new) ;;
-  new-prefix:0) printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal" ;;
+  new-prefix:0) printf 'GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER, REFERENCES, CREATE VIEW ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not grant migration principal" ;;
+  upgrade-create-view) printf 'GRANT CREATE VIEW ON `%s`.* TO %s@%s;\n' "$DB" "$(sql_quote "$MIGRATE_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not upgrade migration principal with CREATE VIEW" ;;
   *) die "migration principal is neither the exact new nor create-only grant state" ;;
 esac
 verify_migrator_grants
