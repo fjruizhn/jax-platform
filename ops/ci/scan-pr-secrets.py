@@ -258,7 +258,7 @@ def main():
             try:
                 crudo.decode("utf-8")
                 continue
-            except UnicodeDecodeError:
+            except UnicodeDecodeError:  # fail-soft: un blob no UTF-8 se escanea completo abajo
                 pass
         for run in RUNS.findall(crudo):
             for t in tokens_de(run.decode("ascii", "replace")):
