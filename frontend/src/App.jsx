@@ -23,7 +23,6 @@ function RequireSuperadmin({ children }) {
 function RequireOfficeAccount({ children }) {
   const user = useJaxStore((s) => s.user)
   const isOfficeAccount = ['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'].includes(user?.account_class)
-    || ['OFFICE_SUPERUSER', 'GENERAL_ADMIN', 'PROJECT_ADMIN', 'COLLABORATOR'].includes(user?.office_role)
   if (!isOfficeAccount) return <Navigate to="/" replace />
   return children
 }
