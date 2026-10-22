@@ -89,7 +89,7 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
         except HTTPException:
             await _close_classic_user_channels(user.user_id)
             return
-        except Exception:
+        except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before the callback enqueues an event
             logger.exception("Fallo al re-verificar la sesión del stream SSE")
             await _close_classic_user_channels(user.user_id)
             return
@@ -133,7 +133,7 @@ async def sse_events(user: AuthUser = Depends(get_current_user)):
                 except HTTPException:
                     await _close_classic_user_channels(user.user_id)
                     return
-                except Exception:
+                except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before a queued SSE event is disclosed
                     logger.exception("Fallo al re-verificar la sesión antes de emitir SSE")
                     await _close_classic_user_channels(user.user_id)
                     return

@@ -422,11 +422,11 @@ def test_migration_rejects_each_missing_or_homonymous_mfa_foreign_key(client):
                     for name in definitions:
                         try:
                             await restore_canonical(name)
-                        except Exception as error:
+                        except Exception as error:  # fail-soft: cleanup error is retained while teardown continues, then raised unless an earlier test failure is primary
                             cleanup_failure = cleanup_failure or error
                     try:
                         await cur.execute(f"DROP DATABASE IF EXISTS `{shadow}`")
-                    except Exception as error:
+                    except Exception as error:  # fail-soft: cleanup error is retained while teardown continues, then raised unless an earlier test failure is primary
                         cleanup_failure = cleanup_failure or error
                     if cleanup_failure is not None and not original_failure:
                         raise cleanup_failure

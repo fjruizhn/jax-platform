@@ -420,7 +420,7 @@ async def _ws_connect_and_subscribe(
                 except HTTPException:
                     await _close_classic_user_channels(user_id)
                     return
-                except Exception:
+                except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before any queued WebSocket event is disclosed
                     logger.exception("Fallo al re-verificar la sesión del WebSocket")
                     await _close_classic_user_channels(user_id)
                     return
@@ -583,7 +583,7 @@ async def _heartbeat(user_id: str, tenant_id: str, session):
         except HTTPException:
             await _close_classic_user_channels(user_id)
             return
-        except Exception:
+        except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before the next heartbeat can disclose liveness
             logger.exception("Fallo al re-verificar la sesión antes del heartbeat WebSocket")
             await _close_classic_user_channels(user_id)
             return

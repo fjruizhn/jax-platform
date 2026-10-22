@@ -266,13 +266,13 @@ def test_office_authorization_audit_rejects_update_and_delete(client):
                 event_id = cur.lastrowid
                 try:
                     await cur.execute("UPDATE office_authorization_event SET reason_code='changed' WHERE event_id=%s", (event_id,))
-                except aiomysql.OperationalError:
+                except aiomysql.OperationalError:  # fail-soft: expected trigger rejection is consumed so this test can assert append-only UPDATE denial
                     pass
                 else:
                     raise AssertionError('append-only audit accepted UPDATE')
                 try:
                     await cur.execute("DELETE FROM office_authorization_event WHERE event_id=%s", (event_id,))
-                except aiomysql.OperationalError:
+                except aiomysql.OperationalError:  # fail-soft: expected trigger rejection is consumed so this test can assert append-only DELETE denial
                     pass
                 else:
                     raise AssertionError('append-only audit accepted DELETE')

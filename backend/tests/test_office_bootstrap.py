@@ -144,7 +144,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         try:
             await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
                                                 target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
-        except BootstrapDenied:
+        except BootstrapDenied:  # fail-soft: expected denied bootstrap is consumed so the test can prove no profile or version mutation occurred
             pass
         else:
             raise AssertionError("bootstrap accepted an administrator-known credential")
@@ -158,7 +158,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         try:
             await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
                                                 target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
-        except BootstrapDenied:
+        except BootstrapDenied:  # fail-soft: expected incompatible-profile denial is consumed so the test can verify it is not treated as a receipt
             pass
         else:
             raise AssertionError("bootstrap accepted incompatible profile")
@@ -169,7 +169,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         try:
             await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
                                                 target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
-        except Exception as error:
+        except Exception as error:  # fail-soft: injected provenance-trigger failure is consumed only to assert transactional rollback
             assert "bootstrap test failure" in str(error)
         else:
             raise AssertionError("bootstrap survived provenance failure")
@@ -181,7 +181,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
             try:
                 return await bootstrap_initial_office_root(session_user=session, target_user_id=user_id,
                                                            expected_email=email, basis_ref="test-bootstrap")
-            except BootstrapDenied:
+            except BootstrapDenied:  # fail-soft: each intentionally wrong ceremony binding is consumed so the test can continue through all denial cases
                 return None
         # Separate transactions from the shared pool contend on the same
         # canonical user/profile rows. Exactly one initial write can win;
@@ -207,7 +207,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
                 await bootstrap_initial_office_root(session_user=fresh_session,
                                                     target_user_id=wrong_target,
                                                     expected_email=email, basis_ref=wrong_basis)
-            except BootstrapDenied:
+            except BootstrapDenied:  # fail-soft: each intentionally wrong ceremony binding is consumed so the test can continue through all denial cases
                 pass
             else:
                 raise AssertionError("bootstrap accepted a wrong ceremony binding")
@@ -218,7 +218,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
         try:
             await bootstrap_initial_office_root(session_user=forged, target_user_id=user_id,
                                                 expected_email=email, basis_ref="test-bootstrap")
-        except BootstrapDenied:
+        except BootstrapDenied:  # fail-soft: forged-proof denial is consumed so the test can assert the credential remains protected
             pass
         else:
             raise AssertionError("bootstrap accepted forged proof")
@@ -239,7 +239,7 @@ def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client
             try:
                 await bootstrap_initial_office_root(session_user=invalid_time, target_user_id=user_id,
                                                     expected_email=email, basis_ref="test-bootstrap")
-            except BootstrapDenied:
+            except BootstrapDenied:  # fail-soft: deliberately stale or future durable proof is consumed so both invalid-time cases are asserted
                 pass
             else:
                 raise AssertionError("bootstrap accepted invalid-time proof")

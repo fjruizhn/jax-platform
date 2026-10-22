@@ -263,7 +263,7 @@ def test_cursor_reauthorization_and_audit_rollback_are_atomic(client):
                 assert decision.allowed is True
                 await record_authorization_event(cur, decision, correlation_id="rollback-test")
                 raise RollbackProbe()
-        except RollbackProbe:
+        except RollbackProbe:  # fail-soft: sentinel rollback is consumed so the test can assert no audit row survived the transaction
             pass
         rows = await _sql("SELECT event_id FROM office_authorization_event WHERE correlation_id='rollback-test'", fetch=True)
         assert rows == ()
@@ -378,7 +378,7 @@ def test_general_admin_cannot_receive_or_use_create_office_project_delegation(cl
         await _sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (manager,))
         try:
             await _sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'CREATE_OFFICE_PROJECT','ACTIVE',%s)", (fixture["tenant_a"], manager, fixture["actor"]))
-        except aiomysql.OperationalError:
+        except aiomysql.OperationalError:  # fail-soft: expected constraint rejection is consumed so the test can assert forbidden delegation was not accepted
             pass
         else:
             decision = await authorize_office(None, manager, OfficeOperation.CREATE_OFFICE_PROJECT)
