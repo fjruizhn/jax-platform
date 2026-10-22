@@ -6,6 +6,7 @@ parameter, query parameter, response field, or logging value.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -64,6 +65,18 @@ def _require_durable_idempotency(idempotency_key: str) -> str:
     if str(parsed) != idempotency_key.lower():
         raise HTTPException(status_code=422, detail="office_invitation_idempotency_invalid")
     return str(parsed)
+
+
+def _invitation_rate_key(bearer_token: str) -> str:
+    """Return a domain-separated limiter key without retaining the bearer.
+
+    The login limiter needs a stable per-bearer bucket in addition to the IP
+    bucket, but the invitation capability itself must never become a raw
+    in-memory key or an accidental diagnostic value.
+    """
+    return hashlib.sha256(
+        b"office-invitation-bearer-rate/v1\x00" + bearer_token.encode("ascii")
+    ).hexdigest()
 
 
 async def _optional_current_user(
@@ -126,8 +139,9 @@ async def accept_invitation(payload: InvitationAcceptRequest,
     password_hash: str | None = None
     if user is None:
         # Bound CPU before the untrusted password reaches bcrypt.  The bearer
-        # itself is opaque and is only used as a rate key, never returned.
-        rate_limit.check_login_rate(request, payload.token)
+        # itself is opaque and is only represented by a domain-separated
+        # digest in the limiter, never returned or retained as a raw key.
+        rate_limit.check_login_rate(request, _invitation_rate_key(payload.token))
         if not await invitation_bearer_preflight(payload.token):
             raise HTTPException(status_code=403, detail="office_invitation_invalid")
         if payload.password is None:
