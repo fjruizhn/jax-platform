@@ -69,6 +69,12 @@ _EXPECTED_FK_EDGES = {}
 for _table, _ddl in _DDL_BY_TABLE.items():
     for _name, _local, _target, _remote in re.findall(r"CONSTRAINT (fk_[a-z0-9_]+) FOREIGN KEY \(([^)]*)\) REFERENCES ([a-z0-9_]+)\(([^)]*)\)", _ddl):
         _EXPECTED_FK_EDGES[(_table, _name)] = (tuple(_local.split(",")), _target, tuple(_remote.split(",")))
+_EXPECTED_INDEX_SHAPES = {}
+for _table, _ddl in _DDL_BY_TABLE.items():
+    _primary = re.search(r"PRIMARY KEY\(([^)]*)\)", _ddl)
+    if _primary: _EXPECTED_INDEX_SHAPES[(_table, "PRIMARY")] = (True, tuple(_primary.group(1).split(",")))
+    for _kind, _name, _columns in re.findall(r"(UNIQUE KEY|KEY) ([a-z0-9_]+) \(([^)]*)\)", _ddl):
+        _EXPECTED_INDEX_SHAPES[(_table, _name)] = (_kind == "UNIQUE KEY", tuple(_columns.split(",")))
 
 class ReleaseReceiptRejected(ValueError): pass
 
@@ -115,8 +121,15 @@ async def assert_inert_release_v2_metadata(cur) -> None:
         if await cur.fetchone() != ("utf8mb4_bin",): raise RuntimeError(f"inert release v2 collation {table} is invalid")
         await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
         if tuple(row[0] for row in await cur.fetchall()) != _EXPECTED_COLUMNS[table]: raise RuntimeError(f"inert release v2 columns {table} are invalid")
-        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
-        if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_INDEXES[table]: raise RuntimeError(f"inert release v2 indexes {table} are invalid")
+        await cur.execute("SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME,COLLATION,SUB_PART,IS_VISIBLE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY INDEX_NAME,SEQ_IN_INDEX", (table,))
+        found_indexes: dict[str, tuple[bool, tuple[str, ...]]] = {}
+        for name, non_unique, column, collation, sub_part, visible in await cur.fetchall():
+            if collation != "A" or sub_part is not None or str(visible).upper() not in {"YES", "1"}: raise RuntimeError(f"inert release v2 index shape {table} is invalid")
+            unique, columns = found_indexes.get(name, (not bool(non_unique), ()))
+            if unique != (not bool(non_unique)): raise RuntimeError(f"inert release v2 index uniqueness {table} is invalid")
+            found_indexes[name] = (unique, (*columns, column))
+        expected_indexes = {name: shape for (indexed_table, name), shape in _EXPECTED_INDEX_SHAPES.items() if indexed_table == table}
+        if found_indexes != expected_indexes: raise RuntimeError(f"inert release v2 indexes {table} are invalid")
         await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
         if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_FKS[table]: raise RuntimeError(f"inert release v2 foreign keys {table} are invalid")
         for name in _EXPECTED_FKS[table]:
