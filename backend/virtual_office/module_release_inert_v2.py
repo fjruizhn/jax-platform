@@ -169,8 +169,17 @@ async def apply_inert_release_v2_migrations(cur) -> None:
         primary_error = error
         raise
     finally:
-        await cur.execute("SELECT RELEASE_LOCK(CONCAT('office-release-v2:',DATABASE()))")
-        if await cur.fetchone() != (1,) and primary_error is None: raise RuntimeError("inert release v2 migration lock release failed")
+        try:
+            await cur.execute("SELECT RELEASE_LOCK(CONCAT('office-release-v2:',DATABASE()))")
+            released = await cur.fetchone()
+        except BaseException as release_error:
+            # Cleanup failure must never replace the migration error that
+            # called it.  The caller still gets the actionable root cause.
+            if primary_error is None:
+                raise RuntimeError("inert release v2 migration lock release failed") from release_error
+        else:
+            if released != (1,) and primary_error is None:
+                raise RuntimeError("inert release v2 migration lock release failed")
 
 async def _apply_inert_release_v2_locked(cur) -> None:
     """Advance only exact, empty table-and-trigger prefixes; never normalize drift."""
@@ -178,22 +187,20 @@ async def _apply_inert_release_v2_locked(cur) -> None:
     present = {row[0] for row in await cur.fetchall()}
     await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (STAMP_TABLE,))
     stamp_exists = await cur.fetchone() is not None
-    if present == set(TABLES):
-        if stamp_exists:
-            await assert_inert_release_v2_metadata(cur)
-        else:
-            await _assert_inert_release_v2_tables(cur, TABLES)
-        if not stamp_exists:
-            for table in TABLES:
-                await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
-                if await cur.fetchone() is not None: raise RuntimeError("inert release v2 pre-stamp tables have rows")
-        await _ensure_release_stamp(cur)
+    if present == set(TABLES) and stamp_exists:
+        await assert_inert_release_v2_metadata(cur)
         return
     if stamp_exists:
         raise RuntimeError("inert release v2 stamp is premature")
-    for index, (table, statement) in enumerate(zip(TABLES, DDL)):
-        await _assert_release_prefix(cur, index)
-        await cur.execute(statement)
+    # A process can die after the table DDL or either trigger.  Those exact,
+    # empty prefixes are resumable; any other shape is drift and stops here.
+    completed = await _assert_resumable_release_prefix(cur)
+    for index in range(completed, len(TABLES)):
+        table, statement = TABLES[index], DDL[index]
+        resuming_current_table = index < len(present)
+        if not resuming_current_table:
+            await _assert_release_prefix(cur, index)
+            await cur.execute(statement)
         for operation in ("UPDATE", "DELETE"):
             await cur.execute(f"CREATE TRIGGER IF NOT EXISTS no_{operation.lower()}_{table} BEFORE {operation} ON {table} FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'")
         await _assert_release_prefix(cur, index + 1)
@@ -244,11 +251,35 @@ async def _assert_release_prefix(cur, count: int) -> None:
     if count:
         await _assert_inert_release_v2_tables(cur, TABLES[:count])
 
+async def _assert_resumable_release_prefix(cur) -> int:
+    """Return the next table creation index for an exact empty DDL prefix."""
+    exists: list[bool] = []
+    for table in TABLES:
+        await cur.execute("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        exists.append(await cur.fetchone() is not None)
+    count = sum(exists)
+    if exists != [True] * count + [False] * (len(TABLES) - count):
+        raise RuntimeError("inert release v2 migration cutpoint is invalid")
+    present = list(TABLES[:count])
+    if not present: return 0
+    trigger_counts: dict[str, int] = {}
+    for index, table in enumerate(present):
+        await cur.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
+        if await cur.fetchone() is not None: raise RuntimeError("inert release v2 interrupted prefix has rows")
+        await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
+        names = tuple(row[0] for row in await cur.fetchall())
+        allowed = ((), (f"no_update_{table}",), (f"no_delete_{table}", f"no_update_{table}"))
+        if names not in allowed: raise RuntimeError("inert release v2 migration trigger cutpoint is invalid")
+        trigger_counts[table] = len(names)
+        if index < len(present) - 1 and len(names) != 2: raise RuntimeError("inert release v2 migration cutpoint is invalid")
+    await _assert_inert_release_v2_tables(cur, tuple(present), trigger_counts=trigger_counts)
+    return len(present) - 1 if trigger_counts[present[-1]] < 2 else len(present)
+
 async def assert_inert_release_v2_metadata(cur) -> None:
     trigger_definer, trigger_sql_mode = await _assert_release_stamp(cur)
     await _assert_inert_release_v2_tables(cur, TABLES, trigger_definer, trigger_sql_mode)
 
-async def _assert_inert_release_v2_tables(cur, tables, trigger_definer=None, trigger_sql_mode=None) -> None:
+async def _assert_inert_release_v2_tables(cur, tables, trigger_definer=None, trigger_sql_mode=None, trigger_counts=None) -> None:
     for table in tables:
         await cur.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if await cur.fetchone() != ("InnoDB",): raise RuntimeError(f"inert release v2 table {table} is invalid")
@@ -285,7 +316,11 @@ async def _assert_inert_release_v2_tables(cur, tables, trigger_definer=None, tri
             await cur.execute("SELECT CURRENT_USER(),@@SESSION.sql_mode")
             trigger_definer, trigger_sql_mode = await cur.fetchone()
         await cur.execute("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,DEFINER,SQL_MODE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
-        expected_triggers = ((f"no_delete_{table}", table, "BEFORE", "DELETE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", trigger_definer, trigger_sql_mode), (f"no_update_{table}", table, "BEFORE", "UPDATE", "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", trigger_definer, trigger_sql_mode))
+        trigger_count = 2 if trigger_counts is None else trigger_counts.get(table, 2)
+        expected_triggers = tuple(
+            (f"no_{operation.lower()}_{table}", table, "BEFORE", operation, "ROW", f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '{table} append-only'", trigger_definer, trigger_sql_mode)
+            for operation in (("UPDATE",) if trigger_count == 1 else (("DELETE", "UPDATE") if trigger_count == 2 else ()))
+        )
         if tuple(tuple(row) for row in await cur.fetchall()) != expected_triggers: raise RuntimeError(f"inert release v2 triggers {table} are invalid")
 
 async def _database_name(cur) -> str:

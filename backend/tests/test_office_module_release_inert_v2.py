@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import importlib.util
 import os
 from pathlib import Path
@@ -50,6 +51,94 @@ def test_receipt_binds_distinct_authorities():
 def test_receipt_rejects_boolean_expected_identity_even_when_equal_to_one():
     with pytest.raises(module.ReleaseReceiptRejected):
         module.validate_release_receipt(valid(), module_package_digest="sha256:"+"11"*32, project_id=True, tenant_id=8, human_approval_id=9, critic_rights_id=10, human_principal="human:fernando")
+
+class _LockCursor:
+    def __init__(self, release): self.release = release; self.last = None
+    async def execute(self, statement, args=None):
+        self.last = statement
+        if "RELEASE_LOCK" in statement and isinstance(self.release, BaseException):
+            raise self.release
+    async def fetchone(self):
+        if "GET_LOCK" in self.last: return (1,)
+        if "RELEASE_LOCK" in self.last: return self.release
+        return None
+
+@pytest.mark.parametrize("release", [(0,), None, RuntimeError("release transport failed")])
+def test_release_lock_cleanup_never_masks_primary_error(monkeypatch, release):
+    async def primary(_cur): raise ValueError("primary migration failure")
+    monkeypatch.setattr(module, "_apply_inert_release_v2_locked", primary)
+    with pytest.raises(ValueError, match="primary migration failure"):
+        asyncio.run(module.apply_inert_release_v2_migrations(_LockCursor(release)))
+
+@pytest.mark.parametrize("release", [(0,), None, RuntimeError("release transport failed")])
+def test_release_lock_cleanup_failure_is_reported_without_primary_error(monkeypatch, release):
+    async def succeeds(_cur): return None
+    monkeypatch.setattr(module, "_apply_inert_release_v2_locked", succeeds)
+    with pytest.raises(RuntimeError, match="lock release failed"):
+        asyncio.run(module.apply_inert_release_v2_migrations(_LockCursor(release)))
+
+class _InterruptAfterReleaseDDL:
+    """Fault after physical DDL so the next call must attest the prefix."""
+    def __init__(self, cursor, after): self.cursor = cursor; self.after = after; self.count = 0
+    async def execute(self, statement, args=None):
+        result = await self.cursor.execute(statement, args)
+        if statement.startswith("CREATE TABLE IF NOT EXISTS office_module_") or statement.startswith("CREATE TRIGGER IF NOT EXISTS no_"):
+            self.count += 1
+            if self.count == self.after: raise RuntimeError(f"injected release cutpoint {self.after}")
+        return result
+    async def fetchone(self): return await self.cursor.fetchone()
+    async def fetchall(self): return await self.cursor.fetchall()
+
+async def _release_v2_prerequisites(cur) -> None:
+    await cur.execute("CREATE TABLE jax_users (user_id INT PRIMARY KEY) ENGINE=InnoDB")
+    await cur.execute("CREATE TABLE office_mfa_security_event (event_id BIGINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB")
+    await cur.execute("CREATE TABLE office_module_candidate (candidate_id BIGINT UNSIGNED PRIMARY KEY,module_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,module_version VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,origin_project_id INT NOT NULL,origin_tenant_id INT NOT NULL,UNIQUE KEY uq_release_scope (candidate_id,origin_project_id,origin_tenant_id,module_id,module_version)) ENGINE=InnoDB")
+    await cur.execute("CREATE TABLE office_module_candidate_revision (candidate_revision_id BIGINT UNSIGNED NOT NULL,candidate_id BIGINT UNSIGNED NOT NULL,manifest_sha256 BINARY(32) NOT NULL,claimed_artifact_set_digest BINARY(32) NOT NULL,PRIMARY KEY(candidate_revision_id,candidate_id,manifest_sha256,claimed_artifact_set_digest)) ENGINE=InnoDB")
+
+def test_mariadb_v2_resumes_each_physical_creation_cutpoint_and_rejects_empty_stamp(client):
+    async def scenario():
+        source = os.environ["JAX_DB_NAME"]
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"],port=int(os.environ["JAX_DB_PORT"]),user=os.environ["JAX_DB_USER"],password=os.environ["JAX_DB_PASSWORD"],db=source,autocommit=True,charset="utf8mb4",connect_timeout=db_connect_timeout_seconds())
+        try:
+            # Seven tables + fourteen append-only triggers can resume exactly.
+            # The final (22nd) cutpoint leaves only an empty seal and must stop.
+            for cutpoint in range(1, 23):
+                schema = f"office_release_v2_cut_{uuid.uuid4().hex[:12]}"
+                async with conn.cursor() as cur:
+                    await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4"); await cur.execute(f"USE `{schema}`")
+                    await _release_v2_prerequisites(cur)
+                    with pytest.raises(RuntimeError, match="injected release cutpoint"):
+                        await module.apply_inert_release_v2_migrations(_InterruptAfterReleaseDDL(cur, cutpoint))
+                    if cutpoint < 22:
+                        await module.apply_inert_release_v2_migrations(cur)
+                        await module.assert_inert_release_v2_metadata(cur)
+                    else:
+                        with pytest.raises(RuntimeError, match="stamp"):
+                            await module.apply_inert_release_v2_migrations(cur)
+                    await cur.execute(f"DROP DATABASE `{schema}`")
+        finally:
+            conn.close()
+    client.portal.call(scenario)
+
+def test_mariadb_v2_rejects_rows_in_an_unsealed_full_schema(client):
+    async def scenario():
+        source = os.environ["JAX_DB_NAME"]; schema = f"office_release_v2_rows_{uuid.uuid4().hex[:12]}"
+        conn = await aiomysql.connect(host=os.environ["JAX_DB_HOST"],port=int(os.environ["JAX_DB_PORT"]),user=os.environ["JAX_DB_USER"],password=os.environ["JAX_DB_PASSWORD"],db=source,autocommit=True,charset="utf8mb4",connect_timeout=db_connect_timeout_seconds())
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}` CHARACTER SET utf8mb4"); await cur.execute(f"USE `{schema}`")
+                await _release_v2_prerequisites(cur)
+                await cur.execute("INSERT INTO office_module_candidate VALUES (1,'studio','1',11,12)")
+                await cur.execute("INSERT INTO office_module_candidate_revision VALUES (2,1,%s,%s)", (bytes(32), bytes.fromhex("11" * 32)))
+                await module.apply_inert_release_v2_migrations(cur)
+                await cur.execute(f"DROP TABLE {module.STAMP_TABLE}")
+                await cur.execute("INSERT INTO office_module_artifact_snapshot_v2 (candidate_revision_id,candidate_id,manifest_sha256,module_package_digest,project_id,tenant_id,module_id,module_version) VALUES (2,1,%s,%s,11,12,'studio','1')", (bytes(32), bytes.fromhex("11" * 32)))
+                with pytest.raises(RuntimeError, match="pre-stamp tables have rows"):
+                    await module.apply_inert_release_v2_migrations(cur)
+        finally:
+            async with conn.cursor() as cur: await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            conn.close()
+    client.portal.call(scenario)
 
 @pytest.mark.parametrize("key,value", [("module_package_digest","sha256:"+"00"*32),("office_release_signer","human:fernando"),("office_release_signer","office-release:"),("critic_principal","human:fernando"),("critic_principal","critic:"),("project_id",True),("domain","module-package/v1")])
 def test_receipt_rejects_misbinding(key, value):
