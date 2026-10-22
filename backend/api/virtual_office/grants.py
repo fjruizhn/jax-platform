@@ -31,6 +31,7 @@ class ProjectGrantUpdate(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+
 class _OfficeMembershipAuthorizer:
     """Trusted JXP callback for JAX's caller-owned membership mutation."""
 
@@ -83,6 +84,8 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
     actor_user_id = _actor_id(user)
     if project_id < 1 or target_user_id < 1:
         raise HTTPException(status_code=404, detail="office_project_grant_target_not_found")
+    if payload.audience == "CLIENT_PUBLISHED" and payload.grant_role != "COLLABORATOR":
+        raise HTTPException(status_code=422, detail="office_project_grant_invalid_audience_role")
     config = load_mfa_config_from_environment()
     from jax.memory.b9_mariadb import MariaDBB9Store
     from jax.memory.project_authority import (
@@ -206,11 +209,16 @@ async def revoke_project_member(project_id: int, target_user_id: int,
             grant = await cur.fetchone()
             if grant is None:
                 raise HTTPException(status_code=404, detail="office_project_grant_not_found")
-            if int(grant[1]) != expected_version:
-                raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
             if grant[0] == "REVOKED":
-                version, replayed = expected_version, True
+                # JAX replay proves this same idempotency request already
+                # revoked canonical membership.  Its Office companion has
+                # therefore advanced exactly once from expected_version.
+                if not result.replayed or int(grant[1]) != expected_version + 1:
+                    raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
+                version, replayed = int(grant[1]), True
             else:
+                if int(grant[1]) != expected_version:
+                    raise HTTPException(status_code=409, detail="office_project_grant_version_conflict")
                 await cur.execute(
                     "UPDATE office_project_grant SET status='REVOKED',version=version+1,updated_at=UTC_TIMESTAMP(6) "
                     "WHERE project_id=%s AND user_id=%s AND version=%s",

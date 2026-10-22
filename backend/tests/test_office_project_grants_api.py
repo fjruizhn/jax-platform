@@ -57,12 +57,28 @@ def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, mon
     )
     assert revoked.status_code == 200
     assert revoked.json()["version"] == 2
+    revoke_replay = client.delete(
+        f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1", headers=revoke_headers,
+    )
+    assert revoke_replay.status_code == 200
+    assert revoke_replay.json()["replayed"] is True
     assert client.portal.call(
         sql,
         "SELECT m.status,g.status FROM jax_project_membership m JOIN office_project_grant g "
         "ON g.project_id=m.project_id AND g.user_id=m.user_id WHERE m.project_id=%s AND m.user_id=%s",
         (project, target), True,
     ) == (("REVOKED", "REVOKED"),)
+
+
+def test_project_admin_client_published_shape_is_rejected_before_membership(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    response = client.put(f"/api/virtual-office/projects/{project}/members/{target}",
+                          json={"grant_role": "PROJECT_ADMIN", "audience": "CLIENT_PUBLISHED", "expected_version": 0},
+                          headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())})
+    assert response.status_code == 422
+    assert client.portal.call(sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True) == ()
 
 
 def test_project_admin_cannot_mint_project_admin_or_leave_partial_member(client, monkeypatch):
