@@ -63,6 +63,7 @@ OFFICE_MEMBERSHIP_RECEIPT_DDL = (
     "CONSTRAINT fk_office_membership_receipt_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_membership_receipt_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_membership_receipt_scope FOREIGN KEY(project_id,target_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
+    "CONSTRAINT fk_office_membership_receipt_grant FOREIGN KEY(project_id,target_user_id) REFERENCES office_project_grant(project_id,user_id),"
     "CONSTRAINT fk_office_membership_receipt_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),"
     "CONSTRAINT fk_office_membership_receipt_relation FOREIGN KEY(external_relation_id,project_id,target_user_id,recipient_group_id) REFERENCES office_external_relation(relation_id,project_id,user_id,recipient_group_id),"
     "CONSTRAINT chk_office_membership_receipt_operation CHECK(operation IN ('GRANT_OFFICE_MEMBER','REVOKE_OFFICE_MEMBER')),"
@@ -76,7 +77,7 @@ OFFICE_MEMBERSHIP_RECEIPT_DDL = (
 )
 
 OFFICE_PROFILE_REVOCATION_DDL = (
-    "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL,KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL,KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES office_account_profile(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_profile_revocation_event BEFORE UPDATE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_profile_revocation_event BEFORE DELETE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
 )
@@ -137,13 +138,14 @@ _MEMBERSHIP_RECEIPT_FOREIGN_KEYS = {
     "fk_office_membership_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
     "fk_office_membership_receipt_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
     "fk_office_membership_receipt_scope": (("project_id", "target_tenant_id"), "jax_project_scope", ("project_id", "tenant_id"), "RESTRICT", "RESTRICT"),
+    "fk_office_membership_receipt_grant": (("project_id", "target_user_id"), "office_project_grant", ("project_id", "user_id"), "RESTRICT", "RESTRICT"),
     "fk_office_membership_receipt_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
     "fk_office_membership_receipt_relation": (("external_relation_id", "project_id", "target_user_id", "recipient_group_id"), "office_external_relation", ("relation_id", "project_id", "user_id", "recipient_group_id"), "RESTRICT", "RESTRICT"),
 }
 
 _PROFILE_REVOCATION_FOREIGN_KEYS = {
     "fk_office_profile_revocation_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
-    "fk_office_profile_revocation_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_profile_revocation_target": (("target_user_id",), "office_account_profile", ("user_id",), "RESTRICT", "RESTRICT"),
     "fk_office_profile_revocation_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
 }
 
@@ -552,6 +554,51 @@ async def _assert_professional_grant_version(cur) -> None:
 async def _constraint_exists(cur, name: str) -> bool:
     await cur.execute("SELECT 1 FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME=%s", (name,))
     return await cur.fetchone() is not None
+
+
+async def _ensure_terminal_ledger_foreign_keys(cur) -> None:
+    """Backfill only absent terminal-ledger links; attestation rejects drift."""
+    additions = (
+        (
+            "office_membership_mutation_receipt",
+            "fk_office_membership_receipt_grant",
+            "ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT "
+            "fk_office_membership_receipt_grant FOREIGN KEY (project_id,target_user_id) "
+            "REFERENCES office_project_grant(project_id,user_id)",
+        ),
+        (
+            "office_profile_revocation_event",
+            "fk_office_profile_revocation_target",
+            "ALTER TABLE office_profile_revocation_event ADD CONSTRAINT "
+            "fk_office_profile_revocation_target FOREIGN KEY (target_user_id) "
+            "REFERENCES office_account_profile(user_id)",
+        ),
+    )
+    for table, name, statement in additions:
+        if await _table_exists(cur, table) and not await _constraint_exists(cur, name):
+            await cur.execute(statement)
+    # This was the original profile-event link.  It can be upgraded without
+    # changing historic rows because profiles are durable, soft-revoked state.
+    # A differently shaped same-name constraint is never repaired silently.
+    if await _table_exists(cur, "office_profile_revocation_event"):
+        await cur.execute(
+            "SELECT k.COLUMN_NAME,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME "
+            "FROM information_schema.KEY_COLUMN_USAGE k WHERE k.CONSTRAINT_SCHEMA=DATABASE() "
+            "AND k.TABLE_NAME='office_profile_revocation_event' "
+            "AND k.CONSTRAINT_NAME='fk_office_profile_revocation_target' "
+            "ORDER BY k.ORDINAL_POSITION"
+        )
+        legacy_shape = (("target_user_id", "jax_users", "user_id"),)
+        if tuple(await cur.fetchall()) == legacy_shape:
+            await cur.execute(
+                "ALTER TABLE office_profile_revocation_event "
+                "DROP CONSTRAINT fk_office_profile_revocation_target"
+            )
+            await cur.execute(
+                "ALTER TABLE office_profile_revocation_event ADD CONSTRAINT "
+                "fk_office_profile_revocation_target FOREIGN KEY (target_user_id) "
+                "REFERENCES office_account_profile(user_id)"
+            )
 
 
 async def _check_clause(cur, name: str) -> str | None:
@@ -1071,7 +1118,9 @@ async def apply_office_migrations(cursor) -> None:
     if await _table_exists(cursor, "jax_namespace_membership_mutation_request"):
         for statement in OFFICE_MEMBERSHIP_RECEIPT_DDL:
             await cursor.execute(statement)
-        await assert_membership_receipt_runtime_metadata(cursor)
     for statement in OFFICE_PROFILE_REVOCATION_DDL:
         await cursor.execute(statement)
+    await _ensure_terminal_ledger_foreign_keys(cursor)
+    if await _table_exists(cursor, "office_membership_mutation_receipt"):
+        await assert_membership_receipt_runtime_metadata(cursor)
     await assert_profile_revocation_runtime_metadata(cursor)

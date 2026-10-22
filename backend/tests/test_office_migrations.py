@@ -128,6 +128,63 @@ def test_membership_receipt_attestation_rejects_weakened_matrix_and_wrong_digest
     client.portal.call(scenario)
 
 
+def test_terminal_ledger_attestation_rejects_wrong_grant_and_profile_links(client):
+    """Terminal evidence must be bound to its Office companion rows."""
+    async def scenario():
+        from db.connection import get_pool
+        source = os.environ["JAX_DB_NAME"]
+        schema = f"office_terminal_fk_attest_{uuid.uuid4().hex[:16]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE `{schema}`")
+                    for table in (
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_project_membership", "jax_project_membership_event",
+                        "jax_namespace_membership_mutation_request",
+                    ):
+                        await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
+                    await cur.execute(f"USE `{schema}`")
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_membership_mutation_receipt "
+                        "DROP CONSTRAINT fk_office_membership_receipt_grant"
+                    )
+                    await cur.execute(
+                        "ALTER TABLE office_membership_mutation_receipt ADD CONSTRAINT "
+                        "fk_office_membership_receipt_grant FOREIGN KEY (project_id,target_user_id) "
+                        "REFERENCES jax_project_scope(project_id,tenant_id)"
+                    )
+                    with pytest.raises(RuntimeError, match="foreign key fk_office_membership_receipt_grant is invalid"):
+                        await apply_office_migrations(cur)
+                    await cur.execute(
+                        "ALTER TABLE office_membership_mutation_receipt "
+                        "DROP CONSTRAINT fk_office_membership_receipt_grant"
+                    )
+                    # A legacy table with no link is upgraded; a homonymous
+                    # wrong link above is instead refused.
+                    await apply_office_migrations(cur)
+                    await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
+                    await cur.execute(
+                        "ALTER TABLE office_profile_revocation_event "
+                        "DROP CONSTRAINT fk_office_profile_revocation_target"
+                    )
+                    await cur.execute(
+                        "ALTER TABLE office_profile_revocation_event ADD CONSTRAINT "
+                        "fk_office_profile_revocation_target FOREIGN KEY (target_user_id) "
+                        "REFERENCES jax_tenants(tenant_id)"
+                    )
+                    with pytest.raises(RuntimeError, match="foreign key fk_office_profile_revocation_target is invalid"):
+                        await apply_office_migrations(cur)
+                finally:
+                    await cur.execute(f"USE `{source}`")
+                    await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+
+    client.portal.call(scenario)
+
+
 def test_delegation_tenant_fk_attestation_rejects_homonymous_wrong_target(client):
     async def scenario():
         import os
