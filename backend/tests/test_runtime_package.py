@@ -18,6 +18,15 @@ def package(tmp_path, payload):
     bundle = tmp_path / "bundle"
     bundle.mkdir(parents=True)
     bundle.chmod(0o755)
+    supplied = {path for path, _, _, _ in payload}
+    for path, (destination, mode) in rp._HELPERS.items():
+        if path not in supplied:
+            payload.append((path, "helper", path.encode(), mode))
+    for path in rp._UNITS:
+        if path not in supplied:
+            payload.append((path, "unit", path.encode(), "0644"))
+    if rp._MANIFEST not in supplied:
+        payload.append((rp._MANIFEST, "manifest", b"runtime receipt", "0644"))
     records = []
     for path, role, contents, mode in payload:
         item = bundle / path
@@ -40,6 +49,16 @@ def test_rejects_bad_digest_extra_and_non_closed_role(tmp_path):
     (bundle / "extra").write_text("x")
     with pytest.raises(rp.PackageError):
         rp.validate(bundle, digest, owner_uid=os.getuid(), owner_gid=os.getgid())
+
+
+def test_rejects_partial_package_even_when_its_digest_is_valid(tmp_path):
+    bundle, digest = package(tmp_path, [("helpers/jax-platform-pair-exec", "helper", b"x", "0755")])
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest["payload"] = [manifest["payload"][0]]
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    (bundle / "manifest.json").write_bytes(raw)
+    with pytest.raises(rp.PackageError, match="incomplete"):
+        rp.validate(bundle, hashlib.sha256(raw).hexdigest(), owner_uid=os.getuid(), owner_gid=os.getgid())
     bundle, digest = package(tmp_path / "two", [("helpers/nope", "helper", b"x", "0755")])
     with pytest.raises(rp.PackageError):
         rp.validate(bundle, digest, owner_uid=os.getuid(), owner_gid=os.getgid())

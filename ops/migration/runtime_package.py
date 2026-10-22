@@ -35,6 +35,7 @@ _UNITS = {
     "units/jax-platform-migrate.service": "/etc/systemd/system/jax-platform-migrate.service",
 }
 _MANIFEST = "runtime-manifest.json"
+_REQUIRED_PATHS = frozenset((*_HELPERS, *_UNITS, _MANIFEST))
 
 
 class PackageError(Exception):
@@ -119,6 +120,8 @@ def validate(root: Path, expected_digest: str, *, owner_uid: int = 0, owner_gid:
         paths.append(path)
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise PackageError("payload order")
+    if not _REQUIRED_PATHS.issubset(paths):
+        raise PackageError("incomplete runtime package")
     actual: set[str] = set()
     for base, directories, names in os.walk(root, topdown=True, followlinks=False):
         directories.sort()
