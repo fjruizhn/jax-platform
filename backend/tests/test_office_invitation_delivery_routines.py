@@ -15,14 +15,3 @@ def _install_delivery_sql() -> None:
 def test_delivery_routines_install_on_disposable_root_db(client):
     _install_delivery_sql()
     assert client is not None
-
-def test_claim_and_settle_emitted_invitation(client):
-    """A valid issued invitation can be claimed and settled exactly once."""
-    _install_delivery_sql()
-    # The full issuance path (authorization, MFA evidence, issuance/event and
-    # outbox triggers) is already exercised by this contract helper.  Reuse it
-    # instead of fabricating rows that could bypass the lifecycle guards.
-    from tests.test_office_invitation_outbox_contract import test_delivery_uses_configured_https_fragment_link_and_localized_templates
-    # This call proves the existing seed is executable in this root-backed DB;
-    # routine transition assertions are added by the root CI follow-up.
-    assert client is not None
