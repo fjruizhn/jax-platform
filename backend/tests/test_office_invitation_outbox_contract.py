@@ -9,11 +9,12 @@ from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 from tests.identidades import sql
 from tests.test_office_projects_api import _office_root_with_current_proof
 from virtual_office.invitation_config import InvitationConfig
+from virtual_office import invitations as invitation_service
 from virtual_office.invitations import (
     finalize_invitation_delivery_in_cursor,
+    deliver_one_invitation,
     issue_invitation_in_cursor,
     revoke_invitation_in_cursor,
-    expire_stale_invitations_in_cursor,
     settle_stale_invitation_claims_in_cursor,
 )
 from virtual_office.mfa import MFAConfig
@@ -119,9 +120,17 @@ def test_stale_lease_can_refine_only_its_same_attempt_to_relay_accepted(client):
     assert client.portal.call(scenario) == (("SMTP_ACCEPTED", ANY, "<late@example.test>"),)
 
 
-def test_expiry_sweep_expires_terminal_unknown_without_rewriting_transport_history(client):
+def test_delivery_maintenance_expires_terminal_unknown_without_rewriting_transport_history(client, monkeypatch):
     issuer, _token_version, _mfa_version, proof_event_id = client.portal.call(
         _office_root_with_current_proof)
+    monkeypatch.setenv("OFFICE_INVITATION_LIFETIME_SECONDS", "1")
+    monkeypatch.setenv("OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "50")
+    monkeypatch.setenv("OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT", "1")
+
+    async def no_delivery(_cur):
+        return None
+    monkeypatch.setattr(invitation_service, "claim_next_invitation_delivery_in_cursor", no_delivery)
 
     async def scenario():
         project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
@@ -143,8 +152,7 @@ def test_expiry_sweep_expires_terminal_unknown_without_rewriting_transport_histo
                 cur, outbox_id=outbox_id, attempt_id=attempt_id, relay_accepted=False,
                 result_code="SMTP_UNKNOWN") is True
         await asyncio.sleep(1.1)
-        async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            assert await expire_stale_invitations_in_cursor(cur, config=config) == 1
+        assert await deliver_one_invitation() is False
         return await sql("SELECT i.status,o.state,o.result_code FROM office_invitation i JOIN office_invitation_outbox o ON o.invitation_id=i.invitation_id WHERE i.invitation_id=%s", (invitation.invitation_id,), True)
 
     assert client.portal.call(scenario) == (("EXPIRED", "UNKNOWN", "SMTP_UNKNOWN"),)

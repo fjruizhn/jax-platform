@@ -168,7 +168,11 @@ async def accept_invitation(payload: InvitationAcceptRequest,
         password_hash = await asyncio.to_thread(_hash, payload.password)
     elif payload.password is not None:
         raise HTTPException(status_code=409, detail="office_invitation_existing_session_required")
-    from jax.memory.project_authority import ProjectAuthorityRetryable
+    from jax.memory.project_authority import (
+        AuthorizationDenied,
+        ProjectAuthorityRetryable,
+        ProjectStateConflict,
+    )
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             replayed = await accept_invitation_in_cursor(
@@ -182,6 +186,11 @@ async def accept_invitation(payload: InvitationAcceptRequest,
         # JAX reserves this class for transient MariaDB contention.  Its
         # stable contract is that retrying the same request is safe.
         raise HTTPException(status_code=503, detail="office_invitation_retryable") from error
+    except (AuthorizationDenied, ProjectStateConflict) as error:
+        # The lifecycle normally translates these races to InvitationError.
+        # Keep the HTTP boundary fail-closed if JAX raises before that adapter
+        # can do so: a revoked MFA/grant or closed project never becomes 500.
+        raise HTTPException(status_code=403, detail="office_invitation_issuer_denied") from error
     if replayed is None:
         raise HTTPException(status_code=410, detail="office_invitation_expired")
     return {"status": "ACCEPTED", "replayed": replayed}

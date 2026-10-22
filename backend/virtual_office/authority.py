@@ -71,6 +71,20 @@ async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
     Office authority are still reread under the caller transaction locks.
     """
     _validate(issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id, None)
+    # Discover tenant keys without trusting them, then acquire the canonical
+    # tenant locks before the resolver locks the issuer/profile and scope.
+    # The resolver re-reads all facts below; this only establishes order with
+    # JAX membership mutations (tenant → actor → target → scope).
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (issuer_user_id,))
+    issuer_tenant = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+    scope_tenant = await cur.fetchone()
+    if issuer_tenant is not None and scope_tenant is not None:
+        for tenant_id in sorted({int(issuer_tenant[0]), int(scope_tenant[0])}):
+            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+            if await cur.fetchone() is None:
+                return _decision(False, "office_tenant_inactive", issuer_user_id,
+                                 OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id)
     decision = await _authorize(cur, issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS,
                                 project_id, None, False, True)
     if not decision.allowed:

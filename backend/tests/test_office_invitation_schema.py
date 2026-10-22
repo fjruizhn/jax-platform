@@ -322,6 +322,10 @@ def test_invitation_guard_upgrade_resumes_after_partial_drop_without_rewriting_r
                     "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
                 assert await cur.fetchone() == (invitation_id, 'ISSUED')
                 await cur.execute(
+                    "SELECT i.expires_at=s.expires_at FROM office_invitation i JOIN office_invitation_issuance s "
+                    "ON s.issuance_id=i.issuance_id WHERE i.invitation_id=%s", (invitation_id,))
+                assert await cur.fetchone() == (1,)
+                await cur.execute(
                     "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
                 row = await cur.fetchone()
                 assert row[:2] == (outbox_id, 'QUEUED') and row[2] is not None
@@ -482,6 +486,11 @@ def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_
                     "guard_office_invitation_outbox_update",
                 ):
                     await cur.execute(f"DROP TRIGGER {name}")
+                # Reproduce the predecessor row shape: the old update guard
+                # rejects arbitrary UPDATE, so the migration must remove only
+                # this attested guard before its one-time expiry backfill.
+                await cur.execute("ALTER TABLE office_invitation DROP INDEX idx_office_invitation_status_expiry")
+                await cur.execute("ALTER TABLE office_invitation DROP COLUMN expires_at")
                 for statement in b44_guards:
                     await cur.execute(statement)
                 await cur.execute(
@@ -495,6 +504,10 @@ def test_b44_invitation_guards_upgrade_server_rendered_bodies_without_rewriting_
                 await cur.execute(
                     "SELECT invitation_id,status FROM office_invitation WHERE invitation_id=%s", (invitation_id,))
                 assert await cur.fetchone() == (invitation_id, 'ISSUED')
+                await cur.execute(
+                    "SELECT i.expires_at=s.expires_at FROM office_invitation i JOIN office_invitation_issuance s "
+                    "ON s.issuance_id=i.issuance_id WHERE i.invitation_id=%s", (invitation_id,))
+                assert await cur.fetchone() == (1,)
                 await cur.execute(
                     "SELECT outbox_id,state,payload_ciphertext FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,))
                 row = await cur.fetchone()

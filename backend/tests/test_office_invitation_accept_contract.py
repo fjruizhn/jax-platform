@@ -307,6 +307,44 @@ def test_accept_and_revoke_share_issuer_scope_then_invitation_lock_order(client)
     assert terminal[0][0] in {"ACCEPTED", "REVOKED"}
 
 
+def test_concurrent_cross_project_revoke_key_collision_is_stable(client):
+    issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
+
+    async def scenario():
+        config = InvitationConfig(lifetime_seconds=60, claim_timeout_seconds=30,
+                                  stale_claim_batch_limit=50, expiry_sweep_batch_limit=50)
+        invitations = []
+        for label in ("left", "right"):
+            project_id = await sql("INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                                   ("invitation-revoke-collision-" + label + "-" + uuid.uuid4().hex,))
+            await sql("INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))", (project_id,))
+            await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, issuer, issuer))
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                invitation = await issue_invitation_in_cursor(
+                    cur, actor_user_id=issuer, project_id=project_id,
+                    email="revoke-" + label + "-" + uuid.uuid4().hex + "@example.test", audience="INTERNAL",
+                    proof_event_id=proof_event_id, mfa_config=MFAConfig(120, 3, 300, 300, 3),
+                    invitation_config=config, idempotency_key=str(uuid.uuid4()))
+            invitations.append((project_id, invitation.invitation_id))
+        key = str(uuid.uuid4())
+        async def revoke(project_id, invitation_id):
+            async with transaccion(AISLAMIENTO_ADMIN) as cur:
+                return await revoke_invitation_in_cursor(
+                    cur, actor_user_id=issuer, project_id=project_id, invitation_id=invitation_id,
+                    expected_version=1, proof_event_id=proof_event_id,
+                    mfa_config=MFAConfig(120, 3, 300, 300, 3), idempotency_key=key)
+        outcomes = await asyncio.gather(*(revoke(*item) for item in invitations), return_exceptions=True)
+        statuses = await sql("SELECT status FROM office_invitation WHERE invitation_id IN (%s,%s) ORDER BY invitation_id", tuple(sorted(item[1] for item in invitations)), True)
+        return outcomes, statuses
+
+    outcomes, statuses = client.portal.call(scenario)
+    assert sum(not isinstance(outcome, Exception) for outcome in outcomes) == 1
+    errors = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(errors) == 1 and isinstance(errors[0], InvitationError)
+    assert errors[0].code == "office_invitation_idempotency_conflict"
+    assert sorted(status[0] for status in statuses) == ["ISSUED", "REVOKED"]
+
+
 def test_receipt_write_failure_rolls_back_issue_companions(client, monkeypatch):
     issuer, _tv, _mv, proof_event_id = client.portal.call(_office_root_with_current_proof)
 
@@ -553,7 +591,7 @@ def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_roll
                 async with transaccion(AISLAMIENTO_ADMIN) as cur:
                     await accept_invitation_in_cursor(cur, accepting_user_id=None, accepting_email=None,
                                                       new_password_hash=_hash("rollback-password"), bearer_token=bearer)
-            except (AuthorizationDenied, ProjectStateConflict) as denied:
+            except (AuthorizationDenied, ProjectStateConflict, InvitationError) as denied:
                 assert denied
             else:
                 raise AssertionError(f"delegated acceptance unexpectedly survived {label} revocation")
