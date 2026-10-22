@@ -11,9 +11,9 @@ User=jaxinvite
 Group=jaxinvite
 EnvironmentFile=/etc/jax/invitation-worker.env
 WorkingDirectory=/srv/jax-prod/jax-platform/backend
-# EnvironmentFile is root-only.  The preflight merely validates inherited
-# settings and its ownership before the unprivileged process starts.
-ExecStartPre=+/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
+# The preflight runs as the dedicated principal; no code under the release
+# tree may run with root privileges.
+ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh
 ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py
 NoNewPrivileges=true
 PrivateTmp=true

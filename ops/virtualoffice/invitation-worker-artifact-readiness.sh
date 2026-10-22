@@ -13,7 +13,7 @@ for path in "$service" "$timer" "$readiness" "$provision" "$launcher"; do [[ -f 
 grep -Fqx 'User=jaxinvite' "$service"
 grep -Fqx 'EnvironmentFile=/etc/jax/invitation-worker.env' "$service"
 grep -Fqx 'WorkingDirectory=/srv/jax-prod/jax-platform/backend' "$service"
-grep -Fqx 'ExecStartPre=+/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh' "$service"
+grep -Fqx 'ExecStartPre=/srv/jax-prod/jax-platform/ops/virtualoffice/invitation-worker-readiness.sh' "$service"
 grep -Fqx 'ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -Es /srv/jax-prod/jax-platform/ops/virtualoffice/run-invitation-worker.py' "$service"
 grep -Fqx 'NoNewPrivileges=true' "$service"
 grep -Fqx 'PrivateDevices=true' "$service"
