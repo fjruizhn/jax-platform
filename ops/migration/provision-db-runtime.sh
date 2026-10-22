@@ -90,7 +90,7 @@ load_runtime_manifest() {
     [[ -n "$table" && -n "$privileges" && -z ${extra:-} ]] || die "runtime table privilege manifest is malformed"
     [[ "$table" =~ ^[a-z][a-z0-9_]{0,63}$ ]] || die "runtime table privilege manifest has invalid table"
     [[ "$privileges" =~ ^(UPDATE|DELETE)(,(UPDATE|DELETE))?$ ]] || die "runtime table privilege manifest has invalid privileges"
-    [[ "$table" != office_authorization_event && "$table" != office_mfa_security_event && "$table" != office_bootstrap_state && "$table" != office_schema_revision ]] || die "runtime table privilege manifest grants a protected table"
+    [[ "$table" != office_authorization_event && "$table" != office_mfa_security_event && "$table" != office_bootstrap_state && "$table" != office_invitation_event && "$table" != office_invitation_issuance && "$table" != office_schema_revision ]] || die "runtime table privilege manifest grants a protected table"
     [[ -z "$previous" || "$table" > "$previous" ]] || die "runtime table privilege manifest is not ordered"
     previous=$table
     RUNTIME_TABLES+=("$table")
