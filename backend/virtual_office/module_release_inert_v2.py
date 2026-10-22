@@ -48,6 +48,24 @@ DDL = (
     "project_id INT NOT NULL,tenant_id INT NOT NULL,module_id VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,head_version BIGINT UNSIGNED NOT NULL,release_receipt_id BIGINT UNSIGNED NOT NULL,status VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),PRIMARY KEY(project_id,tenant_id,module_id,head_version),KEY idx_office_module_effective_head_v2_receipt (release_receipt_id),CONSTRAINT fk_office_module_effective_head_v2_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),CONSTRAINT fk_office_module_effective_head_v2_receipt FOREIGN KEY (release_receipt_id) REFERENCES office_module_release_receipt_v2(release_receipt_id),CONSTRAINT chk_office_module_effective_head_v2_state CHECK (module_id<>'' AND head_version>=1 AND status='PENDING_CONTRACT')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 )
 
+# Names are part of the durable contract.  Keeping these derivable from the
+# reviewed DDL prevents a migration cutpoint from silently accepting an extra
+# authority edge, index, or moved CHECK.
+_DDL_BY_TABLE = {re.search(r"CREATE TABLE IF NOT EXISTS ([a-z0-9_]+)", statement).group(1): statement for statement in DDL}
+_EXPECTED_COLUMNS = {
+    "office_module_artifact_snapshot_v2": ("snapshot_id","candidate_revision_id","candidate_id","manifest_sha256","module_package_digest","client_artifact_set_digest","project_id","tenant_id","created_at"),
+    "office_module_publication_request_v2": ("publication_request_id","snapshot_id","project_id","tenant_id","requested_by_user_id","mfa_proof_event_id","state","created_at"),
+    "office_module_creative_approval_v2": ("creative_approval_id","publication_request_id","human_user_id","mfa_proof_event_id","decision","created_at"),
+    "office_module_rights_verdict_v2": ("rights_verdict_id","publication_request_id","critic_principal","evidence_set_sha256","verification_state","decision","created_at"),
+    "office_module_release_operation_v2": ("release_operation_id","publication_request_id","creative_approval_id","rights_verdict_id","office_release_signer","state","created_at"),
+    "office_module_release_receipt_v2": ("release_receipt_id","release_operation_id","receipt_sha256","receipt_signature","state","created_at"),
+    "office_module_effective_release_head_v2": ("project_id","tenant_id","module_id","head_version","release_receipt_id","status","created_at"),
+}
+def _names(pattern: str, table: str) -> frozenset[str]: return frozenset(re.findall(pattern, _DDL_BY_TABLE[table]))
+_EXPECTED_FKS = {table: _names(r"CONSTRAINT (fk_[a-z0-9_]+) FOREIGN KEY", table) for table in TABLES}
+_EXPECTED_CHECKS = {table: _names(r"CONSTRAINT (chk_[a-z0-9_]+) CHECK", table) for table in TABLES}
+_EXPECTED_INDEXES = {table: (frozenset({"PRIMARY"}) if "PRIMARY KEY" in _DDL_BY_TABLE[table] else frozenset()) | _names(r"(?:UNIQUE KEY|KEY) ([a-z0-9_]+)", table) for table in TABLES}
+
 class ReleaseReceiptRejected(ValueError): pass
 
 @dataclass(frozen=True)
@@ -89,5 +107,13 @@ async def assert_inert_release_v2_metadata(cur) -> None:
     for table in TABLES:
         await cur.execute("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
         if await cur.fetchone() != ("InnoDB",): raise RuntimeError(f"inert release v2 table {table} is invalid")
+        await cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+        if tuple(row[0] for row in await cur.fetchall()) != _EXPECTED_COLUMNS[table]: raise RuntimeError(f"inert release v2 columns {table} are invalid")
+        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_INDEXES[table]: raise RuntimeError(f"inert release v2 indexes {table} are invalid")
+        await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+        if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_FKS[table]: raise RuntimeError(f"inert release v2 foreign keys {table} are invalid")
+        await cur.execute("SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND CONSTRAINT_TYPE='CHECK'", (table,))
+        if frozenset(row[0] for row in await cur.fetchall()) != _EXPECTED_CHECKS[table]: raise RuntimeError(f"inert release v2 checks {table} are invalid")
         await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s ORDER BY TRIGGER_NAME", (table,))
         if tuple(row[0] for row in await cur.fetchall()) != (f"no_delete_{table}", f"no_update_{table}"): raise RuntimeError(f"inert release v2 triggers {table} are invalid")
