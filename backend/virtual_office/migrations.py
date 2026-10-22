@@ -54,18 +54,19 @@ OFFICE_INVITATION_DDL = (
     "CREATE TABLE IF NOT EXISTS office_invitation_issuance ("
     "issuance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
     "token_hash BINARY(32) NOT NULL,email_normalized VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-    "tenant_id INT NOT NULL,project_id INT NOT NULL,recipient_group_id BIGINT UNSIGNED NULL,"
+    "tenant_id INT NOT NULL,project_id INT NOT NULL,recipient_group_id BIGINT UNSIGNED NULL,target_user_id INT NULL,"
     "target_account_class VARCHAR(24) NOT NULL,grant_role VARCHAR(24) NOT NULL,audience VARCHAR(24) NOT NULL,"
     "issued_by_user_id INT NOT NULL,issuer_profile_version BIGINT NOT NULL,issuer_grant_version BIGINT NOT NULL,"
     "issuer_proof_event_id BIGINT UNSIGNED NOT NULL,issuer_mfa_version BIGINT NOT NULL,issuer_mfa_at DATETIME(6) NOT NULL,"
     "issuance_authorization_event_id BIGINT UNSIGNED NOT NULL,proof_digest BINARY(32) NOT NULL,"
     "correlation_id BINARY(16) NOT NULL,issued_at DATETIME(6) NOT NULL,expires_at DATETIME(6) NOT NULL,"
-    "UNIQUE KEY uq_office_invitation_issuance_token (token_hash),"
+    "UNIQUE KEY uq_office_invitation_issuance_token (token_hash),UNIQUE KEY uq_office_invitation_issuance_binding (issuance_id,project_id,email_normalized,target_user_id),"
     "KEY idx_office_invitation_issuance_scope (project_id,tenant_id,expires_at,issuance_id),"
     "KEY idx_office_invitation_issuance_expiry (expires_at,issuance_id),"
     "CONSTRAINT fk_office_invitation_issuance_scope FOREIGN KEY (project_id,tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
     "CONSTRAINT fk_office_invitation_issuance_group_project FOREIGN KEY (recipient_group_id,project_id) REFERENCES office_recipient_group(recipient_group_id,project_id),"
     "CONSTRAINT fk_office_invitation_issuance_issuer FOREIGN KEY (issued_by_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_invitation_issuance_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_invitation_issuance_profile FOREIGN KEY (issued_by_user_id) REFERENCES office_account_profile(user_id),"
     "CONSTRAINT fk_office_invitation_issuance_basis FOREIGN KEY (project_id,issued_by_user_id) REFERENCES office_project_grant(project_id,user_id),"
     "CONSTRAINT fk_office_invitation_issuance_proof FOREIGN KEY (issuer_proof_event_id) REFERENCES office_mfa_security_event(event_id),"
@@ -81,13 +82,15 @@ OFFICE_INVITATION_DDL = (
     "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
     "issuance_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "status VARCHAR(16) NOT NULL DEFAULT 'ISSUED',version BIGINT NOT NULL DEFAULT 1,"
-    "project_id INT NOT NULL,email_normalized VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "project_id INT NOT NULL,email_normalized VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,target_user_id INT NULL,"
     "pending_email VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status='ISSUED' THEN email_normalized ELSE NULL END) STORED,"
     "accepted_user_id INT NULL,accepted_at DATETIME(6) NULL,revoked_by_user_id INT NULL,revoked_at DATETIME(6) NULL,"
     "UNIQUE KEY uq_office_invitation_issuance (issuance_id),UNIQUE KEY uq_office_invitation_pending_subject (project_id,pending_email),"
     "KEY idx_office_invitation_expiry (status,issuance_id,invitation_id),"
     "CONSTRAINT fk_office_invitation_issuance FOREIGN KEY (issuance_id) REFERENCES office_invitation_issuance(issuance_id),"
     "CONSTRAINT fk_office_invitation_project FOREIGN KEY (project_id) REFERENCES projects(id),"
+    "CONSTRAINT fk_office_invitation_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_invitation_issuance_binding FOREIGN KEY (issuance_id,project_id,email_normalized,target_user_id) REFERENCES office_invitation_issuance(issuance_id,project_id,email_normalized,target_user_id),"
     "CONSTRAINT fk_office_invitation_accepted_user FOREIGN KEY (accepted_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT fk_office_invitation_revoker FOREIGN KEY (revoked_by_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT chk_office_invitation_shape CHECK (version >= 1 AND ((status='ISSUED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL) OR "
@@ -99,7 +102,7 @@ OFFICE_INVITATION_DDL = (
     "event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "event_kind VARCHAR(32) NOT NULL,actor_user_id INT NULL,bearer_token_hash BINARY(32) NULL,observed_outbox_state VARCHAR(16) NULL,"
     "correlation_id BINARY(16) NOT NULL,occurred_at DATETIME(6) NOT NULL,"
-    "KEY idx_office_invitation_event_invitation (invitation_id,occurred_at,event_id),"
+    "UNIQUE KEY uq_office_invitation_event_kind (invitation_id,event_kind),UNIQUE KEY uq_office_invitation_event_correlation (correlation_id),KEY idx_office_invitation_event_invitation (invitation_id,occurred_at,event_id),"
     "CONSTRAINT fk_office_invitation_event_invitation FOREIGN KEY (invitation_id) REFERENCES office_invitation(invitation_id),"
     "CONSTRAINT fk_office_invitation_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
     "CONSTRAINT chk_office_invitation_event_shape CHECK ((event_kind='ISSUED' AND actor_user_id IS NOT NULL AND bearer_token_hash IS NULL AND observed_outbox_state IS NULL) OR "
@@ -124,9 +127,10 @@ OFFICE_INVITATION_DDL = (
     "(state='UNKNOWN' AND attempt_id IS NOT NULL AND attempt_count=1 AND payload_ciphertext IS NULL AND message_id IS NULL AND result_code IS NOT NULL AND finished_at IS NOT NULL) OR "
     "(state='CANCELLED' AND cancel_requested=TRUE AND payload_ciphertext IS NULL AND message_id IS NULL AND finished_at IS NOT NULL AND result_code IS NOT NULL))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_update BEFORE UPDATE ON office_invitation FOR EACH ROW BEGIN IF NEW.issuance_id<>OLD.issuance_id OR NEW.project_id<>OLD.project_id OR BINARY NEW.email_normalized<>BINARY OLD.email_normalized OR NEW.version<>OLD.version+1 OR OLD.status<>'ISSUED' OR NEW.status NOT IN ('ACCEPTED','REVOKED','EXPIRED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation transition denied'; END IF; IF NEW.status='ACCEPTED' AND (NOT EXISTS (SELECT 1 FROM office_invitation_event e JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='INVITATION_BEARER_PRESENTED' AND e.bearer_token_hash=s.token_hash) OR NOT EXISTS (SELECT 1 FROM office_invitation_event e WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='ACCEPTED' AND e.actor_user_id=NEW.accepted_user_id)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation acceptance evidence missing'; END IF; END",
-    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_event_insert BEFORE INSERT ON office_invitation_event FOR EACH ROW BEGIN IF NEW.event_kind='INVITATION_BEARER_PRESENTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND s.token_hash=NEW.bearer_token_hash AND i.status='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation bearer evidence denied'; END IF; END",
-    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update BEFORE UPDATE ON office_invitation_outbox FOR EACH ROW BEGIN IF OLD.state='QUEUED' AND NOT (NEW.state='CLAIMED' AND NEW.attempt_id IS NOT NULL AND NEW.attempt_count=1 AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at IS NOT NULL AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox claim denied'; END IF; IF OLD.state='CLAIMED' AND NOT (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.finished_at IS NOT NULL) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal denied'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_insert BEFORE INSERT ON office_invitation FOR EACH ROW BEGIN IF NEW.status<>'ISSUED' OR NEW.version<>1 OR NOT EXISTS (SELECT 1 FROM office_invitation_issuance s WHERE s.issuance_id=NEW.issuance_id AND s.project_id=NEW.project_id AND BINARY s.email_normalized=BINARY NEW.email_normalized AND s.target_user_id<=>NEW.target_user_id) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation issuance binding denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_update BEFORE UPDATE ON office_invitation FOR EACH ROW BEGIN IF NEW.issuance_id<>OLD.issuance_id OR NEW.project_id<>OLD.project_id OR BINARY NEW.email_normalized<>BINARY OLD.email_normalized OR NOT (NEW.target_user_id<=>OLD.target_user_id) OR NEW.version<>OLD.version+1 OR OLD.status<>'ISSUED' OR NEW.status NOT IN ('ACCEPTED','REVOKED','EXPIRED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation transition denied'; END IF; IF NEW.status='ACCEPTED' AND (NOT EXISTS (SELECT 1 FROM office_invitation_event e JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='INVITATION_BEARER_PRESENTED' AND e.bearer_token_hash=s.token_hash) OR NOT EXISTS (SELECT 1 FROM office_invitation_event e WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='ACCEPTED' AND e.actor_user_id=NEW.accepted_user_id)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation acceptance evidence missing'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_event_insert BEFORE INSERT ON office_invitation_event FOR EACH ROW BEGIN IF NEW.event_kind='ISSUED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND s.issued_by_user_id=NEW.actor_user_id) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation issued evidence denied'; END IF; IF NEW.event_kind='INVITATION_BEARER_PRESENTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND s.token_hash=NEW.bearer_token_hash AND i.status='ISSUED' AND EXISTS (SELECT 1 FROM office_invitation_event prior WHERE prior.invitation_id=i.invitation_id AND prior.event_kind='ISSUED')) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation bearer evidence denied'; END IF; IF NEW.event_kind='ACCEPTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_event prior ON prior.invitation_id=i.invitation_id WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED' AND prior.event_kind='INVITATION_BEARER_PRESENTED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation acceptance event denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_invitation_outbox_update BEFORE UPDATE ON office_invitation_outbox FOR EACH ROW BEGIN IF NEW.outbox_id<>OLD.outbox_id OR NEW.invitation_id<>OLD.invitation_id OR NEW.created_at<>OLD.created_at OR NEW.updated_at<>OLD.updated_at THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox identity denied'; END IF; IF OLD.state='QUEUED' AND NOT ((NEW.state='CANCELLED' AND NEW.attempt_id IS NULL AND NEW.attempt_count=0 AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NOT NULL AND NEW.claimed_at IS NULL AND NEW.finished_at IS NOT NULL) OR (NEW.state='CLAIMED' AND NEW.attempt_id IS NOT NULL AND NEW.attempt_count=1 AND NEW.cancel_requested=FALSE AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at IS NOT NULL AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox claim denied'; END IF; IF OLD.state='CLAIMED' AND NOT ((NEW.state='CLAIMED' AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.cancel_requested=TRUE AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at=OLD.claimed_at AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.finished_at IS NOT NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal denied'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; END",
 )
 
 # These records are the Office half of an already immutable JAX namespace
@@ -316,21 +320,19 @@ _INVITATION_EVENT_TRIGGERS = {
         "office_invitation_event", "BEFORE", "DELETE", "ROW",
         "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_event append-only'",
     ),
-    "guard_office_invitation_event_insert": (
-        "office_invitation_event", "BEFORE", "INSERT", "ROW",
-        "BEGIN IF NEW.event_kind='INVITATION_BEARER_PRESENTED' AND NOT EXISTS (SELECT 1 FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id WHERE i.invitation_id=NEW.invitation_id AND s.token_hash=NEW.bearer_token_hash AND i.status='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation bearer evidence denied'; END IF; END",
-    ),
+    "guard_office_invitation_event_insert": ("office_invitation_event", "BEFORE", "INSERT", "ROW", OFFICE_INVITATION_DDL[-2].split(" FOR EACH ROW ", 1)[1]),
 }
 _INVITATION_STATE_TRIGGERS = {
+    "guard_office_invitation_insert": ("office_invitation", "BEFORE", "INSERT", "ROW", OFFICE_INVITATION_DDL[-4].split(" FOR EACH ROW ", 1)[1]),
     "guard_office_invitation_update": (
         "office_invitation", "BEFORE", "UPDATE", "ROW",
-        "BEGIN IF NEW.issuance_id<>OLD.issuance_id OR NEW.project_id<>OLD.project_id OR BINARY NEW.email_normalized<>BINARY OLD.email_normalized OR NEW.version<>OLD.version+1 OR OLD.status<>'ISSUED' OR NEW.status NOT IN ('ACCEPTED','REVOKED','EXPIRED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation transition denied'; END IF; IF NEW.status='ACCEPTED' AND (NOT EXISTS (SELECT 1 FROM office_invitation_event e JOIN office_invitation_issuance s ON s.issuance_id=OLD.issuance_id WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='INVITATION_BEARER_PRESENTED' AND e.bearer_token_hash=s.token_hash) OR NOT EXISTS (SELECT 1 FROM office_invitation_event e WHERE e.invitation_id=OLD.invitation_id AND e.event_kind='ACCEPTED' AND e.actor_user_id=NEW.accepted_user_id)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation acceptance evidence missing'; END IF; END",
+        OFFICE_INVITATION_DDL[-3].split(" FOR EACH ROW ", 1)[1],
     ),
 }
 _INVITATION_OUTBOX_TRIGGERS = {
     "guard_office_invitation_outbox_update": (
         "office_invitation_outbox", "BEFORE", "UPDATE", "ROW",
-        "BEGIN IF OLD.state='QUEUED' AND NOT (NEW.state='CLAIMED' AND NEW.attempt_id IS NOT NULL AND NEW.attempt_count=1 AND NEW.payload_ciphertext<=>OLD.payload_ciphertext AND NEW.claimed_at IS NOT NULL AND NEW.finished_at IS NULL AND NEW.message_id IS NULL AND NEW.result_code IS NULL) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox claim denied'; END IF; IF OLD.state='CLAIMED' AND NOT (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND NEW.attempt_id=OLD.attempt_id AND NEW.attempt_count=OLD.attempt_count AND NEW.payload_ciphertext IS NULL AND NEW.finished_at IS NOT NULL) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal denied'; END IF; IF OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_invitation outbox terminal immutable'; END IF; END",
+        OFFICE_INVITATION_DDL[-1].split(" FOR EACH ROW ", 1)[1],
     ),
 }
 
@@ -339,12 +341,18 @@ _INVITATION_FOREIGN_KEYS = {
         "fk_office_invitation_issuance_scope": (("project_id", "tenant_id"), "jax_project_scope", ("project_id", "tenant_id"), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_issuance_group_project": (("recipient_group_id", "project_id"), "office_recipient_group", ("recipient_group_id", "project_id"), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_issuance_issuer": (("issued_by_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_profile": (("issued_by_user_id",), "office_account_profile", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_basis": (("project_id", "issued_by_user_id"), "office_project_grant", ("project_id", "user_id"), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_issuance_proof": (("issuer_proof_event_id",), "office_mfa_security_event", ("event_id",), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_issuance_authorization": (("issuance_authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
     },
     "office_invitation": {
         "fk_office_invitation_issuance": (("issuance_id",), "office_invitation_issuance", ("issuance_id",), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_accepted_user": (("accepted_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"),
+        "fk_office_invitation_issuance_binding": (("issuance_id", "project_id", "email_normalized", "target_user_id"), "office_invitation_issuance", ("issuance_id", "project_id", "email_normalized", "target_user_id"), "RESTRICT", "RESTRICT"),
         "fk_office_invitation_revoker": (("revoked_by_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
     },
     "office_invitation_event": {
@@ -360,16 +368,20 @@ _INVITATION_INDEXES = {
     "office_invitation_issuance": {
         "PRIMARY": (("issuance_id",), True),
         "uq_office_invitation_issuance_token": (("token_hash",), True),
+        "uq_office_invitation_issuance_binding": (("issuance_id", "project_id", "email_normalized", "target_user_id"), True),
         "idx_office_invitation_issuance_scope": (("project_id", "tenant_id", "expires_at", "issuance_id"), False),
         "idx_office_invitation_issuance_expiry": (("expires_at", "issuance_id"), False),
     },
     "office_invitation": {
         "PRIMARY": (("invitation_id",), True),
         "uq_office_invitation_issuance": (("issuance_id",), True),
+        "uq_office_invitation_pending_subject": (("project_id", "pending_email"), True),
         "idx_office_invitation_expiry": (("status", "issuance_id", "invitation_id"), False),
     },
     "office_invitation_event": {
         "PRIMARY": (("event_id",), True),
+        "uq_office_invitation_event_kind": (("invitation_id", "event_kind"), True),
+        "uq_office_invitation_event_correlation": (("correlation_id",), True),
         "idx_office_invitation_event_invitation": (("invitation_id", "occurred_at", "event_id"), False),
     },
     "office_invitation_outbox": {
@@ -385,8 +397,8 @@ _INVITATION_CHECK_DIGESTS = {
     "chk_office_invitation_outbox_shape": "23611db9479ed674b1077deb12bb8814cec96cd21bbf2fd7ad681316d7ebb85d",
 }
 _INVITATION_COLUMNS = {
-    "office_invitation_issuance": (("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("token_hash","binary","binary(32)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("tenant_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),("recipient_group_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("target_account_class","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("grant_role","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("audience","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("issued_by_user_id","int","int(11)","NO",None,None,"",None),("issuer_profile_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_grant_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_proof_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("issuer_mfa_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_mfa_at","datetime","datetime(6)","NO",None,None,"",None),("issuance_authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("proof_digest","binary","binary(32)","NO",None,None,"",None),("correlation_id","binary","binary(16)","NO",None,None,"",None),("issued_at","datetime","datetime(6)","NO",None,None,"",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None)),
-    "office_invitation": (("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("status","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'ISSUED'"),("version","bigint","bigint(20)","NO",None,None,"","1"),("project_id","int","int(11)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("pending_email","varchar","varchar(320)","YES","ascii","ascii_bin","STORED GENERATED","NULL"),("accepted_user_id","int","int(11)","YES",None,None,"","NULL"),("accepted_at","datetime","datetime(6)","YES",None,None,"","NULL"),("revoked_by_user_id","int","int(11)","YES",None,None,"","NULL"),("revoked_at","datetime","datetime(6)","YES",None,None,"","NULL")),
+    "office_invitation_issuance": (("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("token_hash","binary","binary(32)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("tenant_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),("recipient_group_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("target_account_class","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("grant_role","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("audience","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("issued_by_user_id","int","int(11)","NO",None,None,"",None),("issuer_profile_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_grant_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_proof_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("issuer_mfa_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_mfa_at","datetime","datetime(6)","NO",None,None,"",None),("issuance_authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("proof_digest","binary","binary(32)","NO",None,None,"",None),("correlation_id","binary","binary(16)","NO",None,None,"",None),("issued_at","datetime","datetime(6)","NO",None,None,"",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None)),
+    "office_invitation": (("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("status","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'ISSUED'"),("version","bigint","bigint(20)","NO",None,None,"","1"),("project_id","int","int(11)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("pending_email","varchar","varchar(320)","YES","ascii","ascii_bin","STORED GENERATED","NULL"),("accepted_user_id","int","int(11)","YES",None,None,"","NULL"),("accepted_at","datetime","datetime(6)","YES",None,None,"","NULL"),("revoked_by_user_id","int","int(11)","YES",None,None,"","NULL"),("revoked_at","datetime","datetime(6)","YES",None,None,"","NULL")),
     "office_invitation_event": (("event_id","bigint","bigint(20) unsigned","NO",None,None,"auto_increment",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("event_kind","varchar","varchar(32)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("actor_user_id","int","int(11)","YES",None,None,"","NULL"),("bearer_token_hash","binary","binary(32)","YES",None,None,"","NULL"),("observed_outbox_state","varchar","varchar(16)","YES","utf8mb4","utf8mb4_uca1400_ai_ci","","NULL"),("correlation_id","binary","binary(16)","NO",None,None,"",None),("occurred_at","datetime","datetime(6)","NO",None,None,"",None)),
     "office_invitation_outbox": (("outbox_id","char","char(36)","NO","ascii","ascii_bin","",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("state","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'QUEUED'"),("attempt_id","char","char(36)","YES","ascii","ascii_bin","","NULL"),("attempt_count","int","int(11)","NO",None,None,"","0"),("cancel_requested","tinyint","tinyint(1)","NO",None,None,"","0"),("payload_ciphertext","mediumblob","mediumblob","YES",None,None,"","NULL"),("message_id","varchar","varchar(320)","YES","ascii","ascii_bin","","NULL"),("result_code","varchar","varchar(64)","YES","ascii","ascii_bin","","NULL"),("claimed_at","datetime","datetime(6)","YES",None,None,"","NULL"),("finished_at","datetime","datetime(6)","YES",None,None,"","NULL"),("created_at","datetime","datetime(6)","NO",None,None,"",None),("updated_at","datetime","datetime(6)","NO",None,None,"",None)),
 }
@@ -483,6 +495,12 @@ async def assert_invitation_runtime_metadata(cur) -> None:
     for name, expected_digest in _INVITATION_CHECK_DIGESTS.items():
         if _check_digest(await _check_clause(cur, name)) != expected_digest:
             raise RuntimeError(f"Office invitation check {name} is invalid")
+    await cur.execute(
+        "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_invitation' AND COLUMN_NAME='pending_email'"
+    )
+    if await cur.fetchone() != ("case when `status` = 'ISSUED' then `email_normalized` else NULL end",):
+        raise RuntimeError("Office invitation pending-email generation is invalid")
 
 
 async def _prepare_invitation_schema(cur) -> None:
@@ -497,6 +515,7 @@ async def _prepare_invitation_schema(cur) -> None:
         return
     if (await _column_exists(cur, "office_invitation", "issuance_id")
             and await _column_exists(cur, "office_invitation", "project_id")
+            and await _column_exists(cur, "office_invitation", "target_user_id")
             and await _column_exists(cur, "office_invitation_issuance", "proof_digest")):
         return
     tables = (
