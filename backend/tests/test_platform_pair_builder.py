@@ -287,6 +287,7 @@ def test_real_jax_commit_extracts_all_internal_links_in_disposable_clone(tmp_pat
     tree, links = builder.extract(clone, "8da1473939af2c8178b8b632e2d77b9120556cab", target)
     assert tree == "5a04d2ca83d6eda75d1b1b8b32d0b4f4942fb9fb"
     assert len(links) == 16
+    assert hashlib.sha256(json.dumps(links, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == "e7d41bda5d31363daac6fd8be2a76512b6f49fbd0c9d0940d43a347c4559b767"
     assert all((target / link["path"]).is_symlink() for link in links)
     assert (target / "las_manos" / "jacobs").is_dir()
 
