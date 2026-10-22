@@ -43,6 +43,24 @@ def test_immutable_issuance_proof_supports_unbound_new_identity():
     assert _proof_digest(target_user_id=None, **common) != _proof_digest(target_user_id=7, **common)
 
 
+def test_session_authorized_issuance_has_its_own_domain_and_no_mfa_inputs():
+    """Normal project-admin sessions must not smuggle MFA placeholders."""
+    from virtual_office.invitations import _session_authorization_digest
+
+    common = dict(
+        token_hash=b"x" * 32, email="new@example.test", tenant_id=1, project_id=2,
+        recipient_group_id=None, target_user_id=None, account_class="OFFICE_INTERNAL",
+        actor_user_id=3, profile_version=1, grant_version=2,
+        issued_at=__import__("datetime").datetime(2026, 1, 1),
+        expires_at=__import__("datetime").datetime(2026, 1, 2), authorization_event_id=6,
+    )
+    digest = _session_authorization_digest(**common)
+    assert len(digest) == 32
+    assert digest != _proof_digest(
+        proof_event_id=0, mfa_version=0, **common,
+    )
+
+
 def test_deadline_guard_translates_only_the_mariadb_trigger_error():
     class Cursor:
         async def execute(self, _query):

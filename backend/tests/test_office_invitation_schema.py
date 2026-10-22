@@ -75,13 +75,14 @@ def test_invitation_tables_are_runtime_attested_and_keep_immutable_proof_separat
                 await cur.execute(
                     "SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
                     "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_invitation_issuance' "
-                    "AND COLUMN_NAME IN ('token_hash','issuer_proof_event_id','issuer_mfa_version','issuance_authorization_event_id') "
+                    "AND COLUMN_NAME IN ('token_hash','issuer_authorization_kind','issuer_proof_event_id','issuer_mfa_version','issuance_authorization_event_id') "
                     "ORDER BY COLUMN_NAME"
                 )
                 assert await cur.fetchall() == (
                     ('issuance_authorization_event_id', 'bigint', 'NO'),
-                    ('issuer_mfa_version', 'bigint', 'NO'),
-                    ('issuer_proof_event_id', 'bigint', 'NO'),
+                    ('issuer_authorization_kind', 'varchar', 'NO'),
+                    ('issuer_mfa_version', 'bigint', 'YES'),
+                    ('issuer_proof_event_id', 'bigint', 'YES'),
                     ('token_hash', 'binary', 'NO'),
                 )
                 await cur.execute(

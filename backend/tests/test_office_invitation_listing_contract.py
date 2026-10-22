@@ -89,13 +89,44 @@ def test_listing_gates_before_confidential_email_query(monkeypatch):
     assert cursor.statements == []
 
 
-def test_capability_does_not_downgrade_missing_mfa_configuration_to_false():
-    with pytest.raises(InvitationError) as unavailable:
-        asyncio.run(can_manage_invitations_in_cursor(
-            _Cursor(), actor_user_id=7, project_id=12, proof_event_id=9,
-            mfa_config=None,
-        ))
-    assert unavailable.value.status_code == 503
+def test_capability_uses_normal_project_admin_session_without_mfa(monkeypatch):
+    async def allowed(*_args, **_kwargs):
+        return object(), 1, 1
+
+    monkeypatch.setattr("virtual_office.invitations._session_authorization_snapshot", allowed)
+    assert asyncio.run(can_manage_invitations_in_cursor(
+        _Cursor(), actor_user_id=7, project_id=12, proof_event_id=None,
+        mfa_config=None,
+    )) is True
+
+
+def test_session_snapshot_authorizes_project_admin_without_mfa_arguments(monkeypatch):
+    class BasisCursor(_Cursor):
+        async def fetchone(self):
+            return (4, 9)
+
+    observed = {}
+
+    async def no_op_lock(*_args, **_kwargs):
+        return None
+
+    async def allowed(_cur, actor, operation, project, **kwargs):
+        observed.update(actor=actor, operation=operation.value, project=project, **kwargs)
+        return type("Decision", (), {"allowed": True})()
+
+    monkeypatch.setattr("virtual_office.invitations.lock_office_actor_project_tenants_in_cursor", no_op_lock)
+    monkeypatch.setattr("virtual_office.invitations.authorize_office_in_cursor", allowed)
+    from virtual_office.invitations import _session_authorization_snapshot
+
+    decision, profile_version, grant_version = asyncio.run(
+        _session_authorization_snapshot(BasisCursor(), actor_user_id=7, project_id=12)
+    )
+    assert decision.allowed is True
+    assert (profile_version, grant_version) == (4, 9)
+    assert observed == {
+        "actor": 7, "operation": "ADMINISTER_PROJECT_MEMBERS", "project": 12,
+        "require_recent_mfa": False,
+    }
 
 
 def test_listing_uses_limit_plus_one_live_project_index_keyset(monkeypatch):

@@ -26,6 +26,8 @@ from virtual_office.invitations import (
     InvitationError, accept_invitation_in_cursor, invitation_bearer_preflight, issue_invitation_in_cursor,
     list_active_invitations_in_cursor, revoke_invitation_in_cursor,
 )
+# Retained for compatible import surfaces while invitation issuance uses the
+# normal authenticated project-admin session instead of an MFA prerequisite.
 from virtual_office.mfa import load_mfa_config_from_environment
 
 
@@ -115,15 +117,14 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
     idempotency_key = _require_durable_idempotency(idempotency_key)
     actor = _actor_id(user)
     invitation_config = load_invitation_config_from_environment()
-    mfa_config = load_mfa_config_from_environment()
-    if invitation_config is None or mfa_config is None:
+    if invitation_config is None:
         raise HTTPException(status_code=503, detail="office_invitation_unavailable")
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             invitation = await issue_invitation_in_cursor(
                 cur, actor_user_id=actor, project_id=project_id, email=payload.email,
-                audience=payload.audience, proof_event_id=user.mfa_proof_event_id,
-                mfa_config=mfa_config, invitation_config=invitation_config,
+                audience=payload.audience, proof_event_id=None,
+                mfa_config=None, invitation_config=invitation_config,
                 idempotency_key=idempotency_key,
             )
     except InvitationError as error:
@@ -143,12 +144,11 @@ async def list_invitations(project_id: int, response: Response,
                            user: AuthUser = Depends(get_current_user)):
     """Return only unexpired issued invitations after the issuer gate."""
     actor = _actor_id(user)
-    mfa_config = load_mfa_config_from_environment()
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             invitations, next_cursor = await list_active_invitations_in_cursor(
                 cur, actor_user_id=actor, project_id=project_id,
-                proof_event_id=user.mfa_proof_event_id, mfa_config=mfa_config,
+                proof_event_id=None, mfa_config=None,
                 limit=limit, cursor=cursor,
             )
     except InvitationError as error:
@@ -183,8 +183,7 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
             version, replayed = await revoke_invitation_in_cursor(
                 cur, actor_user_id=actor, project_id=project_id, invitation_id=invitation_id,
                 expected_version=expected_version,
-                proof_event_id=user.mfa_proof_event_id,
-                mfa_config=load_mfa_config_from_environment(),
+                proof_event_id=None, mfa_config=None,
                 idempotency_key=idempotency_key,
             )
     except InvitationError as error:

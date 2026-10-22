@@ -253,6 +253,33 @@ def _proof_digest(*, token_hash: bytes, email: str, tenant_id: int, project_id: 
     return hashlib.sha256(json.dumps(fields, separators=(",", ":"), sort_keys=True).encode("utf-8")).digest()
 
 
+def _session_authorization_digest(*, token_hash: bytes, email: str, tenant_id: int,
+                                  project_id: int, recipient_group_id: int | None,
+                                  target_user_id: int | None, account_class: str,
+                                  actor_user_id: int, profile_version: int,
+                                  grant_version: int, issued_at: dt.datetime,
+                                  expires_at: dt.datetime,
+                                  authorization_event_id: int) -> bytes:
+    """Bind a v2 normal-session issuance without inventing MFA evidence.
+
+    The prefix is part of the serialized preimage, so this can never validate
+    as the historical MFA-proof contract even when every shared value matches.
+    """
+    fields = {
+        "account_class": account_class, "actor_user_id": actor_user_id,
+        "authorization_event_id": authorization_event_id, "email": email,
+        "expires_at": expires_at.isoformat(), "grant_role": "COLLABORATOR",
+        "grant_version": grant_version, "issued_at": issued_at.isoformat(),
+        "profile_version": profile_version, "project_id": project_id,
+        "recipient_group_id": recipient_group_id, "tenant_id": tenant_id,
+        "token_hash": token_hash.hex(), "target_user_id": target_user_id,
+    }
+    return hashlib.sha256(
+        b"office-invitation-session-authorization/v2\\x00"
+        + json.dumps(fields, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).digest()
+
+
 def _outbox_payload(*, invitation_id: str, email: str, token: str, expires_at: dt.datetime) -> bytes:
     """Encrypt the sole transient bearer copy; it deliberately contains no URL."""
     if not clave_de_cifrado_utilizable():
@@ -329,6 +356,31 @@ async def _issuer_snapshot(cur, *, actor_user_id: int, project_id: int,
     return decision, proof, int(basis[0]), int(basis[1])
 
 
+async def _session_authorization_snapshot(cur, *, actor_user_id: int,
+                                          project_id: int):
+    """Resolve the current project-admin session without an MFA prerequisite."""
+    await lock_office_actor_project_tenants_in_cursor(
+        cur, actor_user_id=actor_user_id, project_id=project_id,
+    )
+    decision = await authorize_office_in_cursor(
+        cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS,
+        project_id, require_recent_mfa=False,
+    )
+    if not decision.allowed:
+        raise InvitationError("office_invitation_issuer_denied", status_code=403)
+    await cur.execute(
+        "SELECT p.version,g.version FROM office_account_profile p "
+        "JOIN office_project_grant g ON g.user_id=p.user_id "
+        "WHERE p.user_id=%s AND p.status='ACTIVE' AND g.project_id=%s "
+        "AND g.status='ACTIVE' AND g.audience='INTERNAL' AND g.grant_role='PROJECT_ADMIN' FOR UPDATE",
+        (actor_user_id, project_id),
+    )
+    basis = await cur.fetchone()
+    if basis is None:
+        raise InvitationError("office_invitation_issuer_denied", status_code=403)
+    return decision, int(basis[0]), int(basis[1])
+
+
 async def can_manage_invitations_in_cursor(cur, *, actor_user_id: int,
                                            project_id: int, proof_event_id: int | None,
                                            mfa_config: MFAConfig | None) -> bool:
@@ -339,15 +391,8 @@ async def can_manage_invitations_in_cursor(cur, *, actor_user_id: int,
     callers must not present a false capability when the system could not
     evaluate it.
     """
-    if mfa_config is None:
-        raise InvitationError("office_invitation_unavailable", status_code=503)
-    if type(proof_event_id) is not int or proof_event_id < 1:
-        return False
     try:
-        await _issuer_snapshot(
-            cur, actor_user_id=actor_user_id, project_id=project_id,
-            proof_event_id=proof_event_id, mfa_config=mfa_config,
-        )
+        await _session_authorization_snapshot(cur, actor_user_id=actor_user_id, project_id=project_id)
     except InvitationError as error:
         if error.status_code == 403:
             return False
@@ -364,16 +409,11 @@ async def list_active_invitations_in_cursor(
     The issuer snapshot runs before any invitation/e-mail query.  Every
     continuation is scoped to the project and repeats this gate.
     """
-    if mfa_config is None:
-        raise InvitationError("office_invitation_unavailable", status_code=503)
     if type(actor_user_id) is not int or type(project_id) is not int:
         raise InvitationError("office_invitation_invalid", status_code=422)
     if type(limit) is not int or not 1 <= limit <= 100:
         raise InvitationError("office_invitation_invalid", status_code=422)
-    await _issuer_snapshot(
-        cur, actor_user_id=actor_user_id, project_id=project_id,
-        proof_event_id=proof_event_id, mfa_config=mfa_config,
-    )
+    await _session_authorization_snapshot(cur, actor_user_id=actor_user_id, project_id=project_id)
     predicate = ""
     params: tuple[object, ...] = (project_id,)
     if cursor is not None:
@@ -421,16 +461,13 @@ async def issue_invitation_in_cursor(
     """Derive the target and audience server-side, then queue delivery."""
     if type(actor_user_id) is not int or type(project_id) is not int:
         raise InvitationError("office_invitation_invalid", status_code=422)
-    if mfa_config is None or type(proof_event_id) is not int or proof_event_id < 1:
-        raise InvitationError("office_invitation_issuer_denied", status_code=403)
     normalized_email = _normalize_email(email)
     idempotency_key = _idempotency_key(idempotency_key)
     if audience not in {"INTERNAL", "CLIENT_PUBLISHED"}:
         raise InvitationError("office_invitation_target_denied", status_code=409)
     target_account_class = "OFFICE_INTERNAL" if audience == "INTERNAL" else "EXTERNAL_CLIENT"
-    decision, proof, profile_version, grant_version = await _issuer_snapshot(
+    decision, profile_version, grant_version = await _session_authorization_snapshot(
         cur, actor_user_id=actor_user_id, project_id=project_id,
-        proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
     mutation_digest = _mutation_digest(
         operation="ISSUE", actor_user_id=actor_user_id, project_id=project_id,
@@ -494,23 +531,21 @@ async def issue_invitation_in_cursor(
     outbox_id = str(uuid.uuid4())
     correlation_id = uuid.uuid4().bytes
     authorization_event_id = await record_authorization_event(cur, decision)
-    proof_digest = _proof_digest(
+    proof_digest = _session_authorization_digest(
         token_hash=token_hash, email=normalized_email, tenant_id=tenant_id, project_id=project_id,
         recipient_group_id=recipient_group_id, target_user_id=target_user_id,
         account_class=target_account_class, actor_user_id=actor_user_id,
         profile_version=profile_version, grant_version=grant_version,
-        proof_event_id=proof.event_id, mfa_version=proof.mfa_version,
         issued_at=now, expires_at=expires_at, authorization_event_id=authorization_event_id,
     )
     payload = _outbox_payload(invitation_id=invitation_id, email=normalized_email, token=token, expires_at=expires_at)
     await cur.execute(
         "INSERT INTO office_invitation_issuance "
-        "(issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'COLLABORATOR',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "(issuance_id,token_hash,email_normalized,tenant_id,project_id,recipient_group_id,target_user_id,target_account_class,grant_role,audience,issued_by_user_id,issuer_profile_version,issuer_grant_version,issuer_authorization_kind,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at,issuance_authorization_event_id,proof_digest,correlation_id,issued_at,expires_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'COLLABORATOR',%s,%s,%s,%s,'SESSION_AUTHORIZATION',NULL,NULL,NULL,%s,%s,%s,%s,%s)",
         (issuance_id, token_hash, normalized_email, tenant_id, project_id, recipient_group_id, target_user_id,
          target_account_class, audience,
-         actor_user_id, profile_version, grant_version, proof.event_id, proof.mfa_version,
-         proof.occurred_at.replace(tzinfo=None), authorization_event_id, proof_digest, correlation_id,
+         actor_user_id, profile_version, grant_version, authorization_event_id, proof_digest, correlation_id,
          now.replace(tzinfo=None), expires_at.replace(tzinfo=None)),
     )
     await cur.execute(
@@ -561,11 +596,11 @@ async def revoke_invitation_in_cursor(
     idempotency_key: str,
 ) -> tuple[int, bool]:
     """Revoke an unconsumed invitation and let the DB guard cancel delivery."""
-    if mfa_config is None or type(proof_event_id) is not int or type(expected_version) is not int or expected_version < 1:
+    if type(expected_version) is not int or expected_version < 1:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     idempotency_key = _idempotency_key(idempotency_key)
-    decision, _proof, _profile_version, _grant_version = await _issuer_snapshot(cur, actor_user_id=actor_user_id, project_id=project_id,
-                           proof_event_id=proof_event_id, mfa_config=mfa_config)
+    decision, _profile_version, _grant_version = await _session_authorization_snapshot(
+        cur, actor_user_id=actor_user_id, project_id=project_id)
     mutation_digest = _mutation_digest(
         operation="REVOKE", actor_user_id=actor_user_id, project_id=project_id,
         invitation_id=invitation_id, expected_version=expected_version,
@@ -637,13 +672,15 @@ async def revoke_invitation_in_cursor(
 class _InvitationAcceptanceAuthorizer:
     """Trusted JXP proof resolver used only by JAX's typed capability call."""
     def __init__(self, *, invitation_id: str, issuer_user_id: int, target_user_id: int,
-                 target_tenant_id: int, project_id: int, mfa_version: int,
-                 proof_event_id: int, mfa_at: dt.datetime):
+                 target_tenant_id: int, project_id: int, authorization_kind: str,
+                 mfa_version: int | None, proof_event_id: int | None,
+                 mfa_at: dt.datetime | None):
         self.invitation_id = invitation_id
         self.issuer_user_id = issuer_user_id
         self.target_user_id = target_user_id
         self.target_tenant_id = target_tenant_id
         self.project_id = project_id
+        self.authorization_kind = authorization_kind
         self.mfa_version = mfa_version
         self.proof_event_id = proof_event_id
         self.mfa_at = mfa_at
@@ -662,16 +699,24 @@ class _InvitationAcceptanceAuthorizer:
                 or actor_user_id != self.issuer_user_id or target_user_id != self.target_user_id
                 or target_tenant_id != self.target_tenant_id or project_id != self.project_id):
             raise AuthorizationDenied("Office invitation capability binding denied")
-        await cursor.execute(
-            "SELECT u.mfa_version,p.status FROM jax_users u LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
-            "WHERE u.user_id=%s FOR UPDATE", (self.issuer_user_id,))
-        issuer = await cursor.fetchone()
-        if issuer is None or int(issuer[0]) != self.mfa_version or issuer[1] != "ACTIVE":
-            raise AuthorizationDenied("Office invitation issuer proof is no longer current")
-        decision = await authorize_invitation_issuer_in_cursor(
-            cursor, issuer_user_id=self.issuer_user_id, project_id=self.project_id,
-            proof_event_id=self.proof_event_id, issued_mfa_version=self.mfa_version,
-            issued_mfa_at=self.mfa_at)
+        if self.authorization_kind == "MFA_PROOF":
+            if self.mfa_version is None or self.proof_event_id is None or self.mfa_at is None:
+                raise AuthorizationDenied("Office invitation issuer proof is malformed")
+            await cursor.execute(
+                "SELECT u.mfa_version,p.status FROM jax_users u LEFT JOIN office_account_profile p ON p.user_id=u.user_id "
+                "WHERE u.user_id=%s FOR UPDATE", (self.issuer_user_id,))
+            issuer = await cursor.fetchone()
+            if issuer is None or int(issuer[0]) != self.mfa_version or issuer[1] != "ACTIVE":
+                raise AuthorizationDenied("Office invitation issuer proof is no longer current")
+            decision = await authorize_invitation_issuer_in_cursor(
+                cursor, issuer_user_id=self.issuer_user_id, project_id=self.project_id,
+                proof_event_id=self.proof_event_id, issued_mfa_version=self.mfa_version,
+                issued_mfa_at=self.mfa_at)
+        elif self.authorization_kind == "SESSION_AUTHORIZATION":
+            decision, _profile_version, _grant_version = await _session_authorization_snapshot(
+                cursor, actor_user_id=self.issuer_user_id, project_id=self.project_id)
+        else:
+            raise AuthorizationDenied("Office invitation issuer authorization is unknown")
         if not decision.allowed:
             raise AuthorizationDenied("Office invitation issuer authority is no longer current")
         self.authorization_event_id = await record_authorization_event(cursor, decision)
@@ -734,13 +779,14 @@ async def accept_invitation_in_cursor(
     # actor → scope → invitation order as revoke and prevents their former
     # lock inversion.
     await cur.execute(
-        "SELECT issued_by_user_id,project_id,tenant_id,target_user_id,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at "
+        "SELECT issued_by_user_id,project_id,tenant_id,target_user_id,issuer_authorization_kind,issuer_proof_event_id,issuer_mfa_version,issuer_mfa_at "
         "FROM office_invitation_issuance WHERE token_hash=%s", (token_hash,))
     discovered = await cur.fetchone()
     if discovered is None:
         raise InvitationError("office_invitation_invalid", status_code=403)
     (discovered_issuer, discovered_project, discovered_tenant, discovered_target,
-     discovered_proof, discovered_mfa_version, discovered_mfa_at) = discovered
+     discovered_authorization_kind, discovered_proof, discovered_mfa_version,
+     discovered_mfa_at) = discovered
     await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (discovered_project,))
     discovered_scope = await cur.fetchone()
     tenant_ids = {int(discovered_tenant)}
@@ -757,15 +803,23 @@ async def accept_invitation_in_cursor(
         await cur.execute("SELECT user_id FROM jax_users WHERE user_id=%s FOR UPDATE", (discovered_target,))
         if await cur.fetchone() is None:
             raise InvitationError("office_invitation_invalid", status_code=403)
-    predecision = await authorize_invitation_issuer_in_cursor(
-        cur, issuer_user_id=int(discovered_issuer), project_id=int(discovered_project),
-        proof_event_id=int(discovered_proof), issued_mfa_version=int(discovered_mfa_version),
-        issued_mfa_at=discovered_mfa_at)
+    if discovered_authorization_kind == "MFA_PROOF":
+        if discovered_proof is None or discovered_mfa_version is None or discovered_mfa_at is None:
+            raise InvitationError("office_invitation_invalid", status_code=403)
+        predecision = await authorize_invitation_issuer_in_cursor(
+            cur, issuer_user_id=int(discovered_issuer), project_id=int(discovered_project),
+            proof_event_id=int(discovered_proof), issued_mfa_version=int(discovered_mfa_version),
+            issued_mfa_at=discovered_mfa_at)
+    elif discovered_authorization_kind == "SESSION_AUTHORIZATION":
+        predecision, _profile_version, _grant_version = await _session_authorization_snapshot(
+            cur, actor_user_id=int(discovered_issuer), project_id=int(discovered_project))
+    else:
+        raise InvitationError("office_invitation_invalid", status_code=403)
     if not predecision.allowed:
         raise InvitationError("office_invitation_issuer_denied", status_code=403)
     await cur.execute(
         "SELECT i.invitation_id,i.status,i.version,i.project_id,i.target_user_id,s.issued_by_user_id,s.tenant_id,s.email_normalized,"
-        "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_proof_event_id,"
+        "s.target_account_class,s.grant_role,s.audience,s.recipient_group_id,s.issuer_authorization_kind,s.issuer_proof_event_id,"
         "s.issuer_profile_version,s.issuer_grant_version,s.issuer_mfa_version,s.issuer_mfa_at,"
         "s.issuance_authorization_event_id,s.proof_digest,s.token_hash,s.issued_at,s.expires_at,s.correlation_id "
         "FROM office_invitation i JOIN office_invitation_issuance s ON s.issuance_id=i.issuance_id "
@@ -774,14 +828,15 @@ async def accept_invitation_in_cursor(
     if row is None:
         raise InvitationError("office_invitation_invalid", status_code=403)
     (invitation_id, status, version, project_id, target_user_id, issuer_user_id, tenant_id, issued_email,
-     account_class, grant_role, audience, group_id, proof_event_id,
+     account_class, grant_role, audience, group_id, authorization_kind, proof_event_id,
      issuer_profile_version, issuer_grant_version, issuer_mfa_version, issuer_mfa_at,
      issuance_auth_id, stored_proof_digest, stored_hash, issued_at, expires_at, correlation_id) = row
     if stored_hash != token_hash:
         raise InvitationError("office_invitation_invalid", status_code=403)
-    if (int(issuer_user_id), int(project_id), int(proof_event_id), int(issuer_mfa_version), issuer_mfa_at) != (
-            int(discovered_issuer), int(discovered_project), int(discovered_proof),
-            int(discovered_mfa_version), discovered_mfa_at):
+    if (int(issuer_user_id), int(project_id), authorization_kind, proof_event_id,
+            issuer_mfa_version, issuer_mfa_at) != (
+            int(discovered_issuer), int(discovered_project), discovered_authorization_kind,
+            discovered_proof, discovered_mfa_version, discovered_mfa_at):
         raise InvitationError("office_invitation_retryable", status_code=503)
     # A completed invitation can only be observed by its authenticated owner.
     # A bearer alone must never become a password-reset capability after use.
@@ -834,15 +889,22 @@ async def accept_invitation_in_cursor(
             raise InvitationError("office_invitation_invalid", status_code=403)
     issued_at_utc = issued_at.replace(tzinfo=dt.timezone.utc) if issued_at.tzinfo is None else issued_at.astimezone(dt.timezone.utc)
     expires_at_utc = expires_at.replace(tzinfo=dt.timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(dt.timezone.utc)
-    if not hmac.compare_digest(
-        _proof_digest(token_hash=token_hash, email=issued_email, tenant_id=int(tenant_id), project_id=int(project_id),
-                      recipient_group_id=group_id, target_user_id=(None if target_user_id is None else int(target_user_id)), account_class=account_class,
-                      actor_user_id=int(issuer_user_id), profile_version=int(issuer_profile_version),
-                      grant_version=int(issuer_grant_version), proof_event_id=int(proof_event_id),
-                      mfa_version=int(issuer_mfa_version), issued_at=issued_at_utc,
-                      expires_at=expires_at_utc, authorization_event_id=int(issuance_auth_id)),
-        stored_proof_digest,
-    ):
+    digest_kwargs = dict(
+        token_hash=token_hash, email=issued_email, tenant_id=int(tenant_id), project_id=int(project_id),
+        recipient_group_id=group_id, target_user_id=(None if target_user_id is None else int(target_user_id)),
+        account_class=account_class, actor_user_id=int(issuer_user_id),
+        profile_version=int(issuer_profile_version), grant_version=int(issuer_grant_version),
+        issued_at=issued_at_utc, expires_at=expires_at_utc,
+        authorization_event_id=int(issuance_auth_id),
+    )
+    expected_digest = (
+        _proof_digest(proof_event_id=int(proof_event_id), mfa_version=int(issuer_mfa_version), **digest_kwargs)
+        if authorization_kind == "MFA_PROOF" and proof_event_id is not None and issuer_mfa_version is not None
+        else _session_authorization_digest(**digest_kwargs)
+        if authorization_kind == "SESSION_AUTHORIZATION"
+        else None
+    )
+    if expected_digest is None or not hmac.compare_digest(expected_digest, stored_proof_digest):
         raise InvitationError("office_invitation_integrity", status_code=503)
     await cur.execute(
         "SELECT state FROM office_invitation_outbox WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
@@ -864,8 +926,9 @@ async def accept_invitation_in_cursor(
                                               ProjectNamespace)
     authorizer = _InvitationAcceptanceAuthorizer(
         invitation_id=invitation_id, issuer_user_id=int(issuer_user_id), target_user_id=accepting_user_id,
-        target_tenant_id=int(tenant_id), project_id=int(project_id), mfa_version=int(issuer_mfa_version),
-        proof_event_id=int(proof_event_id), mfa_at=issuer_mfa_at)
+        target_tenant_id=int(tenant_id), project_id=int(project_id), authorization_kind=authorization_kind,
+        mfa_version=None if issuer_mfa_version is None else int(issuer_mfa_version),
+        proof_event_id=None if proof_event_id is None else int(proof_event_id), mfa_at=issuer_mfa_at)
     try:
         result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
             cur, actor_user_id=int(issuer_user_id), target_tenant_id=int(tenant_id), project_id=int(project_id),

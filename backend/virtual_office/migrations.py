@@ -207,7 +207,8 @@ OFFICE_INVITATION_DDL = (
     "tenant_id INT NOT NULL,project_id INT NOT NULL,recipient_group_id BIGINT UNSIGNED NULL,target_user_id INT NULL,"
     "target_account_class VARCHAR(24) NOT NULL,grant_role VARCHAR(24) NOT NULL,audience VARCHAR(24) NOT NULL,"
     "issued_by_user_id INT NOT NULL,issuer_profile_version BIGINT NOT NULL,issuer_grant_version BIGINT NOT NULL,"
-    "issuer_proof_event_id BIGINT UNSIGNED NOT NULL,issuer_mfa_version BIGINT NOT NULL,issuer_mfa_at DATETIME(6) NOT NULL,"
+    "issuer_authorization_kind VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'MFA_PROOF',"
+    "issuer_proof_event_id BIGINT UNSIGNED NULL,issuer_mfa_version BIGINT NULL,issuer_mfa_at DATETIME(6) NULL,"
     "issuance_authorization_event_id BIGINT UNSIGNED NOT NULL,proof_digest BINARY(32) NOT NULL,"
     "correlation_id BINARY(16) NOT NULL,issued_at DATETIME(6) NOT NULL,expires_at DATETIME(6) NOT NULL,"
     "UNIQUE KEY uq_office_invitation_issuance_token (token_hash),UNIQUE KEY uq_office_invitation_issuance_binding (issuance_id,project_id,email_normalized,target_user_id),"
@@ -222,7 +223,9 @@ OFFICE_INVITATION_DDL = (
     "CONSTRAINT fk_office_invitation_issuance_proof FOREIGN KEY (issuer_proof_event_id) REFERENCES office_mfa_security_event(event_id),"
     "CONSTRAINT fk_office_invitation_issuance_authorization FOREIGN KEY (issuance_authorization_event_id) REFERENCES office_authorization_event(event_id),"
     "CONSTRAINT chk_office_invitation_issuance_shape CHECK ("
-    "email_normalized <> '' AND issuer_profile_version>=1 AND issuer_grant_version>=1 AND issuer_mfa_version >= 0 AND issued_at < expires_at AND "
+    "email_normalized <> '' AND issuer_profile_version>=1 AND issuer_grant_version>=1 AND issued_at < expires_at AND "
+    "((issuer_authorization_kind='MFA_PROOF' AND issuer_proof_event_id IS NOT NULL AND issuer_mfa_version >= 0 AND issuer_mfa_at IS NOT NULL) OR "
+    "(issuer_authorization_kind='SESSION_AUTHORIZATION' AND issuer_proof_event_id IS NULL AND issuer_mfa_version IS NULL AND issuer_mfa_at IS NULL)) AND "
     "((target_account_class='OFFICE_INTERNAL' AND grant_role='COLLABORATOR' AND audience='INTERNAL' AND recipient_group_id IS NULL) OR "
     "(target_account_class='EXTERNAL_CLIENT' AND grant_role='COLLABORATOR' AND audience='CLIENT_PUBLISHED' AND recipient_group_id IS NOT NULL))"
     ")) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -757,13 +760,14 @@ _INVITATION_INDEXES = {
     },
 }
 _INVITATION_CHECK_DIGESTS = {
-    "chk_office_invitation_issuance_shape": "efc34a8e7ed42eff7b2d2e48656dd486ceaac49500a9d1516905c6e876ef278a",
+    "chk_office_invitation_issuance_shape": "cbd015ae318628f48528aa6735118e7821e1c82337c37dff9d555d5519f299f4",
     "chk_office_invitation_shape": "c07efa419383b9f00f9bc5b0a8884aac877de5f6f5a5babd8e16cd347522abb6",
     "chk_office_invitation_event_shape": "64103b1ffd1a6e0adcdface79c7782f4b37b38a3428c4a40d0a004f7a478ed78",
     "chk_office_invitation_outbox_shape": "4eb25681d2ea2ab65fe509ea0ed988726a367edad5c214a71136c711192b40e3",
 }
+_INVITATION_ISSUANCE_V1_CHECK_DIGEST = "efc34a8e7ed42eff7b2d2e48656dd486ceaac49500a9d1516905c6e876ef278a"
 _INVITATION_COLUMNS = {
-    "office_invitation_issuance": (("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("token_hash","binary","binary(32)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("tenant_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),("recipient_group_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("target_account_class","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("grant_role","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("audience","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("issued_by_user_id","int","int(11)","NO",None,None,"",None),("issuer_profile_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_grant_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_proof_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("issuer_mfa_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_mfa_at","datetime","datetime(6)","NO",None,None,"",None),("issuance_authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("proof_digest","binary","binary(32)","NO",None,None,"",None),("correlation_id","binary","binary(16)","NO",None,None,"",None),("issued_at","datetime","datetime(6)","NO",None,None,"",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None)),
+    "office_invitation_issuance": (("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("token_hash","binary","binary(32)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("tenant_id","int","int(11)","NO",None,None,"",None),("project_id","int","int(11)","NO",None,None,"",None),("recipient_group_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("target_account_class","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("grant_role","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("audience","varchar","varchar(24)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("issued_by_user_id","int","int(11)","NO",None,None,"",None),("issuer_profile_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_grant_version","bigint","bigint(20)","NO",None,None,"",None),("issuer_authorization_kind","varchar","varchar(32)","NO","ascii","ascii_bin","","'MFA_PROOF'"),("issuer_proof_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("issuer_mfa_version","bigint","bigint(20)","YES",None,None,"","NULL"),("issuer_mfa_at","datetime","datetime(6)","YES",None,None,"","NULL"),("issuance_authorization_event_id","bigint","bigint(20) unsigned","NO",None,None,"",None),("proof_digest","binary","binary(32)","NO",None,None,"",None),("correlation_id","binary","binary(16)","NO",None,None,"",None),("issued_at","datetime","datetime(6)","NO",None,None,"",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None)),
     "office_invitation": (("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("issuance_id","char","char(36)","NO","ascii","ascii_bin","",None),("expires_at","datetime","datetime(6)","NO",None,None,"",None),("status","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'ISSUED'"),("version","bigint","bigint(20)","NO",None,None,"","1"),("project_id","int","int(11)","NO",None,None,"",None),("email_normalized","varchar","varchar(320)","NO","ascii","ascii_bin","",None),("target_user_id","int","int(11)","YES",None,None,"","NULL"),("pending_email","varchar","varchar(320)","YES","ascii","ascii_bin","STORED GENERATED","NULL"),("accepted_user_id","int","int(11)","YES",None,None,"","NULL"),("accepted_at","datetime","datetime(6)","YES",None,None,"","NULL"),("revoked_by_user_id","int","int(11)","YES",None,None,"","NULL"),("revoked_at","datetime","datetime(6)","YES",None,None,"","NULL")),
     "office_invitation_event": (("event_id","bigint","bigint(20) unsigned","NO",None,None,"auto_increment",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("event_kind","varchar","varchar(32)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","",None),("causation_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("actor_user_id","int","int(11)","YES",None,None,"","NULL"),("bearer_token_hash","binary","binary(32)","YES",None,None,"","NULL"),("observed_outbox_state","varchar","varchar(16)","YES","utf8mb4","utf8mb4_uca1400_ai_ci","","NULL"),("authorization_event_id","bigint","bigint(20) unsigned","YES",None,None,"","NULL"),("invocation_digest","binary","binary(32)","YES",None,None,"","NULL"),("correlation_id","binary","binary(16)","NO",None,None,"",None),("occurred_at","datetime","datetime(6)","NO",None,None,"",None)),
     "office_invitation_outbox": (("outbox_id","char","char(36)","NO","ascii","ascii_bin","",None),("invitation_id","char","char(36)","NO","ascii","ascii_bin","",None),("state","varchar","varchar(16)","NO","utf8mb4","utf8mb4_uca1400_ai_ci","","'QUEUED'"),("attempt_id","char","char(36)","YES","ascii","ascii_bin","","NULL"),("attempt_count","int","int(11)","NO",None,None,"","0"),("cancel_requested","tinyint","tinyint(1)","NO",None,None,"","0"),("payload_ciphertext","mediumblob","mediumblob","YES",None,None,"","NULL"),("message_id","varchar","varchar(320)","YES","ascii","ascii_bin","","NULL"),("result_code","varchar","varchar(64)","YES","ascii","ascii_bin","","NULL"),("claimed_at","datetime","datetime(6)","YES",None,None,"","NULL"),("finished_at","datetime","datetime(6)","YES",None,None,"","NULL"),("created_at","datetime","datetime(6)","NO",None,None,"",None),("updated_at","datetime","datetime(6)","NO",None,None,"",None)),
@@ -1004,6 +1008,52 @@ async def _prepare_invitation_schema(cur) -> None:
         await cur.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in tables:
         await cur.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+async def _upgrade_invitation_session_authorization(cur) -> None:
+    """Add the v2 normal-session authority without rewriting v1 MFA evidence."""
+    if not await _table_exists(cur, "office_invitation_issuance"):
+        return
+    if not await _column_exists(cur, "office_invitation_issuance", "issuer_authorization_kind"):
+        await cur.execute(
+            "ALTER TABLE office_invitation_issuance ADD COLUMN "
+            "issuer_authorization_kind VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin "
+            "NOT NULL DEFAULT 'MFA_PROOF' AFTER issuer_grant_version"
+        )
+    # Historic issuance rows retain their non-null v1 evidence.  Only new
+    # SESSION_AUTHORIZATION rows carry NULL MFA fields, so no old evidence is
+    # fabricated or rewritten during this additive upgrade.
+    await cur.execute(
+        "ALTER TABLE office_invitation_issuance "
+        "MODIFY issuer_proof_event_id BIGINT UNSIGNED NULL, "
+        "MODIFY issuer_mfa_version BIGINT NULL, "
+        "MODIFY issuer_mfa_at DATETIME(6) NULL"
+    )
+    clause = await _check_clause(cur, "chk_office_invitation_issuance_shape")
+    digest = _check_digest(clause)
+    expected = _INVITATION_CHECK_DIGESTS["chk_office_invitation_issuance_shape"]
+    if digest == expected:
+        return
+    if digest != _INVITATION_ISSUANCE_V1_CHECK_DIGEST:
+        raise RuntimeError("Office invitation issuance CHECK history is incompatible; historic evidence is not rewritten")
+    await cur.execute(
+        "SELECT 1 FROM office_invitation_issuance "
+        "WHERE issuer_authorization_kind<>'MFA_PROOF' OR issuer_proof_event_id IS NULL "
+        "OR issuer_mfa_version IS NULL OR issuer_mfa_at IS NULL LIMIT 1"
+    )
+    if await cur.fetchone() is not None:
+        raise RuntimeError("Office invitation v1 issuance evidence is incomplete; historic evidence is not rewritten")
+    statement = next(item for item in OFFICE_INVITATION_DDL if item.startswith(
+        "CREATE TABLE IF NOT EXISTS office_invitation_issuance"
+    ))
+    check_sql = statement.split(
+        "CONSTRAINT chk_office_invitation_issuance_shape ", 1
+    )[1].rsplit(") ENGINE=", 1)[0]
+    await cur.execute("ALTER TABLE office_invitation_issuance DROP CONSTRAINT chk_office_invitation_issuance_shape")
+    await cur.execute(
+        "ALTER TABLE office_invitation_issuance ADD CONSTRAINT "
+        "chk_office_invitation_issuance_shape " + check_sql
+    )
 
 
 async def _preflight_invitation_receipt_causal_history(cur) -> None:
@@ -2059,6 +2109,7 @@ async def apply_office_migrations(cursor) -> None:
     await _upgrade_bootstrap_schema(cursor)
     await assert_bootstrap_runtime_metadata(cursor)
     await _prepare_invitation_schema(cursor)
+    await _upgrade_invitation_session_authorization(cursor)
     await _preflight_invitation_receipt_causal_history(cursor)
     await _upgrade_invitation_event_causality(cursor)
     # Attest and remove only known lifecycle guards before the one-time
