@@ -3,11 +3,30 @@
 set -euo pipefail
 umask 077
 
-CONTAINER=cv-op343-db-20261020
-PORT=33991
-DB=jax_memory_test
+# The fixture target is selected by name, never by arbitrary container, port,
+# or schema input.  Each allowed target is independently pinned below and the
+# live Docker port binding is rechecked before any principal is created.
+FIXTURE=${JAX_OFFICE_PROVISION_FIXTURE:-aligned}
+case "$FIXTURE" in
+  aligned)
+    CONTAINER=cv-office-explain-db-20261022
+    PORT=33994
+    DB=jax_memory_test_ac1d2e12
+    ;;
+  legacy)
+    CONTAINER=cv-op343-db-20261020
+    PORT=33991
+    DB=jax_memory_test
+    ;;
+  *)
+    echo "unknown JAX_OFFICE_PROVISION_FIXTURE (allowed: aligned, legacy)" >&2
+    exit 2
+    ;;
+esac
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 HELPER="$ROOT_DIR/ops/migration/provision-db-runtime.sh"
+V1_MANIFEST="$ROOT_DIR/ops/migration/runtime-table-privileges-v1.txt"
+V2_MANIFEST="$ROOT_DIR/ops/migration/runtime-table-privileges-v2.txt"
 [ "$(id -u)" = 0 ] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
 docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
@@ -33,7 +52,7 @@ HOST=$(mariadb "--defaults-extra-file=$ROOT_CNF" --batch --skip-column-names -e 
 case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 2;; esac
 
 ENV_FILE="$TEMP/deployment.env"
-printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=jax_memory_test\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
+printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
@@ -69,12 +88,36 @@ if runtime_sql -e "DELETE FROM office_bootstrap_state WHERE ceremony_key='__acl_
   echo 'runtime DELETE on protected bootstrap state was accepted' >&2; exit 1
 fi
 
-# Simulate an interruption after the first narrow table GRANT but before the
-# legacy schema UPDATE/DELETE revoke.  The next invocation may resume that
-# exact manifest prefix; an arbitrary extra grant remains fail-closed below.
-printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT, UPDATE, DELETE ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+# v11/v1 has schema SELECT,INSERT plus every exact v1 UPDATE/DELETE row.
+# The first v2 GRANT (axioma_config) merges INSERT into an existing row, so
+# SHOW GRANTS does not grow.  That durable cut-point must still resume.
+seed_exact_v1_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+  while read -r table privileges; do
+    [[ -z "$table" || "$table" == \#* ]] && continue
+    printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+  done < "$V1_MANIFEST" | admin >/dev/null
+}
+assert_no_schema_insert() {
+  ! printf "SHOW GRANTS FOR '%s'@'%s';\n" "$WEB" "$HOST" | admin | grep -F " ON \`$DB\`.*" | grep -F INSERT >/dev/null
+}
+[ "$(awk '!/^#/ && NF {count++} END {print count+0}' "$V1_MANIFEST")" -eq 32 ] || { echo 'v1 fixture manifest is not the reviewed 32-row predecessor' >&2; exit 1; }
+
+seed_exact_v1_runtime
+printf "GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
+assert_no_schema_insert
 runtime_sql -e "UPDATE axioma_config SET config_value=config_value WHERE 1=0"
+
+# The last durable v2 table GRANT is also a cut-point: all narrow rows exist,
+# but schema INSERT still has to be removed on the next invocation.
+seed_exact_v1_runtime
+while read -r table privileges; do
+  [[ -z "$table" || "$table" == \#* ]] && continue
+  printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+done < "$V2_MANIFEST" | admin >/dev/null
+run_helper
+assert_no_schema_insert
 
 # Every durable cut-point for a newly created principal is resumable and
 # bounded: CREATE USER (USAGE), schema grant, and the first table grant.  The
@@ -85,10 +128,10 @@ reset_new_runtime() {
 reset_new_runtime
 run_helper
 reset_new_runtime
-printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
+printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 reset_new_runtime
-printf "GRANT SELECT, INSERT ON \`%s\`.* TO '%s'@'%s'; GRANT UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s'; GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
 run_helper
