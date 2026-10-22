@@ -84,9 +84,9 @@ def test_ws_notifications_no_es_un_ajuste():
 # A-18
 def test_cors_solo_admite_frontend_origin():
     import main
-    (cors,) = [m for m in main.app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
-    esperado = [o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o]
-    assert cors.kwargs["allow_origins"] == esperado
+    (cors,) = [m for m in main.app.user_middleware if m.cls.__name__ == "HostBoundCORSMiddleware"]
+    esperado = os.getenv("FRONTEND_ORIGIN", "")
+    assert set(cors.kwargs["host_origins"].values()) == ({esperado} if esperado else set())
 
 
 # A-19: la conducta (payload) no cambia; la estructura si.

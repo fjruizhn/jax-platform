@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from auth.office_barrier import OfficeSurfaceBarrierMiddleware
 from auth.office_barrier import require_classic_stream_user
+from auth.browser_security import BrowserOriginGuard, HostBoundCORSMiddleware, load_browser_security_config
 
 # El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
 # plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
@@ -370,13 +371,14 @@ class _OfficeNoStoreMiddleware:
 # bearer response.
 app.add_middleware(_OfficeNoStoreMiddleware)
 
+_browser_security = load_browser_security_config()
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    HostBoundCORSMiddleware,
+    host_origins=_browser_security.host_origins,
 )
+app.add_middleware(BrowserOriginGuard, host_origins=_browser_security.host_origins)
+if _browser_security.allowed_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(_browser_security.allowed_hosts))
 
 ROUTERS = (
     health_router,

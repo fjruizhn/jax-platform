@@ -28,7 +28,7 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
             "WorkingDirectory": backend, "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
             "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"],
             "EnvironmentFiles": [["/etc/jax/runtime.env", False]],
-            "ExecStartEx": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "ExecStartEx": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=127.0.0.1", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
         },
@@ -78,6 +78,8 @@ def test_restore_accepts_complete_effective_source_unit_contract(tmp_path: Path)
 def test_restore_rejects_effective_contract_tampering(tmp_path: Path) -> None:
     cases = {
         "wrong argv": lambda c: c["jax-platform.service"]["ExecStartEx"][0][1].append("--reload"),
+        "empty forwarded proxy allowlist": lambda c: c["jax-platform.service"]["ExecStartEx"][0][1].__setitem__(7, "--forwarded-allow-ips="),
+        "wildcard forwarded proxy allowlist": lambda c: c["jax-platform.service"]["ExecStartEx"][0][1].__setitem__(7, "--forwarded-allow-ips=*"),
         "privileged start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["full-privileges"]),
         "no setuid start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["no-setuid"]),
         "ignored start command": lambda c: c["jax-platform.service"]["ExecStartEx"][0].__setitem__(2, ["ignore-failure"]),
