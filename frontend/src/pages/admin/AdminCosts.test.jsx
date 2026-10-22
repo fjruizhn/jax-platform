@@ -300,3 +300,65 @@ describe('AdminCosts -- pendientes vs perdidos (Task 4a)', () => {
     ).toBeInTheDocument()
   })
 })
+
+// PR 8 del diseño del tablero de consumo (2026-10-07, auditoría de #212): las
+// sondas del canario entran a axioma_usage como request_type='canario' y la
+// pantalla tiene que decirlo. Columna «Tipo» con el request_type traducido
+// (i18n, nunca el valor crudo salvo que no se conozca).
+describe('AdminCosts -- columna Tipo (request_type)', () => {
+  const CANARIO = { ...FILA, facet: 'thot', model: 'm-canario', request_type: 'canario', requests: 144 }
+  const CHAT = { ...FILA, request_type: 'chat' }
+
+  it('muestra la columna Tipo y el request_type traducido, canario incluido', async () => {
+    api.get.mockResolvedValue({ data: { by_facet: [CHAT, CANARIO], chart_data: null } })
+    renderCosts()
+    await screen.findByText('m-canario')
+    expect(screen.getByRole('columnheader', { name: 'Tipo' })).toBeInTheDocument()
+    expect(screen.getByText('Canario (sonda de salud)')).toBeInTheDocument()
+    expect(screen.getByText('Chat')).toBeInTheDocument()
+    expect(screen.queryByText('canario')).not.toBeInTheDocument()
+  })
+
+  it('en inglés la columna y el tipo salen traducidos', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({ data: { by_facet: [CANARIO], chart_data: null } })
+    renderCosts()
+    await screen.findByText('m-canario')
+    expect(screen.getByRole('columnheader', { name: 'Type' })).toBeInTheDocument()
+    expect(screen.getByText('Canary (health probe)')).toBeInTheDocument()
+  })
+
+  it('un tipo desconocido se muestra tal cual y uno ausente como raya: nunca se esconde una fila', async () => {
+    api.get.mockResolvedValue({ data: { by_facet: [
+      { ...FILA, model: 'm-raro', request_type: 'tipo_nuevo' },
+      { ...FILA, model: 'm-sin-tipo', request_type: null },
+    ], chart_data: null } })
+    renderCosts()
+    await screen.findByText('m-raro')
+    expect(screen.getByText('tipo_nuevo')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+})
+
+// Ronda 3 de #212: el gráfico por faceta cuenta peticiones y excluye las sondas
+// del canario (backend); el título lo dice, para que nadie lea «el canario no
+// hace nada» cuando solo no se cuenta aquí (su costo sí está en la tabla).
+describe('AdminCosts -- el gráfico dice que excluye las sondas', () => {
+  const CON_GRAFICO = {
+    by_facet: [FILA],
+    chart_data: { labels: ['2026-10-01', '2026-10-02'], datasets: { hyde: [1, 2] } },
+  }
+
+  it('en español el título del gráfico aclara que no incluye las sondas del canario', async () => {
+    api.get.mockResolvedValue({ data: CON_GRAFICO })
+    renderCosts()
+    expect(await screen.findByText(/no incluye las sondas del canario/)).toBeInTheDocument()
+  })
+
+  it('en inglés el título del gráfico aclara que excluye las sondas del canario', async () => {
+    localStorage.setItem('jax_lang', 'en')
+    api.get.mockResolvedValue({ data: CON_GRAFICO })
+    renderCosts()
+    expect(await screen.findByText(/excludes canary probes/)).toBeInTheDocument()
+  })
+})
