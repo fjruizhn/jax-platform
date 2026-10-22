@@ -33,6 +33,12 @@ if [[ $current_target != "$new_release" ]]; then
   if (( ! allow_pre_activation )); then die 'current no longer names this activation release'; fi
   if [[ -f $backup/current-target ]]; then [[ $current_target == "$(cat "$backup/current-target")" ]] || die 'current changed before activation rollback'; else [[ $current_target == ABSENT ]] || die 'current changed before activation rollback'; fi
 fi
+if [[ -f $backup/new-vhost-sha256 && -e $vhost ]]; then
+  current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
+  if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then
+    if (( ! allow_pre_activation )) || [[ ! -f $backup/previous-vhost-sha256 ]] || [[ $current_vhost != "$(cat "$backup/previous-vhost-sha256")" ]]; then die 'vhost no longer names this activation content'; fi
+  fi
+fi
 if [[ -f $backup/vhost ]]; then install -o root -g root -m 0644 "$backup/vhost" "$vhost.new"; mv -f -- "$vhost.new" "$vhost"; elif [[ -f $backup/VHOST_ABSENT ]]; then rm -f -- "$vhost"; else die 'backup has no vhost state'; fi
 if [[ -f $backup/current-target ]]; then target=$(cat "$backup/current-target"); [[ -d $target ]] || die 'previous release disappeared'; ln -s -- "$target" "$site/.current.rollback"; chown -h root:root "$site/.current.rollback"; mv -Tf -- "$site/.current.rollback" "$current"; elif [[ -f $backup/CURRENT_ABSENT ]]; then rm -f -- "$current"; else die 'backup has no current state'; fi
 "$nginx" -t

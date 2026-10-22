@@ -91,9 +91,11 @@ escritura de grupo u otros, antes y después de copiar. Copia a
 entonces renombra el directorio. También ejecuta la atestación `offline` sobre
 los bytes ya instalados. Si la atestación falla, no se cambia `current`;
 investigar el release conservado antes de intentar otra instalación.
-2. Instalar la plantilla como un nuevo archivo de vhost de aaPanel, sin editar
-   el vhost de `axioma-ia.io`. Ajustar sólo rutas físicas que difieran de la
-   plantilla y registrar el diff.
+2. Preparar la plantilla root-owned fuera del directorio efectivo de aaPanel,
+sin editar ni crear todavía el vhost de `axioma-ia.io`. Ajustar sólo rutas
+físicas que difieran de la plantilla y registrar el diff. El activador del paso
+4 es quien instala atómicamente ese archivo y por ello puede capturar
+correctamente `VHOST_ABSENT` en el primer despliegue.
 3. Comprobar bytes y rutas de forma local antes de cargar nginx:
 
 ```bash

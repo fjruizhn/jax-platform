@@ -23,7 +23,9 @@ while (($#)); do case $1 in
   -h|--help) usage; exit 0;; *) die "unknown argument: $1";; esac; done
 [[ -n $site && -n $releases && -n $release && -n $source && -n $vhost && -n $backups && -n $validator && -n $nginx && -n $sha && -n $ip && -n $index && -n $asset && -n $asset_sha ]] || { usage >&2; exit 2; }
 [[ $sha =~ ^[0-9a-f]{40}$ && $index =~ ^[0-9a-f]{64}$ && $asset_sha =~ ^[0-9a-f]{64}$ ]] || die 'invalid digest'
-[[ -x $validator && -x $nginx && -f $source ]] || die 'validator, nginx, or vhost source is unavailable'
+[[ -x $validator && -x $nginx && -f $source && ! -L $source ]] || die 'validator, nginx, or vhost source is unavailable'
+source_mode=$(stat -c %a "$source")
+[[ $(stat -c %u "$source") == 0 ]] && (( (8#$source_mode & 8#022) == 0 )) || die 'vhost source is not root-owned and non-writable'
 site=$(readlink -f -- "$site"); releases=$(readlink -f -- "$releases"); release=$(readlink -f -- "$release")
 case "$release" in "$releases"/*) ;; *) die 'release escapes releases root';; esac
 lock="$site/.activation.lock"
@@ -45,7 +47,7 @@ install -d -o root -g root -m 0700 "$backups"
 backup=$(mktemp -d "$backups/office-activation.XXXXXXXX")
 chmod 0700 "$backup"; chown root:root "$backup"
 current="$site/current"
-if [[ -e $vhost || -L $vhost ]]; then cp -a -- "$vhost" "$backup/vhost"; else : > "$backup/VHOST_ABSENT"; fi
+if [[ -e $vhost || -L $vhost ]]; then cp -a -- "$vhost" "$backup/vhost"; sha256sum "$vhost" | awk '{print $1}' > "$backup/previous-vhost-sha256"; else : > "$backup/VHOST_ABSENT"; fi
 if [[ -e $current || -L $current ]]; then
   [[ -L $current ]] || die 'existing current is not a symlink'
   readlink -f -- "$current" > "$backup/current-target"
@@ -57,11 +59,12 @@ printf '%s\n' "$index" > "$backup/new-index-sha256"
 rollback="$(dirname "$(readlink -f -- "$0")")/rollback-public-release.sh"
 [[ -x $rollback ]] || die 'rollback executable is unavailable'
 changed=0
-restore_on_error() { local code=$?; if ((changed)); then "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index" || true; fi; exit "$code"; }
+restore_on_error() { local code=$?; if ((changed)); then if ! "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then : > "$backup/RECOVERY_REQUIRED"; fi; fi; exit "$code"; }
 trap restore_on_error ERR INT TERM
 
-install -d -o root -g root -m 0755 "$(dirname -- "$vhost")"
+[[ -d $(dirname -- "$vhost") && $(stat -c %u "$(dirname -- "$vhost")") == 0 ]] || die 'vhost parent must already exist and be root-owned'
 install -o root -g root -m 0644 "$source" "$vhost.new"
+sha256sum "$vhost.new" | awk '{print $1}' > "$backup/new-vhost-sha256"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"
 changed=1

@@ -26,7 +26,7 @@ make_release(){ local sha=$1 index asset; mkdir -p "$fixture/site/releases/$sha/
 old=1111111111111111111111111111111111111111; new=2222222222222222222222222222222222222222
 make_release "$old"; make_release "$new"
 printf 'old-vhost\n' > "$fixture/vhosts/office.conf"; ln -s "$fixture/site/releases/$old" "$fixture/site/current"
-printf 'new-vhost\n' > "$fixture/template.conf"
+printf 'new-vhost\n' > "$fixture/template.conf"; chown root:root "$fixture/template.conf"; chmod 644 "$fixture/template.conf"
 export FAKE_LOG="$fixture/log"
 args=(--site-root "$fixture/site" --releases-root "$fixture/site/releases" --release "$fixture/site/releases/$new" --vhost-source "$fixture/template.conf" --vhost-path "$fixture/vhosts/office.conf" --backup-root "$fixture/backups" --validator "$fixture/bin/validator" --nginx "$fixture/bin/nginx" --expected-source-sha "$new" --public-ip 127.0.0.1 --expected-index-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --asset-path /assets/a.js --expected-asset-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
 "$fixture/bin/activate" "${args[@]}" >/dev/null
