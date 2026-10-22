@@ -66,6 +66,7 @@ def test_el_limitador_exige_un_solo_proceso():
     exigir({"WEB_CONCURRENCY": "1"}, ["uvicorn", "main:app", "--workers", "1"])
     for env, argv in (
         ({"WEB_CONCURRENCY": "2"}, ["uvicorn", "main:app"]),
+        ({"UVICORN_WORKERS": "2"}, ["uvicorn", "main:app"]),
         ({}, ["uvicorn", "main:app", "--workers", "3"]),
         ({}, ["uvicorn", "main:app", "--workers=2"]),
     ):

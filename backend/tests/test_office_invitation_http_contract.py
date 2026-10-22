@@ -79,7 +79,7 @@ def test_unicode_bearer_is_rejected_before_limiter_preflight_or_bcrypt(monkeypat
     def bcrypt_must_not_run(_password: str) -> str:
         raise AssertionError("bcrypt must not receive a non-ASCII bearer")
 
-    monkeypatch.setattr(invitation_api.rate_limit, "check_login_rate", limiter_must_not_run)
+    monkeypatch.setattr(invitation_api.rate_limit, "check_invitation_accept_rate", limiter_must_not_run)
     monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", preflight_must_not_run)
     monkeypatch.setattr(invitation_api, "_hash", bcrypt_must_not_run)
     with pytest.raises(HTTPException) as rejected:
@@ -102,7 +102,7 @@ def test_invalid_bearer_fails_before_bcrypt(monkeypatch):
     def bcrypt_must_not_run(_password: str) -> str:
         raise AssertionError("bcrypt must not run for an invalid invitation bearer")
 
-    monkeypatch.setattr(invitation_api.rate_limit, "check_login_rate", lambda *_: None)
+    monkeypatch.setattr(invitation_api.rate_limit, "check_invitation_accept_rate", lambda *_: None)
     monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", invalid_preflight)
     monkeypatch.setattr(invitation_api, "_hash", bcrypt_must_not_run)
     with pytest.raises(HTTPException) as rejected:
@@ -121,7 +121,7 @@ def test_rate_rejection_happens_before_preflight_and_bcrypt(monkeypatch):
     def bcrypt_must_not_run(_password: str) -> str:
         raise AssertionError("bcrypt must not run after rate rejection")
 
-    monkeypatch.setattr(invitation_api.rate_limit, "check_login_rate", too_many)
+    monkeypatch.setattr(invitation_api.rate_limit, "check_invitation_accept_rate", too_many)
     monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", preflight_must_not_run)
     monkeypatch.setattr(invitation_api, "_hash", bcrypt_must_not_run)
     with pytest.raises(HTTPException) as rejected:

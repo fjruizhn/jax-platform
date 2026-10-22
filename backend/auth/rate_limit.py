@@ -1,4 +1,4 @@
-"""Límite de intentos de login, por IP y por email (2026-09-12).
+"""Límites de intentos de login y de aceptación anónima de invitaciones.
 
 Desde que el login ya no deja enumerar cuentas (jax-platform#57), TODO intento
 -- exista o no el email -- verifica un bcrypt de costo 12: ~155 ms de CPU.
@@ -34,6 +34,16 @@ Umbrales (configurables, "intentos/segundos"):
   descarta la clave usada hace más tiempo (LRU): un atacante con más de 20.000
   IPs ya no está limitado por IP de todos modos.
 
+La aceptación anónima de invitaciones no reutiliza esos baldes. Comparten la
+defensa de IP confiable y la restricción de un solo worker, pero sus dos
+espacios de memoria y variables de entorno son independientes:
+- JAX_OFFICE_INVITATION_ACCEPT_RATE_IP=20/60
+- JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN=10/300
+- JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS=20000
+
+El segundo balde recibe solo el digest con separación de dominio que calcula
+el adaptador de Office; un bearer crudo nunca se conserva aquí.
+
 Excedido -> 429 con Retry-After y el MISMO cuerpo para todos: no revela si la
 cuenta existe. Un intento rechazado no se cuenta, así que el bloqueo no se
 extiende solo mientras el cliente insiste.
@@ -56,20 +66,26 @@ logger = logging.getLogger(__name__)
 def exigir_un_solo_proceso(env: Mapping[str, str], argv: Sequence[str]) -> None:
     """Falla si uvicorn va a correr más de un worker: con varios, cada uno
     tendría su propio contador y el límite se multiplicaría sin que nada lo
-    avise. Mira las dos formas en que uvicorn los recibe: `--workers` en la
-    línea de comandos (gana) y WEB_CONCURRENCY (su default)."""
-    workers = env.get("WEB_CONCURRENCY")
+    avise. Rechaza todas las entradas de workers que Uvicorn acepta: la línea
+    de comandos, WEB_CONCURRENCY y UVICORN_WORKERS. Aunque una precedencia de
+    Uvicorn hiciera inerte una de ellas, arrancar con una configuración que
+    declara más de un proceso no es seguro para un contador en memoria."""
+    configured = [
+        ("WEB_CONCURRENCY", env.get("WEB_CONCURRENCY")),
+        ("UVICORN_WORKERS", env.get("UVICORN_WORKERS")),
+    ]
     for i, arg in enumerate(argv):
         if arg == "--workers" and i + 1 < len(argv):
-            workers = argv[i + 1]
+            configured.append(("--workers", argv[i + 1]))
         elif arg.startswith("--workers="):
-            workers = arg.split("=", 1)[1]
-    if workers is not None and workers.strip() and int(workers) > 1:
-        raise RuntimeError(
-            f"{workers} workers de uvicorn: el límite de login vive en memoria de UN "
-            "proceso y se multiplicaría. Correr un solo worker, o pasar el limitador "
-            "a un almacén compartido antes de subirlos (auth/rate_limit.py)."
-        )
+            configured.append(("--workers", arg.split("=", 1)[1]))
+    for source, workers in configured:
+        if workers is not None and workers.strip() and int(workers) > 1:
+            raise RuntimeError(
+                f"{source}={workers} declara más de un worker de uvicorn: el límite de login "
+                "vive en memoria de UN proceso y se multiplicaría. Correr un solo worker, o "
+                "pasar el limitador a un almacén compartido antes de subirlos (auth/rate_limit.py)."
+            )
 
 
 exigir_un_solo_proceso(os.environ, sys.argv)
@@ -85,17 +101,33 @@ def parse_rate(spec: str) -> tuple[int, float]:
         hits, window = int(hits_raw), float(window_raw)
     except (ValueError, AttributeError) as exc:
         raise ValueError(f"límite inválido {spec!r}: formato 'intentos/segundos'") from exc
-    if hits <= 0 or window <= 0:
+    if hits <= 0 or not math.isfinite(window) or window <= 0:
         raise ValueError(f"límite inválido {spec!r}: intentos y segundos deben ser > 0")
     return hits, window
+
+
+def parse_max_keys(raw: str) -> int:
+    """Parse a positive bounded-memory key cap without a permissive fallback."""
+    try:
+        max_keys = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"tope de claves inválido {raw!r}: debe ser entero > 0") from exc
+    if max_keys <= 0:
+        raise ValueError(f"tope de claves inválido {raw!r}: debe ser entero > 0")
+    return max_keys
 
 
 class SlidingWindowLimiter:
     """Ventana deslizante por clave, con tope de claves (LRU)."""
 
     def __init__(self, max_hits: int, window_s: float, max_keys: int = 20_000) -> None:
+        window = float(window_s)
+        if (not isinstance(max_hits, int) or isinstance(max_hits, bool) or max_hits <= 0
+                or not math.isfinite(window) or window <= 0
+                or not isinstance(max_keys, int) or isinstance(max_keys, bool) or max_keys <= 0):
+            raise ValueError("SlidingWindowLimiter requires positive hits, window and max_keys")
         self.max_hits = max_hits
-        self.window_s = float(window_s)
+        self.window_s = window
         self.max_keys = max_keys
         self._hits: OrderedDict[str, deque[float]] = OrderedDict()
 
@@ -146,14 +178,30 @@ if not TRUSTED_PROXIES:
         "del proxy y comparte un solo límite de login. Fijarlo en /etc/jax/.env."
     )
 
-_MAX_KEYS = int(os.getenv("JAX_LOGIN_RATE_MAX_KEYS", "20000"))
-LOGIN_IP_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_LOGIN_RATE_IP", "20/60")), max_keys=_MAX_KEYS)
-LOGIN_EMAIL_LIMITER = SlidingWindowLimiter(*parse_rate(os.getenv("JAX_LOGIN_RATE_EMAIL", "10/300")), max_keys=_MAX_KEYS)
+_LOGIN_MAX_KEYS = parse_max_keys(os.getenv("JAX_LOGIN_RATE_MAX_KEYS", "20000"))
+LOGIN_IP_LIMITER = SlidingWindowLimiter(
+    *parse_rate(os.getenv("JAX_LOGIN_RATE_IP", "20/60")), max_keys=_LOGIN_MAX_KEYS)
+LOGIN_EMAIL_LIMITER = SlidingWindowLimiter(
+    *parse_rate(os.getenv("JAX_LOGIN_RATE_EMAIL", "10/300")), max_keys=_LOGIN_MAX_KEYS)
+
+_INVITATION_ACCEPT_MAX_KEYS = parse_max_keys(
+    os.getenv("JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS", "20000"))
+INVITATION_ACCEPT_IP_LIMITER = SlidingWindowLimiter(
+    *parse_rate(os.getenv("JAX_OFFICE_INVITATION_ACCEPT_RATE_IP", "20/60")),
+    max_keys=_INVITATION_ACCEPT_MAX_KEYS,
+)
+INVITATION_ACCEPT_TOKEN_LIMITER = SlidingWindowLimiter(
+    *parse_rate(os.getenv("JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN", "10/300")),
+    max_keys=_INVITATION_ACCEPT_MAX_KEYS,
+)
 
 
 def reset_login_limiters() -> None:
+    """Reset all process-local authentication ingress limiters for tests."""
     LOGIN_IP_LIMITER.reset()
     LOGIN_EMAIL_LIMITER.reset()
+    INVITATION_ACCEPT_IP_LIMITER.reset()
+    INVITATION_ACCEPT_TOKEN_LIMITER.reset()
 
 
 def _demasiados(retry: float) -> HTTPException:
@@ -172,5 +220,20 @@ def check_login_rate(request: Request, email: str) -> None:
     if retry is not None:
         raise _demasiados(retry)
     retry = LOGIN_EMAIL_LIMITER.hit((email or "").strip().lower())
+    if retry is not None:
+        raise _demasiados(retry)
+
+
+def check_invitation_accept_rate(request: Request, token_digest: str) -> None:
+    """Limit anonymous invitation acceptance before preflight and bcrypt.
+
+    IP is charged first, then the non-secret domain-separated bearer digest.
+    A rejected hit is never added, so retries cannot extend either window.
+    This deliberately does not share login's LRU or rate budget.
+    """
+    retry = INVITATION_ACCEPT_IP_LIMITER.hit(client_ip(request, TRUSTED_PROXIES))
+    if retry is not None:
+        raise _demasiados(retry)
+    retry = INVITATION_ACCEPT_TOKEN_LIMITER.hit(token_digest)
     if retry is not None:
         raise _demasiados(retry)
