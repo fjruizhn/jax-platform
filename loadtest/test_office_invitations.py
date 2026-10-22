@@ -38,3 +38,36 @@ def test_known_production_ports_are_rejected_before_any_connection(monkeypatch):
     for key, value in values.items(): monkeypatch.setenv(key, value)
     with pytest.raises(SystemExit, match="known production"):
         oi.env_or_abort()
+
+
+def test_remote_host_is_rejected_even_when_schema_and_port_look_disposable(monkeypatch):
+    values = {
+        "JAX_OFFICE_LOAD_DB": "jax_memory_test_a1b2c3d4", "JAX_DB_HOST": "db.prod.example",
+        "JAX_DB_PORT": "33991", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p",
+        "JAX_REPO_PATH": "/tmp/jax", "JAX_CONFIG_PATH": "/tmp/config", "OFFICE_LOAD_CONTAINER": "db",
+    }
+    for key, value in values.items(): monkeypatch.setenv(key, value)
+    with pytest.raises(SystemExit, match="literal loopback"):
+        oi.env_or_abort()
+
+
+def test_container_binding_requires_the_exact_loopback_port():
+    bindings = {"3306/tcp": [{"HostIp": "127.0.0.1", "HostPort": "33991"}]}
+    assert oi.has_loopback_port_binding(bindings, "33991")
+    assert not oi.has_loopback_port_binding(bindings, "3308")
+    assert not oi.has_loopback_port_binding({"3306/tcp": [{"HostIp": "0.0.0.0", "HostPort": "33991"}]}, "33991")
+
+
+def test_sequential_workers_never_overlap_operations_within_a_user():
+    active, peak, order = {}, [0], []
+    async def action(worker, operation):
+        active[worker] = active.get(worker, 0) + 1
+        peak[0] = max(peak[0], active[worker])
+        order.append((worker, operation))
+        await __import__("asyncio").sleep(0)
+        active[worker] -= 1
+        return worker, operation
+    result = __import__("asyncio").run(oi.sequential_workers(3, 4, action))
+    assert result == [(worker, operation) for worker in range(3) for operation in range(4)]
+    assert set(order) == set(result)
+    assert peak == [1]
