@@ -148,14 +148,14 @@ export default function OfficeInvitation() {
               {password && confirm && password !== confirm && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.passwordMismatch}</p>}
             </>}
           </>}
-          {result === 'accepted' && <p role="status" className="text-sm text-exito">{t.officeInvitation.accepted}</p>}
+          {result === 'accepted' && <div className="space-y-3"><p role="status" className="text-sm text-exito">{t.officeInvitation.accepted}</p><button type="button" onClick={() => useExisting ? navigate('/virtual-office') : continueWithLogin(true)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{useExisting ? t.officeInvitation.continueToOffice : t.officeInvitation.signInToOffice}</button></div>}
           {result === 'error' && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.error}</p>}
           {result === 'terminal' && <p role="alert" className="text-sm text-peligro">{t.officeInvitation.error}</p>}
           {result === 'login' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.loginRequired}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
           {result === 'reopen' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.reopenLink}</p><button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
           {result === 'ambiguous' && <div className="space-y-3"><p role="status" className="text-sm text-texto-suave">{t.officeInvitation.ambiguous}</p><button type="button" onClick={() => continueWithLogin(true)} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color`}>{t.officeInvitation.login}</button></div>}
           {!useExisting && !newAccount && !result && <button type="button" onClick={() => continueWithLogin(false)} className={`${TAMANO_BOTON_ACCION} w-full rounded border border-borde text-texto hover:bg-hundido`}>{t.officeInvitation.login}</button>}
-          {!['login', 'reopen', 'ambiguous', 'terminal'].includes(result) && (useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
+          {!['accepted', 'login', 'reopen', 'ambiguous', 'terminal'].includes(result) && (useExisting || newAccount) && <button type="submit" disabled={!canSubmit || loading} className={`${TAMANO_BOTON_ACCION} w-full rounded bg-accion text-sobre-color disabled:opacity-60`}>{loading ? t.officeInvitation.accepting : t.officeInvitation.accept}</button>}
         </form>}
       </section>
     </main>
