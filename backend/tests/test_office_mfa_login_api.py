@@ -60,6 +60,26 @@ async def _active_factor_user():
     return user_id, email, started.secret
 
 
+async def _active_factor_user_with_recovery_code():
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await apply_office_migrations(cur)
+    user_id, email = await crear_usuario(password=PASSWORD)
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        started = await start_first_enrollment_after_password_in_cursor(
+            cur, preauthenticated_user_id=user_id, config=CONFIG,
+        )
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        confirmed = await confirm_enrollment_in_cursor(
+            cur, enrollment_capability_token=started.enrollment_id,
+            otp=pyotp.TOTP(started.secret, digits=6, interval=30).now(),
+            config=CONFIG, server_correlation_id=b"R" * 16,
+        )
+    return user_id, email, confirmed.recovery_codes[0]
+
+
 def _login_challenge(client, email: str):
     response = client.post("/api/auth/login", json={"email": email, "password": PASSWORD})
     assert response.status_code == 200, response.text
@@ -105,6 +125,22 @@ def test_mfa_login_http_emits_only_post_cut_durable_claims(client, monkeypatch):
     assert access["mfa_version"] == mfa_version == refresh["mfa_version"]
     assert access["mfa_at"] == int(proof_epoch) == refresh["mfa_at"]
     assert abs(int(last_login_epoch) - access["mfa_at"]) < 3
+
+
+def test_recovery_http_returns_the_same_durable_pending_package(client, monkeypatch):
+    _mfa_env(monkeypatch)
+    user_id, _email, code = client.portal.call(_active_factor_user_with_recovery_code)
+    first = client.post("/api/auth/mfa/recover", json={"recovery_code": code})
+    assert first.status_code == 200, first.text
+    assert first.headers["cache-control"] == "no-store"
+    replay = client.post("/api/auth/mfa/recover", json={"recovery_code": code})
+    assert replay.status_code == 200, replay.text
+    assert replay.headers["cache-control"] == "no-store"
+    assert replay.json() == first.json()
+    assert client.portal.call(
+        sql, "SELECT state,response_ciphertext IS NOT NULL FROM office_mfa_recovery_receipt WHERE user_id=%s",
+        (user_id,), True,
+    ) == (("REPLAYABLE", 1),)
 
 
 def test_refresh_preserves_login_proof_recency_and_absolute_window(client, monkeypatch):
