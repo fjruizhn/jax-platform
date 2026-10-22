@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  validate-public-ingress.sh offline --config FILE --release DIR_OR_CURRENT --expected-source-sha SHA
+  validate-public-ingress.sh offline --config FILE --releases-root DIR --release DIR_OR_CURRENT --expected-source-sha SHA [--nginx-user USER]
   validate-public-ingress.sh syntax --nginx NGINX --config COMPLETE_NGINX_CONF
   validate-public-ingress.sh smoke --public-ip IP --expected-index-sha SHA256 --asset-path /assets/FILE
 USAGE
@@ -15,12 +15,14 @@ need() { [[ $# -eq 2 && -n $2 ]] || die "missing value for $1"; }
 has_header() { grep -Eiq "^$2: *$3\\r?$" <<<"$1"; }
 
 cmd=${1:-}; shift || true
-config= release= nginx= public_ip= expected_index_sha= expected_source_sha= asset_path=
+config= release= releases_root= nginx= nginx_user=www public_ip= expected_index_sha= expected_source_sha= asset_path=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config) need "$1" "${2:-}"; config=$2; shift 2 ;;
     --release) need "$1" "${2:-}"; release=$2; shift 2 ;;
+    --releases-root) need "$1" "${2:-}"; releases_root=$2; shift 2 ;;
     --nginx) need "$1" "${2:-}"; nginx=$2; shift 2 ;;
+    --nginx-user) need "$1" "${2:-}"; nginx_user=$2; shift 2 ;;
     --public-ip) need "$1" "${2:-}"; public_ip=$2; shift 2 ;;
     --expected-index-sha) need "$1" "${2:-}"; expected_index_sha=$2; shift 2 ;;
     --expected-source-sha) need "$1" "${2:-}"; expected_source_sha=$2; shift 2 ;;
@@ -57,6 +59,23 @@ print(f'source_sha={sha}'); print(f'index_sha256={files.get("index.html","")}')
 PY
 }
 
+verify_release_permissions() {
+  local target=$1 root=$2 path uid mode
+  [[ $(stat -c %u "$root") == 0 ]] || die "releases root is not owned by root: $root"
+  while IFS= read -r -d '' path; do
+    uid=$(stat -c %u "$path"); mode=$(stat -c %a "$path")
+    [[ $uid == 0 ]] || die "release tree is not owned by root: $path"
+    (( (8#$mode & 8#022) == 0 )) || die "release tree is group/other writable: $path"
+  done < <(find -P "$target" -xdev -print0)
+  id "$nginx_user" >/dev/null 2>&1 || die "nginx user does not exist: $nginx_user"
+  runuser -u "$nginx_user" -- test -r "$target/manifest.json" || die "nginx cannot read manifest"
+  runuser -u "$nginx_user" -- test -r "$target/dist/index.html" || die "nginx cannot read index"
+  while IFS= read -r -d '' path; do
+    if [[ -d $path ]]; then runuser -u "$nginx_user" -- test -x "$path" || die "nginx cannot traverse: $path"
+    else runuser -u "$nginx_user" -- test -r "$path" || die "nginx cannot read: $path"; fi
+  done < <(find -P "$target" -xdev -print0)
+}
+
 check_proxy_allowlist() {
   local expected actual
   expected=$(cat <<'ROUTES' | LC_ALL=C sort
@@ -84,19 +103,23 @@ location ^~ /api/virtual-office/ { proxy_pass http://virtualoffice_jax_api; }
 ROUTES
 )
   actual=$(awk '
- /^[[:space:]]*location[[:space:]]/ { line=$0; sub(/^[[:space:]]*/,"",line); open=line; if(line ~ /proxy_pass[[:space:]]+http:\/\/virtualoffice_jax_api/) print line; active=1; next }
- active && /proxy_pass[[:space:]]+http:\/\/virtualoffice_jax_api/ { print open }
+ /^[[:space:]]*location[[:space:]]/ { line=$0; sub(/^[[:space:]]*/,"",line); open=line; if(line ~ /proxy_pass[[:space:]]/) print line; active=1; next }
+ active && /proxy_pass[[:space:]]/ { print open }
  active && /^    }/ { active=0 }
  ' "$config" | LC_ALL=C sort -u)
   [[ $actual == "$expected" ]] || die 'proxy locations differ from the closed allowlist'
-  [[ $(grep -Ec 'proxy_pass[[:space:]]+http://virtualoffice_jax_api' "$config") -eq 21 ]] || die 'unexpected proxy_pass count'
+  [[ $(grep -Ec 'proxy_pass[[:space:]]+' "$config") -eq 21 ]] || die 'unexpected proxy_pass count'
 }
 
 case $cmd in
  offline)
-  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release ]] || die '--release is required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
+  [[ -f $config ]] || die "config does not exist: $config"; [[ -n $release && -n $releases_root ]] || die '--release and --releases-root are required'; [[ $expected_source_sha =~ ^[0-9a-f]{40}$ ]] || die '--expected-source-sha must be a full lowercase Git SHA'
+  root=$(readlink -f -- "$releases_root") || die "releases root cannot be resolved: $releases_root"; [[ -d $root ]] || die "resolved releases root is not a directory: $root"
   resolved=$(readlink -f -- "$release") || die "release cannot be resolved: $release"; [[ -d $resolved ]] || die "resolved release is not a directory: $resolved"
+  case "$resolved" in "$root"/*) ;; *) die "release escapes releases root: $resolved" ;; esac
   verify_manifest "$resolved" "$expected_source_sha"
+  verify_release_permissions "$resolved" "$root"
+  [[ $(readlink -f -- "$release") == "$resolved" ]] || die 'release target changed during verification'
   grep -Fqx '    server_name virtualoffice.axioma-ia.io;' "$config" || die 'exact public host is absent'
   grep -Fqx '    location ^~ /api/ { return 404; }' "$config" || die 'non-Office API is not denied'
   grep -Fqx '    location ^~ /ws/ { return 404; }' "$config" || die 'websocket namespace is not denied'

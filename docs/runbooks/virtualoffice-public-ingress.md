@@ -43,8 +43,10 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 ```bash
 ops/virtualoffice/validate-public-ingress.sh offline \
   --config /ruta/al/virtualoffice.axioma-ia.io.conf \
+  --releases-root /www/wwwroot/virtualoffice.axioma-ia.io/releases \
   --release /www/wwwroot/virtualoffice.axioma-ia.io/releases/SHA_DE_FUENTE \
-  --expected-source-sha SHA_DE_FUENTE_AUDITADO
+  --expected-source-sha SHA_DE_FUENTE_AUDITADO \
+  --nginx-user www
 ```
 
 `offline` no modifica el release. Rechaza un `dist` que tenga archivos distintos
@@ -54,6 +56,15 @@ release; si se verifica `current`, el comando resuelve el enlace una vez y luego
 aplica las mismas reglas al destino. El SHA esperado viene del artefacto auditado
 independiente, no del nombre del directorio ni del manifiesto. No publicar desde
 un checkout Git ni desde `:5173`.
+
+El destino resuelto debe estar bajo `releases-root`; tanto ese árbol como cada
+entrada del release son de `root` y no permiten escritura de grupo u otros. El
+validador comprueba que el usuario nginx pueda atravesar y leer exactamente los
+archivos que servirá. Antes de cambiar `current`, validar el directorio de
+release directo; al cambiar, usar un reemplazo atómico del enlace y ejecutar de
+inmediato el mismo comando sobre `current`. El comando fija el destino al inicio
+y vuelve a resolverlo al terminar, por lo que falla si el enlace cambia durante
+la verificación.
 
 4. Ejecutar `nginx -t` sobre la configuración completa efectiva de aaPanel,
 no sobre el fragmento aislado. Luego recargar sólo después de los gates de
