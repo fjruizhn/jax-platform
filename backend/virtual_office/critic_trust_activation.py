@@ -211,10 +211,9 @@ def _read_bound_bytes(path: Path) -> tuple[bytes, ContractFingerprint]:
         raise ActivationContractError("activation contract cannot be opened safely") from error
     finally:
         if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+            # A close failure means this read has no complete descriptor
+            # lifecycle.  Propagate it: this input is an authority boundary.
+            os.close(fd)
 
 
 def load_activation_contract(path: Path = ACTIVATION_CONTRACT_PATH) -> ActivationContract:
