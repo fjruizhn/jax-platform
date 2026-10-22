@@ -154,6 +154,54 @@ def test_project_list_cursor_advances_over_a_bounded_stable_scope_scan(client, m
     assert second["projects"][0]["id"] == second_id
 
 
+def test_project_list_never_uses_hidden_lookahead_as_a_cursor(client):
+    async def scenario():
+        member, _ = await crear_usuario()
+        no_grant, _ = await crear_usuario()
+        await sql(
+            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES "
+            "(%s,'COLLABORATOR','ACTIVE'),(%s,'COLLABORATOR','ACTIVE')",
+            (member, no_grant),
+        )
+        project_ids = []
+        for suffix in ("hidden", "visible"):
+            project_id = await sql(
+                "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+                ("office-hidden-cursor-" + suffix + "-" + uuid.uuid4().hex,),
+            )
+            await sql(
+                "INSERT INTO jax_project_scope "
+                "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+                "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))",
+                (project_id,),
+            )
+            project_ids.append(project_id)
+        visible = project_ids[1]
+        await sql(
+            "INSERT INTO jax_project_membership "
+            "(membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), visible, member),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (visible, member, member),
+        )
+        return member, no_grant, project_ids
+
+    member, no_grant, (hidden, visible) = client.portal.call(scenario)
+    response = client.get("/api/virtual-office/projects?limit=1", headers=_headers(member)).json()
+    assert [project["id"] for project in response["projects"]] == [visible]
+    assert response["next_after_id"] == visible
+    assert hidden not in [project["id"] for project in response["projects"]]
+    # A user with no grants receives neither an ID nor a progress cursor over
+    # confidential scopes owned by other people.
+    assert client.get("/api/virtual-office/projects?limit=1", headers=_headers(no_grant)).json() == {
+        "projects": [], "next_after_id": None,
+    }
+
+
 def test_create_project_jax_first_then_exact_replay_and_one_client_group(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)

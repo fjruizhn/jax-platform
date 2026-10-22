@@ -107,7 +107,7 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
         raise _PhaseBRetryable("office project initialization failed") from error
 
 
-async def _active_profile_in_cursor(cur, actor_user_id: int) -> bool:
+async def _active_profile_in_cursor(cur, actor_user_id: int):
     """Establish that this is an active Office identity in the same read.
 
     Project visibility itself is always decided by the canonical resolver
@@ -115,14 +115,16 @@ async def _active_profile_in_cursor(cur, actor_user_id: int) -> bool:
     Office identity (403) from a valid identity with no visible projects ([]).
     """
     await cur.execute(
-        "SELECT u.status,t.status,p.status FROM jax_users u "
+        "SELECT u.status,t.status,p.status,u.account_class,p.global_role,u.tenant_id FROM jax_users u "
         "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
         "JOIN office_account_profile p ON p.user_id=u.user_id "
         "WHERE u.user_id=%s",
         (actor_user_id,),
     )
     row = await cur.fetchone()
-    return row is not None and tuple(row) == ("active", "active", "ACTIVE")
+    if row is None or tuple(row[:3]) != ("active", "active", "ACTIVE"):
+        return None
+    return {"account_class": row[3], "global_role": row[4], "tenant_id": int(row[5])}
 
 
 @router.get("")
@@ -146,34 +148,49 @@ async def list_projects(
     config = load_mfa_config_from_environment()
     proof_event_id = user.mfa_proof_event_id
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        if not await _active_profile_in_cursor(cur, actor_user_id):
+        profile = await _active_profile_in_cursor(cur, actor_user_id)
+        if profile is None:
             raise HTTPException(status_code=403, detail="office_access_denied")
         predicate = " AND p.id>%s" if after_id is not None else ""
-        params: tuple[object, ...] = (() if after_id is None else (after_id,)) + (limit + 1,)
-        await cur.execute(
-            "SELECT p.id,p.name,p.description,s.tenant_id FROM projects p "
-            "JOIN jax_project_scope s ON s.project_id=p.id "
-            "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE'"
-            + predicate + " ORDER BY p.id LIMIT %s",
-            params,
-        )
-        candidates = await cur.fetchall()
-        project_ids = [int(row[0]) for row in candidates]
-        external_groups: dict[int, int] = {}
-        if project_ids:
-            placeholders = ",".join("%s" for _ in project_ids)
-            await cur.execute(
-                "SELECT project_id,recipient_group_id FROM office_external_relation "
-                "WHERE user_id=%s AND project_id IN (" + placeholders + ")",
-                (actor_user_id, *project_ids),
+        cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
+        if profile["global_role"] == "OFFICE_SUPERUSER":
+            query = (
+                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
+                "JOIN jax_project_scope s ON s.project_id=p.id "
+                "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE'"
             )
-            external_groups = {int(project_id): int(group_id) for project_id, group_id in await cur.fetchall()}
+            params = cursor_params + (limit + 1,)
+        elif profile["account_class"] in {"INTERNAL", "OFFICE_INTERNAL"}:
+            query = (
+                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
+                "JOIN jax_project_scope s ON s.project_id=p.id "
+                "JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
+                "JOIN jax_project_membership m ON m.project_id=p.id AND m.user_id=%s "
+                "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
+                "AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
+                "AND g.grant_role IN ('COLLABORATOR','PROJECT_ADMIN') AND m.status='ACTIVE'"
+            )
+            params = (actor_user_id, actor_user_id, profile["tenant_id"], *cursor_params, limit + 1)
+        else:
+            query = (
+                "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM projects p "
+                "JOIN jax_project_scope s ON s.project_id=p.id "
+                "JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
+                "JOIN office_external_relation r ON r.project_id=p.id AND r.user_id=%s "
+                "JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=p.id "
+                "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
+                "AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' "
+                "AND r.status='ACTIVE' AND rg.status='ACTIVE'"
+            )
+            params = (actor_user_id, actor_user_id, *cursor_params, limit + 1)
+        await cur.execute(query + predicate + " ORDER BY p.id LIMIT %s", params)
+        candidates = await cur.fetchall()
         visible = []
-        for project_id, name, description, tenant_id in candidates:
+        for project_id, name, description, tenant_id, recipient_group_id in candidates:
             project_id = int(project_id)
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.VIEW_PROJECT, project_id,
-                recipient_group_id=external_groups.get(project_id),
+                recipient_group_id=None if recipient_group_id is None else int(recipient_group_id),
                 mfa_proof_event_id=proof_event_id, mfa_config=config,
             )
             if decision.allowed:
@@ -182,11 +199,19 @@ async def list_projects(
                     "description": None if decision.audience == "CLIENT_PUBLISHED" else description,
                     "tenant_id": int(tenant_id),
                 })
-        # The cursor advances over scanned candidates, not visible rows: a
-        # caller with no grants must still be able to progress past a dense
-        # range of scopes that it cannot see.
-        next_after_id = int(candidates[limit - 1][0]) if len(candidates) > limit else None
-    return {"projects": visible[:limit], "next_after_id": next_after_id}
+        # For non-roots the candidate predicates are exactly the resolver's
+        # active-view prerequisites (the resolver remains the authoritative
+        # final decision).  Thus a bounded candidate page cannot be consumed
+        # by hidden rows before a permitted one.  The sole root exception is
+        # a stale/missing MFA proof, where returning no continuation is the
+        # intended fail-closed result.
+        # The cursor contains only a project already returned to this caller.
+        # It never advances over a hidden lookahead candidate, so it cannot be
+        # used to enumerate confidential IDs.  A final full page may yield an
+        # empty next page; that is a bounded, harmless continuation.
+        visible = visible[:limit]
+        next_after_id = visible[-1]["id"] if len(visible) == limit else None
+    return {"projects": visible, "next_after_id": next_after_id}
 
 
 @router.post("")

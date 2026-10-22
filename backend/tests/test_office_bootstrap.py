@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import pyotp
 import time
 
@@ -46,6 +47,23 @@ def test_bootstrap_credential_chain_requires_a_self_actor_and_resets_after_admin
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             assert await credential_self_control_in_cursor(cur, user_id=subject) is None
     client.portal.call(scenario)
+
+
+def test_bootstrap_cli_checks_runtime_contract_before_reading_or_mutating(monkeypatch):
+    import virtual_office.bootstrap_cli as cli
+    from db.runtime_contract import RuntimeDbContractError
+
+    async def rejected(_pool):
+        raise RuntimeDbContractError("contract denied")
+
+    async def must_not_run(*_args, **_kwargs):
+        raise AssertionError("bootstrap action ran after failed runtime contract")
+
+    monkeypatch.setattr(cli, "assert_runtime_db_contract", rejected)
+    monkeypatch.setattr(cli, "bootstrap_initial_office_root", must_not_run)
+    monkeypatch.setattr("sys.stdin.readline", lambda: "untrusted-token\n")
+    args = argparse.Namespace(target_user_id=1, expected_email="root@example.invalid", basis_ref="test", access_token_stdin=True)
+    assert asyncio.run(cli._run(args)) == 1
 
 
 async def _login_proof(user_id: int, secret: str, correlation: bytes, offset: int):

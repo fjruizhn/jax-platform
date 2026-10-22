@@ -258,3 +258,94 @@ def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(clien
                 await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
             admin.close()
     client.portal.call(scenario)
+
+
+def test_runtime_bootstrap_probe_rejects_redacted_same_name_noop_triggers(client):
+    """A DML principal cannot inspect trigger text, so it must exercise it."""
+    async def scenario():
+        from db.connection import get_pool
+        database = os.environ["JAX_DB_NAME"]
+        tag = uuid.uuid4().hex[:16]
+        user, password = f"office_bootstrap_rt_{tag}", f"Office{uuid.uuid4().hex}"
+        admin = await get_pool()
+        runtime = None
+        try:
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await apply_office_migrations(cur)
+                    await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
+                    await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO `{user}`@'%'")
+                    await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
+                    await cur.execute("DROP TRIGGER no_delete_office_bootstrap_state")
+                    await cur.execute(
+                        "CREATE TRIGGER no_update_office_bootstrap_state BEFORE UPDATE "
+                        "ON office_bootstrap_state FOR EACH ROW SET NEW.completed_at=OLD.completed_at"
+                    )
+                    await cur.execute(
+                        "CREATE TRIGGER no_delete_office_bootstrap_state BEFORE DELETE "
+                        "ON office_bootstrap_state FOR EACH ROW SET @office_bootstrap_noop=1"
+                    )
+            runtime = await _runtime_pool(user, password)
+            async with runtime.acquire() as runtime_conn:
+                async with runtime_conn.cursor() as runtime_cur:
+                    await runtime_cur.execute(
+                        "SELECT ACTION_STATEMENT FROM information_schema.TRIGGERS "
+                        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
+                        "('no_update_office_bootstrap_state','no_delete_office_bootstrap_state') "
+                        "ORDER BY TRIGGER_NAME"
+                    )
+                    assert await runtime_cur.fetchall() == ((None,), (None,))
+            with pytest.raises(RuntimeDbContractError, match="bootstrap trigger permitted a mutation"):
+                await assert_runtime_db_contract(runtime)
+        finally:
+            if runtime is not None:
+                runtime.close(); await runtime.wait_closed()
+            async with admin.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
+                    await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
+                    await apply_office_migrations(cur)
+                    await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
+    client.portal.call(scenario)
+
+
+def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema(client):
+    async def scenario():
+        from db.runtime_contract import _bootstrap_append_only_probe
+        from db.connection import get_pool
+
+        database = os.environ["JAX_DB_NAME"]
+        tag = uuid.uuid4().hex[:16]
+        schema, user, password = f"office_bootstrap_empty_{tag}", f"office_bootstrap_empty_{tag}", f"Office{uuid.uuid4().hex}"
+        admin = await aiomysql.connect(
+            host=os.environ["JAX_DB_HOST"], port=int(os.environ["JAX_DB_PORT"]),
+            user=os.environ["JAX_DB_USER"], password=os.environ["JAX_DB_PASSWORD"],
+            db=database, charset="utf8mb4", autocommit=True,
+        )
+        runtime = None
+        try:
+            async with admin.cursor() as cur:
+                await cur.execute(f"CREATE DATABASE `{schema}`")
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                    await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
+                await cur.execute(f"USE `{schema}`")
+                await apply_office_migrations(cur)
+                await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
+                await cur.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{schema}`.* TO `{user}`@'%'")
+            runtime = await _runtime_pool(user, password, schema)
+            await _bootstrap_append_only_probe(runtime)
+            async with admin.cursor() as cur:
+                await cur.execute(f"USE `{schema}`")
+                for table in ("jax_tenants", "jax_users", "user_admin_audit", "office_mfa_challenge", "office_mfa_security_event", "office_bootstrap_state"):
+                    await cur.execute(f"SELECT COUNT(*) FROM `{table}`")
+                    # MFA migration fence is the only durable ledger row.
+                    assert (await cur.fetchone())[0] == (1 if table == "office_mfa_security_event" else 0)
+        finally:
+            if runtime is not None:
+                runtime.close(); await runtime.wait_closed()
+            async with admin.cursor() as cur:
+                await cur.execute(f"DROP USER IF EXISTS `{user}`@'%'")
+                await cur.execute(f"USE `{database}`")
+                await cur.execute(f"DROP DATABASE IF EXISTS `{schema}`")
+            admin.close()
+    client.portal.call(scenario)

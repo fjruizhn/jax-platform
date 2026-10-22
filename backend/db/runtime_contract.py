@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import aiomysql
+import secrets
 from virtual_office.migrations import RUNTIME_COMPONENT as SCHEMA_COMPONENT
 from virtual_office.migrations import RUNTIME_REVISION as SCHEMA_REVISION
 from virtual_office.migrations import assert_mfa_ledger_runtime_metadata
@@ -14,6 +15,8 @@ FENCE_REASON = "office_audit_fence_v1"
 APPEND_ONLY_MESSAGE = "office_authorization_event append-only"
 MFA_FENCE_KEY = "office-mfa-fence-v1"
 MFA_APPEND_ONLY_MESSAGE = "office_mfa_security_event append-only"
+BOOTSTRAP_KEY = "INITIAL_OFFICE_SUPERUSER"
+BOOTSTRAP_APPEND_ONLY_MESSAGE = "office_bootstrap_state append-only"
 
 
 class RuntimeDbContractError(RuntimeError):
@@ -248,6 +251,152 @@ async def _mfa_pristine_ledger_probe(pool) -> None:
                 raise RuntimeDbContractError("Office MFA fence changed after probe rollback")
 
 
+async def _bootstrap_snapshot(cur):
+    await cur.execute(
+        "SELECT ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,"
+        "credential_audit_id,basis_ref,completed_at FROM office_bootstrap_state "
+        "WHERE ceremony_key=%s FOR UPDATE",
+        (BOOTSTRAP_KEY,),
+    )
+    return await cur.fetchone()
+
+
+async def _insert_rolled_back_bootstrap_canary(cur):
+    """Build a contract-valid but denied bootstrap row within this rollback.
+
+    It is only used when no real ceremony exists.  Its account, audit and MFA
+    proof are inert, all lie in the same transaction, and never survive it.
+    """
+    await cur.execute("SELECT tenant_id FROM jax_tenants WHERE status='active' ORDER BY tenant_id LIMIT 1")
+    tenant = await cur.fetchone()
+    created_tenant = False
+    if tenant is None:
+        # Startup may run before the application seed.  The transaction-local
+        # tenant is inert and is verified absent after rollback together with
+        # the rest of this canary; it never establishes Office authority.
+        await cur.execute(
+            "INSERT INTO jax_tenants (name,plan,status) "
+            "VALUES (CONCAT('office-bootstrap-contract-',REPLACE(UUID(),'-','')),'test','active')"
+        )
+        tenant = (cur.lastrowid,)
+        created_tenant = True
+    basis_ref = "runtime-contract-" + secrets.token_hex(16)
+    await cur.execute(
+        "INSERT INTO jax_users (tenant_id,email,password_hash) "
+        "VALUES (%s,CONCAT('office-bootstrap-contract-',REPLACE(UUID(),'-',''),'@invalid.local'),'!')",
+        (_row(tenant, 0),),
+    )
+    user_id = cur.lastrowid
+    await cur.execute(
+        "INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) "
+        "VALUES (UTC_TIMESTAMP(6),%s,%s,'sessions_revoked')",
+        (user_id, user_id),
+    )
+    audit_id = cur.lastrowid
+    await cur.execute(
+        "INSERT INTO office_mfa_challenge "
+        "(token_hash,user_id,purpose,expected_token_version,expected_mfa_version,max_attempts,expires_at,state,created_at) "
+        "VALUES (UNHEX(SHA2(UUID(),256)),%s,'LOGIN',0,0,1,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 MINUTE),'ISSUED',UTC_TIMESTAMP(6))",
+        (user_id,),
+    )
+    challenge_id = cur.lastrowid
+    await cur.execute(
+        "INSERT INTO office_mfa_security_event "
+        "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,"
+        "token_version,mfa_version,result,server_correlation_id,occurred_at) "
+        "VALUES ('MFA_PROOF',NULL,'PASSWORD_PREAUTH',%s,%s,'MFA_PROOF','LOGIN',0,0,'DENIED',"
+        "UNHEX(REPLACE(UUID(),'-','')),UTC_TIMESTAMP(6))",
+        (challenge_id, user_id),
+    )
+    proof_id = cur.lastrowid
+    await cur.execute(
+        "INSERT INTO office_bootstrap_state "
+        "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref,completed_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+        (BOOTSTRAP_KEY, user_id, user_id, proof_id, audit_id, basis_ref),
+    )
+    return {
+        "tenant_id": _row(tenant, 0), "created_tenant": created_tenant,
+        "user_id": user_id, "audit_id": audit_id, "challenge_id": challenge_id,
+        "proof_id": proof_id, "basis_ref": basis_ref,
+    }
+
+
+async def _bootstrap_append_only_probe(pool) -> None:
+    """Exercise both bootstrap mutations as the exact DML runtime principal."""
+    initial = None
+    for attempt in range(2):
+        retry_duplicate = False
+        async with pool.acquire() as conn:
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    original = await _bootstrap_snapshot(cur)
+                    before = original
+                    fixture = None
+                    if before is None:
+                        try:
+                            fixture = await _insert_rolled_back_bootstrap_canary(cur)
+                        except aiomysql.IntegrityError as error:
+                            if getattr(error, "args", (None,))[0] == 1062 and attempt == 0:
+                                retry_duplicate = True
+                            else:
+                                raise RuntimeDbContractError("Office bootstrap canary could not be initialized") from error
+                        if retry_duplicate:
+                            continue
+                        before = await _bootstrap_snapshot(cur)
+                    if before is None:
+                        raise RuntimeDbContractError("Office bootstrap canary is absent")
+                    initial = original
+                    for statement in (
+                        "UPDATE office_bootstrap_state SET completed_at=DATE_ADD(completed_at,INTERVAL 1 MICROSECOND) WHERE ceremony_key=%s",
+                        "DELETE FROM office_bootstrap_state WHERE ceremony_key=%s",
+                    ):
+                        try:
+                            await cur.execute(statement, (BOOTSTRAP_KEY,))
+                        except aiomysql.OperationalError as error:
+                            if error.args != (1644, BOOTSTRAP_APPEND_ONLY_MESSAGE):
+                                raise RuntimeDbContractError("Office bootstrap trigger did not reject canonically") from error
+                        else:
+                            raise RuntimeDbContractError("Office bootstrap trigger permitted a mutation")
+                        if await _bootstrap_snapshot(cur) != before:
+                            raise RuntimeDbContractError("Office bootstrap state changed during rejected probe")
+            finally:
+                # No bootstrap canary, temporary identity, or lock survives a
+                # contract check, including cancellation/BaseException.
+                await conn.rollback()
+        if retry_duplicate:
+            continue
+        async with pool.acquire() as reread_conn:
+            async with reread_conn.cursor() as reread_cur:
+                await reread_cur.execute(
+                    "SELECT ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,"
+                    "credential_audit_id,basis_ref,completed_at FROM office_bootstrap_state WHERE ceremony_key=%s",
+                    (BOOTSTRAP_KEY,),
+                )
+                if await reread_cur.fetchone() != initial:
+                    raise RuntimeDbContractError("Office bootstrap state changed after probe rollback")
+                if fixture is not None:
+                    checks = (
+                        ("jax_users", "user_id", fixture["user_id"]),
+                        ("user_admin_audit", "id", fixture["audit_id"]),
+                        ("office_mfa_challenge", "challenge_id", fixture["challenge_id"]),
+                        ("office_mfa_security_event", "event_id", fixture["proof_id"]),
+                        ("office_bootstrap_state", "basis_ref", fixture["basis_ref"]),
+                    )
+                    if fixture["created_tenant"]:
+                        checks += (("jax_tenants", "tenant_id", fixture["tenant_id"]),)
+                    for table, column, value in checks:
+                        await reread_cur.execute(
+                            "SELECT 1 FROM " + table + " WHERE " + column + "=%s LIMIT 1",
+                            (value,),
+                        )
+                        if await reread_cur.fetchone() is not None:
+                            raise RuntimeDbContractError("Office bootstrap canary survived probe rollback")
+        return
+    raise RuntimeDbContractError("Office bootstrap canary contention did not settle")
+
+
 async def assert_runtime_db_contract(pool) -> None:
     """Verify revision, canonical fence, trigger metadata and DML behavior."""
     async with pool.acquire() as conn:
@@ -269,3 +418,4 @@ async def assert_runtime_db_contract(pool) -> None:
         await _mfa_probe(pool, "DELETE FROM office_mfa_security_event WHERE event_id=%s", normal_event_id)
     else:
         await _mfa_pristine_ledger_probe(pool)
+    await _bootstrap_append_only_probe(pool)
