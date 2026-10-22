@@ -160,6 +160,7 @@ def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_modu
         "office_module_rights_review_event", "office_module_rights_review_head",
         "office_module_release_event", "office_module_release",
         "office_trusted_critic_key", "office_trusted_critic_key_revocation",
+        "office_engine",
     ):
         assert protected not in grants
     assert "INSERT" in grants["office_authorization_event"]
@@ -203,6 +204,9 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
             assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_engine () VALUES ()") == 1142
+            assert await _errno(runtime, "UPDATE office_engine SET enabled=enabled WHERE 1=0") == 1142
+            assert await _errno(runtime, "DELETE FROM office_engine WHERE 1=0") == 1142
             assert await _errno(runtime, "INSERT INTO office_trusted_critic_key () VALUES ()") == 1142
             assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
@@ -524,15 +528,15 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v12 marker cannot certify the v15 origin-bound candidate contract."""
+    """A v16 marker cannot certify the v17 epoch-guarded catalogue contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
-        assert SCHEMA_REVISION.startswith("office-runtime-v15-")
-        predecessor = "office-runtime-v12-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
+        assert SCHEMA_REVISION.startswith("office-runtime-v17-")
+        predecessor = "office-runtime-v16-" + MANIFEST_VERSION + "-" + runtime_table_privilege_digest()[:16]
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
@@ -569,7 +573,7 @@ def test_runtime_metadata_denies_stamped_schema_without_terminal_membership_rece
                 async with conn.cursor() as cur:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -607,7 +611,7 @@ def test_migrator_rejects_mfa_trigger_that_only_protects_the_fence(client):
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
-                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model"):
                     await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
                 await cur.execute(f"INSERT INTO `{schema}`.`jax_users` SELECT * FROM `{database}`.`jax_users`")
                 await cur.execute(f"USE `{schema}`")
@@ -740,7 +744,7 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
-                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit", "model"):
                     await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)

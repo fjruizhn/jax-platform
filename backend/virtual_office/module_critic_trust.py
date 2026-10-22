@@ -368,7 +368,7 @@ async def _assert_v14_preconditions(cur, contract: ActivationContract) -> None:
     await cur.execute("SELECT revision FROM office_schema_revision WHERE component='virtual-office'")
     from virtual_office.migrations import RUNTIME_REVISION
     if tuple(await cur.fetchone() or ()) != (RUNTIME_REVISION,):
-        raise RuntimeError("critic-trust v14 requires the exact global Office v15 marker")
+        raise RuntimeError("critic-trust v14 requires the exact current global Office marker")
     await _assert_v14_definer_privileges(cur, contract)
     await _assert_critic_trust_anchor_metadata(cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES)
 

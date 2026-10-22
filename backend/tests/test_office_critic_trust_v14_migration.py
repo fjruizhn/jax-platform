@@ -172,15 +172,15 @@ def test_v14_recreates_contract_bound_triggers_preserves_rows_and_retries(
                     v14_contract=contract,
                 )
                 # A v13-ready global runtime stamp cannot carry this v14
-                # seal into the v15 candidate-origin contract.  The global
+                # seal into the v16 engine-catalogue contract. The global
                 # invalidation preserves a durable cause, and v14 refuses to
-                # become ready until the v15 runtime marker is re-stamped.
-                old_v13 = RUNTIME_REVISION.replace("office-runtime-v15-", "office-runtime-v13-", 1)
-                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (old_v13,))
+                # become ready until the current runtime marker is re-stamped.
+                old_v16 = RUNTIME_REVISION.replace("office-runtime-v17-", "office-runtime-v16-", 1)
+                await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (old_v16,))
                 await invalidate_office_runtime_revision(cur)
                 assert await _revision(cur, "virtual-office") != RUNTIME_REVISION
                 assert await _revision(cur, "virtual-office-critic-trust") == trust._V15_INVALIDATED_MARKER
-                with pytest.raises(RuntimeError, match="global Office v15 marker"):
+                with pytest.raises(RuntimeError, match="current global Office marker"):
                     await trust.migrate_critic_trust_v14(contract, connect=dedicated)
                 assert await _revision(cur, "virtual-office-critic-trust") == trust._V15_INVALIDATED_MARKER
                 await cur.execute("UPDATE office_schema_revision SET revision=%s WHERE component='virtual-office'", (RUNTIME_REVISION,))
