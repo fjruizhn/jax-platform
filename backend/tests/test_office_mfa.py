@@ -66,6 +66,14 @@ def _retire_legacy_recovery_ceremonies_after_each_test(client):
                     "WHERE receipt.user_id=credential.user_id "
                     "AND receipt.output_challenge_hash=enrollment.token_hash)"
                 )
+                await cur.execute(
+                    "UPDATE office_mfa_challenge enrollment "
+                    "JOIN office_mfa_credential credential ON credential.pending_enrollment_id=enrollment.token_hash "
+                    "JOIN office_mfa_recovery_receipt receipt ON receipt.output_challenge_hash=enrollment.token_hash "
+                    "SET enrollment.state='INVALIDATED',enrollment.used_at=UTC_TIMESTAMP(6) "
+                    "WHERE enrollment.purpose='ENROLLMENT' AND enrollment.state='ISSUED' "
+                    "AND credential.state='PENDING' AND receipt.state='TERMINAL'"
+                )
 
     client.portal.call(cleanup)
 
