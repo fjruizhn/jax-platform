@@ -111,6 +111,121 @@ def test_project_admin_may_list_members_but_client_and_nonmember_are_denied(clie
         assert (response.status_code, response.json()) == (403, {"detail": "office_project_grant_denied"})
 
 
+def test_root_changes_active_internal_role_without_touching_jax_membership(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    assert client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    ).status_code == 200
+    before = client.portal.call(
+        sql, "SELECT membership_id,version FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
+    )
+    events_before = client.portal.call(
+        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND user_id=%s", (project, target), True,
+    )
+    key = str(uuid.uuid4())
+    response = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": key},
+    )
+    assert response.json() == {"project_id": project, "user_id": target,
+                               "grant_role": "PROJECT_ADMIN", "version": 2, "replayed": False}
+    assert client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": key},
+    ).json()["replayed"] is True
+    stale = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "COLLABORATOR", "expected_version": 1},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert (stale.status_code, stale.json()["detail"]) == (409, "office_project_role_version_conflict")
+    conflict = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "COLLABORATOR", "expected_version": 2},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": key},
+    )
+    assert (conflict.status_code, conflict.json()["detail"]) == (409, "office_project_role_idempotency_conflict")
+    assert client.portal.call(
+        sql, "SELECT grant_role,status,audience,version FROM office_project_grant WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == (("PROJECT_ADMIN", "ACTIVE", "INTERNAL", 2),)
+    assert client.portal.call(
+        sql, "SELECT membership_id,version FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == before
+    assert client.portal.call(
+        sql, "SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == events_before
+
+
+def test_only_root_can_change_role_and_ineligible_member_is_rejected(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    grant_headers = {**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())}
+    assert client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0}, headers=grant_headers,
+    ).status_code == 200
+    admin, atv, amv, aproof = client.portal.call(
+        lambda: _project_admin_with_proof(project=project, root=root))
+    denied = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+        headers={**_headers(admin, atv, amv, aproof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert (denied.status_code, denied.json()) == (403, {"detail": "office_project_role_denied"})
+    client.portal.call(sql, "UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (project, target))
+    revoked = client.patch(
+        f"/api/virtual-office/projects/{project}/members/{target}/role",
+        json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert (revoked.status_code, revoked.json()["detail"]) == (409, "office_project_role_member_ineligible")
+
+
+def test_role_receipt_failure_rolls_back_cas_and_authorization_event(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+    assert client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+        headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    ).status_code == 200
+
+    async def install_trigger():
+        await sql("DROP TRIGGER IF EXISTS test_office_role_receipt_rollback")
+        await sql(
+            "CREATE TRIGGER test_office_role_receipt_rollback BEFORE INSERT ON office_project_role_mutation_receipt "
+            "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test rollback'"
+        )
+
+    client.portal.call(install_trigger)
+    audit_before = client.portal.call(
+        sql, "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s", (root, project), True,
+    )
+    try:
+        failed = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert (failed.status_code, failed.json()["detail"]) == (503, "office_project_role_retryable")
+    finally:
+        client.portal.call(sql, "DROP TRIGGER IF EXISTS test_office_role_receipt_rollback")
+    assert client.portal.call(
+        sql, "SELECT grant_role,version FROM office_project_grant WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == (("COLLABORATOR", 1),)
+    assert client.portal.call(
+        sql, "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s", (root, project), True,
+    ) == audit_before
+
+
 def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)

@@ -410,6 +410,29 @@ OFFICE_MEMBERSHIP_RECEIPT_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_membership_mutation_receipt BEFORE DELETE ON office_membership_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'",
 )
 
+# A role change never calls the JAX membership mutator: the canonical
+# membership remains present and only the Office authorization role changes.
+# Its replay evidence is consequently a separate immutable ledger rather than
+# an overloaded membership-mutation receipt.
+OFFICE_PROJECT_ROLE_RECEIPT_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_project_role_mutation_receipt ("
+    "receipt_id CHAR(36) NOT NULL,idempotency_key CHAR(36) NOT NULL,request_digest BINARY(32) NOT NULL,"
+    "actor_user_id INT NOT NULL,target_tenant_id INT NOT NULL,project_id INT NOT NULL,target_user_id INT NOT NULL,"
+    "old_grant_role VARCHAR(24) NOT NULL,new_grant_role VARCHAR(24) NOT NULL,expected_version BIGINT NOT NULL,result_version BIGINT NOT NULL,"
+    "authorization_event_id BIGINT UNSIGNED NOT NULL,created_at DATETIME(6) NOT NULL,"
+    "PRIMARY KEY(receipt_id),UNIQUE KEY uq_office_project_role_receipt_idempotency(idempotency_key),"
+    "KEY idx_office_project_role_receipt_scope(project_id,target_user_id,created_at),"
+    "CONSTRAINT fk_office_project_role_receipt_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_project_role_receipt_target FOREIGN KEY(target_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_project_role_receipt_scope FOREIGN KEY(project_id,target_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),"
+    "CONSTRAINT fk_office_project_role_receipt_grant FOREIGN KEY(project_id,target_user_id) REFERENCES office_project_grant(project_id,user_id),"
+    "CONSTRAINT fk_office_project_role_receipt_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),"
+    "CONSTRAINT chk_office_project_role_receipt_shape CHECK(old_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND new_grant_role IN ('PROJECT_ADMIN','COLLABORATOR') AND old_grant_role<>new_grant_role AND expected_version>=1 AND result_version=expected_version+1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_project_role_mutation_receipt BEFORE UPDATE ON office_project_role_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_project_role_mutation_receipt append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_project_role_mutation_receipt BEFORE DELETE ON office_project_role_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_project_role_mutation_receipt append-only'",
+)
+
 OFFICE_PROFILE_REVOCATION_DDL = (
     "CREATE TABLE IF NOT EXISTS office_profile_revocation_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,action VARCHAR(32) NOT NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,reason_code VARCHAR(64) NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL,KEY idx_office_profile_revocation_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_profile_revocation_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_profile_revocation_target FOREIGN KEY(target_user_id) REFERENCES office_account_profile(user_id),CONSTRAINT fk_office_profile_revocation_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_profile_revocation_shape CHECK(action='REVOKE_PROFILE' AND version_before >= 1 AND version_after=version_before+1 AND reason_code<>'')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_profile_revocation_event BEFORE UPDATE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
@@ -419,6 +442,22 @@ OFFICE_PROFILE_REVOCATION_DDL = (
 _MEMBERSHIP_RECEIPT_TRIGGERS = {
     "no_update_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
     "no_delete_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
+}
+_PROJECT_ROLE_RECEIPT_TRIGGERS = {
+    "no_update_office_project_role_mutation_receipt": ("office_project_role_mutation_receipt", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_project_role_mutation_receipt append-only'"),
+    "no_delete_office_project_role_mutation_receipt": ("office_project_role_mutation_receipt", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_project_role_mutation_receipt append-only'"),
+}
+_PROJECT_ROLE_RECEIPT_INDEXES = {
+    "PRIMARY": (("receipt_id",), True),
+    "uq_office_project_role_receipt_idempotency": (("idempotency_key",), True),
+    "idx_office_project_role_receipt_scope": (("project_id", "target_user_id", "created_at"), False),
+}
+_PROJECT_ROLE_RECEIPT_FOREIGN_KEYS = {
+    "fk_office_project_role_receipt_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_project_role_receipt_target": (("target_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_project_role_receipt_scope": (("project_id", "target_tenant_id"), "jax_project_scope", ("project_id", "tenant_id"), "RESTRICT", "RESTRICT"),
+    "fk_office_project_role_receipt_grant": (("project_id", "target_user_id"), "office_project_grant", ("project_id", "user_id"), "RESTRICT", "RESTRICT"),
+    "fk_office_project_role_receipt_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
 }
 _PROFILE_REVOCATION_TRIGGERS = {
     "no_update_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
@@ -1194,6 +1233,31 @@ async def assert_profile_revocation_runtime_metadata(cur, *, allow_redacted_trig
     for name, digest in _PROFILE_REVOCATION_CHECK_DIGESTS.items():
         if _check_digest(await _check_clause(cur, name)) != digest:
             raise RuntimeError(f"Office profile revocation CHECK {name} is invalid")
+
+
+async def assert_project_role_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+    """Require the immutable role replay ledger before the runtime is ready."""
+    table = "office_project_role_mutation_receipt"
+    if not await _table_exists(cur, table):
+        raise RuntimeError("Office project role receipt table is missing")
+    await _assert_indexes(cur, table=table, expected=_PROJECT_ROLE_RECEIPT_INDEXES)
+    await _assert_foreign_keys(cur, table=table, expected=_PROJECT_ROLE_RECEIPT_FOREIGN_KEYS)
+    await cur.execute(
+        "SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL",
+        (table,),
+    )
+    if {row[0] for row in await cur.fetchall()} != set(_PROJECT_ROLE_RECEIPT_FOREIGN_KEYS):
+        raise RuntimeError("Office project role receipt foreign key set is invalid")
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS "
+        "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,),
+    )
+    if {row[0] for row in await cur.fetchall()} != {"chk_office_project_role_receipt_shape"}:
+        raise RuntimeError("Office project role receipt check set is invalid")
+    await _assert_append_only_table_metadata(
+        cur, table=table, triggers=_PROJECT_ROLE_RECEIPT_TRIGGERS,
+        allow_redacted_trigger_body=allow_redacted_trigger_body, primary_key=("receipt_id",))
 
 # Exact MariaDB 12.3.3 CHECK_CLAUSE renderings, measured from the constraint
 # created below.  Normalization deliberately preserves boolean operators and
@@ -2066,11 +2130,14 @@ async def apply_office_migrations(cursor) -> None:
         membership_receipt_collation = await _membership_receipt_collation(cursor)
         for statement in OFFICE_MEMBERSHIP_RECEIPT_DDL:
             await cursor.execute(statement.format(membership_receipt_collation=membership_receipt_collation))
+    for statement in OFFICE_PROJECT_ROLE_RECEIPT_DDL:
+        await cursor.execute(statement)
     for statement in OFFICE_PROFILE_REVOCATION_DDL:
         await cursor.execute(statement)
     await _ensure_terminal_ledger_foreign_keys(cursor)
     if await _table_exists(cursor, "office_membership_mutation_receipt"):
         await assert_membership_receipt_runtime_metadata(cursor)
+    await assert_project_role_receipt_runtime_metadata(cursor)
     await assert_profile_revocation_runtime_metadata(cursor)
     # Candidate storage is intentionally inert: it is only untrusted bytes and
     # claims, never publication, approval, or a release decision.  It must be
