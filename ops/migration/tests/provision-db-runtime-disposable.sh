@@ -53,6 +53,7 @@ case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 
 
 ENV_FILE="$TEMP/deployment.env"
 printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
+printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=must-not-copy\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
@@ -87,13 +88,17 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
 ! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
-ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" python3 - <<'PY'
+ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" MIGRATE_ENV="$TEMP/state/migrate.env" python3 - <<'PY'
 import importlib.util, os
 from pathlib import Path
 script=Path(os.environ['ROOT_DIR'])/'ops/migration/jax-platform-pair-exec.py'
 spec=importlib.util.spec_from_file_location('pair_exec',script); assert spec and spec.loader
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-assert module.credential(Path(os.environ['RUNTIME_ENV']))
+runtime = module.credential(Path(os.environ['RUNTIME_ENV']))
+assert runtime['JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA'] == 'fixture-platform-credential'
+assert 'JAX_GITHUB_TOKEN' not in runtime
+assert 'JAX_LAS_MANOS_CREDENCIAL_JACOBS' not in runtime
+assert module.credential(Path(os.environ['MIGRATE_ENV']))
 PY
 test "$(wc -l < "$TEMP/state/migrate.env")" -eq 7
 grep -qx 'JAX_MIGRATE_DB_READINESS_ATTEMPTS=12' "$TEMP/state/migrate.env"

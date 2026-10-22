@@ -46,6 +46,13 @@ note() { printf 'provision-db-runtime: %s\n' "$*"; }
 [[ -r "$ENV_FILE" ]] || die "environment file is not readable"
 
 declare -A CFG=()
+PAIR_EXEC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jax-platform-pair-exec.py"
+allowed_keys=$(python3 -I -S "$PAIR_EXEC" --list-allowed-keys) || die "runtime credential allowlist is unavailable"
+declare -A RUNTIME_ALLOWED=()
+while IFS= read -r allowed_key; do
+  [[ -z $allowed_key ]] || RUNTIME_ALLOWED["$allowed_key"]=1
+done <<< "$allowed_keys"
+[[ ${#RUNTIME_ALLOWED[@]} -gt 0 ]] || die "runtime credential allowlist is empty"
 parse_env() {
   local line key value line_no=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -454,6 +461,7 @@ if [ "$MIGRATOR_ONLY" = 0 ]; then
   runtime_content=
   for key in "${!CFG[@]}"; do
     case "$key" in JAX_DB_USER|JAX_DB_PASSWORD|JAX_RUNTIME_DB_USER|JAX_MIGRATE_*|JAX_BOOTSTRAP_*|JAX_DB_GRANTEE_HOST|JAX_DB_ADMIN_*) continue ;; esac
+    [[ -v "RUNTIME_ALLOWED[$key]" ]] || continue
     runtime_content+="$key=${CFG[$key]}"$'\n'
   done
   runtime_content+="JAX_DB_USER=$RUNTIME_USER"$'\n'
