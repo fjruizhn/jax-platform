@@ -58,7 +58,8 @@ def percentile(values: list[float], p: int) -> float | None:
     return sorted(values)[max(0, min(len(values) - 1, round(len(values) * p / 100) - 1))]
 
 
-def summarize(latencies: list[float], statuses: dict[int | str, int], started: float) -> dict:
+def summarize(latencies: list[float], statuses: dict[int | str, int], started: float,
+              error_details: list[str] | None = None) -> dict:
     n = sum(statuses.values())
     return {
         "n": n, "ok": sum(v for k, v in statuses.items() if k in {200, 201, 204}),
@@ -69,6 +70,9 @@ def summarize(latencies: list[float], statuses: dict[int | str, int], started: f
         "p95_ms": round(percentile(latencies, 95), 2) if latencies else None,
         "p99_ms": round(percentile(latencies, 99), 2) if latencies else None,
         "max_ms": round(max(latencies), 2) if latencies else None,
+        # Bodies are only error codes from local test HTTP; bearer tokens and
+        # passwords are never response fields and are never recorded here.
+        "error_details": sorted(set(error_details or []))[:10],
     }
 
 
@@ -85,13 +89,15 @@ def degradation(rows: list[dict]) -> str:
 
 def env_or_abort() -> dict[str, str]:
     required = ("JAX_OFFICE_LOAD_DB", "JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_USER", "JAX_DB_PASSWORD",
-                "JAX_REPO_PATH", "JAX_CONFIG_PATH")
+                "JAX_REPO_PATH", "JAX_CONFIG_PATH", "OFFICE_LOAD_CONTAINER")
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         raise SystemExit("missing required environment: " + ", ".join(missing))
     env = {key: os.environ[key] for key in required}
     if not DATABASE_RE.fullmatch(env["JAX_OFFICE_LOAD_DB"]):
         raise SystemExit("JAX_OFFICE_LOAD_DB must be a dedicated jax_memory_test_<8 hex> database")
+    if env["JAX_DB_PORT"] in {"3306", "3308"}:
+        raise SystemExit("JAX_DB_PORT is a known production/default port; use a disposable container port")
     return env
 
 
@@ -113,6 +119,33 @@ def assert_disposable_runtime(cfg: dict[str, str]) -> None:
                 raise RuntimeError("Office migration is absent; provision the disposable database first")
     finally:
         conn.close()
+
+
+def assert_disposable_container(cfg: dict[str, str]) -> None:
+    """Bind the requested loopback database port to a running named container.
+
+    A test-shaped schema name alone is not a production boundary: a production
+    server could host one.  The operator must therefore declare the disposable
+    MariaDB container and this check confirms that it exposes the configured
+    port on loopback before SQL is opened.
+    """
+    try:
+        state = subprocess.check_output(
+            ["sudo", "-n", "docker", "inspect", "--format", "{{.State.Running}}", cfg["OFFICE_LOAD_CONTAINER"]],
+            text=True, stderr=subprocess.DEVNULL).strip()
+        ports = subprocess.check_output(
+            ["sudo", "-n", "docker", "inspect", "--format", "{{json .NetworkSettings.Ports}}", cfg["OFFICE_LOAD_CONTAINER"]],
+            text=True, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("cannot inspect the declared disposable Office load container") from error
+    if state != "true":
+        raise RuntimeError("declared Office load container is not running")
+    bindings = json.loads(ports)
+    wanted = str(cfg["JAX_DB_PORT"])
+    loopback = {"127.0.0.1", "::1", "[::1]"}
+    if not any(binding.get("HostPort") == wanted and binding.get("HostIp") in loopback
+               for values in bindings.values() if values for binding in values):
+        raise RuntimeError("declared container does not expose JAX_DB_PORT on loopback")
 
 
 def provision(cfg: dict[str, str], run_id: str, password: str) -> tuple[int, int]:
@@ -152,7 +185,10 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
     env = dict(os.environ)
     env.update(cfg, JAX_DB_NAME=cfg["JAX_OFFICE_LOAD_DB"], JAX_JWT_SECRET=secrets.token_urlsafe(48),
                FERNET_KEY=base64.urlsafe_b64encode(os.urandom(32)).decode(),
-               JAX_PLATFORM_URL=f"http://127.0.0.1:{port}", OFFICE_INVITATION_PUBLIC_BASE_URL="http://127.0.0.1:1",
+               JAX_PLATFORM_URL=f"http://127.0.0.1:{port}",
+               # Configuration validates the canonical public origin even
+               # though this harness never sends an email or opens that URL.
+               OFFICE_INVITATION_PUBLIC_BASE_URL="https://virtualoffice.example.test",
                OFFICE_INVITATION_LIFETIME_SECONDS="600", OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS="30",
                OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT="50", OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT="50",
                OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS="120", OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS="3",
@@ -162,7 +198,14 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
                JAX_KILL_SWITCH_PATH=str(tmp / "pause"), JAX_AUDIT_LOG_PATH=str(tmp / "audit.jsonl"),
                JAX_REPO_BASE=str(tmp / "repo"), JAX_ADJUNTOS_DIR=str(tmp / "adjuntos"),
                JAX_PROXY_CARRIL_RAIZ=str(tmp / "carril"), LAS_MANOS_URL="http://127.0.0.1:1",
-               JACOBS_URL="http://127.0.0.1:1/jacobs")
+               JACOBS_URL="http://127.0.0.1:1/jacobs", JAX_OLLAMA_URL="http://127.0.0.1:1",
+               JAX_ADJUNTO_MAX_BYTES="10485760", JAX_ADJUNTO_MAX_CHARS="8000",
+               JAX_ADJUNTO_MAX_PAGINAS="20", JAX_ADJUNTO_MAX_POR_MENSAJE="1",
+               JAX_ADJUNTO_IMAGENES_EN_PROCESO="1", JAX_ADJUNTO_SUBIDAS_EN_PROCESO="1",
+               JAX_ADJUNTO_PDF_PROCESOS="1", JAX_ADJUNTO_PDF_TIMEOUT_SEGUNDOS="5",
+               JAX_ADJUNTOS_TTL_HORAS="24", JAX_ADJUNTOS_CUOTA_BYTES_USUARIO="524288000",
+               JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES="1073741824",
+               JAX_ADJUNTOS_SUBIDAS_POR_MINUTO="600", JAX_ADJUNTOS_RECHAZO_ESPERA_MS="0")
     env["PYTHONPATH"] = os.pathsep.join([str(BACKEND), os.getenv("PYTHONPATH", "")])
     return env, env["FERNET_KEY"].encode()
 
@@ -200,12 +243,18 @@ async def authenticated_client(base: str, email: str, password: str):
     enroll = await client.post("/api/auth/mfa/enrollment/start", json={"password": password}, headers={"Authorization": f"Bearer {access}"})
     enroll.raise_for_status()
     enrollment = enroll.json()
-    confirm = await client.post("/api/auth/mfa/enrollment/confirm", json={"enrollment_token": enrollment["enrollment_token"], "otp": pyotp.TOTP(enrollment["secret"]).now()})
+    totp = pyotp.TOTP(enrollment["secret"])
+    enrollment_otp = totp.now()
+    confirm = await client.post("/api/auth/mfa/enrollment/confirm", json={"enrollment_token": enrollment["enrollment_token"], "otp": enrollment_otp})
     confirm.raise_for_status()
     login = await client.post("/api/auth/login", json={"email": email, "password": password})
     login.raise_for_status()
     challenge = login.json()
-    verified = await client.post("/api/auth/mfa/login/verify", json={"challenge_token": challenge["challenge_token"], "otp": pyotp.TOTP(enrollment["secret"]).now()})
+    # MFA deliberately rejects reuse of a TOTP counter.  Enrollment consumed
+    # this counter, so wait for the next actual clock interval rather than
+    # fabricating a proof or weakening the replay guard for a load test.
+    await asyncio.sleep(max(.1, 30 - (time.time() % 30) + .1))
+    verified = await client.post("/api/auth/mfa/login/verify", json={"challenge_token": challenge["challenge_token"], "otp": totp.now()})
     verified.raise_for_status()
     return client, {"Authorization": f"Bearer {verified.json()['access_token']}"}
 
@@ -235,55 +284,62 @@ async def run_level(client, headers: dict, project_id: int, cfg: dict, fernet_ke
     async def batch(kind: str):
         started = time.perf_counter()
         results = await asyncio.gather(*(issue(kind, n) for n in range(concurrency * OPERATIONS_PER_WORKER)))
-        stats, latencies = {}, []
+        stats, latencies, errors = {}, [], []
         for response, latency in results:
             stats[response.status_code] = stats.get(response.status_code, 0) + 1
             if response.status_code == 200:
                 body = response.json(); issued.append((body["id"], int(body["version"])))
                 latencies.append(latency)
-        return summarize(latencies, stats, started)
+            else:
+                errors.append(response.text[:200])
+        return summarize(latencies, stats, started, errors)
     list_started = time.perf_counter()
     async def list_once():
         before = time.perf_counter()
         response = await client.get(f"/api/virtual-office/projects/{project_id}/invitations?limit=100", headers=headers)
         return response, (time.perf_counter() - before) * 1000
     lists = await asyncio.gather(*(list_once() for _ in range(concurrency * OPERATIONS_PER_WORKER)))
-    list_lat = []
+    list_lat, list_errors = [], []
     list_status = {}
     for response, latency in lists:
         list_status[response.status_code] = list_status.get(response.status_code, 0) + 1
         if response.status_code == 200:
             list_lat.append(latency)
+        else:
+            list_errors.append(response.text[:200])
     issue_result = await batch("accept")
     accept_ids = [iid for iid, _ in issued]
-    tokens = outbox_tokens(cfg, fernet_key, accept_ids)
-    accept_started, accept_stats, accept_lat = time.perf_counter(), {}, []
+    tokens = await asyncio.to_thread(outbox_tokens, cfg, fernet_key, accept_ids)
+    accept_started, accept_stats, accept_lat, accept_errors = time.perf_counter(), {}, [], []
     async def accept(iid: str):
         before = time.perf_counter(); response = await client.post("/api/virtual-office/invitations/accept", json={"token": tokens[iid], "password": "Loadtest-Only-Password-123!"}); return response, (time.perf_counter()-before)*1000
     for response, latency in await asyncio.gather(*(accept(iid) for iid in accept_ids)):
         accept_stats[response.status_code] = accept_stats.get(response.status_code, 0) + 1
         if response.status_code == 200: accept_lat.append(latency)
+        else: accept_errors.append(response.text[:200])
     issued.clear()
     revoke_issue = await batch("revoke")
-    revoke_started, revoke_stats, revoke_lat = time.perf_counter(), {}, []
+    revoke_started, revoke_stats, revoke_lat, revoke_errors = time.perf_counter(), {}, [], []
     async def revoke(iid: str, version: int):
         before = time.perf_counter(); response = await client.delete(f"/api/virtual-office/projects/{project_id}/invitations/{iid}?expected_version={version}", headers={**headers, "Idempotency-Key": str(uuid.uuid4())}); return response, (time.perf_counter()-before)*1000
     for response, latency in await asyncio.gather(*(revoke(iid, version) for iid, version in issued)):
         revoke_stats[response.status_code] = revoke_stats.get(response.status_code, 0) + 1
         if response.status_code == 200: revoke_lat.append(latency)
-    return {"concurrency": concurrency, "list": summarize(list_lat, list_status, list_started), "issue_accept": issue_result,
-            "accept": summarize(accept_lat, accept_stats, accept_started), "issue_revoke": revoke_issue,
-            "revoke": summarize(revoke_lat, revoke_stats, revoke_started)}
+        else: revoke_errors.append(response.text[:200])
+    return {"concurrency": concurrency, "list": summarize(list_lat, list_status, list_started, list_errors), "issue_accept": issue_result,
+            "accept": summarize(accept_lat, accept_stats, accept_started, accept_errors), "issue_revoke": revoke_issue,
+            "revoke": summarize(revoke_lat, revoke_stats, revoke_started, revoke_errors)}
 
 
 async def measure(cfg: dict[str, str]) -> dict:
-    assert_disposable_runtime(cfg)
+    await asyncio.to_thread(assert_disposable_container, cfg)
+    await asyncio.to_thread(assert_disposable_runtime, cfg)
     run_id, password = uuid.uuid4().hex[:8], secrets.token_urlsafe(24)
-    _, project_id = provision(cfg, run_id, password)
-    tmp = Path(tempfile.mkdtemp(prefix="office-invitations-load-")); port = free_port()
+    _, project_id = await asyncio.to_thread(provision, cfg, run_id, password)
+    tmp = Path(tempfile.mkdtemp(prefix="office-invitations-load-")); port = await asyncio.to_thread(free_port)
     env, fernet_key = backend_env(cfg, tmp, port); proc = log = None
     try:
-        proc, log = start_backend(env, port, tmp)
+        proc, log = await asyncio.to_thread(start_backend, env, port, tmp)
         client, headers = await authenticated_client(f"http://127.0.0.1:{port}", f"office-load-admin-{run_id}@example.invalid", password)
         try:
             rows = [await run_level(client, headers, project_id, cfg, fernet_key, run_id, c) for c in LEVELS]
@@ -295,7 +351,7 @@ async def measure(cfg: dict[str, str]) -> dict:
         return {"schema": "office-invitation-load/v1", "database": cfg["JAX_OFFICE_LOAD_DB"], "run_id": run_id,
                 "levels": rows, "degradation": gates, "notes": ["real loopback ASGI HTTP", "real auth and MFA", "outbox bearer decrypted only from the isolated disposable database"]}
     finally:
-        if proc: stop_backend(proc)
+        if proc: await asyncio.to_thread(stop_backend, proc)
         if log: log.close()
 
 

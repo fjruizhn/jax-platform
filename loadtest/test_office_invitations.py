@@ -27,3 +27,14 @@ def test_database_pattern_rejects_non_disposable_names(name):
 
 def test_database_pattern_accepts_only_explicit_disposable_database():
     assert oi.DATABASE_RE.fullmatch("jax_memory_test_a1b2c3d4") is not None
+
+
+def test_known_production_ports_are_rejected_before_any_connection(monkeypatch):
+    values = {
+        "JAX_OFFICE_LOAD_DB": "jax_memory_test_a1b2c3d4", "JAX_DB_HOST": "127.0.0.1",
+        "JAX_DB_PORT": "3308", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p",
+        "JAX_REPO_PATH": "/tmp/jax", "JAX_CONFIG_PATH": "/tmp/config", "OFFICE_LOAD_CONTAINER": "db",
+    }
+    for key, value in values.items(): monkeypatch.setenv(key, value)
+    with pytest.raises(SystemExit, match="known production"):
+        oi.env_or_abort()
