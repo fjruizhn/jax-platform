@@ -6,8 +6,9 @@ parameter, query parameter, response field, or logging value.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -53,6 +54,23 @@ def _raise(error: InvitationError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.code) from error
 
 
+def _require_durable_idempotency(idempotency_key: str) -> str:
+    """Validate the UI retry key before failing closed on missing persistence.
+
+    The ingress must never silently discard a retry key.  The invitation
+    service has no request/receipt store for issue or revoke yet, so accepting
+    a syntactically valid key would promise a replay guarantee it cannot make.
+    Keep the HTTP boundary explicit until that service contract exists.
+    """
+    try:
+        parsed = uuid.UUID(idempotency_key)
+    except (AttributeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail="office_invitation_idempotency_invalid") from error
+    if str(parsed) != idempotency_key.lower():
+        raise HTTPException(status_code=422, detail="office_invitation_idempotency_invalid")
+    raise HTTPException(status_code=503, detail="office_invitation_idempotency_unavailable")
+
+
 async def _optional_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer),
 ) -> AuthUser | None:
@@ -63,7 +81,9 @@ async def _optional_current_user(
 
 @router.post("/projects/{project_id}/invitations")
 async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
+                           idempotency_key: str = Header(alias="Idempotency-Key"),
                            user: AuthUser = Depends(get_current_user)):
+    _require_durable_idempotency(idempotency_key)
     actor = _actor_id(user)
     invitation_config = load_invitation_config_from_environment()
     mfa_config = load_mfa_config_from_environment()
@@ -78,12 +98,15 @@ async def issue_invitation(project_id: int, payload: InvitationIssueRequest,
             )
     except InvitationError as error:
         _raise(error)
-    return {"invitation_id": invitation.invitation_id, "expires_at": invitation.expires_at.isoformat()}
+    return {"id": invitation.invitation_id, "invitation_id": invitation.invitation_id,
+            "version": 1, "expires_at": invitation.expires_at.isoformat()}
 
 
 @router.delete("/projects/{project_id}/invitations/{invitation_id}")
 async def revoke_invitation(project_id: int, invitation_id: str, expected_version: int = Query(ge=1),
+                            idempotency_key: str = Header(alias="Idempotency-Key"),
                             user: AuthUser = Depends(get_current_user)):
+    _require_durable_idempotency(idempotency_key)
     actor = _actor_id(user)
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -95,7 +118,8 @@ async def revoke_invitation(project_id: int, invitation_id: str, expected_versio
             )
     except InvitationError as error:
         _raise(error)
-    return {"invitation_id": invitation_id, "status": "REVOKED", "replayed": replayed}
+    return {"id": invitation_id, "invitation_id": invitation_id, "status": "REVOKED",
+            "version": expected_version + 1, "replayed": replayed}
 
 
 @router.post("/invitations/accept")
