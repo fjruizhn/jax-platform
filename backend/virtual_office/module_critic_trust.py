@@ -15,12 +15,20 @@ DEFINER and SQL_MODE are environment-owned trigger metadata and intentionally
 stay outside this v13 digest: the four canonical bodies only SIGNAL, so neither
 widens their semantics. Future sensitive trigger behavior requires a versioned
 creation-policy contract before it can rely on either field.
+
+The separate v14 entry point below is intentionally not called by the generic
+Office migration runner.  It consumes a descriptor-bound root contract,
+invalidates the runtime marker before any DDL, then recreates and attests the
+trigger environment.  It remains schema work only: it neither makes the guard
+ready nor enables a receipt consumer.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
+
+from virtual_office.critic_trust_activation import ActivationContract
 
 
 _KEY_DDL = (
@@ -212,8 +220,96 @@ async def assert_critic_trust_anchor_metadata(cur) -> None:
     )
 
 
+async def apply_critic_trust_v14(cur, contract: ActivationContract) -> None:
+    """Apply the explicit, contract-bound v14 trigger migration.
+
+    This is deliberately a separate operator entry point.  Its caller must
+    have obtained ``contract`` via ``load_activation_contract``; it is
+    revalidated before DDL and before the v14 marker is written.  MariaDB DDL
+    commits implicitly, so a failure at any point leaves the ordinary Office
+    marker invalidated and a later retry recreates all four triggers.
+    """
+    if type(contract) is not ActivationContract:
+        raise TypeError("critic-trust v14 requires a validated ActivationContract")
+    from virtual_office.migrations import (
+        invalidate_office_runtime_revision,
+    )
+
+    contract.assert_unchanged()
+    # The invalidation is deliberately first.  No v13-ready marker survives a
+    # failed ALTER/DROP/CREATE sequence.
+    await invalidate_office_runtime_revision(cur)
+    await _assert_v14_predecessor_tables(cur)
+    await _set_contract_table_defaults(cur, contract)
+    await _recreate_v14_triggers(cur, contract)
+    await _attest_v14_under_mdl(cur, contract)
+
+
+async def _assert_v14_predecessor_tables(cur) -> None:
+    """Accept only the known v13 tables; trigger state is repaired by v14."""
+    await _assert_critic_trust_anchor_metadata(
+        cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
+        include_triggers=False,
+    )
+
+
+async def _set_contract_table_defaults(cur, contract) -> None:
+    for table in _APPEND_ONLY:
+        await cur.execute(
+            f"ALTER TABLE `{table}` DEFAULT CHARACTER SET `{contract.database_charset}` "
+            f"COLLATE `{contract.database_collation}`"
+        )
+
+
+async def _recreate_v14_triggers(cur, contract) -> None:
+    """Replace the complete trigger set with the contract's creation context."""
+    await cur.execute("SELECT @@SESSION.sql_mode,@@character_set_client,@@collation_connection")
+    original_mode, original_charset, original_collation = await cur.fetchone()
+    try:
+        await cur.execute("SET SESSION sql_mode=%s", (contract.database_sql_mode,))
+        await cur.execute(
+            f"SET NAMES `{contract.database_charset}` COLLATE `{contract.database_collation}`"
+        )
+        for name, _table, _operation, _statement in _trigger_definitions():
+            await cur.execute(f"DROP TRIGGER IF EXISTS `{name}`")
+        definer = contract.trigger_definer
+        for name, table, operation, statement in _trigger_definitions():
+            await cur.execute(
+                f"CREATE DEFINER=`{definer.user}`@`{definer.host}` TRIGGER `{name}` "
+                f"BEFORE {operation} ON `{table}` FOR EACH ROW {statement}"
+            )
+    finally:
+        # Session restoration cannot make a failed DDL sequence ready; the
+        # marker remains invalid until a future complete invocation succeeds.
+        await cur.execute("SET SESSION sql_mode=%s", (original_mode,))
+        await cur.execute(f"SET NAMES `{original_charset}` COLLATE `{original_collation}`")
+
+
+async def _attest_v14_under_mdl(cur, contract) -> None:
+    """Hold table MDL while checking every v14 environment-owned field."""
+    await cur.execute("START TRANSACTION")
+    try:
+        for table in _APPEND_ONLY:
+            await cur.execute(f"SELECT 1 FROM `{table}` WHERE 0 LOCK IN SHARE MODE")
+        await _assert_critic_trust_anchor_metadata(
+            cur, expected_columns=_TABLE_COLUMNS, expected_clauses=_CHECK_CLAUSES,
+            v14_contract=contract,
+        )
+        # The completion stamp is deliberately part of the same MDL-held
+        # transaction, so no un-attested schema can be stamped ready.
+        contract.assert_unchanged()
+        from virtual_office.migrations import stamp_critic_trust_v14_runtime_revision
+        await stamp_critic_trust_v14_runtime_revision(cur)
+    except BaseException:
+        await cur.execute("ROLLBACK")
+        raise
+    else:
+        await cur.execute("COMMIT")
+
+
 async def _assert_critic_trust_anchor_metadata(
     cur, *, expected_columns, expected_clauses, tables=None, allow_trigger_prefix: bool = False,
+    include_triggers: bool = True, v14_contract=None,
 ) -> None:
     """Attest an exact schema generation; callers choose the known generation."""
     tables = tuple(expected_columns) if tables is None else tuple(tables)
@@ -276,11 +372,19 @@ async def _assert_critic_trust_anchor_metadata(
         ),)
     if foreign_keys != expected_foreign_keys:
         raise RuntimeError("Office critic trust foreign keys are invalid")
+    if not include_triggers:
+        return
     found = {}
+    trigger_fields = (
+        "TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,"
+        "ACTION_STATEMENT,ACTION_ORDER"
+    )
+    if v14_contract is not None:
+        trigger_fields += ",DEFINER,SQL_MODE,CHARACTER_SET_CLIENT,COLLATION_CONNECTION,DATABASE_COLLATION"
     for table in tables:
         await cur.execute(
-            "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT,ACTION_ORDER "
-            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
+            f"SELECT {trigger_fields} FROM information_schema.TRIGGERS "
+            "WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
         )
         found.update({row[0]: tuple(row[1:]) for row in await cur.fetchall()})
     definitions = _trigger_definitions(tables)
@@ -288,6 +392,24 @@ async def _assert_critic_trust_anchor_metadata(
         name: (table, "BEFORE", operation, "ROW", statement, 1)
         for name, table, operation, statement in definitions
     }
+    if v14_contract is not None:
+        await cur.execute("SELECT VERSION()")
+        version = str((await cur.fetchone() or ("",))[0]).split("-", 1)[0]
+        if version != v14_contract.database_server_version:
+            raise RuntimeError("Office critic trust database version is incompatible")
+        expected = {
+            name: (*definition, f"{v14_contract.trigger_definer.user}@{v14_contract.trigger_definer.host}",
+                   v14_contract.database_sql_mode, v14_contract.database_charset,
+                   v14_contract.database_collation, v14_contract.database_collation)
+            for name, definition in expected.items()
+        }
+        for table in tables:
+            await cur.execute(
+                "SELECT TABLE_COLLATION FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,)
+            )
+            if tuple(await cur.fetchone() or ()) != (v14_contract.database_collation,):
+                raise RuntimeError(f"Office critic trust table collation for {table} is invalid")
     if allow_trigger_prefix:
         expected = dict(list(expected.items())[:len(found)])
     if found != expected:
