@@ -158,6 +158,9 @@ Instalar `jax-office-activate-public-release.sh` y
 `jax-office-rollback-public-release.sh` de la misma manera root-owned y
 comparada que el instalador y validador del paso 1. Conservar la ruta de la
 instantánea que imprime el activador hasta que la publicación quede aceptada.
+La instantánea contiene `ACTIVATION_IN_PROGRESS` desde antes del primer cambio;
+si queda tras un corte o un `SIGKILL`, no hacer otro despliegue: ejecutar la
+reversión con esa ruta y conservar `RECOVERY_REQUIRED` si ella falla.
 
 ## Comprobación sin DNS
 

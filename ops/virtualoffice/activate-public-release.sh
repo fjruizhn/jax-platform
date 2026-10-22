@@ -44,6 +44,8 @@ if (( ! lock_is_held )); then exec "$locker" --lock "$lock" -- "$0" "${original_
 install -d -o root -g root -m 0700 "$backups"
 backup=$(mktemp -d "$backups/office-activation.XXXXXXXX")
 chmod 0700 "$backup"; chown root:root "$backup"
+vhost_canonical=$(readlink -m -- "$vhost")
+printf '%s\n' "$vhost_canonical" > "$backup/vhost-path"
 staged_source="$backup/vhost-source"
 python3 - "$source" "$staged_source" <<'PY' || die 'could not pin trusted vhost source'
 import os,stat,sys
@@ -80,12 +82,15 @@ changed=0
 restore_on_error() { local code=$?; if ((changed)); then if ! "$rollback" --lock-held --allow-pre-activation --site-root "$site" --vhost-path "$vhost" --backup "$backup" --nginx "$nginx" --validator "$validator" --public-ip "$ip" --new-index-sha256 "$index"; then : > "$backup/RECOVERY_REQUIRED"; fi; fi; exit "$code"; }
 trap restore_on_error ERR INT TERM
 
-[[ -d $(dirname -- "$vhost") && $(stat -c %u "$(dirname -- "$vhost")") == 0 ]] || die 'vhost parent must already exist and be root-owned'
+vhost_parent=$(dirname -- "$vhost")
+parent_mode=$(stat -c %a "$vhost_parent" 2>/dev/null || true)
+[[ -d $vhost_parent && $(stat -c %u "$vhost_parent") == 0 ]] && (( (8#$parent_mode & 8#022) == 0 )) || die 'vhost parent must already exist, be root-owned, and not writable'
 install -o root -g root -m 0644 "$staged_source" "$vhost.new"
 sha256sum "$vhost.new" | awk '{print $1}' > "$backup/new-vhost-sha256"
 ln -s -- "$release" "$site/.current.new"
 chown -h root:root "$site/.current.new"
 changed=1
+: > "$backup/ACTIVATION_IN_PROGRESS"
 mv -f -- "$vhost.new" "$vhost"
 mv -Tf -- "$site/.current.new" "$current"
 "$validator" offline --config "$vhost" --site-root "$site" --releases-root "$releases" --release "$current" --expected-source-sha "$sha" --nginx-user "$nginx_user"
@@ -93,4 +98,5 @@ mv -Tf -- "$site/.current.new" "$current"
 "$nginx" -s reload
 "$validator" smoke --public-ip "$ip" --expected-index-sha "$index" --asset-path "$asset" --expected-asset-sha "$asset_sha"
 trap - ERR INT TERM
+rm -f -- "$backup/ACTIVATION_IN_PROGRESS"
 printf 'public Office activation passed; rollback snapshot: %s\n' "$backup"

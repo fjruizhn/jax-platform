@@ -13,6 +13,9 @@ while (($#)); do case $1 in
 [[ -n $site && -n $vhost && -n $backup && -n $nginx && -n $validator && -n $ip && $new_index =~ ^[0-9a-f]{64}$ ]] || { usage >&2; exit 2; }
 [[ -d $backup && -x $nginx && -x $validator ]] || die 'backup, nginx, or validator unavailable'
 site=$(readlink -f -- "$site"); current="$site/current"
+[[ $(readlink -m -- "$vhost") == "$(cat "$backup/vhost-path")" ]] || die 'rollback vhost path differs from snapshot'
+snapshot_index=$(cat "$backup/new-index-sha256")
+[[ $new_index == "$snapshot_index" ]] || die 'rollback index digest differs from snapshot'
 lock="$site/.activation.lock"
 locker="$(dirname "$(readlink -f -- "$0")")/with-office-activation-lock.py"
 [[ -x $locker ]] || die 'activation lock helper is unavailable'
@@ -33,10 +36,14 @@ if [[ $current_target != "$new_release" ]]; then
   if (( ! allow_pre_activation )); then die 'current no longer names this activation release'; fi
   if [[ -f $backup/current-target ]]; then [[ $current_target == "$(cat "$backup/current-target")" ]] || die 'current changed before activation rollback'; else [[ $current_target == ABSENT ]] || die 'current changed before activation rollback'; fi
 fi
-if [[ -f $backup/new-vhost-sha256 && -e $vhost ]]; then
-  current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
-  if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then
-    if (( ! allow_pre_activation )) || [[ ! -f $backup/previous-vhost-sha256 ]] || [[ $current_vhost != "$(cat "$backup/previous-vhost-sha256")" ]]; then die 'vhost no longer names this activation content'; fi
+if [[ -f $backup/new-vhost-sha256 ]]; then
+  if [[ ! -e $vhost ]]; then
+    (( allow_pre_activation )) || die 'activated vhost disappeared'
+  else
+    current_vhost=$(sha256sum "$vhost" | awk '{print $1}')
+    if [[ $current_vhost != "$(cat "$backup/new-vhost-sha256")" ]]; then
+      if (( ! allow_pre_activation )) || [[ ! -f $backup/previous-vhost-sha256 ]] || [[ $current_vhost != "$(cat "$backup/previous-vhost-sha256")" ]]; then die 'vhost no longer names this activation content'; fi
+    fi
   fi
 fi
 if [[ -f $backup/vhost ]]; then install -o root -g root -m 0644 "$backup/vhost" "$vhost.new"; mv -f -- "$vhost.new" "$vhost"; elif [[ -f $backup/VHOST_ABSENT ]]; then rm -f -- "$vhost"; else die 'backup has no vhost state'; fi
@@ -49,7 +56,7 @@ if [[ -f $backup/CURRENT_ABSENT ]]; then
   status=$(curl --noproxy '*' -k --silent --show-error --max-time 10 --output "$body" --write-out '%{http_code}' --resolve "virtualoffice.axioma-ia.io:443:$ip" https://virtualoffice.axioma-ia.io/ || true)
   case "$status" in
     200) [[ -s $body ]] || die 'first-deploy rollback HTTP response was empty'; got=$(sha256sum "$body" | awk '{print $1}'); [[ $got != "$new_index" ]] || die 'first-deploy rollback still serves the activated index' ;;
-    000|400|403|404) : ;; # The old default host closed the Office request.
+    400|403|404) : ;; # The old default host closed the Office request.
     *) die "first-deploy rollback returned unacceptable HTTP status: ${status:-curl-failed}" ;;
   esac
   rm -f -- "$body"
@@ -62,4 +69,5 @@ PY
 )
   "$validator" smoke --public-ip "$ip" --expected-index-sha "${prior[1]}" --asset-path "${prior[2]}" --expected-asset-sha "${prior[3]}"
 fi
+rm -f -- "$backup/ACTIVATION_IN_PROGRESS" "$backup/RECOVERY_REQUIRED"
 printf 'public Office rollback passed from snapshot: %s\n' "$backup"
