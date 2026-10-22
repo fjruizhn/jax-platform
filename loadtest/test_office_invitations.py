@@ -72,6 +72,25 @@ def test_container_binding_accepts_docker_ipv6_loopback_serialization():
         {"3306/tcp": [{"HostIp": "[::1]", "HostPort": "33991"}]}, "::1", "33991")
 
 
+def test_source_revision_requires_a_full_git_sha(monkeypatch):
+    monkeypatch.setattr(oi.subprocess, "check_output", lambda *args, **kwargs: "a" * 40 + "\n")
+    assert oi.source_revision() == "a" * 40
+
+
+def test_benchmark_process_raises_both_login_and_invitation_accept_buckets(tmp_path):
+    cfg = {
+        "JAX_OFFICE_LOAD_DB": "jax_memory_test_a1b2c3d4", "JAX_DB_HOST": "127.0.0.1",
+        "JAX_DB_PORT": "33991", "JAX_DB_USER": "u", "JAX_DB_PASSWORD": "p",
+        "JAX_REPO_PATH": "/tmp/jax", "JAX_CONFIG_PATH": "/tmp/config", "OFFICE_LOAD_CONTAINER": "db",
+    }
+    env, _ = oi.backend_env(cfg, tmp_path, 54321)
+    assert env["JAX_LOGIN_RATE_IP"] == "10000/60"
+    assert env["JAX_LOGIN_RATE_EMAIL"] == "10000/60"
+    assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_IP"] == "10000/60"
+    assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN"] == "10000/60"
+    assert env["JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS"] == "20000"
+
+
 def test_sequential_workers_never_overlap_operations_within_a_user():
     active, peak, order = {}, [0], []
     async def action(worker, operation):

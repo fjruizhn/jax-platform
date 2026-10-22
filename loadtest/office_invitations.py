@@ -51,6 +51,16 @@ BACKEND = ROOT / "backend"
 DATABASE_RE = re.compile(r"jax_memory_test_[0-9a-f]{8}$")
 LEVELS = [1, 5, 10]
 OPERATIONS_PER_WORKER = 4
+BENCHMARK_RATE_POLICY = {
+    "JAX_LOGIN_RATE_IP": "10000/60",
+    "JAX_LOGIN_RATE_EMAIL": "10000/60",
+    "JAX_LOGIN_RATE_MAX_KEYS": "20000",
+    # These are intentionally process-local.  The anonymous accept endpoint
+    # has its own IP and bearer buckets, separate from login since PR #219.
+    "JAX_OFFICE_INVITATION_ACCEPT_RATE_IP": "10000/60",
+    "JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN": "10000/60",
+    "JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS": "20000",
+}
 if os.environ.get("CARGA_RAPIDA"):
     LEVELS, OPERATIONS_PER_WORKER = [1], 1
 
@@ -105,6 +115,18 @@ def has_exact_loopback_port_binding(bindings: dict, host: str, port: str) -> boo
         return address[1:-1] if isinstance(address, str) and address.startswith("[") and address.endswith("]") else address
     return any(binding.get("HostPort") == port and normalized(binding.get("HostIp")) == normalized(host)
                for values in bindings.values() if values for binding in values)
+
+
+def source_revision() -> str:
+    """Record the exact combined tree that produced a measurement."""
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("Office load evidence requires a resolvable git revision") from error
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("Office load evidence received an invalid git revision")
+    return revision
 
 
 async def sequential_workers(concurrency: int, operations: int, action):
@@ -233,11 +255,11 @@ def backend_env(cfg: dict[str, str], tmp: Path, port: int) -> tuple[dict[str, st
                JAX_ADJUNTOS_TTL_HORAS="24", JAX_ADJUNTOS_CUOTA_BYTES_USUARIO="524288000",
                JAX_ADJUNTOS_DISCO_LIBRE_MINIMO_BYTES="1073741824",
                JAX_ADJUNTOS_SUBIDAS_POR_MINUTO="600", JAX_ADJUNTOS_RECHAZO_ESPERA_MS="0",
-               # Isolated benchmark-only process.  This prevents its shared
-               # in-memory limiter from obscuring acceptance capacity across
-               # c=1/c=5/c=10; its values are emitted in the result below.
-               JAX_LOGIN_RATE_IP="10000/60", JAX_LOGIN_RATE_EMAIL="10000/60",
-               JAX_LOGIN_RATE_MAX_KEYS="20000")
+               # Isolated benchmark-only process.  Login and anonymous
+               # invitation acceptance keep separate in-memory buckets; both
+               # must be raised here so c=1 cannot spend the budget for a
+               # later c=5/c=10 level.  Production defaults stay untouched.
+               **BENCHMARK_RATE_POLICY)
     env["PYTHONPATH"] = os.pathsep.join([str(BACKEND), os.getenv("PYTHONPATH", "")])
     return env, env["FERNET_KEY"].encode()
 
@@ -406,10 +428,11 @@ async def measure(cfg: dict[str, str]) -> dict:
         # Each stateful leg reports separately; the overall degradation is the
         # first operation whose p95/HTTP errors cross the declared criterion.
         gates = {name: degradation([{"concurrency": r["concurrency"], "result": r[name]} for r in rows]) for name in ("list", "issue_accept", "accept", "issue_revoke", "revoke")}
-        return {"schema": "office-invitation-load/v1", "database": cfg["JAX_OFFICE_LOAD_DB"], "run_id": run_id,
+        return {"schema": "office-invitation-load/v1", "source_revision": source_revision(),
+                "database": cfg["JAX_OFFICE_LOAD_DB"], "run_id": run_id,
                 "workers_per_level": {"concurrent_users": "c", "operations_per_user": OPERATIONS_PER_WORKER},
                 "seed": {"active_invitations": 100, "method": "real issue endpoint"},
-                "benchmark_rate_policy": {"JAX_LOGIN_RATE_IP": "10000/60", "JAX_LOGIN_RATE_EMAIL": "10000/60", "scope": "isolated local benchmark process only"},
+                "benchmark_rate_policy": {**BENCHMARK_RATE_POLICY, "scope": "isolated local benchmark process only"},
                 "levels": rows, "degradation": gates, "notes": ["real loopback ASGI HTTP", "real auth and MFA", "outbox bearer decrypted only from the isolated disposable database", "guardrail 429 is reported separately from capacity"]}
     finally:
         if proc: await asyncio.to_thread(stop_backend, proc)
