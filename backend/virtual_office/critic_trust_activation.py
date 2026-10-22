@@ -14,23 +14,34 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 ACTIVATION_CONTRACT_PATH = Path("/etc/jax/office-critic-trust-activation-v1.json")
 MAX_CONTRACT_BYTES = 8 * 1024
-DOMAIN = "axioma.office"
-VERSION = 1
+DOMAIN = "axioma.office.critic-trust-activation"
+SCHEMA_VERSION = 1
+OFFICE_RUNTIME_GENERATION = 14
 GUARD_PROTOCOL = "office-critic-trust-guard/v1"
-PURPOSE = "rights.review"
-ALGORITHM = "Ed25519"
+RECEIPT_DOMAIN = "axioma.office.critic-invocation-receipt"
+RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_OPERATION = "rights.review"
+RECEIPT_ALGORITHM = "Ed25519"
+DATABASE_SCHEMA = "jax_memory"
+DATABASE_SERVER_VERSION = "12.3.3"
+DATABASE_SQL_MODE = "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION"
+DATABASE_CHARSET = "utf8mb4"
+DATABASE_COLLATION = "utf8mb4_uca1400_ai_ci"
+SOCKET_PATH = "/run/jax/office-critic-trust-guard/guard.sock"
 MAX_FRAME_BYTES = 20 * 1024
 _USER = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
+_HOST = re.compile(r"[A-Za-z0-9._:-]{1,255}\Z")
+_PRINCIPAL = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-_TOP_KEYS = frozenset({
-    "algorithm", "allowed_peer_uids", "database_user", "domain", "guard_gid",
-    "guard_protocol", "guard_uid", "limits", "purpose", "trust_definer_user", "version",
-})
+_TOP_KEYS = frozenset({"database", "domain", "guard_protocol", "limits", "office_runtime_generation", "process", "receipt", "schema_version"})
+_DATABASE_KEYS = frozenset({"charset", "collation", "guard_account", "schema", "server_version", "sql_mode", "trigger_definer"})
+_ACCOUNT_KEYS = frozenset({"host", "user"})
+_PROCESS_KEYS = frozenset({"allowed_client_uids", "gid", "socket_path", "uid"})
+_RECEIPT_KEYS = frozenset({"algorithm", "critic_principal", "domain", "operation", "schema_version"})
 _LIMIT_KEYS = frozenset({"max_frame_bytes", "max_inflight", "timeout_seconds"})
 
 
@@ -52,12 +63,20 @@ class ContractFingerprint:
 
 
 @dataclass(frozen=True)
+class DatabaseAccount:
+    user: str
+    host: str
+
+
+@dataclass(frozen=True)
 class ActivationContract:
+    critic_principal: str
     guard_uid: int
     guard_gid: int
-    allowed_peer_uids: tuple[int, ...]
-    database_user: str
-    trust_definer_user: str
+    allowed_client_uids: tuple[int, ...]
+    socket_path: str
+    guard_account: DatabaseAccount
+    trigger_definer: DatabaseAccount
     timeout_seconds: int
     max_inflight: int
     path: Path
@@ -92,15 +111,25 @@ def _no_constant(_: str) -> object:
 
 
 def _positive_int(value: object, name: str, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+    if type(value) is not int or not 1 <= value <= maximum:
         _reject(f"activation contract {name} is invalid")
     return value
 
 
-def _user(value: object, name: str) -> str:
-    if not isinstance(value, str) or _USER.fullmatch(value) is None:
+def _text(value: object, name: str, pattern: re.Pattern[str]) -> str:
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
         _reject(f"activation contract {name} is invalid")
     return value
+
+
+def _account(value: object, name: str) -> DatabaseAccount:
+    if not isinstance(value, dict) or set(value) != _ACCOUNT_KEYS:
+        _reject(f"activation contract {name} is invalid")
+    user = _text(value["user"], f"{name}.user", _USER)
+    host = _text(value["host"], f"{name}.host", _HOST)
+    if host == "%":
+        _reject(f"activation contract {name}.host is invalid")
+    return DatabaseAccount(user, host)
 
 
 def _canonical(value: dict[str, object]) -> bytes:
@@ -120,35 +149,51 @@ def _parse_contract(raw: bytes) -> ActivationContract:
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ActivationContractError) as error:
         raise ActivationContractError("activation contract JSON is invalid") from error
-    if not isinstance(value, dict) or set(value) != _TOP_KEYS:
-        _reject("activation contract keys are invalid")
-    if raw != _canonical(value):
-        _reject("activation contract is not canonical JSON")
-    if value["domain"] != DOMAIN or value["version"] != VERSION:
-        _reject("activation contract domain or version is invalid")
-    if value["guard_protocol"] != GUARD_PROTOCOL or value["purpose"] != PURPOSE or value["algorithm"] != ALGORITHM:
-        _reject("activation contract protocol constants are invalid")
-    guard_uid = _positive_int(value["guard_uid"], "guard_uid", 2**31 - 1)
-    guard_gid = _positive_int(value["guard_gid"], "guard_gid", 2**31 - 1)
-    database_user = _user(value["database_user"], "database_user")
-    trust_definer_user = _user(value["trust_definer_user"], "trust_definer_user")
-    if database_user == trust_definer_user:
-        _reject("activation contract database user and definer must differ")
-    peer_uids = value["allowed_peer_uids"]
-    if not isinstance(peer_uids, list) or not 1 <= len(peer_uids) <= 16:
-        _reject("activation contract allowed_peer_uids is invalid")
-    typed_uids = tuple(_positive_int(item, "allowed_peer_uids", 2**31 - 1) for item in peer_uids)
-    if tuple(sorted(typed_uids)) != typed_uids or len(set(typed_uids)) != len(typed_uids):
-        _reject("activation contract allowed_peer_uids is not canonical")
+    if not isinstance(value, dict) or set(value) != _TOP_KEYS or raw != _canonical(value):
+        _reject("activation contract shape or canonical bytes are invalid")
+    if value["domain"] != DOMAIN or type(value["schema_version"]) is not int or value["schema_version"] != SCHEMA_VERSION:
+        _reject("activation contract domain or schema version is invalid")
+    if type(value["office_runtime_generation"]) is not int or value["office_runtime_generation"] != OFFICE_RUNTIME_GENERATION:
+        _reject("activation contract runtime generation is invalid")
+    if value["guard_protocol"] != GUARD_PROTOCOL:
+        _reject("activation contract guard protocol is invalid")
+    receipt = value["receipt"]
+    if not isinstance(receipt, dict) or set(receipt) != _RECEIPT_KEYS:
+        _reject("activation contract receipt is invalid")
+    if (receipt["domain"], receipt["schema_version"], receipt["operation"], receipt["algorithm"]) != (RECEIPT_DOMAIN, RECEIPT_SCHEMA_VERSION, RECEIPT_OPERATION, RECEIPT_ALGORITHM) or type(receipt["schema_version"]) is not int:
+        _reject("activation contract receipt constants are invalid")
+    critic_principal = _text(receipt["critic_principal"], "receipt.critic_principal", _PRINCIPAL)
+    database = value["database"]
+    if not isinstance(database, dict) or set(database) != _DATABASE_KEYS:
+        _reject("activation contract database is invalid")
+    if (database["schema"], database["server_version"], database["sql_mode"], database["charset"], database["collation"]) != (DATABASE_SCHEMA, DATABASE_SERVER_VERSION, DATABASE_SQL_MODE, DATABASE_CHARSET, DATABASE_COLLATION):
+        _reject("activation contract database metadata is invalid")
+    guard_account = _account(database["guard_account"], "database.guard_account")
+    trigger_definer = _account(database["trigger_definer"], "database.trigger_definer")
+    if guard_account == trigger_definer:
+        _reject("activation contract guard account and trigger definer must differ")
+    process = value["process"]
+    if not isinstance(process, dict) or set(process) != _PROCESS_KEYS:
+        _reject("activation contract process is invalid")
+    guard_uid = _positive_int(process["uid"], "process.uid", 2**31 - 1)
+    guard_gid = _positive_int(process["gid"], "process.gid", 2**31 - 1)
+    if process["socket_path"] != SOCKET_PATH:
+        _reject("activation contract socket path is invalid")
+    raw_clients = process["allowed_client_uids"]
+    if not isinstance(raw_clients, list) or not 1 <= len(raw_clients) <= 16:
+        _reject("activation contract allowed client UIDs are invalid")
+    clients = tuple(_positive_int(item, "process.allowed_client_uids", 2**31 - 1) for item in raw_clients)
+    if clients != tuple(sorted(clients)) or len(set(clients)) != len(clients):
+        _reject("activation contract allowed client UIDs are not canonical")
     limits = value["limits"]
     if not isinstance(limits, dict) or set(limits) != _LIMIT_KEYS:
         _reject("activation contract limits are invalid")
-    timeout = _positive_int(limits["timeout_seconds"], "timeout_seconds", 30)
-    max_inflight = _positive_int(limits["max_inflight"], "max_inflight", 32)
-    if limits["max_frame_bytes"] != MAX_FRAME_BYTES:
+    timeout = _positive_int(limits["timeout_seconds"], "limits.timeout_seconds", 30)
+    max_inflight = _positive_int(limits["max_inflight"], "limits.max_inflight", 32)
+    if type(limits["max_frame_bytes"]) is not int or limits["max_frame_bytes"] != MAX_FRAME_BYTES:
         _reject("activation contract max_frame_bytes is invalid")
     # ``path`` and ``fingerprint`` are bound only after descriptor-safe I/O.
-    return ActivationContract(guard_uid, guard_gid, typed_uids, database_user, trust_definer_user, timeout, max_inflight, Path(), ContractFingerprint(0, 0, 0, 0, ""))
+    return ActivationContract(critic_principal, guard_uid, guard_gid, clients, SOCKET_PATH, guard_account, trigger_definer, timeout, max_inflight, Path(), ContractFingerprint(0, 0, 0, 0, ""))
 
 
 def _file_identity(info: os.stat_result) -> tuple[int, int, int, int]:
@@ -211,9 +256,10 @@ def _read_bound_bytes(path: Path) -> tuple[bytes, ContractFingerprint]:
         raise ActivationContractError("activation contract cannot be opened safely") from error
     finally:
         if fd is not None:
-            # A close failure means this read has no complete descriptor
-            # lifecycle.  Propagate it: this input is an authority boundary.
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError as error:
+                raise ActivationContractError("activation contract descriptor cannot be closed") from error
 
 
 def load_activation_contract(path: Path = ACTIVATION_CONTRACT_PATH) -> ActivationContract:
@@ -222,6 +268,7 @@ def load_activation_contract(path: Path = ACTIVATION_CONTRACT_PATH) -> Activatio
     raw, fingerprint = _read_bound_bytes(locator)
     parsed = _parse_contract(raw)
     return ActivationContract(
-        parsed.guard_uid, parsed.guard_gid, parsed.allowed_peer_uids, parsed.database_user,
-        parsed.trust_definer_user, parsed.timeout_seconds, parsed.max_inflight, locator, fingerprint,
+        parsed.critic_principal, parsed.guard_uid, parsed.guard_gid, parsed.allowed_client_uids,
+        parsed.socket_path, parsed.guard_account, parsed.trigger_definer, parsed.timeout_seconds,
+        parsed.max_inflight, locator, fingerprint,
     )
