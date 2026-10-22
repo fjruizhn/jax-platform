@@ -666,7 +666,14 @@ def test_invitation_transition_and_outbox_fences_reject_direct_dml(client):
                                 (runtime_user,),
                             )
                             for (connection_id,) in await admin_cur.fetchall():
-                                await admin_cur.execute(f"KILL CONNECTION {int(connection_id)}")
+                                try:
+                                    await admin_cur.execute(f"KILL CONNECTION {int(connection_id)}")
+                                except aiomysql.OperationalError as exc:
+                                    # PROCESSLIST is only a snapshot: a pool connection can
+                                    # finish between discovery and KILL.  Any other cleanup
+                                    # failure still fails the test.
+                                    if exc.args[:1] != (1094,):
+                                        raise
                             await admin_cur.execute(f"DROP USER IF EXISTS `{runtime_user}`@'%'")
                     migration_admin.close()
                     await migration_admin.wait_closed()
