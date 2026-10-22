@@ -55,6 +55,7 @@ MODULE_CANDIDATE_DDL = (
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
     "UNIQUE KEY uq_office_module_candidate_evidence_entry (candidate_revision_id,evidence_kind,evidence_sha256),"
     "KEY idx_office_module_candidate_evidence_revision (candidate_revision_id,evidence_kind,candidate_evidence_id),"
+    "KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),"
     "CONSTRAINT fk_office_module_candidate_evidence_revision FOREIGN KEY (candidate_revision_id,candidate_id) REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id),"
     "CONSTRAINT chk_office_module_candidate_evidence_payload CHECK (evidence_kind<>'' AND OCTET_LENGTH(evidence_sha256)=32 AND evidence_sha256=UNHEX(SHA2(evidence_bytes,256)) AND OCTET_LENGTH(evidence_bytes)>0 AND OCTET_LENGTH(evidence_bytes)<=16777215)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -105,6 +106,7 @@ _INDEXES = {
     ("office_module_candidate_evidence", "PRIMARY"): (True, ("candidate_evidence_id",)),
     ("office_module_candidate_evidence", "uq_office_module_candidate_evidence_entry"): (True, ("candidate_revision_id", "evidence_kind", "evidence_sha256")),
     ("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision"): (False, ("candidate_revision_id", "evidence_kind", "candidate_evidence_id")),
+    ("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"): (False, ("candidate_revision_id", "candidate_id")),
 }
 _FOREIGN_KEYS = {
     "fk_office_module_candidate_origin_scope": ("office_module_candidate", ("origin_project_id", "origin_tenant_id"), "jax_project_scope", ("project_id", "tenant_id")),
@@ -113,6 +115,47 @@ _FOREIGN_KEYS = {
 }
 
 _PREDECESSOR_CANDIDATE_COLUMNS = ("candidate_id", "module_id", "module_version", "created_at")
+_PREDECESSOR_EVIDENCE_FK_INDEX = "fk_office_module_candidate_evidence_revision"
+
+
+async def _index_set(cur) -> dict[tuple[str, str], tuple[bool, tuple[str, ...]]]:
+    await cur.execute(
+        "SELECT TABLE_NAME,INDEX_NAME,NON_UNIQUE,COLUMN_NAME "
+        "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN ('office_module_candidate','office_module_candidate_revision','office_module_candidate_evidence') "
+        "ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX"
+    )
+    found: dict[tuple[str, str], tuple[bool, tuple[str, ...]]] = {}
+    for table, index, non_unique, column in await cur.fetchall():
+        key = (str(table), str(index))
+        unique, columns = found.get(key, (not bool(non_unique), ()))
+        if unique != (not bool(non_unique)):
+            raise RuntimeError("Office module candidate index set is invalid")
+        found[key] = (unique, (*columns, str(column)))
+    return found
+
+
+async def _canonicalize_evidence_foreign_key_index(cur) -> None:
+    """Replace only the exact v13 implicit FK index with the named v15 one."""
+    named = ("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate")
+    legacy = ("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)
+    found = await _index_set(cur)
+    if named in found:
+        return
+    expected_legacy = dict(_INDEXES)
+    expected_legacy.pop(named)
+    expected_legacy[legacy] = (False, ("candidate_revision_id", "candidate_id"))
+    if found != expected_legacy:
+        return
+    await cur.execute(
+        "ALTER TABLE office_module_candidate_evidence "
+        "DROP FOREIGN KEY fk_office_module_candidate_evidence_revision,"
+        "DROP INDEX fk_office_module_candidate_evidence_revision,"
+        "ADD KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),"
+        "ADD CONSTRAINT fk_office_module_candidate_evidence_revision "
+        "FOREIGN KEY (candidate_revision_id,candidate_id) "
+        "REFERENCES office_module_candidate_revision(candidate_revision_id,candidate_id)"
+    )
 
 
 async def _candidate_table_columns(cur) -> tuple[str, ...]:
@@ -195,6 +238,7 @@ async def apply_module_candidate_storage_migrations(cur) -> None:
     await _upgrade_empty_candidate_predecessor(cur)
     for statement in MODULE_CANDIDATE_DDL:
         await cur.execute(statement)
+    await _canonicalize_evidence_foreign_key_index(cur)
     for table in _APPEND_ONLY:
         for operation in ("UPDATE", "DELETE"):
             trigger = f"no_{operation.lower()}_{table}"
@@ -220,6 +264,8 @@ async def assert_module_candidate_storage_metadata(
         expected_columns["office_module_candidate"] = expected_candidate_columns
         expected_shapes["office_module_candidate"] = _COLUMN_SHAPES["office_module_candidate"][:3] + _COLUMN_SHAPES["office_module_candidate"][5:]
         expected_indexes.pop(("office_module_candidate", "idx_office_module_candidate_origin"))
+        expected_indexes.pop(("office_module_candidate_evidence", "idx_office_module_candidate_evidence_revision_candidate"))
+        expected_indexes[("office_module_candidate_evidence", _PREDECESSOR_EVIDENCE_FK_INDEX)] = (False, ("candidate_revision_id", "candidate_id"))
         expected_foreign_keys.pop("fk_office_module_candidate_origin_scope")
     for table, expected in expected_columns.items():
         await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
@@ -234,20 +280,7 @@ async def assert_module_candidate_storage_metadata(
         rows = await cur.fetchall()
         if not rows or any(int(row[0]) != int(not unique) for row in rows) or tuple(row[1] for row in rows) != columns:
             raise RuntimeError(f"Office module candidate index {table}.{index} is invalid")
-    await cur.execute(
-        "SELECT TABLE_NAME,INDEX_NAME,NON_UNIQUE,COLUMN_NAME "
-        "FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
-        "AND TABLE_NAME IN ('office_module_candidate','office_module_candidate_revision','office_module_candidate_evidence') "
-        "ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX"
-    )
-    found_index_rows = await cur.fetchall()
-    found_indexes: dict[tuple[str, str], tuple[bool, tuple[str, ...]]] = {}
-    for table, index, non_unique, column in found_index_rows:
-        key = (str(table), str(index))
-        unique, columns = found_indexes.get(key, (not bool(non_unique), ()))
-        if unique != (not bool(non_unique)):
-            raise RuntimeError("Office module candidate index set is invalid")
-        found_indexes[key] = (unique, (*columns, str(column)))
+    found_indexes = await _index_set(cur)
     if found_indexes != expected_indexes:
         raise RuntimeError("Office module candidate index set is invalid")
     await cur.execute("SELECT tc.TABLE_NAME,tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME LIKE 'office_module_candidate%' AND tc.CONSTRAINT_TYPE='CHECK'")

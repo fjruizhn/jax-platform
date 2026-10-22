@@ -151,6 +151,8 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                         "KEY idx_office_module_candidate_origin (origin_project_id,origin_tenant_id,candidate_id),", ""
                     ).replace(
                         "CONSTRAINT fk_office_module_candidate_origin_scope FOREIGN KEY (origin_project_id,origin_tenant_id) REFERENCES jax_project_scope(project_id,tenant_id),", ""
+                    ).replace(
+                        "KEY idx_office_module_candidate_evidence_revision_candidate (candidate_revision_id,candidate_id),", ""
                     )
                     await cur.execute(predecessor)
                 for table in candidate._APPEND_ONLY:
@@ -166,6 +168,10 @@ def test_mariadb_empty_exact_predecessor_gains_immutable_origin_or_fails_closed(
                 await candidate.apply_module_candidate_storage_migrations(cur)
                 await cur.execute("SHOW COLUMNS FROM office_module_candidate LIKE 'origin_project_id'")
                 assert (await cur.fetchone())[1:3] == ("int(11)", "NO")
+                await cur.execute("SHOW INDEX FROM office_module_candidate_evidence WHERE Key_name='idx_office_module_candidate_evidence_revision_candidate'")
+                assert (await cur.fetchone())[4] == "candidate_revision_id"
+                await cur.execute("SHOW INDEX FROM office_module_candidate_evidence WHERE Key_name='fk_office_module_candidate_evidence_revision'")
+                assert await cur.fetchone() is None
                 await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('predecessor','1',11,12)")
                 with pytest.raises(IntegrityError):
                     await cur.execute("INSERT INTO office_module_candidate (module_id,module_version,origin_project_id,origin_tenant_id) VALUES ('wrong-scope','1',99,12)")
