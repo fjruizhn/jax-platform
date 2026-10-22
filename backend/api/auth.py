@@ -19,6 +19,8 @@ from auth.jwt import (create_access_token, create_refresh_token,
 from auth.middleware import get_current_user, get_current_user_con_cambio_pendiente, verificar_sesion
 from auth import rate_limit
 from auth.password_rules import problema_de_password
+from auth.browser_security import (BrowserSecurityConfigError, delete_refresh_cookie,
+                                   password_reset_origin, set_refresh_cookie)
 from db.connection import get_pool
 from db.seed import verify_password, _hash
 from jax_engine.background import add_safe_task
@@ -105,13 +107,7 @@ def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, 
         user_id, tenant_id, role, token_version, vida_segundos=vida_segundos,
         mfa_proof_event_id=mfa_proof_event_id, mfa_version=mfa_version, mfa_at=mfa_at,
     )
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        max_age=vida_segundos,
-        samesite="lax",
-    )
+    set_refresh_cookie(response, refresh_token, max_age=vida_segundos)
     return create_access_token(user_id, tenant_id, role, token_version,
                                mfa_proof_event_id=mfa_proof_event_id,
                                mfa_version=mfa_version, mfa_at=mfa_at)
@@ -487,10 +483,7 @@ async def verify_mfa_step_up(
         issued_at=issued_at, expires_at=expires_at,
         mfa_proof_event_id=receipt.event_id, mfa_version=receipt.mfa_version, mfa_at=mfa_at,
     )
-    response.set_cookie(
-        key="refresh_token", value=refreshed, httponly=True,
-        max_age=max(0, expires_at - int(time.time())), samesite="lax",
-    )
+    set_refresh_cookie(response, refreshed, max_age=max(0, expires_at - int(time.time())))
     response.headers["Cache-Control"] = "no-store"
     return RefreshResponse(access_token=access)
 
@@ -721,7 +714,7 @@ async def logout(response: Response, refresh_token: str = Cookie(None)):
             # este navegador comparten la cookie: salen también, a propósito).
             if matada:
                 await _cortar_conexiones(user_id)
-    response.delete_cookie(key="refresh_token", samesite="lax")
+    delete_refresh_cookie(response)
     return {"ok": True}
 
 
@@ -855,6 +848,15 @@ async def _crear_enlace_de_recuperacion(cur, user_id: int, client_ip: str) -> tu
     baja podía confirmar y el token quedaba vivo para un dado de baja. Con la
     fila bloqueada, la baja espera y, al entrar, borra este token pendiente.
     Orden usuario -> token: el mismo de la baja y de /reset-password (U21)."""
+    # The caller already holds this PK lock; read the class in this same
+    # transaction so the delivery surface never comes from a request Host or
+    # an unverified email lookup.
+    await cur.execute("SELECT account_class FROM jax_users WHERE user_id = %s FOR UPDATE", (user_id,))
+    account_row = await cur.fetchone()
+    if account_row is None:
+        raise RuntimeError("password-reset target disappeared while locked")
+    reset_origin = password_reset_origin(str(account_row[0]))
+
     token = str(uuid.uuid4())
     expires_at = utc_ahora() + timedelta(hours=1)
     await cur.execute(
@@ -866,8 +868,7 @@ async def _crear_enlace_de_recuperacion(cur, user_id: int, client_ip: str) -> tu
         "VALUES (%s, %s, %s, %s)",
         (user_id, token, expires_at, client_ip),
     )
-    frontend_origin = os.getenv("FRONTEND_ORIGIN", "https://axioma-ia.io")
-    return token, f"{frontend_origin}/reset-password?token={token}"
+    return token, f"{reset_origin}/reset-password?token={token}"
 
 
 async def _procesar_recuperacion(email: str, client_ip: str) -> None:
