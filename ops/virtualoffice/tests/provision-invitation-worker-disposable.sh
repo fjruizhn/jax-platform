@@ -133,7 +133,7 @@ printf "USE \`%s\`; DROP PROCEDURE IF EXISTS office_invitation_claim_next_v1; DR
 printf "DROP USER IF EXISTS 'jaxoffice_invitation_owner'@'localhost';\nCREATE USER 'jaxoffice_invitation_owner'@'localhost' ACCOUNT UNLOCK;\n" | admin
 OWNER_FIXTURE=1
 
-run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST"; }
+run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" --attestor "$INSTALLED_ATTESTOR" --attestor-sha256 "$(sha256sum "$INSTALLED_ATTESTOR" | awk '{print $1}')"; }
 owner_grants_before=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
 owner_locked_before=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.account_locked')) FROM mysql.global_priv WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin)
 [[ "$owner_locked_before" == false ]] || { echo 'fixture owner did not start unlocked' >&2; exit 2; }
@@ -209,6 +209,9 @@ fi
   echo 'rejected SQL changed the routine component' >&2; exit 1;
 }
 "$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR"
+# The normal lifecycle is deliberately two-step: prepare the locked principals,
+# install and attest the exact routines, then make the post-routine rerun prove
+# the finished capability without changing its grants.
 run_helper
 [[ $(stat -c '%U:%G:%a' /etc/jax) == "$JAX_DIR_BEFORE" ]] || { echo '/etc/jax ownership or mode was changed' >&2; exit 1; }
 test "$(stat -c '%U:%G:%a' "$TEMP/state/invitation-worker.env")" = root:root:600
@@ -249,6 +252,40 @@ for grant in \
   grep -Fqx "$grant" <<< "$grants" || { printf "missing expected grant: %s\n" "$grant" >&2; printf "%s\n" "$grants" >&2; exit 1; }
 done
 [[ $(grep -c '^GRANT ' <<< "$grants") == 6 ]]
+# A root-owned path alone is not an identity. A post-routine rerun rejects a
+# changed attestor digest before it can alter either principal.
+worker_grants_before=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+if "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" --attestor "$INSTALLED_ATTESTOR" --attestor-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
+  echo 'post-routine provisioner accepted an unpinned attestor identity' >&2; exit 1
+fi
+worker_grants_after=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+[[ "$worker_grants_after" == "$worker_grants_before" ]] || { echo 'failed attestor identity check changed worker grants' >&2; exit 1; }
+# A complete but substituted routine set must be rejected by the post-routine
+# provisioner before it changes either principal's grants.  Restore only from
+# the audited installer, then prove the normal two-step path again.
+printf "USE \`%s\`; DROP PROCEDURE office_invitation_claim_next_v1; DROP PROCEDURE office_invitation_expire_due_v1; DROP PROCEDURE office_invitation_settle_delivery_v1; CREATE PROCEDURE office_invitation_claim_next_v1() SELECT 1; CREATE PROCEDURE office_invitation_expire_due_v1() SELECT 1; CREATE PROCEDURE office_invitation_settle_delivery_v1() SELECT 1;\n" "$DB" | admin
+owner_grants_before=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
+worker_grants_before=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+if run_helper >/dev/null 2>&1; then
+  echo 'post-routine provisioner accepted substituted delivery routines' >&2; exit 1
+fi
+owner_grants_after=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
+worker_grants_after=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+[[ "$owner_grants_after" == "$owner_grants_before" && "$worker_grants_after" == "$worker_grants_before" ]] || { echo 'substituted routines changed principal grants' >&2; exit 1; }
+printf "USE \`%s\`; DROP PROCEDURE office_invitation_claim_next_v1; DROP PROCEDURE office_invitation_expire_due_v1; DROP PROCEDURE office_invitation_settle_delivery_v1;\n" "$DB" | admin
+"$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR"
+run_helper
+# An existing broad grant is also rejected before the post-routine rerun can
+# issue a grant.  It must remain present for the operator to inspect/revoke.
+printf "GRANT SELECT ON \`%s\`.\`office_invitation\` TO '%s'@'%s';\n" "$DB" "$USER_NAME" "$HOST" | admin
+worker_grants_before=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+if run_helper >/dev/null 2>&1; then
+  echo 'post-routine provisioner accepted a broad worker grant' >&2; exit 1
+fi
+worker_grants_after=$(printf "SHOW GRANTS FOR '%s'@'%s';\n" "$USER_NAME" "$HOST" | admin | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047')
+[[ "$worker_grants_after" == "$worker_grants_before" ]] || { echo 'broad post-routine worker grants changed' >&2; exit 1; }
+printf "REVOKE SELECT ON \`%s\`.\`office_invitation\` FROM '%s'@'%s';\n" "$DB" "$USER_NAME" "$HOST" | admin
+run_helper
 # An extra definer procedure grant is an authority widening. Both attestation
 # and provisioning must reject it without silently revoking authority.
 printf "USE \`%s\`; CREATE PROCEDURE \`office_invitation_fixture_forbidden_v1\`() SELECT 1; GRANT EXECUTE ON PROCEDURE \`%s\`.\`office_invitation_fixture_forbidden_v1\` TO 'jaxoffice_invitation_owner'@'localhost';\n" "$DB" "$DB" | admin
