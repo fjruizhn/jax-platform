@@ -27,26 +27,11 @@ for n in {1..40}; do systemctl show --property=Version >/dev/null 2>&1 && break;
 systemctl show --property=Version >/dev/null
 test "$(cat /proc/1/comm)" = systemd
 
-root=/tmp/pair-systemd-e2e
-install -d -o root -g root -m 0755 "$root/releases" "$root/libexec" /etc/jax /usr/local/libexec
-# The production validator's temporary-root escape hatch still attests every
-# ancestor and therefore rejects sticky /tmp itself.  This PID1 fixture owns a
-# root-only, manifest-shape probe instead; artifact byte sealing is exercised
-# by pair-supervisor-e2e-v1 and artifact_readiness unit tests.
-cat >"$root/libexec/pair_artifact_readiness.py" <<'PY'
-import json, sys
-from pathlib import Path
-class PairReadinessError(Exception): pass
-def verify(release, **_expected):
-    try:
-        value=json.loads((Path(release) / 'pair-manifest.json').read_text())
-        if value['schema'] != 'axioma.jax-platform-pair/v1': raise ValueError
-    except Exception as exc:
-        raise PairReadinessError from exc
-PY
-chmod 0644 "$root/libexec/pair_artifact_readiness.py"
+root=/opt/jax-platform-pair
+install -d -o root -g root -m 0755 "$root/releases" /etc/jax /usr/local/libexec
 install -m 0755 -o root -g root /workspace/ops/migration/activate-platform-pair-release.sh /usr/local/libexec/activate-platform-pair-release.sh
 install -m 0644 -o root -g root /workspace/ops/migration/jax-platform-pair-exec.py /usr/local/libexec/jax-platform-pair-exec.py
+install -m 0644 -o root -g root /workspace/ops/migration/pair_artifact_readiness.py /usr/local/libexec/pair_artifact_readiness.py
 install -m 0644 -o root -g root /workspace/ops/migration/systemd-units/jax-platform.service /etc/systemd/system/jax-platform.service
 install -m 0644 -o root -g root /workspace/ops/migration/systemd-units/jax-platform-migrate.service /etc/systemd/system/jax-platform-migrate.service
 cat >/etc/systemd/system/docker.service <<'EOF'
@@ -58,19 +43,22 @@ useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxweb
 useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin jaxmigrate
 printf 'JAX_TRUSTED_PROXIES=127.0.0.1\n' >/etc/jax/runtime.env
 printf 'JAX_DB_HOST=127.0.0.1\n' >/etc/jax/migrate.env
-chmod 0600 /etc/jax/runtime.env /etc/jax/migrate.env
+chown jaxweb:jaxweb /etc/jax/runtime.env
+chown jaxmigrate:jaxmigrate /etc/jax/migrate.env
+chmod 0400 /etc/jax/runtime.env /etc/jax/migrate.env
 install -d -o root -g root -m 0755 /etc/systemd/system/jax-platform.service.d /etc/systemd/system/jax-platform-migrate.service.d
-cat >/etc/systemd/system/jax-platform.service.d/e2e.conf <<EOF
+# Debian's container manager does not materialize %d credentials for this
+# transient fixture.  Keep the production users and launcher, but pass the
+# same root-owned credential files directly so this test isolates PID1
+# recovery rather than systemd's credential-directory implementation.
+cat >/etc/systemd/system/jax-platform.service.d/e2e.conf <<'EOF'
 [Service]
-User=root
-Environment=JAX_PAIR_TEST_MODE=1 JAX_PAIR_TEST_ROOT=$root
 ExecStart=
 ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py web /etc/jax/runtime.env
+ExecStartPost=/bin/sh -c 'for n in $$(seq 1 40); do /usr/bin/curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null && exit 0; sleep .25; done; exit 1'
 EOF
-cat >/etc/systemd/system/jax-platform-migrate.service.d/e2e.conf <<EOF
+cat >/etc/systemd/system/jax-platform-migrate.service.d/e2e.conf <<'EOF'
 [Service]
-User=root
-Environment=JAX_PAIR_TEST_MODE=1 JAX_PAIR_TEST_ROOT=$root
 ExecStart=
 ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate /etc/jax/migrate.env
 EOF
@@ -92,7 +80,9 @@ def health(): return {'ok': True}
 PY
   : >"$release/jax-platform/backend/db/__init__.py"
   cat >"$release/jax-platform/backend/db/migrate.py" <<'PY'
-if __name__ == '__main__': pass
+if __name__ == '__main__':
+    import os, pwd
+    if os.geteuid() != pwd.getpwnam('jaxmigrate').pw_uid: raise SystemExit(1)
 PY
   : >"$release/jax/jax/__init__.py"
   python3 - "$release" "$platform" "$jax" "$previous_platform" "$previous_jax" <<'PY'
@@ -127,7 +117,7 @@ j2=4444444444444444444444444444444444444444
 d1=$(build_release predecessor "$p1" "$j1" - -)
 d2=$(build_release successor "$p2" "$j2" "$p1" "$j1")
 ln -s releases/predecessor "$root/current"
-python3 - "$root/platform-pair-selection.json" "$root/releases/predecessor" "$p1" "$j1" "$d1" <<'PY'
+python3 - /etc/jax/platform-pair-selection.json "$root/releases/predecessor" "$p1" "$j1" "$d1" <<'PY'
 import json,sys
 open(sys.argv[1],'w').write(json.dumps(dict(zip(('release','jax_platform_revision','jax_revision','manifest_sha256'),sys.argv[2:])),separators=(',',':'))+'\n')
 PY
@@ -137,8 +127,8 @@ systemctl daemon-reload
 # SIGKILL after publish leaves the durable PRE_DDL journal and the candidate
 # selected.  A second real invocation must stop the units, recover predecessor,
 # then start the successor through systemd/PID1.
-if JAX_PAIR_TEST_MODE=1 JAX_PAIR_SYSTEMCTL_BIN=/usr/bin/systemctl JAX_PAIR_HEALTH_BIN=/usr/bin/curl JAX_PAIR_TEST_KILL_AT=after_publish /usr/local/libexec/activate-platform-pair-release.sh \
-  --root "$root" --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"; then
+if JAX_PAIR_TEST_KILL_AT=after_publish /usr/local/libexec/activate-platform-pair-release.sh \
+  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"; then
   echo 'activation cutpoint was not reached' >&2; exit 1
 fi
 test "$(python3 -c "import json; print(json.load(open('$root/activation-journal.json'))['state'])")" = PRE_DDL
@@ -154,14 +144,19 @@ test "$(systemctl show --value --property=ActiveState jax-platform.service)" != 
 # transient state so recovery exercises the activation script's own orderly
 # stop/start path rather than systemd's remembered failure result.
 systemctl reset-failed jax-platform.service jax-platform-migrate.service
-JAX_PAIR_TEST_MODE=1 JAX_PAIR_SYSTEMCTL_BIN=/usr/bin/systemctl JAX_PAIR_HEALTH_BIN=/usr/bin/curl /usr/local/libexec/activate-platform-pair-release.sh \
-  --root "$root" --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"
+/usr/local/libexec/activate-platform-pair-release.sh \
+  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"
 test ! -e "$root/activation-journal.json"
 test "$(readlink "$root/current")" = releases/successor
 test "$(systemctl show --value --property=ActiveState jax-platform.service)" = active
 pid=$(systemctl show --value --property=MainPID jax-platform.service)
 test "$pid" -gt 1
+test "$(awk '/^Uid:/{print $2}' "/proc/$pid/status")" = "$(id -u jaxweb)"
 tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "JAX_REPO_PATH=$root/releases/successor/jax"
+for _ in {1..40}; do
+  curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null && break
+  sleep .25
+done
 curl --fail --silent http://127.0.0.1:8080/api/health >/dev/null
 echo PAIR_SYSTEMD_E2E_V1_OK
 CONTAINER
