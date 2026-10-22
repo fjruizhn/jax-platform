@@ -78,7 +78,7 @@ describe('client.js -- el interceptor no toca los endpoints de auth (integració
     expect(useJaxStore.getState().avisoSesion).toBeNull()
   })
 
-  it.each(['/auth/mfa/login/verify', '/auth/mfa/recover', '/auth/mfa/recovery/enrollment/start', '/auth/mfa/enrollment/start', '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up'])(
+  it.each(['/auth/mfa/login/verify', '/auth/mfa/recover', '/auth/mfa/enrollment/start', '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up'])(
     'un 401 de capacidad MFA pública (%s) no refresca ni restaura sesión vieja', async (url) => {
       await expect(onRejected(err401(url))).rejects.toBeTruthy()
       expect(axiosPostMock).not.toHaveBeenCalled()
