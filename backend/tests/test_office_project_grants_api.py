@@ -89,7 +89,8 @@ def test_project_admin_may_list_members_but_client_and_nonmember_are_denied(clie
     _configure_mfa(monkeypatch)
     root, _tv, _mv, _proof = client.portal.call(_root_with_proof)
     project, target = client.portal.call(_office_project_and_unassigned_member)
-    admin, tv, mv, proof = client.portal.call(_project_admin_with_proof, project=project, root=root)
+    admin, tv, mv, proof = client.portal.call(
+        lambda: _project_admin_with_proof(project=project, root=root))
     assert client.get(f"/api/virtual-office/projects/{project}/members", headers=_headers(admin, tv, mv, proof)).status_code == 200
 
     async def denied_actors():
