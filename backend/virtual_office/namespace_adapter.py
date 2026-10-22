@@ -23,12 +23,18 @@ def _office_namespace(namespace) -> bool:
 class OfficeNamespaceAuthorizer:
     """JAX callback for creating Office scopes under JAX's transaction."""
 
+    def __init__(self, *, mfa_proof_event_id: int | None = None, mfa_config=None):
+        self._proof_event_id = mfa_proof_event_id
+        self._mfa_config = mfa_config
+
     async def authorize_in_transaction(self, cursor, *, actor_user_id: int,
                                        target_tenant_id: int, namespace, operation: str) -> None:
         if operation != "CREATE_OFFICE_PROJECT" or not _office_namespace(namespace):
             raise OfficeNamespaceAuthorizationDenied("Office namespace operation denied")
         decision = await authorize_office_in_cursor(
-            cursor, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT)
+            cursor, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
+            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
+            mfa_config=self._mfa_config)
         if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
             raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
         target = await repository.fetch_tenant(cursor, target_tenant_id, for_update=True)

@@ -236,7 +236,7 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     class CrashAfterFreshLedgerCreate:
@@ -316,6 +316,9 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
                     # challenge table survives, while the ledger does not.
                     # The new ledger FK cannot be declared until the
                     # challenge surrogate and composite uniqueness exist.
+                    await cur.execute("DROP TRIGGER no_update_office_bootstrap_state")
+                    await cur.execute("DROP TRIGGER no_delete_office_bootstrap_state")
+                    await cur.execute("DROP TABLE office_bootstrap_state")
                     await cur.execute("DROP TRIGGER no_update_office_mfa_security_event")
                     await cur.execute("DROP TRIGGER no_delete_office_mfa_security_event")
                     await cur.execute("DROP TABLE office_mfa_security_event")
@@ -347,7 +350,7 @@ def test_mfa_schema_upgrade_resumes_only_attested_ddl_interruptions(client):
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
@@ -417,7 +420,7 @@ def test_mfa_v4_incompatible_evidence_fails_preflight_without_rewrite_or_readine
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
@@ -500,7 +503,7 @@ def test_mfa_v4_check_upgrade_is_atomic_across_real_disconnects(target, timing, 
             conn = await pool.acquire()
             cur = await conn.cursor()
             await cur.execute(f"CREATE DATABASE `{schema}`")
-            for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+            for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                 await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
             await cur.execute(f"USE `{schema}`")
             await apply_office_migrations(cur)

@@ -224,7 +224,7 @@ def test_runtime_mfa_canary_rejects_a_trigger_that_only_protects_the_fence(clien
         try:
             async with admin.cursor() as cur:
                 await cur.execute(f"CREATE DATABASE `{schema}`")
-                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope"):
+                for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                     await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{database}`.`{table}`")
                 await cur.execute(f"INSERT INTO `{schema}`.`jax_users` SELECT * FROM `{database}`.`jax_users`")
                 await cur.execute(f"USE `{schema}`")

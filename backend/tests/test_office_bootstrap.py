@@ -1,0 +1,122 @@
+"""Real MariaDB behaviour for the explicit Office bootstrap ceremony."""
+from __future__ import annotations
+
+import asyncio
+import pyotp
+import time
+
+from auth.models import AuthUser
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from tests.identidades import crear_usuario, sql
+from virtual_office.bootstrap import bootstrap_initial_office_root
+from virtual_office.mfa import (
+    MFAConfig, confirm_enrollment_in_cursor, issue_login_challenge_after_password_in_cursor,
+    start_first_enrollment_after_password_in_cursor, verify_and_consume_totp_in_cursor,
+)
+from virtual_office.migrations import apply_office_migrations
+
+CONFIG = MFAConfig(120, 3, 300, 300, 3)
+
+
+async def _login_proof(user_id: int, secret: str, correlation: bytes, offset: int):
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        challenge = await issue_login_challenge_after_password_in_cursor(
+            cur, preauthenticated_user_id=user_id, config=CONFIG,
+        )
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        return await verify_and_consume_totp_in_cursor(
+            cur, challenge_token=challenge.token,
+            otp=pyotp.TOTP(secret, digits=6, interval=30).at((int(time.time()) // 30 + offset) * 30), server_correlation_id=correlation,
+        )
+
+
+async def _session(user_id: int, email: str, proof):
+    rows = await sql("SELECT tenant_id,role,token_version,mfa_version FROM jax_users WHERE user_id=%s", (user_id,), True)
+    tenant_id, role, token_version, mfa_version = rows[0]
+    return AuthUser(user_id=str(user_id), tenant_id=str(tenant_id), role=role, email=email,
+                    token_version=int(token_version), account_class="INTERNAL",
+                    mfa_proof_event_id=proof.event_id, mfa_version=int(mfa_version),
+                    mfa_at=int(proof.occurred_at.timestamp()))
+
+
+def test_bootstrap_uses_current_self_proof_and_replays_without_second_cut(client, monkeypatch):
+    """The receipt survives the bootstrap token cut, but a new proof is needed."""
+    for name, value in {
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS": "120", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS": "3",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS": "300", "OFFICE_MFA_RECENCY_SECONDS": "300",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT": "3",
+    }.items():
+        monkeypatch.setenv(name, value)
+    async def scenario():
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                # The permanent ceremony is intentionally global.  This test
+                # owns the private schema lease and restores an empty table.
+                await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
+                await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
+                await cur.execute("DROP TABLE IF EXISTS office_bootstrap_state")
+                for statement in __import__("virtual_office.migrations", fromlist=["OFFICE_BOOTSTRAP_DDL"]).OFFICE_BOOTSTRAP_DDL:
+                    await cur.execute(statement)
+        user_id, email = await crear_usuario(password="bootstrap-test-password")
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            started = await start_first_enrollment_after_password_in_cursor(cur, preauthenticated_user_id=user_id, config=CONFIG)
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            await confirm_enrollment_in_cursor(cur, enrollment_capability_token=started.enrollment_id,
+                                               otp=pyotp.TOTP(started.secret, digits=6, interval=30).now(),
+                                               config=CONFIG, server_correlation_id=b"B" * 16)
+        first = await _login_proof(user_id, started.secret, b"C" * 16, 1)
+        # A real current proof alone does not establish that the subject owns
+        # its credential; no profile or version cut may appear on this denial.
+        from virtual_office.bootstrap import BootstrapDenied
+        before_denial = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0]
+        try:
+            await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
+                                                target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
+        except BootstrapDenied:
+            pass
+        else:
+            raise AssertionError("bootstrap accepted an administrator-known credential")
+        assert await sql("SELECT user_id FROM office_account_profile WHERE user_id=%s", (user_id,), True) == ()
+        assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0] == before_denial
+        await sql("INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES (UTC_TIMESTAMP(6),%s,%s,'create')", (user_id, user_id))
+        await sql("INSERT INTO user_admin_audit (ts,actor_user_id,target_user_id,action) VALUES (UTC_TIMESTAMP(6),%s,%s,'password_reset_completed')", (user_id, user_id))
+        # A durable provenance write failure is a real database failure: the
+        # preceding profile/reset/version writes must all roll back together.
+        await sql("CREATE TRIGGER test_bootstrap_provenance_failure BEFORE INSERT ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='bootstrap test failure'")
+        try:
+            await bootstrap_initial_office_root(session_user=await _session(user_id, email, first),
+                                                target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
+        except Exception as error:
+            assert "bootstrap test failure" in str(error)
+        else:
+            raise AssertionError("bootstrap survived provenance failure")
+        assert await sql("SELECT user_id FROM office_account_profile WHERE user_id=%s", (user_id,), True) == ()
+        assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0] == before_denial
+        await sql("DROP TRIGGER test_bootstrap_provenance_failure")
+        session = await _session(user_id, email, first)
+        async def ceremony():
+            try:
+                return await bootstrap_initial_office_root(session_user=session, target_user_id=user_id,
+                                                           expected_email=email, basis_ref="test-bootstrap")
+            except BootstrapDenied:
+                return None
+        # Separate transactions from the shared pool contend on the same
+        # canonical user/profile rows. Exactly one initial write can win;
+        # the stale-proof loser cannot create a second grant or version cut.
+        outcomes = await asyncio.gather(ceremony(), ceremony())
+        winners = [outcome for outcome in outcomes if outcome is not None]
+        assert len(winners) == 1
+        receipt = winners[0]
+        assert receipt.replay is False
+        assert await sql("SELECT COUNT(*) FROM office_bootstrap_state", (), True) == ((1,),)
+        after_first = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0]
+        second = await _login_proof(user_id, started.secret, b"D" * 16, -1)
+        replay = await bootstrap_initial_office_root(session_user=await _session(user_id, email, second),
+                                                     target_user_id=user_id, expected_email=email, basis_ref="test-bootstrap")
+        assert replay.replay is True
+        assert replay.identity_proof_event_id == receipt.identity_proof_event_id
+        assert (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (user_id,), True))[0][0] == after_first + 1
+    client.portal.call(scenario)

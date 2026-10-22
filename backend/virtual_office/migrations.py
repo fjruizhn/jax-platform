@@ -16,7 +16,7 @@ OFFICE_DDL = (
 )
 
 RUNTIME_COMPONENT = "virtual-office"
-RUNTIME_REVISION = "office-runtime-v5-mfa-cursor-boundary"
+RUNTIME_REVISION = "office-runtime-v6-bootstrap-state"
 
 # MFA values are always either Fernet ciphertext or SHA-256 digests.  Raw
 # enrollment/challenge/recovery capabilities never enter durable storage.
@@ -28,6 +28,15 @@ OFFICE_MFA_DDL = (
     "CREATE TABLE IF NOT EXISTS office_mfa_security_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, event_kind VARCHAR(24) NOT NULL, actor_user_id INT NULL, principal_kind VARCHAR(32) NOT NULL, challenge_id BIGINT UNSIGNED NULL, subject_user_id INT NULL, operation VARCHAR(40) NULL, purpose VARCHAR(24) NULL, token_version BIGINT NULL, mfa_version BIGINT NULL, previous_token_version BIGINT NULL, previous_mfa_version BIGINT NULL, proof_event_id BIGINT UNSIGNED NULL, authorization_event_id BIGINT UNSIGNED NULL, result VARCHAR(16) NOT NULL, server_correlation_id BINARY(16) NULL, occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), fence_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL, UNIQUE KEY uq_office_mfa_security_event_fence (fence_key), KEY idx_office_mfa_security_event_proof (subject_user_id,purpose,token_version,mfa_version,occurred_at,event_id), KEY idx_office_mfa_security_event_challenge (challenge_id,subject_user_id), CONSTRAINT fk_office_mfa_security_event_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_mfa_security_event_subject FOREIGN KEY (subject_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_mfa_security_event_challenge_subject FOREIGN KEY (challenge_id,subject_user_id) REFERENCES office_mfa_challenge(challenge_id,user_id), CONSTRAINT fk_office_mfa_security_event_proof FOREIGN KEY (proof_event_id) REFERENCES office_mfa_security_event(event_id), CONSTRAINT fk_office_mfa_security_event_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id), CONSTRAINT chk_office_mfa_security_event_shape CHECK ((event_kind='MFA_PROOF' AND operation='MFA_PROOF' AND subject_user_id IS NOT NULL AND purpose IN ('LOGIN','STEP_UP','ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result IN ('VERIFIED','DENIED') AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL AND challenge_id IS NULL) OR (principal_kind IN ('PASSWORD_PREAUTH','RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='MFA_STATE_CHANGE' AND subject_user_id IS NOT NULL AND operation IN ('ENROLLMENT_CONFIRM','RECOVERY_CONSUME','MFA_DISABLE','MFA_RESET') AND purpose IN ('ENROLLMENT','RECOVERY') AND token_version >= 0 AND mfa_version >= 0 AND previous_token_version >= 0 AND previous_mfa_version >= 0 AND proof_event_id IS NOT NULL AND result='RECORDED' AND ((principal_kind='USER_SESSION' AND actor_user_id IS NOT NULL) OR (principal_kind IN ('RECOVERY_CAPABILITY','ENROLLMENT_CAPABILITY') AND actor_user_id IS NULL AND challenge_id IS NOT NULL))) OR (event_kind='SYSTEM_FENCE' AND actor_user_id IS NULL AND principal_kind='SYSTEM_MIGRATOR' AND challenge_id IS NULL AND subject_user_id IS NULL AND operation IS NULL AND purpose IS NULL AND token_version IS NULL AND mfa_version IS NULL AND previous_token_version IS NULL AND previous_mfa_version IS NULL AND proof_event_id IS NULL AND authorization_event_id IS NULL AND result='RECORDED' AND server_correlation_id IS NULL AND fence_key IS NOT NULL AND BINARY fence_key=BINARY 'office-mfa-fence-v1'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_update_office_mfa_security_event BEFORE UPDATE ON office_mfa_security_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'",
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_mfa_security_event BEFORE DELETE ON office_mfa_security_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_mfa_security_event append-only'",
+)
+
+# This follows the MFA ledger because its durable proof reference is an FK.
+# ``credential_audit_id`` deliberately stays signed: user_admin_audit.id is
+# BIGINT, unlike the unsigned Office MFA ledger IDs.
+OFFICE_BOOTSTRAP_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_bootstrap_state (ceremony_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, target_user_id INT NOT NULL, identity_actor_user_id INT NOT NULL, identity_proof_event_id BIGINT UNSIGNED NOT NULL, credential_audit_id BIGINT NOT NULL, basis_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, completed_at DATETIME(6) NOT NULL, CONSTRAINT fk_office_bootstrap_target FOREIGN KEY (target_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_actor FOREIGN KEY (identity_actor_user_id) REFERENCES jax_users(user_id), CONSTRAINT fk_office_bootstrap_proof FOREIGN KEY (identity_proof_event_id) REFERENCES office_mfa_security_event(event_id), CONSTRAINT fk_office_bootstrap_credential_audit FOREIGN KEY (credential_audit_id) REFERENCES user_admin_audit(id), CONSTRAINT chk_office_bootstrap_identity CHECK (target_user_id=identity_actor_user_id), CONSTRAINT chk_office_bootstrap_basis CHECK (basis_ref <> '')) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_bootstrap_state BEFORE UPDATE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_bootstrap_state BEFORE DELETE ON office_bootstrap_state FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_bootstrap_state append-only'",
 )
 
 # Exact MariaDB 12.3.3 CHECK_CLAUSE renderings, measured from the constraint
@@ -341,6 +350,41 @@ async def assert_mfa_ledger_runtime_metadata(cur, *, allow_redacted_trigger_body
         raise RuntimeError("Office MFA triggers are missing or invalid")
 
 
+async def assert_bootstrap_runtime_metadata(cur) -> None:
+    """Attest bootstrap's signed/unsigned foreign keys and append-only guard."""
+    await cur.execute(
+        "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='office_bootstrap_state' ORDER BY ORDINAL_POSITION"
+    )
+    if tuple(await cur.fetchall()) != (
+        ("ceremony_key", "varchar(64)", "NO"), ("target_user_id", "int(11)", "NO"),
+        ("identity_actor_user_id", "int(11)", "NO"),
+        ("identity_proof_event_id", "bigint(20) unsigned", "NO"),
+        ("credential_audit_id", "bigint(20)", "NO"), ("basis_ref", "varchar(128)", "NO"),
+        ("completed_at", "datetime(6)", "NO"),
+    ):
+        raise RuntimeError("Office bootstrap state column metadata is invalid")
+    await cur.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_bootstrap_state' AND CONSTRAINT_TYPE='FOREIGN KEY' ORDER BY CONSTRAINT_NAME"
+    )
+    if tuple(row[0] for row in await cur.fetchall()) != (
+        "fk_office_bootstrap_actor", "fk_office_bootstrap_credential_audit",
+        "fk_office_bootstrap_proof", "fk_office_bootstrap_target",
+    ):
+        raise RuntimeError("Office bootstrap state foreign keys are invalid")
+    await cur.execute(
+        "SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION FROM information_schema.TRIGGERS "
+        "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN "
+        "('no_update_office_bootstrap_state','no_delete_office_bootstrap_state')"
+    )
+    if {(row[0], row[1], row[2]) for row in await cur.fetchall()} != {
+        ("no_update_office_bootstrap_state", "BEFORE", "UPDATE"),
+        ("no_delete_office_bootstrap_state", "BEFORE", "DELETE"),
+    }:
+        raise RuntimeError("Office bootstrap state triggers are invalid")
+
+
 async def _ensure_ascii_bin(cur, column: str) -> None:
     await cur.execute(
         "SELECT CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS "
@@ -449,6 +493,9 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_MFA_DDL:
         if statement.startswith("CREATE TRIGGER"):
             await cursor.execute(statement)
+    for statement in OFFICE_BOOTSTRAP_DDL:
+        await cursor.execute(statement)
+    await assert_bootstrap_runtime_metadata(cursor)
     await _upgrade_credential_shape(cursor)
     ledger = {name: _check_digest(await _check_clause(cursor, name)) for name in _MFA_V5_CHECK_SQL}
     if ledger == _CANONICAL_V4_MFA_CHECK_DIGESTS:
