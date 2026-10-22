@@ -55,3 +55,64 @@ def test_root_grant_and_revoke_member_are_atomic_with_jax_membership(client, mon
         "ON g.project_id=m.project_id AND g.user_id=m.user_id WHERE m.project_id=%s AND m.user_id=%s",
         (project, target), True,
     ) == (("REVOKED", "REVOKED"),)
+
+
+def test_project_admin_cannot_mint_project_admin_or_leave_partial_member(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _, _, _ = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def project_admin():
+        admin, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (admin,))
+        versions = (await sql("SELECT token_version,mfa_version FROM jax_users WHERE user_id=%s", (admin,), True))[0]
+        proof = await sql(
+            "INSERT INTO office_mfa_security_event "
+            "(event_kind,actor_user_id,principal_kind,challenge_id,subject_user_id,operation,purpose,token_version,mfa_version,previous_token_version,previous_mfa_version,proof_event_id,authorization_event_id,result,server_correlation_id,fence_key,occurred_at) "
+            "VALUES ('MFA_PROOF',%s,'USER_SESSION',NULL,%s,'MFA_PROOF','STEP_UP',%s,%s,NULL,NULL,NULL,NULL,'VERIFIED',%s,NULL,UTC_TIMESTAMP(6))",
+            (admin, admin, versions[0], versions[1], uuid.uuid4().bytes),
+        )
+        await sql("INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,grant_origin,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE','OFFICE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project, admin))
+        await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project, admin, root))
+        return admin, int(versions[0]), int(versions[1]), int(proof)
+
+    admin, tv, mv, proof = client.portal.call(project_admin)
+    denied = client.put(
+        f"/api/virtual-office/projects/{project}/members/{target}",
+        json={"grant_role": "PROJECT_ADMIN", "audience": "INTERNAL", "expected_version": 0},
+        headers={**_headers(admin, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert denied.status_code == 403
+    assert client.portal.call(
+        sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == ()
+    assert client.portal.call(
+        sql, "SELECT user_id FROM office_project_grant WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == ()
+
+
+def test_office_grant_write_failure_rolls_back_jax_membership(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+    project, target = client.portal.call(_office_project_and_unassigned_member)
+
+    async def install_trigger():
+        await sql("DROP TRIGGER IF EXISTS test_office_project_grant_rollback")
+        await sql(
+            "CREATE TRIGGER test_office_project_grant_rollback BEFORE INSERT ON office_project_grant "
+            "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test rollback'"
+        )
+
+    client.portal.call(install_trigger)
+    try:
+        response = client.put(
+            f"/api/virtual-office/projects/{project}/members/{target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**_headers(root, tv, mv, proof), "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert response.status_code == 503
+    finally:
+        client.portal.call(sql, "DROP TRIGGER IF EXISTS test_office_project_grant_rollback")
+    assert client.portal.call(
+        sql, "SELECT user_id FROM jax_project_membership WHERE project_id=%s AND user_id=%s", (project, target), True,
+    ) == ()

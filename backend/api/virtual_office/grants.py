@@ -160,6 +160,8 @@ async def grant_project_member(project_id: int, target_user_id: int, payload: Pr
         raise HTTPException(status_code=403, detail="office_project_grant_denied") from error
     except ProjectAuthorityError as error:
         raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
     return {"project_id": project_id, "user_id": target_user_id, "grant_role": payload.grant_role,
             "audience": payload.audience, "version": version, "replayed": replayed,
             "membership_replayed": result.replayed}
@@ -230,6 +232,8 @@ async def revoke_project_member(project_id: int, target_user_id: int,
     except AuthorizationDenied as error:
         raise HTTPException(status_code=403, detail="office_project_grant_denied") from error
     except ProjectAuthorityError as error:
+        raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
+    except Exception as error:
         raise HTTPException(status_code=503, detail="office_project_grant_retryable") from error
     return {"project_id": project_id, "user_id": target_user_id, "version": version,
             "replayed": replayed, "membership_replayed": result.replayed}
