@@ -38,6 +38,13 @@ _OFFICE_ENGINE_UPDATE_GUARD = (
     "(OLD.enabled = 1 AND NEW.enabled = 0 AND NEW.activation_epoch <> OLD.activation_epoch) "
     "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_engine update requires a new approved revision'; END IF; END"
 )
+_OFFICE_ENGINE_INSERT_GUARD = (
+    "BEGIN IF NEW.enabled <> 0 OR NEW.activation_epoch <> 0 OR NEW.version <> 1 "
+    "THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_engine insert must start disabled at epoch zero'; END IF; END"
+)
+_OFFICE_ENGINE_DELETE_GUARD = (
+    "BEGIN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_engine rows are never deleted'; END"
+)
 OFFICE_ENGINE_DDL = (
     "CREATE TABLE IF NOT EXISTS office_engine ("
     "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
@@ -54,7 +61,9 @@ OFFICE_ENGINE_DDL = (
     "CONSTRAINT chk_office_engine_activation_epoch CHECK (activation_epoch>=0),"
     "CONSTRAINT chk_office_engine_version CHECK (version>=1)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_engine_insert BEFORE INSERT ON office_engine FOR EACH ROW " + _OFFICE_ENGINE_INSERT_GUARD,
     "CREATE TRIGGER IF NOT EXISTS guard_office_engine_update BEFORE UPDATE ON office_engine FOR EACH ROW " + _OFFICE_ENGINE_UPDATE_GUARD,
+    "CREATE TRIGGER IF NOT EXISTS guard_office_engine_delete BEFORE DELETE ON office_engine FOR EACH ROW " + _OFFICE_ENGINE_DELETE_GUARD,
 )
 _OFFICE_ENGINE_COLUMNS = (
     ("engine_key", "varchar", "varchar(64)", "NO", "ascii", "ascii_bin", "", None),
@@ -79,6 +88,9 @@ _OFFICE_ENGINE_CHECKS = {
     "chk_office_engine_activation_epoch": "`activation_epoch` >= 0",
     "chk_office_engine_version": "`version` >= 1",
 }
+_OFFICE_ENGINE_V16_COLUMNS = tuple(column for column in _OFFICE_ENGINE_COLUMNS if column[0] != "activation_epoch")
+_OFFICE_ENGINE_V16_CHECKS = {name: clause for name, clause in _OFFICE_ENGINE_CHECKS.items()
+                             if name != "chk_office_engine_activation_epoch"}
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical
@@ -1802,6 +1814,40 @@ async def assert_audit_runtime_metadata(cur) -> None:
         raise RuntimeError("Office authorization audit triggers are missing or invalid")
 
 
+async def _upgrade_exact_empty_office_engine_v16(cur) -> None:
+    """Upgrade only the known empty v16 predecessor; preserve every other row."""
+    table = "office_engine"
+    if not await _table_exists(cur, table) or await _column_exists(cur, table, "activation_epoch"):
+        return
+    try:
+        await _assert_columns(cur, table=table, expected=_OFFICE_ENGINE_V16_COLUMNS)
+        await _assert_indexes(cur, table=table, expected={
+            "PRIMARY": (("engine_key",), True),
+            "fk_office_engine_model": (("model_ref",), False),
+        })
+        await _assert_foreign_keys(cur, table=table, expected=_OFFICE_ENGINE_FOREIGN_KEYS)
+        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if {row[0] for row in await cur.fetchall()} != {"PRIMARY", "fk_office_engine_model"}:
+            raise RuntimeError("index drift")
+        await cur.execute("SELECT CONSTRAINT_NAME,CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        checks = {str(name): _normalize_mariadb_check(str(clause)) for name, clause in await cur.fetchall()}
+        expected = {name: _normalize_mariadb_check(clause) for name, clause in _OFFICE_ENGINE_V16_CHECKS.items()}
+        if checks != expected:
+            raise RuntimeError("check drift")
+        await cur.execute("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,))
+        if await cur.fetchall():
+            raise RuntimeError("trigger drift")
+        await cur.execute("SELECT COUNT(*) FROM office_engine")
+        if tuple(await cur.fetchone() or ()) != (0,):
+            raise RuntimeError("nonempty predecessor")
+    except RuntimeError as error:
+        raise RuntimeError("Office engine catalogue v16 predecessor is not exact and empty") from error
+    await cur.execute(
+        "ALTER TABLE office_engine ADD COLUMN activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0 "
+        "AFTER enabled, ADD CONSTRAINT chk_office_engine_activation_epoch CHECK (activation_epoch>=0)"
+    )
+
+
 async def assert_office_engine_runtime_metadata(cur) -> None:
     """Reject a homonymous or weakened catalogue before readiness is stamped."""
     table = "office_engine"
@@ -1832,7 +1878,11 @@ async def assert_office_engine_runtime_metadata(cur) -> None:
         "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE=%s", (table,)
     )
     triggers = {row[0]: tuple(row[1:]) for row in await cur.fetchall()}
-    expected_triggers = {"guard_office_engine_update": ("BEFORE", "UPDATE", "ROW", _OFFICE_ENGINE_UPDATE_GUARD)}
+    expected_triggers = {
+        "guard_office_engine_insert": ("BEFORE", "INSERT", "ROW", _OFFICE_ENGINE_INSERT_GUARD),
+        "guard_office_engine_update": ("BEFORE", "UPDATE", "ROW", _OFFICE_ENGINE_UPDATE_GUARD),
+        "guard_office_engine_delete": ("BEFORE", "DELETE", "ROW", _OFFICE_ENGINE_DELETE_GUARD),
+    }
     if triggers != expected_triggers:
         raise RuntimeError("Office engine catalogue triggers are invalid")
 
@@ -1992,6 +2042,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
+    await _upgrade_exact_empty_office_engine_v16(cursor)
     for statement in OFFICE_ENGINE_DDL:
         await cursor.execute(statement)
     await assert_office_engine_runtime_metadata(cursor)
