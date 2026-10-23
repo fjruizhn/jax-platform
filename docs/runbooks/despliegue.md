@@ -164,6 +164,19 @@ sudo /usr/local/libexec/activate-platform-pair-release.sh \
   --measured-grantee-host "$JAX_DB_GRANTEE_HOST"
 ```
 
+Antes de instalar ese paquete y activar el par, agregar la única ruta de
+proveedor aprobada al archivo de despliegue, no a `runtime.env`:
+
+```bash
+sudo install -o root -g jaxsvc -m 0640 /etc/jax/.env /etc/jax/.env.nueva
+sudo sed -i '/^OFFICE_BROKER_ALLOWED_BASE_URLS=/d' /etc/jax/.env.nueva
+printf '%s\n' 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' | sudo tee -a /etc/jax/.env.nueva >/dev/null
+sudo mv /etc/jax/.env.nueva /etc/jax/.env
+```
+
+El provisionador valida esa URL HTTPS de Z.ai y la copia al nuevo `runtime.env`;
+escribirla directamente allí se pierde en la siguiente provisión.
+
 El paquete de runtime instala el provisionador y sus dos manifiestos junto con
 el activador, antes de ejecutar la activación. La migración queda en estado
 `active (exited)` tras completarse: web conserva sus dependencias normales y

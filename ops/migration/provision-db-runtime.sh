@@ -180,6 +180,8 @@ DB=${CFG[JAX_DB_NAME]}
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   load_runtime_allowlist
+  [[ -n ${RUNTIME_ALLOWED[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} ]] || die "installed runtime credential launcher lacks required key: OFFICE_BROKER_ALLOWED_BASE_URLS"
+  [[ -n ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} && ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]} == https://api.z.ai/api/paas/v4 ]] || die "Office broker allowlist must be the approved HTTPS Z.ai base URL"
   office_keys_in_deployment=0
   for key in "${OFFICE_INVITATION_KEYS[@]}"; do [[ -v "CFG[$key]" ]] && office_keys_in_deployment=$((office_keys_in_deployment + 1)); done
   if [ "$office_keys_in_deployment" = 0 ]; then

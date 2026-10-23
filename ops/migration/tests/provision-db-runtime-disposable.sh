@@ -53,7 +53,7 @@ case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 
 
 ENV_FILE="$TEMP/deployment.env"
 printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
-printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
+printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nOFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
@@ -109,10 +109,17 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
 ! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
+grep -qx 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' "$TEMP/state/runtime.env"
 for entry in OFFICE_INVITATION_LIFETIME_SECONDS=3600 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
 printf 'OFFICE_INVITATION_LIFETIME_SECONDS=7200\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test\nOFFICE_PUBLIC_ORIGIN=https://office-override.example.test\n' >> "$ENV_FILE"
 run_helper
 for entry in OFFICE_INVITATION_LIFETIME_SECONDS=7200 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20 OFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test OFFICE_PUBLIC_ORIGIN=https://office-override.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
+grep -qx 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' "$TEMP/state/runtime.env"
+INVALID_BROKER_ENV="$TEMP/invalid-broker.env"
+sed 's#^OFFICE_BROKER_ALLOWED_BASE_URLS=.*#OFFICE_BROKER_ALLOWED_BASE_URLS=http://api.z.ai/api/paas/v4#' "$ENV_FILE" > "$INVALID_BROKER_ENV"
+if JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --plan --env "$INVALID_BROKER_ENV" --runtime-env "$TEMP/state/runtime.env" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'non-HTTPS Office broker allowlist was accepted' >&2; exit 1
+fi
 ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" MIGRATE_ENV="$TEMP/state/migrate.env" python3 - <<'PY'
 import importlib.util, os
 from pathlib import Path
@@ -122,6 +129,7 @@ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 runtime = module.credential(Path(os.environ['RUNTIME_ENV']))
 assert runtime['JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA'] == 'fixture-platform-credential'
 assert runtime['JAX_GITHUB_TOKEN'] == 'fixture-github-token'
+assert runtime['OFFICE_BROKER_ALLOWED_BASE_URLS'] == 'https://api.z.ai/api/paas/v4'
 for key in ('JAX_EJECUTOR_MISIONES', 'JAX_EJECUTOR_POLITICA',
             'JAX_EJECUTOR_TURNO_TOPE_S', 'JAX_EJECUTOR_VIGIA_ESPERA_S',
             'JAX_PROXY_CARRIL_MODELO', 'JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS'):
