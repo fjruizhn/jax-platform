@@ -951,6 +951,46 @@ _AGENT_RUNTIME_FKS = {
 }
 
 
+def _agent_runtime_check_clauses() -> dict[str, str]:
+    """Extract canonical CHECK bodies from the reviewed DDL, preserving nesting."""
+    result: dict[str, str] = {}
+    for statement in (*OFFICE_ENGINE_DDL, *OFFICE_AGENT_RUNTIME_DDL, *OFFICE_AGENT_DDL):
+        position = 0
+        while True:
+            match = re.search(r"CONSTRAINT (chk_office_(?:engine|agent(?:_runtime_config|_run|_binding)?)[a-z0-9_]*) CHECK ", statement[position:])
+            if match is None:
+                break
+            name = match.group(1)
+            start = position + match.end()
+            if statement[start] != "(":
+                raise RuntimeError("Office agent CHECK definition is malformed")
+            depth, end = 0, start
+            while end < len(statement):
+                depth += statement[end] == "("
+                depth -= statement[end] == ")"
+                end += 1
+                if depth == 0:
+                    break
+            if depth:
+                raise RuntimeError("Office agent CHECK definition is unterminated")
+            result[name] = statement[start:end]
+            position = end
+    return result
+
+
+def _agent_runtime_trigger_bodies() -> dict[str, str]:
+    result = {}
+    for statement in (*OFFICE_AGENT_RUNTIME_DDL, *OFFICE_AGENT_DDL):
+        match = re.match(r"CREATE TRIGGER IF NOT EXISTS ([a-z0-9_]+) .*? FOR EACH ROW (.*)", statement)
+        if match is not None:
+            result[match.group(1)] = match.group(2)
+    return result
+
+
+def _normalize_trigger_body(value: object) -> str:
+    return re.sub(r"[\s`]", "", str(value).lower())
+
+
 def _agent_runtime_expected_indexes(table: str) -> dict[str, tuple[tuple[str, ...], bool]]:
     expected = dict(_AGENT_RUNTIME_INDEXES[table])
     for name, (local, _target, _remote, _update, _delete) in _AGENT_RUNTIME_FKS.get(table, {}).items():
@@ -978,17 +1018,16 @@ async def assert_office_agent_runtime_metadata(cur) -> None:
         await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
         if {row[0] for row in await cur.fetchall()} != set(expected_fks):
             raise RuntimeError(f"Office agent runtime foreign keys for {table} are invalid")
-    for name in ("chk_office_agent_runtime_config_singleton", "chk_office_agent_runtime_config_version", "chk_office_agent_runtime_config_bounds", "chk_office_agent_run_snapshot", "chk_office_agent_run_output"):
-        if await _check_clause(cur, name) is None:
-            raise RuntimeError(f"Office agent runtime check {name} is invalid")
-    await cur.execute("SELECT ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='guard_office_agent_runtime_config_update'")
-    config_guard = await cur.fetchone()
-    if config_guard is None or tuple(config_guard[:2]) != ("BEFORE", "UPDATE") or "config_version" not in str(config_guard[2]) or "SIGNAL SQLSTATE '45000'" not in str(config_guard[2]):
-        raise RuntimeError("Office agent runtime config guard is invalid")
-    await cur.execute("SELECT ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='no_mutate_office_agent_run_snapshot'")
-    run_guard = await cur.fetchone()
-    if run_guard is None or tuple(run_guard[:2]) != ("BEFORE", "UPDATE") or "SIGNAL SQLSTATE '45000'" not in str(run_guard[2]) or "credential_id" not in str(run_guard[2]) or "dispatch_snapshot_sha256" not in str(run_guard[2]):
-        raise RuntimeError("Office agent runtime run guard is invalid")
+    expected_checks = _agent_runtime_check_clauses()
+    await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME IN ('office_engine','office_agent','office_agent_binding','office_agent_run','office_agent_runtime_config') AND tc.CONSTRAINT_TYPE='CHECK'")
+    found_checks = {str(name): str(clause) for name, clause in await cur.fetchall()}
+    if set(found_checks) != set(expected_checks) or any(_normalize_mariadb_check(found_checks[name]) != _normalize_mariadb_check(clause) for name, clause in expected_checks.items()):
+        raise RuntimeError("Office agent runtime checks are invalid")
+    expected_triggers = _agent_runtime_trigger_bodies()
+    await cur.execute("SELECT TRIGGER_NAME,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME IN ('guard_office_agent_runtime_config_update','no_mutate_office_agent_run_snapshot')")
+    found_triggers = {str(name): tuple(row) for name, *row in await cur.fetchall()}
+    if set(found_triggers) != set(expected_triggers) or any(tuple(found_triggers[name][:3]) != ("BEFORE", "UPDATE", "ROW") or _normalize_trigger_body(found_triggers[name][3]) != _normalize_trigger_body(body) for name, body in expected_triggers.items()):
+        raise RuntimeError("Office agent runtime triggers are invalid")
 
 
 async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]],
