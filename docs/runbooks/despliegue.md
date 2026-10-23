@@ -165,8 +165,12 @@ sudo /usr/local/libexec/activate-platform-pair-release.sh \
 ```
 
 El paquete de runtime instala el provisionador y sus dos manifiestos junto con
-el activador. La activación no vuelve a disparar la migración que ya completó
-antes de abrir web. Una modificación, byte extra, enlace, permisos
+el activador, antes de ejecutar la activación. La migración queda en estado
+`active (exited)` tras completarse: web conserva sus dependencias normales y
+no vuelve a dispararla. En Hall9000 el archivo de despliegue `/etc/jax/.env`
+es `root:jaxsvc 0640`; el activador exige exactamente ese formato, o el formato
+más cerrado `root:root 0600` para un entorno de recuperación. Una modificación,
+byte extra, enlace, permisos
 inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
 arranque antes de importar Python. Antes de borrar el journal, la activación
 comprueba el estado efectivo del unit, el PID principal y que su entorno apunta

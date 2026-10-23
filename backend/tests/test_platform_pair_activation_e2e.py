@@ -87,6 +87,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     shutil.copy2(MIGRATION / "pair_artifact_readiness.py", root / "libexec" / "pair_artifact_readiness.py")
     calls = tmp_path / "systemctl.calls"
     service_pid = tmp_path / "service.pid"
+    migration_state = tmp_path / "migration.state"
     fake_systemctl = tmp_path / "systemctl"
     test_launcher = tmp_path / "launcher"
     test_launcher.write_text(
@@ -104,9 +105,10 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     fake_systemctl.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
         "if [ \"$1 $2\" = 'stop jax-platform.service' ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ]; then kill \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null || :; rm -f \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
-        "if [ \"$1\" = show ] && [ \"$2\" = --value ]; then p=$3; pid=0; active=inactive; sub=dead; result=success; if [ \"$4\" = jax-platform.service ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ] && kill -0 \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null; then pid=$(cat \"$JAX_PAIR_TEST_SERVICE_PID\"); active=active; sub=running; fi; case $p in --property=ActiveState) echo $active;; --property=SubState) echo $sub;; --property=MainPID) echo $pid;; --property=Result) echo $result;; esac; exit 0; fi\n"
-        "if [ \"$1 $2\" = 'start jax-platform-migrate.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; fi\n"
-        "if [ \"$1 $2\" = 'start --job-mode=ignore-dependencies' ] && [ \"$3\" = jax-platform.service ]; then \"$JAX_PAIR_TEST_LAUNCHER\" web; env JAX_REPO_PATH=\"$JAX_PAIR_TEST_RELEASE/jax\" sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
+        "if [ \"$1 $2\" = 'stop jax-platform-migrate.service' ]; then rm -f \"$JAX_PAIR_TEST_MIGRATION_STATE\"; fi\n"
+        "if [ \"$1\" = show ] && [ \"$2\" = --value ]; then p=$3; pid=0; active=inactive; sub=dead; result=success; if [ \"$4\" = jax-platform.service ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ] && kill -0 \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null; then pid=$(cat \"$JAX_PAIR_TEST_SERVICE_PID\"); active=active; sub=running; fi; if [ \"$4\" = jax-platform-migrate.service ] && [ -f \"$JAX_PAIR_TEST_MIGRATION_STATE\" ]; then active=active; sub=exited; fi; case $p in --property=ActiveState) echo $active;; --property=SubState) echo $sub;; --property=MainPID) echo $pid;; --property=Result) echo $result;; esac; exit 0; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform-migrate.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; : > \"$JAX_PAIR_TEST_MIGRATION_STATE\"; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" web; env JAX_REPO_PATH=\"$JAX_PAIR_TEST_RELEASE/jax\" sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
         "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
         encoding="utf-8",
     )
@@ -155,6 +157,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_TEST_CALLS": str(calls),
         "JAX_PAIR_TEST_LAUNCHER": str(test_launcher),
         "JAX_PAIR_TEST_SERVICE_PID": str(service_pid),
+        "JAX_PAIR_TEST_MIGRATION_STATE": str(migration_state),
         "JAX_PAIR_TEST_RELEASE": str(release),
         "JAX_PAIR_HEALTH_BIN": str(health),
         "JAX_PAIR_TEST_HEALTH_CALLS": str(health_calls),
@@ -184,9 +187,9 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         time.sleep(0.02)
     assert calls.exists(), first.communicate(timeout=5)[1]
     deadline = time.monotonic() + 5
-    while "start --job-mode=ignore-dependencies jax-platform.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
+    while "start jax-platform.service" not in calls.read_text(encoding="utf-8") and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert "start --job-mode=ignore-dependencies jax-platform.service" in calls.read_text(encoding="utf-8")
+    assert "start jax-platform.service" in calls.read_text(encoding="utf-8")
     contended = command[:script_index] + ["JAX_PAIR_TEST_LOCK_SECONDS=0.1"] + command[script_index:]
     second = subprocess.run(contended, text=True, capture_output=True, check=False)
     assert second.returncode != 0
@@ -205,7 +208,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
         "start jax-platform-migrate.service",
         "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
-        "start --job-mode=ignore-dependencies jax-platform.service",
+        "start jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",

@@ -29,7 +29,8 @@ fi
 [[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ && $PREVIOUS =~ ^[0-9a-f]{64}$ && -n $MEASURED_HOST ]] || { echo 'external target and predecessor manifest digests required; measured DB grantee host required' >&2; exit 2; }
 [[ -f $PROVISIONER && ! -L $PROVISIONER ]] || { echo 'runtime DB provisioner unavailable' >&2; exit 1; }
 if [[ $ROOT == /opt/jax-platform-pair ]]; then
-  [[ $(/usr/bin/stat -c '%U:%G:%a' "$PROVISIONER") == root:root:755 && -f $ENV_FILE && ! -L $ENV_FILE && $(/usr/bin/stat -c '%U:%G:%a' "$ENV_FILE") == root:root:600 ]] || { echo 'runtime DB provisioner or environment is unsafe' >&2; exit 1; }
+  env_stat=$(/usr/bin/stat -c '%U:%G:%a' "$ENV_FILE" 2>/dev/null || true)
+  [[ $(/usr/bin/stat -c '%U:%G:%a' "$PROVISIONER") == root:root:755 && -f $ENV_FILE && ! -L $ENV_FILE && ( $env_stat == root:root:600 || $env_stat == root:jaxsvc:640 ) ]] || { echo 'runtime DB provisioner or environment is unsafe' >&2; exit 1; }
 fi
 JOURNAL="$ROOT/activation-journal.json"
 
@@ -171,16 +172,17 @@ transaction ddl "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 # The runtime principal cannot receive its exact table grants until this
 # release's migration created its Office tables.  Run that migration first,
 # then converge its grants before the web service has any opportunity to use
-# them.  Web normally Requires the migrator; ignore that dependency here so
-# this transaction does not execute the same migration a second time.
+# them.  The migrator stays active after a successful one-shot, so the normal
+# web dependency observes it as satisfied and preserves all other unit
+# requirements without running this migration twice.
 $SYSTEMCTL start jax-platform-migrate.service
 state=$($SYSTEMCTL show --value --property=ActiveState jax-platform-migrate.service)
 substate=$($SYSTEMCTL show --value --property=SubState jax-platform-migrate.service)
 pid=$($SYSTEMCTL show --value --property=MainPID jax-platform-migrate.service)
 result=$($SYSTEMCTL show --value --property=Result jax-platform-migrate.service)
-[[ $state == inactive && $substate == dead && $pid == 0 && $result == success ]] || { echo 'migration service did not complete cleanly' >&2; exit 1; }
+[[ $state == active && $substate == exited && $pid == 0 && $result == success ]] || { echo 'migration service did not complete cleanly' >&2; exit 1; }
 "$PROVISIONER" --env "$ENV_FILE" --measured-grantee-host "$MEASURED_HOST"
-$SYSTEMCTL start --job-mode=ignore-dependencies jax-platform.service
+$SYSTEMCTL start jax-platform.service
 # Type=simple returns from `start` when the process has been forked, before
 # uvicorn has necessarily bound its listener.  Never accept a health response
 # from a process whose effective systemd state is no longer the selected web

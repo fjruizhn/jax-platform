@@ -20,4 +20,5 @@ def test_activation_requires_externally_pinned_target_and_predecessor() -> None:
     assert "--measured-grantee-host HOST" in activator
     assert "start jax-platform-migrate.service" in activator
     assert '"$PROVISIONER" --env "$ENV_FILE" --measured-grantee-host "$MEASURED_HOST"' in activator
-    assert "start --job-mode=ignore-dependencies jax-platform.service" in activator
+    assert "start jax-platform.service" in activator
+    assert "RemainAfterExit=yes" in (_ROOT / "ops/migration/systemd-units/jax-platform-migrate.service").read_text(encoding="utf-8")
