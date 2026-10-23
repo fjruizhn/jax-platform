@@ -32,12 +32,14 @@ docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
 
 TEMP=$(mktemp -d /tmp/office-db-provision.XXXXXX)
+MISSING_RUNTIME_TABLES="$TEMP/missing-runtime-tables"
 WEB=officecvweb_$(openssl rand -hex 8)
 MIG=officecvmig_$(openssl rand -hex 8)
 HOST=
 OWNED=0
 cleanup() {
   if [ "$OWNED" = 1 ] && [ -n "$HOST" ]; then printf "DROP USER IF EXISTS '%s'@'%s'; DROP USER IF EXISTS '%s'@'%s';\n" "$WEB" "$HOST" "$MIG" "$HOST" | admin >/dev/null 2>&1 || true; fi
+  if [ -s "$MISSING_RUNTIME_TABLES" ]; then while IFS= read -r table; do printf 'DROP TABLE IF EXISTS `%s`.`%s`;\n' "$DB" "$table"; done < "$MISSING_RUNTIME_TABLES" | admin >/dev/null 2>&1 || true; fi
   rm -rf "$TEMP"
 }
 trap cleanup EXIT
@@ -83,12 +85,29 @@ absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') 
 [ "$absent" = 0 ] || { echo 'random fixture principal already exists; refusing ownership' >&2; exit 2; }
 OWNED=1
 
+# The pinned DB is intentionally older than the current runtime grant
+# manifest.  Create minimal stand-ins only for missing manifest tables and
+# remove exactly those stand-ins on exit: this exercises ACL convergence on
+# MariaDB without claiming to test the selector's DDL itself.
+while read -r table privileges; do
+  [[ -z "$table" || "$table" == \#* ]] && continue
+  present=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s';\n" "$DB" "$table" | admin)
+  case "$present" in
+    0) printf '%s\n' "$table" >> "$MISSING_RUNTIME_TABLES" ;;
+    1) ;;
+    *) echo 'runtime fixture table lookup is ambiguous' >&2; exit 2 ;;
+  esac
+done < "$V2_MANIFEST"
+if [ -s "$MISSING_RUNTIME_TABLES" ]; then
+  while IFS= read -r table; do printf 'CREATE TABLE `%s`.`%s` (id BIGINT PRIMARY KEY) ENGINE=InnoDB;\n' "$DB" "$table"; done < "$MISSING_RUNTIME_TABLES" | admin
+fi
+
 run_helper() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$WEB" "$HOST" | admin)" = 0
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
-test ! -e "$TEMP/state/runtime.env"
+test -f "$TEMP/state/runtime.env"
 test -f "$TEMP/state/migrate.env"
 printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
 
@@ -203,6 +222,29 @@ reset_new_runtime
 printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s'; GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_helper
+
+# A runtime principal created before the selector has the exact v2 manifest
+# except for the three selector tables, which sit in the middle of its sorted
+# order.  It must converge without accepting an omitted unrelated row or an
+# extra privilege.
+seed_pre_agent_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT ON \`%s\`.* TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+  while read -r table privileges; do
+    [[ -z "$table" || "$table" == \#* ]] && continue
+    case "$table" in office_agent|office_agent_binding|office_agent_run) continue;; esac
+    printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+  done < "$V2_MANIFEST" | admin >/dev/null
+}
+seed_pre_agent_runtime
+run_helper
+for table in office_agent office_agent_binding office_agent_run; do
+  printf "SHOW GRANTS FOR '%s'@'%s';\n" "$WEB" "$HOST" | admin | grep -F " ON \`$DB\`.\`$table\`" | grep -F 'INSERT, UPDATE' >/dev/null
+done
+seed_pre_agent_runtime
+printf "GRANT SELECT ON mysql.* TO '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
+if run_helper; then echo 'pre-agent runtime principal with extra privilege was accepted' >&2; exit 1; fi
+printf "REVOKE SELECT ON mysql.* FROM '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 
 chmod 644 "$TEMP/state/secrets/$WEB.password"
