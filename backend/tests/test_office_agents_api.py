@@ -55,6 +55,9 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     engines = client.get(f"/api/virtual-office/projects/{project}/engines", headers=headers)
     assert engines.status_code == 200
     assert {"engine_key": engine_key, "display_name": "GLM", "model_id": "glm-5.3", "allowed_data_classifications": ["INTERNAL_CONFIDENTIAL"]} in engines.json()["items"]
+    rejected = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "public-writer", "display_name": "Public Writer", "engine_key": engine_key, "data_classification": "PUBLIC", "instructions": "No debe rebajar la clasificacion."})
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "office_agent_data_classification_invalid"
     created = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
     assert created.status_code == 201
     duplicate = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})

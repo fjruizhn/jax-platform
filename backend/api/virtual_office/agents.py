@@ -20,6 +20,10 @@ from virtual_office.engine_resolver import OfficeEngineUnavailable, resolve_offi
 
 router = APIRouter(prefix="/api/virtual-office/projects")
 
+# Office project authority establishes the handling class.  It is not a choice
+# made by the project administrator or by the browser.
+OFFICE_AGENT_DATA_CLASSIFICATION = "INTERNAL_CONFIDENTIAL"
+
 
 class AgentCreate(BaseModel):
     agent_key: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
@@ -54,6 +58,13 @@ async def _decision(cur, actor: int, operation: OfficeOperation, project_id: int
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_agent_denied")
     return decision
+
+
+def _canonical_agent_classification(requested: str) -> str:
+    """Reject a client attempt to weaken the Office project's fixed class."""
+    if requested != OFFICE_AGENT_DATA_CLASSIFICATION:
+        raise HTTPException(status_code=422, detail="office_agent_data_classification_invalid")
+    return OFFICE_AGENT_DATA_CLASSIFICATION
 
 
 async def _agent_row(cur, project_id: int, agent_id: int, *, lock: bool = False):
@@ -99,8 +110,14 @@ async def list_engines(project_id: int, user: AuthUser = Depends(get_current_use
             "SELECT e.engine_key,e.display_name_key,m.model_id,e.allowed_data_classifications FROM office_engine e "
             "JOIN model m ON m.id=e.model_ref WHERE e.enabled=TRUE ORDER BY e.engine_key")
         rows = await cur.fetchall()
-    return {"items": [{"engine_key": str(row[0]), "display_name": str(row[1]), "model_id": str(row[2]),
-                       "allowed_data_classifications": json.loads(row[3])} for row in rows]}
+    items = []
+    for row in rows:
+        classifications = json.loads(row[3])
+        if OFFICE_AGENT_DATA_CLASSIFICATION not in classifications:
+            continue
+        items.append({"engine_key": str(row[0]), "display_name": str(row[1]), "model_id": str(row[2]),
+                      "allowed_data_classifications": classifications})
+    return {"items": items}
 
 
 @router.get("/{project_id}/agents")
@@ -124,14 +141,15 @@ async def create_agent(project_id: int, payload: AgentCreate, user: AuthUser = D
     actor = _actor_id(user)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         await _decision(cur, actor, OfficeOperation.MANAGE_PROJECT, project_id)
+        data_classification = _canonical_agent_classification(payload.data_classification)
         try:
             await resolve_office_engine_in_cursor(cur, engine_key=payload.engine_key,
-                                                  data_classification=payload.data_classification, for_update=True)
+                                                  data_classification=data_classification, for_update=True)
         except OfficeEngineUnavailable as error:
             raise HTTPException(status_code=409, detail="office_engine_unavailable") from error
         try:
             await cur.execute("INSERT INTO office_agent (project_id,agent_key,display_name,instructions,data_classification,created_by) VALUES (%s,%s,%s,%s,%s,%s)",
-                              (project_id, payload.agent_key, payload.display_name, payload.instructions, payload.data_classification, actor))
+                              (project_id, payload.agent_key, payload.display_name, payload.instructions, data_classification, actor))
             agent_id = int(cur.lastrowid)
             await cur.execute("INSERT INTO office_agent_binding (agent_id,engine_key,binding_version,bound_by) VALUES (%s,%s,1,%s)",
                               (agent_id, payload.engine_key, actor))

@@ -8,8 +8,8 @@ const agents = vi.hoisted(() => ({ list: vi.fn(), engines: vi.fn(), create: vi.f
 vi.mock('../../api/virtualOffice', () => ({ officeAgentsApi: agents }))
 import OfficeAgentPanel, { officeAgentRunIntentStorageKey } from './OfficeAgentPanel.jsx'
 
-const engine = { engine_key: 'glm', display_name: 'GLM', model_id: 'glm-5', allowed_data_classifications: ['INTERNAL'] }
-const existing = { agent_id: 7, agent_key: 'resumen', display_name: 'Resumen', engine_key: 'glm', model_id: 'glm-5', data_classification: 'INTERNAL', version: 1, status: 'ACTIVE' }
+const engine = { engine_key: 'glm', display_name: 'GLM', model_id: 'glm-5', allowed_data_classifications: ['INTERNAL_CONFIDENTIAL'] }
+const existing = { agent_id: 7, agent_key: 'resumen', display_name: 'Resumen', engine_key: 'glm', model_id: 'glm-5', data_classification: 'INTERNAL_CONFIDENTIAL', version: 1, status: 'ACTIVE' }
 
 function show({ canManage = false, projectId = 12 } = {}) {
   return render(<I18nProvider><OfficeAgentPanel projectId={projectId} canManage={canManage} onForbidden={vi.fn()} /></I18nProvider>)
@@ -94,14 +94,14 @@ describe('OfficeAgentPanel', () => {
   it('allows a project administrator to create a private agent and change its engine', async () => {
     agents.create.mockResolvedValue({ data: { ...existing, agent_id: 8, version: 1 } })
     agents.bind.mockResolvedValue({ data: { ...existing, engine_key: 'local', model_id: 'local-1', version: 2 } })
-    agents.engines.mockResolvedValue({ data: { items: [engine, { engine_key: 'local', display_name: 'Local', model_id: 'local-1', allowed_data_classifications: ['INTERNAL'] }] } })
+    agents.engines.mockResolvedValue({ data: { items: [engine, { engine_key: 'local', display_name: 'Local', model_id: 'local-1', allowed_data_classifications: ['INTERNAL_CONFIDENTIAL'] }] } })
     show({ canManage: true })
     fireEvent.click(await screen.findByRole('button', { name: 'Crear agente privado' }))
     fireEvent.change(screen.getByLabelText('Clave del agente'), { target: { value: 'redactor' } })
     fireEvent.change(screen.getByLabelText('Nombre del agente'), { target: { value: 'Redactor' } })
     fireEvent.change(screen.getByLabelText('Instrucciones'), { target: { value: 'Redactá con claridad.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Crear agente' }))
-    await waitFor(() => expect(agents.create).toHaveBeenCalledWith(12, { agent_key: 'redactor', display_name: 'Redactor', engine_key: 'glm', data_classification: 'INTERNAL', instructions: 'Redactá con claridad.' }))
+    await waitFor(() => expect(agents.create).toHaveBeenCalledWith(12, { agent_key: 'redactor', display_name: 'Redactor', engine_key: 'glm', data_classification: 'INTERNAL_CONFIDENTIAL', instructions: 'Redactá con claridad.' }))
     fireEvent.click(screen.getAllByRole('button', { name: 'Resumen' })[0])
     fireEvent.change(await screen.findByLabelText('Motor de Resumen'), { target: { value: 'local' } })
     await waitFor(() => expect(agents.bind).toHaveBeenCalledWith(12, 7, { engine_key: 'local', expected_version: 1 }))

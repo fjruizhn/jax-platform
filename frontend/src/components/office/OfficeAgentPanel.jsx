@@ -7,7 +7,7 @@ import { useJaxStore } from '../../store/useJaxStore'
 
 const INPUT = 'w-full min-h-11 bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus-visible:ring-2 focus-visible:ring-foco'
 const BUTTON = `${TAMANO_BOTON_ACCION} rounded border border-borde px-3 text-texto hover:bg-hundido disabled:opacity-60`
-const CLASSIFICATION = 'INTERNAL'
+const CLASSIFICATION = 'INTERNAL_CONFIDENTIAL'
 const validAgent = (value) => value && Number.isInteger(value.agent_id) && typeof value.agent_key === 'string' && typeof value.display_name === 'string' && typeof value.engine_key === 'string' && typeof value.model_id === 'string' && typeof value.data_classification === 'string' && Number.isInteger(value.version) && ['ACTIVE', 'DISABLED'].includes(value.status)
 const validEngine = (value) => value && typeof value.engine_key === 'string' && typeof value.display_name === 'string' && typeof value.model_id === 'string' && Array.isArray(value.allowed_data_classifications) && value.allowed_data_classifications.every((classification) => typeof classification === 'string')
 const validItems = (data, validator) => data && Array.isArray(data.items) && data.items.every(validator)
