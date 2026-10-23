@@ -153,7 +153,12 @@ async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch
             captured.update(kwargs)
             return Stream()
 
-    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    client = Client()
+
+    async def get_client():
+        return client
+
+    monkeypatch.setattr(broker, "get_http_client", get_client)
     target = broker.OfficeDispatchTarget(
         resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
         "secret", "https://api.z.ai/api/paas/v4/chat/completions")
@@ -165,6 +170,73 @@ async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch
     assert captured["json"] == {"model": "glm-5.3", "messages": [
         {"role": "system", "content": "system"}, {"role": "user", "content": "hello"},
     ], "tools": [], "max_tokens": 123}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reuses_the_lifespan_http_client_without_network(monkeypatch):
+    import virtual_office.agent_broker as broker
+    from virtual_office.engine_resolver import resolve_office_engine_row
+
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {}
+
+        async def aiter_bytes(self):
+            yield b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, *_args, **_kwargs):
+            self.calls += 1
+            return Stream()
+
+    client = Client()
+    lookups = 0
+
+    async def get_client():
+        nonlocal lookups
+        lookups += 1
+        return client
+
+    monkeypatch.setattr(broker, "get_http_client", get_client)
+    target = broker.OfficeDispatchTarget(
+        resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
+        "secret", "https://api.z.ai/api/paas/v4/chat/completions")
+    for _ in range(2):
+        assert await broker.dispatch(
+            target, instructions="system", user_input="hello", max_tokens_field="max_tokens",
+            max_output_tokens=1, max_response_bytes=1024, timeout_seconds=1,
+        ) == "ok"
+    assert lookups == 2
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_http_client_is_closed_by_its_lifecycle(monkeypatch):
+    import http_client
+
+    class Client:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(http_client, "_client", client)
+    assert await http_client.get_http_client() is client
+    await http_client.close_http_client()
+    assert client.closed is True
+    assert http_client._client is None
 
 
 @pytest.mark.asyncio
@@ -206,7 +278,12 @@ async def test_dispatch_uses_the_model_declared_token_field_and_streams_a_bounde
             captured.update(kwargs)
             return Stream()
 
-    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    client = Client()
+
+    async def get_client():
+        return client
+
+    monkeypatch.setattr(broker, "get_http_client", get_client)
     target = broker.OfficeDispatchTarget(
         resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
         "secret", "https://api.z.ai/api/paas/v4/chat/completions")
@@ -254,7 +331,12 @@ async def test_dispatch_rejects_a_response_larger_than_the_office_limit(monkeypa
         def stream(self, *_args, **_kwargs):
             return Stream()
 
-    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    client = Client()
+
+    async def get_client():
+        return client
+
+    monkeypatch.setattr(broker, "get_http_client", get_client)
     target = broker.OfficeDispatchTarget(
         resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
         "secret", "https://api.z.ai/api/paas/v4/chat/completions")
@@ -285,7 +367,12 @@ async def test_dispatch_has_an_absolute_timeout_while_provider_trickles(monkeypa
         async def __aenter__(self): return self
         async def __aexit__(self, *_args): return None
         def stream(self, *_args, **_kwargs): return Stream()
-    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    client = Client()
+
+    async def get_client():
+        return client
+
+    monkeypatch.setattr(broker, "get_http_client", get_client)
     target = broker.OfficeDispatchTarget(resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"), "secret", "https://api.z.ai/api/paas/v4/chat/completions")
     with pytest.raises(broker.OfficeBrokerUnavailable):
         await broker.dispatch(target, instructions="system", user_input="hello", max_tokens_field="max_tokens", max_output_tokens=1, max_response_bytes=1000000, timeout_seconds=1)

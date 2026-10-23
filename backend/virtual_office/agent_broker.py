@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from crypto_secrets import decrypt_db_secret
+from http_client import get_http_client
 from virtual_office.engine_resolver import (OfficeEngineUnavailable, ResolvedOfficeEngine,
                                             load_pinned_office_credential_in_cursor)
 
@@ -103,24 +104,28 @@ async def dispatch(target: OfficeDispatchTarget, *, instructions: str, user_inpu
         {"role": "system", "content": instructions}, {"role": "user", "content": user_input},
     ], "tools": [], max_tokens_field: max_output_tokens}
     try:
+        # The application lifespan creates and closes this shared client.  Keeping
+        # the pool here avoids a TCP/TLS handshake for every Office message while
+        # the per-request timeout remains deliberately bounded below.
         timeout = httpx.Timeout(_MAX_SECONDS, connect=min(_MAX_SECONDS, 10.0))
         async with asyncio.timeout(timeout_seconds):
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                async with client.stream(
+            client = await get_http_client()
+            async with client.stream(
                 "POST", target.url,
                 headers={"Authorization": f"Bearer {target.api_key}", "Content-Type": "application/json"},
                 json=payload,
-                ) as response:
-                    if response.is_redirect or response.status_code < 200 or response.status_code >= 300:
+                timeout=timeout,
+            ) as response:
+                if response.is_redirect or response.status_code < 200 or response.status_code >= 300:
+                    raise OfficeBrokerUnavailable("office provider response is unavailable")
+                content_length = response.headers.get("content-length")
+                if content_length is not None and (not content_length.isdecimal() or int(content_length) > max_response_bytes):
+                    raise OfficeBrokerUnavailable("office provider response is unavailable")
+                encoded = bytearray()
+                async for chunk in response.aiter_bytes():
+                    encoded.extend(chunk)
+                    if len(encoded) > max_response_bytes:
                         raise OfficeBrokerUnavailable("office provider response is unavailable")
-                    content_length = response.headers.get("content-length")
-                    if content_length is not None and (not content_length.isdecimal() or int(content_length) > max_response_bytes):
-                        raise OfficeBrokerUnavailable("office provider response is unavailable")
-                    encoded = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        encoded.extend(chunk)
-                        if len(encoded) > max_response_bytes:
-                            raise OfficeBrokerUnavailable("office provider response is unavailable")
         decoded = json.loads(encoded.decode("utf-8"))
         content = decoded["choices"][0]["message"]["content"]
         if not isinstance(content, str) or not content:
