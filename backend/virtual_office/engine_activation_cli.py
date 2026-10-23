@@ -18,6 +18,7 @@ from virtual_office.engine_resolver import engine_binding_fingerprint
 
 _CLASSIFICATION = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _KEY = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+_OFFICE_PROVIDER_ID = "zhipu"
 
 
 def parse_classifications(value: str) -> frozenset[str]:
@@ -56,6 +57,8 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
     # Lock hierarchy mirrors credential rotation: provider, then the precise
     # credential, then (in activate) the Office engine row.  This avoids an
     # activation fingerprinting a credential while a rotation changes it.
+    if provider_id != _OFFICE_PROVIDER_ID:
+        raise ValueError("Office v1 requires the zhipu provider")
     await cur.execute("SELECT id,base_url,auth_type,api_key_transport,status,is_local FROM provider WHERE id=%s AND status='active' AND auth_type='api_key' FOR UPDATE", (provider_id,))
     provider = await cur.fetchone()
     if provider is None:
@@ -68,10 +71,13 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
         raise ValueError("provider/model is unavailable")
     await cur.execute(
         "SELECT id,provider_id,state,activated_at,revoked_at,SHA2(encrypted_value,256) FROM credential "
-        "WHERE provider_id=%s AND state='active' FOR UPDATE", (provider_id,))
+        "WHERE provider_id=%s AND state='active' ORDER BY activated_at DESC,id DESC FOR UPDATE", (provider_id,))
     credentials = await cur.fetchall()
-    if len(credentials) != 1:
-        raise ValueError("provider/model needs exactly one active credential")
+    if not credentials:
+        raise ValueError("provider/model needs an active credential")
+    # Rotation deliberately leaves the old secret active for a short overlap.
+    # The newest row is deterministic and the provider lock above prevents a
+    # concurrent rotation from changing this choice before the engine update.
     credential = credentials[0]
     model_ref, credential_id = int(model[0]), int(credential[0])
     await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-provider-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(provider))
@@ -87,6 +93,8 @@ async def activate(args: argparse.Namespace) -> dict[str, object]:
     classifications = parse_classifications(args.classifications)
     if not _KEY.fullmatch(args.engine_key) or not args.display_name.strip() or not args.provider_id or not args.model_id:
         raise ValueError("engine key, display name, provider and model are invalid")
+    if args.provider_id != _OFFICE_PROVIDER_ID:
+        raise ValueError("Office v1 requires the zhipu provider")
     conn = await aiomysql.connect(**_settings())
     try:
         async with conn.cursor() as cur:

@@ -10,6 +10,7 @@ _CLASSIFICATION = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SUPPORTED_TRANSPORTS = frozenset({"http_openai_compat"})
 _MAX_TOKEN_PARAMS = frozenset({"max_tokens", "max_completion_tokens"})
+_OFFICE_PROVIDER_ID = "zhipu"
 
 
 class OfficeEngineUnavailable(RuntimeError):
@@ -97,7 +98,7 @@ def resolve_office_engine_row(row: dict[str, object] | None, *, data_classificat
     if (not available or transport not in _SUPPORTED_TRANSPORTS or data_classification not in classifications
             or not isinstance(engine_key, str) or not engine_key or not isinstance(display_name_key, str) or not display_name_key
             or isinstance(model_ref, bool) or not isinstance(model_ref, int) or model_ref < 1
-            or not isinstance(provider_id, str) or not provider_id or not isinstance(provider_auth_type, str) or provider_auth_type != "api_key"
+            or not isinstance(provider_id, str) or provider_id != _OFFICE_PROVIDER_ID or not isinstance(provider_auth_type, str) or provider_auth_type != "api_key"
             or provider_api_key_transport != "header_bearer"
             or not isinstance(model_id, str) or not model_id
             or not isinstance(max_tokens_param, str) or max_tokens_param not in _MAX_TOKEN_PARAMS
