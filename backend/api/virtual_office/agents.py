@@ -57,12 +57,29 @@ async def _decision(cur, actor: int, operation: OfficeOperation, project_id: int
 
 
 async def _agent_row(cur, project_id: int, agent_id: int, *, lock: bool = False):
+    if lock:
+        # Lock only the mutable agent/binding pair here.  The engine itself is
+        # deliberately resolved afterwards in provider→model→credential→engine
+        # order, shared with activation/rotation.
+        await cur.execute(
+            "SELECT agent_id,agent_key,display_name,instructions,data_classification,status,version "
+            "FROM office_agent WHERE project_id=%s AND agent_id=%s FOR UPDATE", (project_id, agent_id))
+        agent = await cur.fetchone()
+        if agent is None:
+            return None
+        await cur.execute(
+            "SELECT binding_id,binding_version,engine_key FROM office_agent_binding "
+            "WHERE agent_id=%s AND active=TRUE FOR UPDATE", (agent_id,))
+        binding = await cur.fetchone()
+        if binding is None:
+            return None
+        return tuple(agent) + (binding[0], binding[1], binding[2], None, None)
     await cur.execute(
         "SELECT a.agent_id,a.agent_key,a.display_name,a.instructions,a.data_classification,a.status,a.version,"
         "b.binding_id,b.binding_version,b.engine_key,e.model_ref,m.model_id FROM office_agent a "
         "JOIN office_agent_binding b ON b.agent_id=a.agent_id AND b.active=TRUE "
         "JOIN office_engine e ON e.engine_key=b.engine_key JOIN model m ON m.id=e.model_ref "
-        "WHERE a.project_id=%s AND a.agent_id=%s" + (" FOR UPDATE" if lock else ""), (project_id, agent_id))
+        "WHERE a.project_id=%s AND a.agent_id=%s", (project_id, agent_id))
     return await cur.fetchone()
 
 
@@ -109,7 +126,7 @@ async def create_agent(project_id: int, payload: AgentCreate, user: AuthUser = D
         await _decision(cur, actor, OfficeOperation.MANAGE_PROJECT, project_id)
         try:
             await resolve_office_engine_in_cursor(cur, engine_key=payload.engine_key,
-                                                  data_classification=payload.data_classification)
+                                                  data_classification=payload.data_classification, for_update=True)
         except OfficeEngineUnavailable as error:
             raise HTTPException(status_code=409, detail="office_engine_unavailable") from error
         try:
@@ -139,7 +156,7 @@ async def change_agent_binding(project_id: int, agent_id: int, payload: AgentBin
             raise HTTPException(status_code=409, detail="office_agent_version_conflict")
         try:
             await resolve_office_engine_in_cursor(cur, engine_key=payload.engine_key,
-                                                  data_classification=str(row[4]))
+                                                  data_classification=str(row[4]), for_update=True)
         except OfficeEngineUnavailable as error:
             raise HTTPException(status_code=409, detail="office_engine_unavailable") from error
         await cur.execute("UPDATE office_agent_binding SET active=FALSE WHERE agent_id=%s AND active=TRUE", (agent_id,))
