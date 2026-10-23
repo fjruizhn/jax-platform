@@ -21,9 +21,10 @@ activó el mismo motor con éxito.
 Validación medida en MariaDB desechable `127.0.0.1:33994`, sin llamada ni cargo
 al proveedor: 44 pruebas focales de API, broker, esquema y CLI pasaron sobre
 el paquete combinado; 47 de activación y contratos, 6 del panel, y build de
-producción. La medición anterior de 32 ejecuciones concurrentes (p95 0.0375 s,
-777.9 ejecuciones/s) precedió a los límites y al esquema final; se repetirá
-antes de publicar.
+producción. Con el esquema y límites finales, un probe de 80 ejecuciones de
+cuatro usuarios en un proyecto, hasta 8 simultáneas y proveedor simulado con
+10 ms de latencia, completó 80/80: 288.64 ejecuciones/s, p95 27.7 ms y máximo
+30.6 ms. El probe no mide la latencia ni disponibilidad real de Z.ai.
 
 Orden de instalación para evitar una reinicialización con una clave todavía
 desconocida: (1) agregar `OFFICE_BROKER_ALLOWED_BASE_URLS` a `/etc/jax/.env`,
