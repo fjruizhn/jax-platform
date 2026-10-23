@@ -56,16 +56,14 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
     # Lock hierarchy mirrors credential rotation: provider, then the precise
     # credential, then (in activate) the Office engine row.  This avoids an
     # activation fingerprinting a credential while a rotation changes it.
-    await cur.execute(
-        "SELECT p.id,p.base_url,p.auth_type,p.api_key_transport,p.status,p.is_local,"
-        "m.id,m.provider_id,m.model_id,m.status,m.is_alias,m.context_window,m.supports_tool_use,"
-        "m.supports_structured_output,m.max_tokens_param,m.max_output_tokens,m.input_modalities "
-        "FROM provider p JOIN model m ON m.provider_id=p.id WHERE p.id=%s AND m.model_id=%s "
-        "AND p.status='active' AND p.auth_type='api_key' AND m.status='available' FOR UPDATE", (provider_id, model_id))
-    rows = await cur.fetchall()
-    if len(rows) != 1:
+    await cur.execute("SELECT id,base_url,auth_type,api_key_transport,status,is_local FROM provider WHERE id=%s AND status='active' AND auth_type='api_key' FOR UPDATE", (provider_id,))
+    provider = await cur.fetchone()
+    if provider is None:
         raise ValueError("provider/model is unavailable")
-    row = rows[0]
+    await cur.execute("SELECT id,provider_id,model_id,status,is_alias,context_window,supports_tool_use,supports_structured_output,max_tokens_param,max_output_tokens,input_modalities FROM model WHERE provider_id=%s AND model_id=%s AND status='available' FOR UPDATE", (provider_id, model_id))
+    model = await cur.fetchone()
+    if model is None:
+        raise ValueError("provider/model is unavailable")
     await cur.execute(
         "SELECT id,provider_id,state,activated_at,revoked_at,SHA2(encrypted_value,256) FROM credential "
         "WHERE provider_id=%s AND state='active' FOR UPDATE", (provider_id,))
@@ -73,10 +71,10 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
     if len(credentials) != 1:
         raise ValueError("provider/model needs exactly one active credential")
     credential = credentials[0]
-    model_ref, credential_id = int(row[6]), int(credential[0])
-    await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-provider-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[:6]))
+    model_ref, credential_id = int(model[0]), int(credential[0])
+    await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-provider-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(provider))
     provider_fingerprint = (await cur.fetchone())[0]
-    await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-model-v1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[6:17]))
+    await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-model-v1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(model))
     model_fingerprint = (await cur.fetchone())[0]
     await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-credential-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(credential))
     credential_fingerprint = (await cur.fetchone())[0]

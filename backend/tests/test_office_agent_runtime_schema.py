@@ -193,10 +193,11 @@ def test_engine_binding_v2_includes_the_exact_credential_identity() -> None:
 def test_activation_locks_provider_then_credential_then_engine() -> None:
     source = (Path(__file__).parents[1] / "virtual_office" / "engine_activation_cli.py").read_text(encoding="utf-8")
 
-    provider_lock = source.index("m.status='available' FOR UPDATE")
+    provider_lock = source.index("auth_type='api_key' FOR UPDATE")
+    model_lock = source.index("model_id=%s AND status='available' FOR UPDATE")
     credential_lock = source.index("WHERE provider_id=%s AND state='active' FOR UPDATE")
     engine_lock = source.index("FROM office_engine WHERE engine_key=%s FOR UPDATE")
-    assert provider_lock < credential_lock < engine_lock
+    assert provider_lock < model_lock < credential_lock < engine_lock
 
 
 def test_resolver_exposes_a_pinned_credential_loader_not_a_provider_lookup() -> None:
