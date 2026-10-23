@@ -85,7 +85,7 @@ OFFICE_AGENT_DDL = (
     "credential_id INT NOT NULL,credential_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,provider_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "auth_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,auth_transport VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,accepted_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),deadline_at DATETIME(6) NOT NULL,fence BIGINT UNSIGNED NOT NULL,completed_at DATETIME(6) NULL,"
-    "UNIQUE KEY uq_office_agent_run_idempotency (requested_by,agent_id,idempotency_key),KEY idx_office_agent_run_actor_window (requested_by,accepted_at,status,deadline_at),KEY idx_office_agent_run_project_window (project_id,accepted_at,status,deadline_at),"
+    "UNIQUE KEY uq_office_agent_run_idempotency (requested_by,agent_id,idempotency_key),KEY idx_office_agent_run_actor_window (requested_by,accepted_at,status,deadline_at),KEY idx_office_agent_run_project_window (project_id,accepted_at,status,deadline_at),KEY idx_office_agent_run_actor_concurrency (requested_by,status,deadline_at),KEY idx_office_agent_run_project_concurrency (project_id,status,deadline_at),"
     "CONSTRAINT fk_office_agent_run_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_run_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_run_requested_by FOREIGN KEY (requested_by) REFERENCES jax_users(user_id),CONSTRAINT fk_office_agent_run_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT fk_office_agent_run_binding FOREIGN KEY (binding_id) REFERENCES office_agent_binding(binding_id),CONSTRAINT fk_office_agent_run_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_run_model FOREIGN KEY (model_ref) REFERENCES model(id),CONSTRAINT fk_office_agent_run_credential FOREIGN KEY (credential_id) REFERENCES credential(id),"
     "CONSTRAINT chk_office_agent_run_key CHECK (idempotency_key<>''),CONSTRAINT chk_office_agent_run_snapshot CHECK (agent_version>=1 AND binding_version>=1 AND config_version>=1 AND engine_version>=1 AND engine_binding_fingerprint REGEXP '^[0-9a-f]{64}$' AND credential_fingerprint REGEXP '^[0-9a-f]{64}$' AND provider_id<>'' AND auth_type<>'' AND auth_transport<>'' AND fence>=1 AND deadline_at>=accepted_at),CONSTRAINT chk_office_agent_run_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR (status IN ('DISPATCHING','UNKNOWN') AND output_text IS NULL))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -941,7 +941,7 @@ _AGENT_RUNTIME_INDEXES = {
     "office_engine": {"PRIMARY": (("engine_key",), True)},
     "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False)},
     "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
-    "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False)},
+    "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_actor_concurrency": (("requested_by", "status", "deadline_at"), False), "idx_office_agent_run_project_concurrency": (("project_id", "status", "deadline_at"), False)},
 }
 _AGENT_RUNTIME_FKS = {
     "office_engine": {"fk_office_engine_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_engine_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
@@ -949,6 +949,14 @@ _AGENT_RUNTIME_FKS = {
     "office_agent_binding": {"fk_office_agent_binding_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_by": (("bound_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT")},
     "office_agent_run": {"fk_office_agent_run_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_requested_by": (("requested_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_binding": (("binding_id",), "office_agent_binding", ("binding_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
 }
+
+
+def _agent_runtime_expected_indexes(table: str) -> dict[str, tuple[tuple[str, ...], bool]]:
+    expected = dict(_AGENT_RUNTIME_INDEXES[table])
+    for name, (local, _target, _remote, _update, _delete) in _AGENT_RUNTIME_FKS.get(table, {}).items():
+        if not any(columns[:len(local)] == local for columns, _unique in expected.values()):
+            expected[name] = (local, False)
+    return expected
 
 
 async def assert_office_agent_runtime_metadata(cur) -> None:
@@ -960,9 +968,10 @@ async def assert_office_agent_runtime_metadata(cur) -> None:
         found_columns = tuple((str(name), str(column_type)) for name, column_type in await cur.fetchall())
         if tuple(name for name, _type in found_columns) != columns or any(not column_type for _name, column_type in found_columns):
             raise RuntimeError(f"Office agent runtime columns for {table} are invalid")
-        await _assert_indexes(cur, table=table, expected=_AGENT_RUNTIME_INDEXES[table])
+        expected_indexes = _agent_runtime_expected_indexes(table)
+        await _assert_indexes(cur, table=table, expected=expected_indexes)
         await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
-        if {row[0] for row in await cur.fetchall()} != set(_AGENT_RUNTIME_INDEXES[table]):
+        if {row[0] for row in await cur.fetchall()} != set(expected_indexes):
             raise RuntimeError(f"Office agent runtime indexes for {table} are invalid")
         expected_fks = _AGENT_RUNTIME_FKS.get(table, {})
         await _assert_foreign_keys(cur, table=table, expected=expected_fks)
