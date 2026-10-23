@@ -42,3 +42,11 @@ def test_launcher_refuses_pre_ddl_activation_journal_before_release_execution():
     source = MODULE.read_text(encoding='utf-8')
     assert "activation-journal.json" in source
     assert "journal.get('state') != 'DDL_STARTED'" in source
+
+
+def test_launcher_allows_broker_configuration_and_a_root_only_engine_activation_mode():
+    source = MODULE.read_text(encoding='utf-8')
+    assert 'OFFICE_BROKER_ALLOWED_BASE_URLS' in source
+    assert "'office-engine'" in source
+    assert 'stat.S_IMODE(credential_stat.st_mode) != 0o600' in source
+    assert "virtual_office.engine_activation_cli" in source

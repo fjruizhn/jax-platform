@@ -35,7 +35,10 @@ export default function OfficeAgentPanel({ projectId, canManage = false, onForbi
   async function load() {
     setError(null)
     try {
-      const [{ data: agentData }, { data: engineData }] = await Promise.all([officeAgentsApi.list(projectId), officeAgentsApi.engines(projectId)])
+      const requests = [officeAgentsApi.list(projectId)]
+      if (canManage) requests.push(officeAgentsApi.engines(projectId))
+      const [{ data: agentData }, engineResponse] = await Promise.all(requests)
+      const engineData = engineResponse?.data || { items: [] }
       if (!validItems(agentData, validAgent) || !validItems(engineData, validEngine)) throw new Error('invalid Office agent response')
       setAgents(agentData.items)
       setEngines(engineData.items)
@@ -61,8 +64,8 @@ export default function OfficeAgentPanel({ projectId, canManage = false, onForbi
     setBusy(true); setError(null); setResult(null)
     try {
       const { data } = await officeAgentsApi.run(projectId, active.agent_id, { input: trimmed, idempotency_key: runIntent.current.key })
-      if (!data || typeof data.run_id !== 'string' || !['SUCCEEDED', 'UNKNOWN'].includes(data.status) || typeof data.model_id !== 'string' || (data.output !== null && data.output !== undefined && typeof data.output !== 'string')) throw new Error('invalid Office agent run response')
-      runIntent.current = null
+      if (!data || typeof data.run_id !== 'string' || !['SUCCEEDED', 'UNKNOWN', 'DISPATCHING'].includes(data.status) || typeof data.model_id !== 'string' || (data.output !== null && data.output !== undefined && typeof data.output !== 'string')) throw new Error('invalid Office agent run response')
+      if (data.status !== 'DISPATCHING') runIntent.current = null
       setResult(data)
     } catch (err) {
       if (err?.response?.status === 403) await forbidden()
@@ -116,6 +119,7 @@ export default function OfficeAgentPanel({ projectId, canManage = false, onForbi
         <label className="block text-sm text-texto-suave" htmlFor={`office-agent-input-${active.agent_id}`}>{t.virtualOffice.agents.messageFor(active.display_name)}<textarea id={`office-agent-input-${active.agent_id}`} value={input} disabled={busy} onChange={(event) => { setInput(event.target.value); setError(null); setResult(null); runIntent.current = null }} className={`${INPUT} mt-1 min-h-24`} /></label>
         <button disabled={busy || !input.trim()} className={`${TAMANO_BOTON_ACCION} rounded bg-accion px-3 text-sobre-color disabled:opacity-60`}>{busy ? t.virtualOffice.agents.running : t.virtualOffice.agents.run}</button>
         {result?.status === 'UNKNOWN' && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.agents.unknown}</p>}
+        {result?.status === 'DISPATCHING' && <p role="status" className="text-sm text-texto-suave">{t.virtualOffice.agents.dispatching}</p>}
         {result?.status === 'SUCCEEDED' && <div aria-label={t.virtualOffice.agents.output} className="rounded border border-borde bg-hundido p-3 text-sm text-texto"><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-texto-suave">{t.virtualOffice.agents.output}</p><p className="whitespace-pre-wrap break-words">{result.output}</p></div>}
       </form>}
     </>}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 import asyncio
+import time
 
 from auth.jwt import create_access_token
 from tests.identidades import crear_usuario, sql
@@ -40,6 +41,7 @@ async def _project_admin_with_engine():
 def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypatch):
     import api.virtual_office.agents as agents_api
 
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
     admin, project, engine_key = client.portal.call(_project_admin_with_engine)
     calls = []
 
@@ -101,3 +103,42 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     )
     assert denied.status_code == 403
     assert calls == calls_before_external_attempt
+
+
+def test_private_agent_mocked_provider_handles_parallel_runs_on_a_real_database(client, monkeypatch):
+    """A bounded local load probe: durable run rows plus mocked provider I/O."""
+    import api.virtual_office.agents as agents_api
+    from api.virtual_office.agents import AgentRunRequest, run_agent
+    from auth.models import AuthUser
+
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
+    admin, project, engine_key = client.portal.call(_project_admin_with_engine)
+    headers = _headers(admin)
+    created = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "load", "display_name": "Load", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
+    assert created.status_code == 201
+    agent_id = created.json()["agent_id"]
+
+    async def fake_dispatch(_target, *, instructions, user_input):
+        await asyncio.sleep(0.001)
+        return user_input
+
+    monkeypatch.setattr(agents_api, "dispatch", fake_dispatch)
+
+    async def run_probe():
+        user = AuthUser(user_id=str(admin), tenant_id="1", role="operator", account_class="INTERNAL")
+
+        async def one(index: int):
+            started = time.perf_counter()
+            reply = await run_agent(project, agent_id, AgentRunRequest(input=f"load-{index}", idempotency_key=f"load-{index}"), user)
+            return reply, time.perf_counter() - started
+
+        batch_started = time.perf_counter()
+        measured = await asyncio.gather(*(one(index) for index in range(32)))
+        batch_seconds = time.perf_counter() - batch_started
+        durations = sorted(duration for _reply, duration in measured)
+        p95 = durations[round((len(durations) - 1) * 0.95)]
+        assert all(reply["status"] == "SUCCEEDED" for reply, _duration in measured)
+        assert p95 < 2.0
+        print(f"office-agent mocked-provider load: concurrency=32 p95_seconds={p95:.4f} throughput_rps={len(measured) / batch_seconds:.1f}")
+
+    client.portal.call(run_probe)

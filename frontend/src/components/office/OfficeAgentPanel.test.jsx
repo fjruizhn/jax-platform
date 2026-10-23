@@ -32,6 +32,17 @@ describe('OfficeAgentPanel', () => {
     expect(document.querySelector('b')).toBeNull()
   })
 
+  it('lets an internal member run agents without loading the admin engine catalogue', async () => {
+    agents.engines.mockRejectedValue({ response: { status: 403 } })
+    agents.run.mockResolvedValue({ data: { run_id: 'run-8', status: 'DISPATCHING', output: null, model_id: 'glm-5' } })
+    show()
+    expect(await screen.findByRole('button', { name: 'Resumen' })).toBeInTheDocument()
+    expect(agents.engines).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Mensaje para Resumen'), { target: { value: 'seguí' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ejecutar agente' }))
+    expect(await screen.findByText('El agente sigue procesando este mensaje. No lo envíes de nuevo.')).toBeInTheDocument()
+  })
+
   it('allows a project administrator to create a private agent and change its engine', async () => {
     agents.create.mockResolvedValue({ data: { ...existing, agent_id: 8, version: 1 } })
     agents.bind.mockResolvedValue({ data: { ...existing, engine_key: 'local', model_id: 'local-1', version: 2 } })

@@ -11,7 +11,7 @@ JAX_CONFIG_PATH JAX_DB_CONNECT_TIMEOUT_SECONDS JAX_DB_HOST JAX_DB_NAME JAX_DB_PA
 JAX_EJECUTOR_ADMIN_USUARIO JAX_EJECUTOR_AUTO_COMPACT_WINDOW JAX_EJECUTOR_BASH_MAX_OUTPUT_LENGTH JAX_EJECUTOR_CANARIO_PUERTO JAX_EJECUTOR_CARACTERES_POR_TOKEN_MIN JAX_EJECUTOR_CERCO_SONDAS JAX_EJECUTOR_CONTROLADOR_LLAVE JAX_EJECUTOR_CUENTA JAX_EJECUTOR_CUENTA_HOME JAX_EJECUTOR_FILE_READ_MAX_OUTPUT_TOKENS JAX_EJECUTOR_FRENO_ESTADO JAX_EJECUTOR_FRENO_KNOWN_HOSTS JAX_EJECUTOR_FRENO_LLAVE JAX_EJECUTOR_FRENO_REMOTOS JAX_EJECUTOR_GANCHO_TOPE_S JAX_EJECUTOR_HUELLA_KNOWN_HOSTS JAX_EJECUTOR_HUELLA_LLAVE JAX_EJECUTOR_HUELLA_ORIGEN_IP JAX_EJECUTOR_INVENTARIO JAX_EJECUTOR_LIB JAX_EJECUTOR_LLAVES_ROOT JAX_EJECUTOR_MAX_ENTRADA_TOKENS JAX_EJECUTOR_MISIONES JAX_EJECUTOR_NODE_BIN JAX_EJECUTOR_PAUSA JAX_EJECUTOR_POLITICA JAX_EJECUTOR_PYTHON JAX_EJECUTOR_REGISTRO JAX_EJECUTOR_SSH_PUERTO JAX_EJECUTOR_TURNO_TOPE_S JAX_EJECUTOR_VIGIA_ESPERA_S JAX_EJECUTOR_VIGIA_LATIDO JAX_EJECUTOR_VIGIA_LATIDO_CADA_S JAX_EJECUTOR_VIGIA_LATIDO_MAX_S
 JAX_ENVIRONMENT JAX_GITHUB_TOKEN JAX_JWT_SECRET JAX_KILL_SWITCH_PATH JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA JAX_MEMORY_EMBED_COLUMN JAX_MIGRATE_DB_READINESS_ATTEMPTS JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS JAX_OLLAMA_CPU_URL JAX_OLLAMA_URL JAX_OPERATIONAL_TRUSTED_HOSTS JAX_PLATFORM_URL
 JAX_PROXY_CARRIL_HOST JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS JAX_PROXY_CARRIL_MODELO JAX_PROXY_CARRIL_PENSAMIENTO JAX_PROXY_CARRIL_PUERTO JAX_PROXY_CARRIL_RAIZ JAX_PROXY_CARRIL_TOPE_S JAX_PROXY_CARRIL_UPSTREAM
-JAX_PUBLIC_HOST_ORIGIN_BINDINGS JAX_REFRESH_COOKIE_SECURE JAX_REPO_BASE JAX_REPO_PATH JAX_SEED_SUPERADMIN_EMAIL JAX_SEED_TENANT_NAME JAX_TRUSTED_PROXIES JAX_WORKSPACE_DIR LAS_MANOS_URL OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_PUBLIC_BASE_URL OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_PUBLIC_ORIGIN PIPELINE_DETAIL_PATH TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+JAX_PUBLIC_HOST_ORIGIN_BINDINGS JAX_REFRESH_COOKIE_SECURE JAX_REPO_BASE JAX_REPO_PATH JAX_SEED_SUPERADMIN_EMAIL JAX_SEED_TENANT_NAME JAX_TRUSTED_PROXIES JAX_WORKSPACE_DIR LAS_MANOS_URL OFFICE_BROKER_ALLOWED_BASE_URLS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_PUBLIC_BASE_URL OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_PUBLIC_ORIGIN PIPELINE_DETAIL_PATH TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 '''.split())
 NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
@@ -29,12 +29,20 @@ def credential(path: Path):
     if not values: die()
     return values
 
+def root_only_credential(path: Path):
+    credential_stat = path.stat()
+    if (not stat.S_ISREG(credential_stat.st_mode) or credential_stat.st_uid != 0
+            or credential_stat.st_gid != 0 or stat.S_IMODE(credential_stat.st_mode) != 0o600):
+        die()
+    return credential(path)
+
 def main():
     if sys.argv[1:] == ['--list-allowed-keys']:
         print('\n'.join(sorted(ALLOWED)))
         return
-    if len(sys.argv) != 3 or sys.argv[1] not in ('web','migrate'): die()
-    mode, cred = sys.argv[1:]
+    if len(sys.argv) < 3 or sys.argv[1] not in ('web','migrate','office-engine'): die()
+    mode, cred, *engine_args = sys.argv[1:]
+    if mode in ('web', 'migrate') and engine_args: die()
     root = Path('/opt/jax-platform-pair'); selection = Path('/etc/jax/platform-pair-selection.json')
     if os.environ.get('JAX_PAIR_TEST_MODE') == '1' and os.geteuid() == 0 and os.environ.get('JAX_PAIR_TEST_ROOT','').startswith('/tmp/'):
         root = Path(os.environ['JAX_PAIR_TEST_ROOT']); selection = root/'platform-pair-selection.json'
@@ -71,14 +79,14 @@ def main():
     module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     try: module.verify(release, expected_jxp=x['jax_platform_revision'], expected_jax=x['jax_revision'], ancestor_stop=root if root != Path('/opt/jax-platform-pair') else None)
     except (module.PairReadinessError, OSError): die()
-    child=credential(Path(cred)); child['PATH']='/usr/bin:/bin'; child['JAX_REPO_PATH']=str(release/'jax')
+    child=(root_only_credential(Path(cred)) if mode == 'office-engine' else credential(Path(cred))); child['PATH']='/usr/bin:/bin'; child['JAX_REPO_PATH']=str(release/'jax')
     backend=release/'jax-platform'/'backend'; os.chdir(backend)
     python=str(backend/'.venv/bin/python')
     # -I keeps the child environment isolated; do not add -S here because the
     # venv's own site-packages contains uvicorn and the application modules.
     # The immutable release inventory includes no bytecode cache.  -I ignores
     # PYTHONDONTWRITEBYTECODE, so -B is required for both service processes.
-    argv=[python,'-I','-B','-m','uvicorn','main:app','--app-dir',str(backend),'--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-B','-c',"import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module('db.migrate',run_name='__main__')",str(backend)]
+    argv=([python,'-I','-B','-m','uvicorn','main:app','--app-dir',str(backend),'--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-B','-c',"import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module('db.migrate',run_name='__main__')",str(backend)] if mode == 'migrate' else [python,'-I','-B','-m','virtual_office.engine_activation_cli',*engine_args])
     if mode=='web' and not child['JAX_TRUSTED_PROXIES']: die()
     os.execve(python,argv,child)
 if __name__ == '__main__': main()
