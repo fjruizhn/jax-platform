@@ -52,7 +52,7 @@ def _settings() -> dict[str, object]:
             "connect_timeout": db_connect_timeout_seconds()}
 
 
-async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple[int, str, str, str]:
+async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple[int, int, str, str, str]:
     await cur.execute(
         "SELECT p.id,p.base_url,p.auth_type,p.api_key_transport,p.status,p.is_local,"
         "m.id,m.provider_id,m.model_id,m.status,m.is_alias,m.context_window,m.supports_tool_use,"
@@ -65,14 +65,14 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
     if len(rows) != 1:
         raise ValueError("provider/model needs exactly one active credential")
     row = rows[0]
-    model_ref = int(row[6])
+    model_ref, credential_id = int(row[6]), int(row[17])
     await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-provider-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[:6]))
     provider_fingerprint = (await cur.fetchone())[0]
     await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-model-v1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[6:17]))
     model_fingerprint = (await cur.fetchone())[0]
     await cur.execute("SELECT SHA2(CAST(JSON_ARRAY('office-engine-credential-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[17:23]))
     credential_fingerprint = (await cur.fetchone())[0]
-    return model_ref, provider_fingerprint, model_fingerprint, credential_fingerprint
+    return model_ref, credential_id, provider_fingerprint, model_fingerprint, credential_fingerprint
 
 
 async def activate(args: argparse.Namespace) -> dict[str, object]:
@@ -82,25 +82,25 @@ async def activate(args: argparse.Namespace) -> dict[str, object]:
     conn = await aiomysql.connect(**_settings())
     try:
         async with conn.cursor() as cur:
-            model_ref, provider_fp, model_fp, credential_fp = await _catalogue_fingerprints(cur, args.provider_id, args.model_id)
-            await cur.execute("SELECT model_ref,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version FROM office_engine WHERE engine_key=%s FOR UPDATE", (args.engine_key,))
+            model_ref, credential_id, provider_fp, model_fp, credential_fp = await _catalogue_fingerprints(cur, args.provider_id, args.model_id)
+            await cur.execute("SELECT model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version FROM office_engine WHERE engine_key=%s FOR UPDATE", (args.engine_key,))
             prior = await cur.fetchone()
             desired_classes = json.dumps(sorted(classifications), separators=(",", ":"))
             if prior is not None:
-                prior_model_ref, prior_transport, prior_classes, prior_fp, prior_enabled, prior_epoch, prior_version = prior
-                expected = engine_binding_fingerprint(engine_key=args.engine_key, model_ref=int(prior_model_ref), transport=str(prior_transport), allowed_data_classifications=frozenset(json.loads(prior_classes)), provider_fingerprint=provider_fp, model_fingerprint=model_fp, credential_fingerprint=credential_fp, engine_enabled=int(prior_enabled), activation_epoch=int(prior_epoch), version=int(prior_version))
-                unchanged = (int(prior_model_ref) == model_ref and str(prior_transport) == "http_openai_compat" and prior_classes == desired_classes and int(prior_enabled) == 1 and str(prior_fp) == expected)
+                prior_model_ref, prior_credential_id, prior_transport, prior_classes, prior_fp, prior_enabled, prior_epoch, prior_version = prior
+                expected = engine_binding_fingerprint(engine_key=args.engine_key, model_ref=int(prior_model_ref), transport=str(prior_transport), allowed_data_classifications=frozenset(json.loads(prior_classes)), provider_fingerprint=provider_fp, model_fingerprint=model_fp, credential_id=credential_id, credential_fingerprint=credential_fp, engine_enabled=int(prior_enabled), activation_epoch=int(prior_epoch), version=int(prior_version))
+                unchanged = (int(prior_model_ref) == model_ref and int(prior_credential_id) == credential_id and str(prior_transport) == "http_openai_compat" and prior_classes == desired_classes and int(prior_enabled) == 1 and str(prior_fp) == expected)
                 if unchanged:
                     await conn.rollback()
                     return {"engine_key": args.engine_key, "activated": True, "changed": False, "version": int(prior_version)}
                 epoch, version = int(prior_epoch) + 1, int(prior_version) + 1
             else:
                 epoch, version = 1, 1
-            fingerprint = engine_binding_fingerprint(engine_key=args.engine_key, model_ref=model_ref, transport="http_openai_compat", allowed_data_classifications=classifications, provider_fingerprint=provider_fp, model_fingerprint=model_fp, credential_fingerprint=credential_fp, engine_enabled=1, activation_epoch=epoch, version=version)
+            fingerprint = engine_binding_fingerprint(engine_key=args.engine_key, model_ref=model_ref, transport="http_openai_compat", allowed_data_classifications=classifications, provider_fingerprint=provider_fp, model_fingerprint=model_fp, credential_id=credential_id, credential_fingerprint=credential_fp, engine_enabled=1, activation_epoch=epoch, version=version)
             if prior is None:
-                await cur.execute("INSERT INTO office_engine (engine_key,display_name_key,model_ref,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) VALUES (%s,%s,%s,'http_openai_compat',%s,%s,TRUE,%s,%s)", (args.engine_key, args.display_name.strip(), model_ref, desired_classes, fingerprint, epoch, version))
+                await cur.execute("INSERT INTO office_engine (engine_key,display_name_key,model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) VALUES (%s,%s,%s,%s,'http_openai_compat',%s,%s,TRUE,%s,%s)", (args.engine_key, args.display_name.strip(), model_ref, credential_id, desired_classes, fingerprint, epoch, version))
             else:
-                await cur.execute("UPDATE office_engine SET display_name_key=%s,model_ref=%s,transport='http_openai_compat',allowed_data_classifications=%s,binding_fingerprint=%s,enabled=TRUE,activation_epoch=%s,version=%s WHERE engine_key=%s", (args.display_name.strip(), model_ref, desired_classes, fingerprint, epoch, version, args.engine_key))
+                await cur.execute("UPDATE office_engine SET display_name_key=%s,model_ref=%s,credential_id=%s,transport='http_openai_compat',allowed_data_classifications=%s,binding_fingerprint=%s,enabled=TRUE,activation_epoch=%s,version=%s WHERE engine_key=%s", (args.display_name.strip(), model_ref, credential_id, desired_classes, fingerprint, epoch, version, args.engine_key))
         await conn.commit()
         return {"engine_key": args.engine_key, "activated": True, "changed": True, "version": version}
     except Exception:
