@@ -16,6 +16,13 @@ JAX_PUBLIC_HOST_ORIGIN_BINDINGS JAX_REFRESH_COOKIE_SECURE JAX_REPO_BASE JAX_REPO
 NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 def die(): raise SystemExit(1)
+def office_engine_argv(python: str, backend: Path, engine_args: list[str]) -> list[str]:
+    # -I omits the current directory from sys.path; add only this verified
+    # release's backend before loading the CLI as a module.
+    return [python, '-I', '-B', '-c',
+            "import runpy,sys;sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[1:];runpy.run_module('virtual_office.engine_activation_cli',run_name='__main__')",
+            str(backend), *engine_args]
+
 def credential(path: Path):
     values = {}
     try: lines = path.read_text(encoding="utf-8").splitlines()
@@ -88,7 +95,7 @@ def main():
     # venv's own site-packages contains uvicorn and the application modules.
     # The immutable release inventory includes no bytecode cache.  -I ignores
     # PYTHONDONTWRITEBYTECODE, so -B is required for both service processes.
-    argv=([python,'-I','-B','-m','uvicorn','main:app','--app-dir',str(backend),'--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-B','-c',"import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module('db.migrate',run_name='__main__')",str(backend)] if mode == 'migrate' else [python,'-I','-B','-m','virtual_office.engine_activation_cli',*engine_args])
+    argv=([python,'-I','-B','-m','uvicorn','main:app','--app-dir',str(backend),'--host','0.0.0.0','--port','8080','--proxy-headers',f"--forwarded-allow-ips={child.get('JAX_TRUSTED_PROXIES','')}",'--no-access-log','--log-level','warning'] if mode=='web' else [python,'-I','-B','-c',"import runpy,sys;sys.path.insert(0,sys.argv[1]);runpy.run_module('db.migrate',run_name='__main__')",str(backend)] if mode == 'migrate' else office_engine_argv(python, backend, engine_args))
     if mode=='web' and not child['JAX_TRUSTED_PROXIES']: die()
     os.execve(python,argv,child)
 if __name__ == '__main__': main()

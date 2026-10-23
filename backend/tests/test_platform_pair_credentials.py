@@ -52,3 +52,11 @@ def test_launcher_allows_broker_configuration_and_a_root_only_engine_activation_
     assert "Path(cred) != Path('/etc/jax/migrate.env')" in source
     assert 'stat.S_IMODE(credential_stat.st_mode) != 0o600' in source
     assert "virtual_office.engine_activation_cli" in source
+
+
+def test_office_engine_cli_imports_from_verified_backend_under_isolated_python():
+    backend = Path(__file__).resolve().parents[1]
+    argv = pair_exec.office_engine_argv(sys.executable, backend, ['--help'])
+    result = subprocess.run(argv, cwd='/', capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert 'activate-office-engine' in result.stdout
