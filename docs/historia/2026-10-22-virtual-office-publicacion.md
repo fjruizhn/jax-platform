@@ -51,10 +51,11 @@ El procedimiento de reversión está en los runbooks de ingreso público y par.
 La activación humana del usuario raíz es el siguiente paso de producto:
 Fernando entra con su cuenta existente y contraseña actual en el sitio. Luego
 se comprueba una invitación por correo real y la administración delegada de
-usuarios/proyectos. Los PR de fuente #229 (JXP), #238 (base JXP) y #410 (JAX)
-se integran tras sus comprobaciones; los commits de piso CI posteriores a los
-SHA de runtime no cambian este release. Continúan por separado el manifiesto
-#351 y el selector #352.
+usuarios/proyectos. Los PR de fuente #238 (base JXP) y #410 (JAX) ya se
+integraron; #229 (JXP) espera que termine la corrección y comprobación de su
+suite con MariaDB. Los commits de piso CI posteriores a los SHA de runtime no
+cambian este release. Continúan por separado el manifiesto #351 y el selector
+#352.
 
 Alternativa descartada: usar el checkout de Git de usuario como árbol ejecutado
 en producción. El release seleccionado usa árboles inmutables y manifiestos

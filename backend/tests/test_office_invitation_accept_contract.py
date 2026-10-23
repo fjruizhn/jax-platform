@@ -443,11 +443,12 @@ def test_revoke_replay_reauthorizes_and_new_key_cannot_revoke_terminal_invitatio
                     invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
                     mfa_config=config, idempotency_key=str(uuid.uuid4()))
         await sql("UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", (issuer,))
-        with pytest.raises(InvitationError, match="office_invitation_issuer_denied"):
-            async with transaccion(AISLAMIENTO_ADMIN) as cur:
-                await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
-                    invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
-                    mfa_config=config, idempotency_key=key)
+        # This issuance used the normal project-admin session contract, which
+        # deliberately does not bind invitation replay to MFA state.
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await revoke_invitation_in_cursor(cur, actor_user_id=issuer, project_id=project_id,
+                invitation_id=invitation.invitation_id, expected_version=1, proof_event_id=proof_event_id,
+                mfa_config=config, idempotency_key=key) == (2, True)
 
     client.portal.call(scenario)
 
@@ -626,13 +627,23 @@ def test_delegated_acceptance_rechecks_versions_grant_and_live_project_with_roll
                 new_password_hash=_hash("ordinary-login-password"), bearer_token=bearer) is False
         await sql("UPDATE jax_users SET token_version=token_version-1 WHERE user_id=%s", (issuer,))
         assert await sql("SELECT status FROM office_invitation WHERE invitation_id=%s", (invitation_id,), True) == (("ACCEPTED",),)
+        # Project-admin invitations are authorized by the active project
+        # session.  MFA is optional, so changing its version does not cancel
+        # an otherwise current issuance.
+        invitation_id, email, bearer = await issue("mfa-version")
+        await sql("UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", (issuer,))
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            assert await accept_invitation_in_cursor(
+                cur, accepting_user_id=None, accepting_email=None,
+                new_password_hash=_hash("mfa-version-password"), bearer_token=bearer) is False
+        await sql("UPDATE jax_users SET mfa_version=mfa_version-1 WHERE user_id=%s", (issuer,))
+        assert await sql("SELECT status FROM office_invitation WHERE invitation_id=%s", (invitation_id,), True) == (("ACCEPTED",),)
         for label, deny, restore in (
-            ("mfa", "UPDATE jax_users SET mfa_version=mfa_version+1 WHERE user_id=%s", "UPDATE jax_users SET mfa_version=mfa_version-1 WHERE user_id=%s"),
             ("grant", "UPDATE office_project_grant SET status='REVOKED' WHERE project_id=%s AND user_id=%s", "UPDATE office_project_grant SET status='ACTIVE' WHERE project_id=%s AND user_id=%s"),
             ("project", "UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", "UPDATE jax_project_scope SET status='ACTIVE' WHERE project_id=%s"),
         ):
             invitation_id, email, bearer = await issue(label)
-            args = (issuer,) if label == "mfa" else ((project_id, issuer) if label == "grant" else (project_id,))
+            args = (project_id, issuer) if label == "grant" else (project_id,)
             await sql(deny, args)
             try:
                 async with transaccion(AISLAMIENTO_ADMIN) as cur:
