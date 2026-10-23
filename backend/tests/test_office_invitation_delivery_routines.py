@@ -148,7 +148,7 @@ async def _seed_issued_invitation(issuer: int, proof_event_id: int, invitation_c
 
 
 def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
-    """One queue item gains one lease; only the routine can complete it."""
+    """Every queued item gains at most one lease; only the routine completes it."""
     worker = "jaxinvite_" + uuid.uuid4().hex[:16]
     worker_host = _install_routines(worker)
     try:
@@ -156,12 +156,25 @@ def test_restricted_delivery_routines_claim_settle_and_fence_replays(client):
         invitation_id = client.portal.call(_seed_issued_invitation, issuer, proof_event_id)
         claims = client.portal.call(lambda: asyncio.gather(_claim(worker), _claim(worker)))
         claimed = [claim for claim in claims if claim[0] == "CLAIMED"]
-        assert len(claimed) == 1
+        # The database is shared by the full backend suite.  Other tests can
+        # legitimately have enqueued invitations before this test's item, so
+        # two workers may each claim a *different* queued row.  The delivery
+        # contract is exclusivity per outbox row, not a global one-at-a-time
+        # gate for the entire queue.
+        assert claimed
+        assert len(claimed) <= 2
+        assert len({claim[1] for claim in claimed}) == len(claimed)
         assert {claim[0] for claim in claims} <= {"CLAIMED", "EMPTY", "RETRY"}
         _disposition, outbox_id, attempt_id = claimed[0]
         assert outbox_id and attempt_id
         assert client.portal.call(_settle, worker, outbox_id, attempt_id) == "APPLIED"
         assert client.portal.call(_settle, worker, outbox_id, attempt_id) == "REPLAYED"
+        # Do not leave a lease from another test's earlier queue item behind.
+        # Its normal terminal transition is exercised through the same
+        # restricted routine, without exposing its encrypted payload.
+        for _disposition, extra_outbox_id, extra_attempt_id in claimed[1:]:
+            assert extra_outbox_id and extra_attempt_id
+            assert client.portal.call(_settle, worker, extra_outbox_id, extra_attempt_id) == "APPLIED"
         ((settled_invitation_id,),) = client.portal.call(
             sql, "SELECT invitation_id FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,), True)
         assert client.portal.call(sql, "SELECT state,payload_ciphertext,result_code FROM office_invitation_outbox WHERE outbox_id=%s", (outbox_id,), True) == (("SMTP_ACCEPTED", None, "SMTP_ACCEPTED"),)

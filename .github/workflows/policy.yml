@@ -1591,8 +1591,9 @@ jobs:
           # The secrets test skips only when GitHub Actions lacks the production
           # /etc/jax/.env needed to exercise its comparison.  It is accredited
           # by its full junit identity so another environmental skip cannot
-          # silently replace it.  The sole gated skip is the MariaDB SR2 test;
-          # its exact identity is exercised by f2e-sr2-step-status-exact-pair.
+          # silently replace it. The source and wheelhouse tests also require
+          # local Hall9000 inputs unavailable on GitHub runners. The sole gated
+          # skip is the MariaDB SR2 test, exercised by its exact-pair job.
           env_only_test = (
               "tests.test_conftest_no_carga_secretos_no_necesarios",
               "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
@@ -1603,7 +1604,20 @@ jobs:
               "test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan",
               "requires the isolated SR2 exact-pair MariaDB job",
           )
+          runner_only_tests = {
+              (
+                  "tests.test_platform_pair_builder",
+                  "test_real_jax_commit_extracts_all_internal_links_in_disposable_clone",
+                  "local JAX source unavailable",
+              ),
+              (
+                  "tests.test_platform_pair_credentials",
+                  "test_isolated_child_uses_real_venv_site_packages",
+                  "pinned wheelhouse unavailable",
+              ),
+          }
           env_only_skips = 0
+          runner_only_skips = set()
           sr2_gated_skips = 0
           for case in root.iter("testcase"):
               skipped = case.find("skipped")
@@ -1612,13 +1626,17 @@ jobs:
               identity = (case.get("classname"), case.get("name"), skipped.get("message"))
               if identity == env_only_test:
                   env_only_skips += 1
+              elif identity in runner_only_tests:
+                  if identity in runner_only_skips:
+                      sys.exit(f"skip de runner repetido: {identity[:2]}")
+                  runner_only_skips.add(identity)
               elif identity == sr2_gated_test:
                   sr2_gated_skips += 1
           if env_only_skips > 1:
               sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
           if sr2_gated_skips > 1:
               sys.exit(f"skip SR2 repetido inesperadamente: {sr2_gated_skips}")
-          gated_skips = skip - env_only_skips
+          gated_skips = skip - env_only_skips - len(runner_only_skips)
           if gated_skips != sr2_gated_skips:
               sys.exit(
                   "skip no acreditado: sólo el skip SR2 exacto puede consumir "
