@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import aiomysql
+
 
 def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
     from virtual_office import migrations
@@ -26,6 +29,7 @@ def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
     assert "window_seconds BETWEEN 60 AND 3600" in ddl
     assert "actor_concurrency BETWEEN 1 AND 2" in ddl
     assert "project_concurrency BETWEEN 1 AND 8" in ddl
+    assert "stale_seconds>=timeout_seconds+5" in ddl
 
 
 def test_runtime_config_is_migrator_owned() -> None:
@@ -62,6 +66,18 @@ def test_runtime_config_accepts_tighter_valid_database_limits(client) -> None:
                 "project_runs_per_window=%s,actor_concurrency=%s,project_concurrency=%s,timeout_seconds=%s,"
                 "stale_seconds=%s WHERE config_id=1",
                 before,
+            )
+
+    client.portal.call(exercise)
+
+
+def test_runtime_config_rejects_a_stale_window_shorter_than_timeout(client) -> None:
+    from tests.identidades import sql
+
+    async def exercise() -> None:
+        with pytest.raises(aiomysql.OperationalError):
+            await sql(
+                "UPDATE office_agent_runtime_config SET timeout_seconds=45,stale_seconds=44 WHERE config_id=1"
             )
 
     client.portal.call(exercise)

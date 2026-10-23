@@ -55,7 +55,7 @@ OFFICE_AGENT_RUNTIME_DDL = (
     "project_concurrency TINYINT UNSIGNED NOT NULL DEFAULT 8,timeout_seconds TINYINT UNSIGNED NOT NULL DEFAULT 45,"
     "stale_seconds TINYINT UNSIGNED NOT NULL DEFAULT 60,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
     "CONSTRAINT chk_office_agent_runtime_config_singleton CHECK (config_id=1),CONSTRAINT chk_office_agent_runtime_config_version CHECK (config_version>=1),"
-    "CONSTRAINT chk_office_agent_runtime_config_bounds CHECK (max_output_tokens BETWEEN 1 AND 2048 AND max_input_bytes BETWEEN 1 AND 32768 AND max_instructions_bytes BETWEEN 1 AND 32768 AND max_response_bytes BETWEEN 1 AND 1048576 AND window_seconds BETWEEN 60 AND 3600 AND actor_runs_per_window BETWEEN 1 AND 30 AND project_runs_per_window BETWEEN 1 AND 300 AND actor_concurrency BETWEEN 1 AND 2 AND project_concurrency BETWEEN 1 AND 8 AND timeout_seconds BETWEEN 1 AND 45 AND stale_seconds BETWEEN 1 AND 60)"
+    "CONSTRAINT chk_office_agent_runtime_config_bounds CHECK (max_output_tokens BETWEEN 1 AND 2048 AND max_input_bytes BETWEEN 1 AND 32768 AND max_instructions_bytes BETWEEN 1 AND 32768 AND max_response_bytes BETWEEN 1 AND 1048576 AND window_seconds BETWEEN 60 AND 3600 AND actor_runs_per_window BETWEEN 1 AND 30 AND project_runs_per_window BETWEEN 1 AND 300 AND actor_concurrency BETWEEN 1 AND 2 AND project_concurrency BETWEEN 1 AND 8 AND timeout_seconds BETWEEN 1 AND 45 AND stale_seconds BETWEEN 6 AND 60 AND stale_seconds>=timeout_seconds+5)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "INSERT INTO office_agent_runtime_config (config_id,config_version) VALUES (1,1) ON DUPLICATE KEY UPDATE config_id=config_id",
 )
