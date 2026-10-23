@@ -23,7 +23,54 @@ RUNTIME_COMPONENT = "virtual-office"
 # process can consider the schema/runtime pair ready.
 # v12 binds the per-table write contract after v11 introduced the pending
 # publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v12-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-runtime-v13-agents-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+
+# The Office catalogue is deliberately a binding to the central provider/model
+# catalogue.  A browser never supplies a URL, credential or model id.  The
+# fingerprint makes a changed provider, model or credential identity unusable
+# until an administrator explicitly re-attests and enables the engine.
+OFFICE_ENGINE_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_engine ("
+    "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "display_name_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,model_ref INT NOT NULL,"
+    "transport ENUM('http_openai_compat') NOT NULL,allowed_data_classifications JSON NOT NULL,"
+    "binding_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,enabled BOOLEAN NOT NULL DEFAULT FALSE,"
+    "activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0,version BIGINT NOT NULL DEFAULT 1,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),"
+    "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
+    "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
+    "CONSTRAINT chk_office_engine_fingerprint CHECK (binding_fingerprint REGEXP '^[0-9a-f]{64}$'),"
+    "CONSTRAINT chk_office_engine_epoch CHECK (activation_epoch>=0),CONSTRAINT chk_office_engine_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
+OFFICE_AGENT_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_agent ("
+    "agent_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,project_id INT NOT NULL,agent_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "display_name VARCHAR(128) NOT NULL,instructions TEXT NOT NULL,data_classification VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "status ENUM('ACTIVE','DISABLED') NOT NULL DEFAULT 'ACTIVE',version BIGINT UNSIGNED NOT NULL DEFAULT 1,created_by INT NOT NULL,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_agent_project_key (project_id,agent_key),KEY idx_office_agent_project (project_id,status,agent_id),"
+    "CONSTRAINT fk_office_agent_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_created_by FOREIGN KEY (created_by) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_agent_key CHECK (agent_key<>''),CONSTRAINT chk_office_agent_name CHECK (display_name<>''),CONSTRAINT chk_office_agent_classification CHECK (data_classification REGEXP '^[A-Z][A-Z0-9_]{0,63}$'),CONSTRAINT chk_office_agent_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_agent_binding ("
+    "binding_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,agent_id BIGINT UNSIGNED NOT NULL,engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "binding_version BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL DEFAULT TRUE,bound_by INT NOT NULL,bound_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_agent_binding_version (agent_id,binding_version),KEY idx_office_agent_binding_active (agent_id,active,binding_version),"
+    "CONSTRAINT fk_office_agent_binding_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_binding_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_binding_by FOREIGN KEY (bound_by) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_agent_binding_version CHECK (binding_version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_agent_run ("
+    "run_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,agent_id BIGINT UNSIGNED NOT NULL,project_id INT NOT NULL,requested_by INT NOT NULL,"
+    "idempotency_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,input_sha256 BINARY(32) NOT NULL,engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,model_id VARCHAR(255) NOT NULL,"
+    "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),completed_at DATETIME(6) NULL,"
+    "UNIQUE KEY uq_office_agent_run_idempotency (agent_id,idempotency_key),KEY idx_office_agent_run_project (project_id,agent_id,created_at),"
+    "CONSTRAINT fk_office_agent_run_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_run_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_run_requested_by FOREIGN KEY (requested_by) REFERENCES jax_users(user_id),CONSTRAINT fk_office_agent_run_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),"
+    "CONSTRAINT chk_office_agent_run_key CHECK (idempotency_key<>''),CONSTRAINT chk_office_agent_run_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR (status IN ('DISPATCHING','UNKNOWN') AND output_text IS NULL))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical
@@ -2057,6 +2104,12 @@ async def apply_office_migrations(cursor) -> None:
     if not await _column_exists(cursor, "jax_users", "mfa_version"):
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
+        await cursor.execute(statement)
+    # v10 has no Office engine or agent tables.  This additive v11 cut is
+    # applied before any route can resolve a binding or create a run.
+    for statement in OFFICE_ENGINE_DDL:
+        await cursor.execute(statement)
+    for statement in OFFICE_AGENT_DDL:
         await cursor.execute(statement)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
