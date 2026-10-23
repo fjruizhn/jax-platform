@@ -176,7 +176,33 @@ def test_rejects_hostile_inventory_path_before_split_amplifies_memory(tmp_path):
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    assert peak < 16 * 1024 * 1024
+    assert peak < 1 * 1024 * 1024
+
+
+def test_file_close_error_is_typed_and_never_retries_a_reused_descriptor(tmp_path, monkeypatch):
+    asset = file(tmp_path)
+    foreign_path = tmp_path / "foreign.txt"; foreign_path.write_text("keep", encoding="utf-8")
+    real_close = module.os.close
+    source_fd = os.open(foreign_path, os.O_RDONLY)
+    replacement: list[int] = []
+    def close_then_reuse(fd):
+        is_asset = os.fstat(fd).st_ino == asset.stat().st_ino
+        real_close(fd)
+        if is_asset and not replacement:
+            os.dup2(source_fd, fd)
+            replacement.append(fd)
+            raise OSError("file close reported after descriptor reuse")
+    monkeypatch.setattr(module.os, "close", close_then_reuse)
+    try:
+        with pytest.raises(module.ModuleReleaseContractRejected, match="descriptor close failed"):
+            module.build_artifact_set(tmp_path)
+        assert replacement
+        assert os.fstat(replacement[0]).st_size == len("keep")
+    finally:
+        if replacement:
+            with contextlib.suppress(OSError):
+                real_close(replacement[0])
+        real_close(source_fd)
 
 
 def test_artifact_set_v1_golden_glm_vector_is_byte_stable(tmp_path):

@@ -184,7 +184,11 @@ def build_artifact_set(root: str | Path, *, _allow_proc_fd: bool = False) -> dic
                     if count > _MAX_FILE_BYTES: _reject(f"artifact file exceeds byte limit: {path}")
                     hashed.update(chunk)
                 if _stable(os.fstat(file_fd)) != _stable(before) or count != before.st_size: _reject(f"artifact file changed during read: {path}")
-            finally: os.close(file_fd)
+            finally:
+                try:
+                    os.close(file_fd)
+                except OSError as error:
+                    raise ModuleReleaseContractRejected("artifact descriptor close failed") from error
             key = path.casefold()
             if key in folded: _reject(f"artifact has case-fold path collision: {path}")
             folded.add(key); total += count
