@@ -381,8 +381,8 @@ async def _insert_rolled_back_bootstrap_canary(cur):
     proof_id = cur.lastrowid
     await cur.execute(
         "INSERT INTO office_bootstrap_state "
-        "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref,completed_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+        "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method,basis_ref,completed_at) "
+        "VALUES (%s,%s,%s,%s,%s,'MFA',%s,UTC_TIMESTAMP(6))",
         (BOOTSTRAP_KEY, user_id, user_id, proof_id, audit_id, basis_ref),
     )
     return {

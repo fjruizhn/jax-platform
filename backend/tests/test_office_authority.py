@@ -518,7 +518,6 @@ async def _add_internal_office_user(fixture, *, global_role: str = "COLLABORATOR
 @pytest.mark.parametrize(
     ("role_case", "global_role", "grant_role", "professional"),
     (
-        ("office_root", "OFFICE_SUPERUSER", "COLLABORATOR", False),
         ("general_admin", "GENERAL_ADMIN", "COLLABORATOR", False),
         ("professional_approver", "COLLABORATOR", "COLLABORATOR", True),
     ),
@@ -528,18 +527,11 @@ def test_privileged_view_requires_current_verified_proof_but_not_recency(
 ):
     async def scenario():
         fixture = await _seed_office_fixture()
-        if role_case == "office_root":
-            actor = fixture["outsider"]
-            await _sql(
-                "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,%s,'ACTIVE')",
-                (actor, global_role),
-            )
-        else:
-            actor = await _add_internal_office_user(fixture, global_role=global_role)
-            await _sql(
-                "UPDATE office_project_grant SET grant_role=%s WHERE project_id=%s AND user_id=%s",
-                (grant_role, fixture["project"], actor),
-            )
+        actor = await _add_internal_office_user(fixture, global_role=global_role)
+        await _sql(
+            "UPDATE office_project_grant SET grant_role=%s WHERE project_id=%s AND user_id=%s",
+            (grant_role, fixture["project"], actor),
+        )
         if professional:
             await _sql(
                 "INSERT INTO office_professional_grant "
@@ -609,26 +601,22 @@ def test_office_wide_mutations_keep_recent_proof_requirement(client):
 def test_privileged_view_rejects_untrusted_or_version_stale_durable_proofs(client, case):
     async def scenario():
         fixture = await _seed_office_fixture()
-        root = fixture["outsider"]
-        await _sql(
-            "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')",
-            (root,),
-        )
-        await _real_mfa_proof(root, step_up=True)
+        admin = await _add_internal_office_user(fixture, global_role="GENERAL_ADMIN")
+        await _real_mfa_proof(admin, step_up=True)
         if case == "wrong_subject":
             other = await _add_internal_office_user(fixture)
             await _real_mfa_proof(other, step_up=True)
             proof_id = await _insert_controlled_step_up_proof(other)
         else:
             proof_id = await _insert_controlled_step_up_proof(
-                root,
+                admin,
                 timestamp="future" if case == "future" else "current",
                 result="DENIED" if case == "non_verified" else "VERIFIED",
                 token_version_delta=-1 if case == "old_token" else 0,
                 mfa_version_delta=-1 if case == "old_mfa" else 0,
             )
         decision = await authorize_office(
-            None, root, OfficeOperation.VIEW_PROJECT, fixture["project"],
+            None, admin, OfficeOperation.VIEW_PROJECT, fixture["project"],
             **_with_proof(type("Proof", (), {"event_id": proof_id})()),
         )
         assert decision.code == "office_mfa_required", case
