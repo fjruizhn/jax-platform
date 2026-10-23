@@ -77,6 +77,8 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     assert cross_actor.status_code == 202
     assert cross_actor.json()["run_id"] != first.json()["run_id"]
     assert cross_actor.json()["output"] == "respuesta GLM"
+    foreign_get = client.get(f"/api/virtual-office/projects/{project}/agents/{agent_id}/runs/{cross_actor.json()['run_id']}", headers=headers)
+    assert foreign_get.status_code == 404
     assert calls == [("Responde breve.", "hola"), ("Responde breve.", "hola")]
 
     async def replay_while_dispatch_is_in_flight():
