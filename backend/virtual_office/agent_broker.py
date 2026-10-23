@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import json
+import os
 from urllib.parse import urlsplit
 
 import httpx
@@ -16,8 +17,6 @@ import httpx
 from crypto_secrets import decrypt_db_secret
 from virtual_office.engine_resolver import OfficeEngineUnavailable, ResolvedOfficeEngine
 
-_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
-_ZAI_COMPLETIONS_URL = _ZAI_BASE_URL + "/chat/completions"
 _MAX_SECONDS = 45.0
 
 
@@ -32,14 +31,27 @@ class OfficeDispatchTarget:
     url: str
 
 
-def _allowed_zai_url(value: object) -> str:
-    if not isinstance(value, str) or value.rstrip("/") != _ZAI_BASE_URL:
+def _normalise_allowlisted_base(value: object) -> str:
+    if not isinstance(value, str) or not value:
         raise OfficeBrokerUnavailable("office provider url is not allowlisted")
     parts = urlsplit(value)
-    if (parts.scheme, parts.hostname, parts.port, parts.path.rstrip("/"), parts.query, parts.fragment) != (
-            "https", "api.z.ai", None, "/api/paas/v4", "", ""):
+    if (parts.scheme != "https" or not parts.hostname or parts.port is not None
+            or not parts.path.rstrip("/") or parts.query or parts.fragment
+            or parts.username is not None or parts.password is not None):
         raise OfficeBrokerUnavailable("office provider url is not allowlisted")
-    return _ZAI_COMPLETIONS_URL
+    return f"https://{parts.hostname}{parts.path.rstrip('/')}"
+
+
+def _allowed_zai_url(value: object) -> str:
+    configured = os.environ.get("OFFICE_BROKER_ALLOWED_BASE_URLS", "")
+    bases = [part.strip() for part in configured.split(",") if part.strip()]
+    if not bases:
+        raise OfficeBrokerUnavailable("office provider url is not allowlisted")
+    allowed = {_normalise_allowlisted_base(base) for base in bases}
+    candidate = _normalise_allowlisted_base(value)
+    if candidate not in allowed:
+        raise OfficeBrokerUnavailable("office provider url is not allowlisted")
+    return candidate + "/chat/completions"
 
 
 async def load_dispatch_target_in_cursor(cur, *, engine: ResolvedOfficeEngine) -> OfficeDispatchTarget:

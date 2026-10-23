@@ -38,15 +38,36 @@ def test_engine_never_accepts_a_changed_model_or_credential_fingerprint():
     "http://api.z.ai/api/paas/v4", "https://api.z.ai/other", "https://api.z.ai/api/paas/v4?next=x",
     "https://api.z.ai.evil.invalid/api/paas/v4", "https://api.z.ai:444/api/paas/v4",
 ])
-def test_broker_rejects_noncanonical_or_redirectable_provider_urls(url):
+def test_broker_rejects_noncanonical_or_redirectable_provider_urls(monkeypatch, url):
     from virtual_office.agent_broker import OfficeBrokerUnavailable, _allowed_zai_url
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
     with pytest.raises(OfficeBrokerUnavailable):
         _allowed_zai_url(url)
 
 
-def test_broker_uses_one_fixed_https_completion_url():
+def test_broker_requires_explicit_base_url_configuration(monkeypatch):
+    from virtual_office.agent_broker import OfficeBrokerUnavailable, _allowed_zai_url
+    monkeypatch.delenv("OFFICE_BROKER_ALLOWED_BASE_URLS", raising=False)
+    with pytest.raises(OfficeBrokerUnavailable):
+        _allowed_zai_url("https://api.z.ai/api/paas/v4")
+
+
+def test_broker_uses_the_explicitly_allowlisted_https_completion_url(monkeypatch):
     from virtual_office.agent_broker import _allowed_zai_url
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
     assert _allowed_zai_url("https://api.z.ai/api/paas/v4/") == "https://api.z.ai/api/paas/v4/chat/completions"
+
+
+def test_broker_rejects_a_url_not_in_the_explicit_allowlist(monkeypatch):
+    from virtual_office.agent_broker import OfficeBrokerUnavailable, _allowed_zai_url
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
+    with pytest.raises(OfficeBrokerUnavailable):
+        _allowed_zai_url("https://api.z.ai/api/paas/v5")
+
+
+def test_agent_runtime_revision_fits_its_durable_column():
+    from virtual_office.migrations import RUNTIME_REVISION
+    assert len(RUNTIME_REVISION) <= 64
 
 
 class _Cursor:
@@ -66,6 +87,7 @@ async def test_broker_rejects_zero_or_multiple_active_credentials(monkeypatch):
     from virtual_office.engine_resolver import resolve_office_engine_row
 
     monkeypatch.setattr(broker, "decrypt_db_secret", lambda _value: "key")
+    monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
     engine = resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL")
     for rows in ([], [("https://api.z.ai/api/paas/v4", "one"), ("https://api.z.ai/api/paas/v4", "two")]):
         with pytest.raises(broker.OfficeBrokerUnavailable):

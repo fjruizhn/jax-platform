@@ -23,7 +23,7 @@ RUNTIME_COMPONENT = "virtual-office"
 # process can consider the schema/runtime pair ready.
 # v12 binds the per-table write contract after v11 introduced the pending
 # publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v13-agents-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-v13a-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # The Office catalogue is deliberately a binding to the central provider/model
 # catalogue.  A browser never supplies a URL, credential or model id.  The
