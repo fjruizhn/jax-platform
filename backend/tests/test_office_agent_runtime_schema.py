@@ -93,6 +93,74 @@ def test_runtime_config_rejects_a_limit_change_without_a_version_advance(client)
     client.portal.call(exercise)
 
 
+def test_runtime_schema_attestation_rejects_missing_quota_check(client) -> None:
+    from tests.identidades import sql
+    from virtual_office import migrations
+
+    async def exercise() -> None:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("ALTER TABLE office_agent_runtime_config DROP CONSTRAINT chk_office_agent_runtime_config_bounds")
+                try:
+                    with pytest.raises(RuntimeError, match="runtime check"):
+                        await migrations.assert_office_agent_runtime_metadata(cur)
+                finally:
+                    await cur.execute(
+                "ALTER TABLE office_agent_runtime_config ADD CONSTRAINT chk_office_agent_runtime_config_bounds "
+                "CHECK (max_output_tokens BETWEEN 1 AND 2048 AND max_input_bytes BETWEEN 1 AND 32768 "
+                "AND max_instructions_bytes BETWEEN 1 AND 32768 AND max_response_bytes BETWEEN 1 AND 1048576 "
+                "AND window_seconds BETWEEN 60 AND 3600 AND actor_runs_per_window BETWEEN 1 AND 30 "
+                "AND project_runs_per_window BETWEEN 1 AND 300 AND actor_concurrency BETWEEN 1 AND 2 "
+                "AND project_concurrency BETWEEN 1 AND 8 AND timeout_seconds BETWEEN 1 AND 45 "
+                "AND stale_seconds BETWEEN 6 AND 60 AND stale_seconds>=timeout_seconds+5)"
+                    )
+
+    client.portal.call(exercise)
+
+
+def test_runtime_schema_attestation_rejects_noop_config_trigger(client) -> None:
+    from tests.identidades import sql
+    from virtual_office import migrations
+
+    async def exercise() -> None:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("DROP TRIGGER guard_office_agent_runtime_config_update")
+                await cur.execute(
+            "CREATE TRIGGER guard_office_agent_runtime_config_update BEFORE UPDATE ON office_agent_runtime_config "
+            "FOR EACH ROW SET NEW.config_version=NEW.config_version"
+                )
+                try:
+                    with pytest.raises(RuntimeError, match="config guard"):
+                        await migrations.assert_office_agent_runtime_metadata(cur)
+                finally:
+                    await cur.execute("DROP TRIGGER guard_office_agent_runtime_config_update")
+                    await cur.execute(migrations.OFFICE_AGENT_RUNTIME_DDL[-1])
+
+    client.portal.call(exercise)
+
+
+def test_runtime_quota_queries_use_their_four_real_indexes(client) -> None:
+    from tests.identidades import sql
+
+    async def exercise() -> None:
+        queries = (
+            ("idx_office_agent_run_actor_window", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (1,)),
+            ("idx_office_agent_run_project_window", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (1,)),
+            ("idx_office_agent_run_actor_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (1,)),
+            ("idx_office_agent_run_project_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (1,)),
+        )
+        for expected, statement, params in queries:
+            plan = (await sql("EXPLAIN " + statement, params, True))[0]
+            assert plan[5] == expected
+
+    client.portal.call(exercise)
+
+
 def test_run_schema_pins_every_dispatch_snapshot_and_actor_idempotency() -> None:
     from virtual_office import migrations
 
