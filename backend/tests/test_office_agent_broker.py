@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+import httpx
 
 
 def _engine_row(**overrides):
@@ -92,3 +93,36 @@ async def test_broker_rejects_zero_or_multiple_active_credentials(monkeypatch):
     for rows in ([], [("https://api.z.ai/api/paas/v4", "one"), ("https://api.z.ai/api/paas/v4", "two")]):
         with pytest.raises(broker.OfficeBrokerUnavailable):
             await broker.load_dispatch_target_in_cursor(_Cursor(rows), engine=engine)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch):
+    import virtual_office.agent_broker as broker
+    from virtual_office.engine_resolver import resolve_office_engine_row
+
+    captured = {}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    target = broker.OfficeDispatchTarget(
+        resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
+        "secret", "https://api.z.ai/api/paas/v4/chat/completions")
+    assert await broker.dispatch(target, instructions="system", user_input="hello") == "ok"
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert captured["json"] == {"model": "glm-5.3", "messages": [
+        {"role": "system", "content": "system"}, {"role": "user", "content": "hello"},
+    ], "tools": []}

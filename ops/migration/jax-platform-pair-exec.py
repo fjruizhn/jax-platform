@@ -79,6 +79,8 @@ def main():
     module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     try: module.verify(release, expected_jxp=x['jax_platform_revision'], expected_jax=x['jax_revision'], ancestor_stop=root if root != Path('/opt/jax-platform-pair') else None)
     except (module.PairReadinessError, OSError): die()
+    if mode == 'office-engine' and Path(cred) != Path('/etc/jax/migrate.env'):
+        die()
     child=(root_only_credential(Path(cred)) if mode == 'office-engine' else credential(Path(cred))); child['PATH']='/usr/bin:/bin'; child['JAX_REPO_PATH']=str(release/'jax')
     backend=release/'jax-platform'/'backend'; os.chdir(backend)
     python=str(backend/'.venv/bin/python')

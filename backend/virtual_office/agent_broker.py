@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
-import json
 import os
 from urllib.parse import urlsplit
 
@@ -92,8 +91,7 @@ async def dispatch(target: OfficeDispatchTarget, *, instructions: str, user_inpu
     try:
         timeout = httpx.Timeout(_MAX_SECONDS, connect=min(_MAX_SECONDS, 10.0))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            response = await client.post(target.url, headers={"Authorization": f"Bearer {target.api_key}"},
-                                         content=json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            response = await client.post(target.url, headers={"Authorization": f"Bearer {target.api_key}"}, json=payload)
         if response.is_redirect or response.status_code < 200 or response.status_code >= 300:
             raise OfficeBrokerUnavailable("office provider response is unavailable")
         decoded = response.json()

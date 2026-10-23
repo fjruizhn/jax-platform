@@ -48,5 +48,7 @@ def test_launcher_allows_broker_configuration_and_a_root_only_engine_activation_
     source = MODULE.read_text(encoding='utf-8')
     assert 'OFFICE_BROKER_ALLOWED_BASE_URLS' in source
     assert "'office-engine'" in source
+    assert "migrate.env" in source
+    assert "Path(cred) != Path('/etc/jax/migrate.env')" in source
     assert 'stat.S_IMODE(credential_stat.st_mode) != 0o600' in source
     assert "virtual_office.engine_activation_cli" in source
