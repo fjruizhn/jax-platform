@@ -36,6 +36,12 @@ def test_engine_never_accepts_a_changed_model_or_credential_fingerprint():
         resolve_office_engine_row(row, data_classification="INTERNAL_CONFIDENTIAL")
 
 
+def test_engine_rejects_a_provider_transport_the_broker_cannot_send():
+    from virtual_office.engine_resolver import OfficeEngineUnavailable, resolve_office_engine_row
+    with pytest.raises(OfficeEngineUnavailable):
+        resolve_office_engine_row(_engine_row(provider_api_key_transport="query"), data_classification="INTERNAL_CONFIDENTIAL")
+
+
 @pytest.mark.parametrize("url", [
     "http://api.z.ai/api/paas/v4", "https://api.z.ai/other", "https://api.z.ai/api/paas/v4?next=x",
     "https://api.z.ai.evil.invalid/api/paas/v4", "https://api.z.ai:444/api/paas/v4",
