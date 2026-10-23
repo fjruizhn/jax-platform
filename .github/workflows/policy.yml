@@ -1150,10 +1150,10 @@ jobs:
             // de GitHub 119972590490 y 119972668257: 1506/0/1506, 121 archivos.
             // 1506 -> 1513 (administración Office, 2026-10-22): medido local
             // sobre el árbol unido de #229: 1513/0/1513, 121 archivos.
-            // 1513 -> 1514 (cambio de rol con PATCH Office, 2026-10-22):
-            // medido local sobre la rama de #229: 1514/0/1514, 121 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1514) {
-              console.error("PISO ROTO: se esperaban 1514 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1514 -> 1518 (activacion y reintentos Office, 2026-10-22):
+            // medido en CI sobre el release integrado: 1518 passed, 0 fallidos, 121 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1518) {
+              console.error("PISO ROTO: se esperaban 1518 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
