@@ -341,6 +341,55 @@ def test_agent_selector_indexes_are_part_of_the_attested_schema() -> None:
     assert migrations._AGENT_RUNTIME_INDEXES["office_engine"]["idx_office_engine_enabled_key"] == (("enabled", "engine_key"), False)
 
 
+def test_agent_binding_allows_only_one_active_binding_per_agent(client) -> None:
+    from tests.identidades import sql
+    from virtual_office import migrations
+
+    assert "active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED" in "\n".join(migrations.OFFICE_AGENT_DDL)
+    assert "uq_office_agent_binding_active_agent" in migrations._AGENT_RUNTIME_INDEXES["office_agent_binding"]
+
+    async def exercise() -> None:
+        await sql(
+            "CREATE TEMPORARY TABLE office_agent_binding_uniqueness_probe ("
+            "agent_id BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL,"
+            "active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED,"
+            "UNIQUE KEY uq_active_agent (active_agent_id))"
+        )
+        await sql("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,FALSE),(7,FALSE),(7,TRUE)")
+        with pytest.raises((aiomysql.IntegrityError, aiomysql.OperationalError)):
+            await sql("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,TRUE)")
+
+    client.portal.call(exercise)
+
+
+def test_agent_run_output_states_have_exact_terminal_shape(client) -> None:
+    from tests.identidades import sql
+    from virtual_office import migrations
+
+    expected = migrations._AGENT_RUNTIME_CHECK_CLAUSES["chk_office_agent_run_output"]
+    assert "'DISPATCHING' and `output_text` is null and `completed_at` is null" in expected
+    assert "'UNKNOWN' and `output_text` is null and `completed_at` is not null" in expected
+
+    async def exercise() -> None:
+        await sql(
+            "CREATE TEMPORARY TABLE office_agent_run_output_probe ("
+            "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,completed_at DATETIME(6) NULL,"
+            "CONSTRAINT chk_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
+            "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
+            "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL)))"
+        )
+        await sql(
+            "INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES "
+            "('SUCCEEDED','ok',UTC_TIMESTAMP(6)),('DISPATCHING',NULL,NULL),('UNKNOWN',NULL,UTC_TIMESTAMP(6))"
+        )
+        with pytest.raises(aiomysql.OperationalError):
+            await sql("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('DISPATCHING',NULL,UTC_TIMESTAMP(6))")
+        with pytest.raises(aiomysql.OperationalError):
+            await sql("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('UNKNOWN',NULL,NULL)")
+
+    client.portal.call(exercise)
+
+
 def test_engine_binding_v2_includes_the_exact_credential_identity() -> None:
     from virtual_office.engine_resolver import engine_binding_fingerprint
 

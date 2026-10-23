@@ -74,8 +74,8 @@ OFFICE_AGENT_DDL = (
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS office_agent_binding ("
     "binding_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,agent_id BIGINT UNSIGNED NOT NULL,engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
-    "binding_version BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL DEFAULT TRUE,bound_by INT NOT NULL,bound_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
-    "UNIQUE KEY uq_office_agent_binding_version (agent_id,binding_version),KEY idx_office_agent_binding_active (agent_id,active,binding_version),"
+    "binding_version BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL DEFAULT TRUE,active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED,bound_by INT NOT NULL,bound_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_agent_binding_version (agent_id,binding_version),UNIQUE KEY uq_office_agent_binding_active_agent (active_agent_id),KEY idx_office_agent_binding_active (agent_id,active,binding_version),"
     "CONSTRAINT fk_office_agent_binding_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_binding_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_binding_by FOREIGN KEY (bound_by) REFERENCES jax_users(user_id),"
     "CONSTRAINT chk_office_agent_binding_version CHECK (binding_version>=1)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -88,7 +88,7 @@ OFFICE_AGENT_DDL = (
     "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,accepted_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),deadline_at DATETIME(6) NOT NULL,fence BIGINT UNSIGNED NOT NULL,completed_at DATETIME(6) NULL,"
     "UNIQUE KEY uq_office_agent_run_idempotency (requested_by,agent_id,idempotency_key),KEY idx_office_agent_run_actor_window (requested_by,accepted_at,status,deadline_at),KEY idx_office_agent_run_project_window (project_id,accepted_at,status,deadline_at),KEY idx_office_agent_run_actor_concurrency (requested_by,status,deadline_at),KEY idx_office_agent_run_project_concurrency (project_id,status,deadline_at),"
     "CONSTRAINT fk_office_agent_run_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_run_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_run_requested_by FOREIGN KEY (requested_by) REFERENCES jax_users(user_id),CONSTRAINT fk_office_agent_run_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT fk_office_agent_run_binding FOREIGN KEY (binding_id) REFERENCES office_agent_binding(binding_id),CONSTRAINT fk_office_agent_run_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_run_model FOREIGN KEY (model_ref) REFERENCES model(id),CONSTRAINT fk_office_agent_run_credential FOREIGN KEY (credential_id) REFERENCES credential(id),"
-    "CONSTRAINT chk_office_agent_run_key CHECK (idempotency_key<>''),CONSTRAINT chk_office_agent_run_snapshot CHECK (agent_version>=1 AND binding_version>=1 AND config_version>=1 AND engine_version>=1 AND engine_binding_fingerprint REGEXP '^[0-9a-f]{64}$' AND credential_fingerprint REGEXP '^[0-9a-f]{64}$' AND provider_id<>'' AND auth_type<>'' AND auth_transport<>'' AND fence>=1 AND deadline_at>=accepted_at),CONSTRAINT chk_office_agent_run_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR (status IN ('DISPATCHING','UNKNOWN') AND output_text IS NULL))"
+    "CONSTRAINT chk_office_agent_run_key CHECK (idempotency_key<>''),CONSTRAINT chk_office_agent_run_snapshot CHECK (agent_version>=1 AND binding_version>=1 AND config_version>=1 AND engine_version>=1 AND engine_binding_fingerprint REGEXP '^[0-9a-f]{64}$' AND credential_fingerprint REGEXP '^[0-9a-f]{64}$' AND provider_id<>'' AND auth_type<>'' AND auth_transport<>'' AND fence>=1 AND deadline_at>=accepted_at),CONSTRAINT chk_office_agent_run_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR (status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR (status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL))"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TRIGGER IF NOT EXISTS no_mutate_office_agent_run_snapshot BEFORE UPDATE ON office_agent_run FOR EACH ROW BEGIN IF OLD.status IN ('SUCCEEDED','UNKNOWN') OR NEW.run_id<>OLD.run_id OR NEW.agent_id<>OLD.agent_id OR NEW.project_id<>OLD.project_id OR NEW.requested_by<>OLD.requested_by OR NEW.authorization_event_id<>OLD.authorization_event_id OR NEW.agent_version<>OLD.agent_version OR NEW.binding_id<>OLD.binding_id OR NEW.binding_version<>OLD.binding_version OR NEW.idempotency_key<>OLD.idempotency_key OR NEW.input_sha256<>OLD.input_sha256 OR NEW.instructions_sha256<>OLD.instructions_sha256 OR NEW.dispatch_snapshot_sha256<>OLD.dispatch_snapshot_sha256 OR NEW.config_version<>OLD.config_version OR NEW.engine_key<>OLD.engine_key OR NEW.engine_version<>OLD.engine_version OR NEW.engine_binding_fingerprint<>OLD.engine_binding_fingerprint OR NEW.model_ref<>OLD.model_ref OR NEW.model_id<>OLD.model_id OR NEW.credential_id<>OLD.credential_id OR NEW.credential_fingerprint<>OLD.credential_fingerprint OR NEW.provider_id<>OLD.provider_id OR NEW.auth_type<>OLD.auth_type OR NEW.auth_transport<>OLD.auth_transport OR NEW.accepted_at<>OLD.accepted_at OR NEW.deadline_at<>OLD.deadline_at OR NEW.fence<>OLD.fence THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_agent_run snapshot or terminal row is immutable'; END IF; END",
 )
@@ -934,7 +934,7 @@ _AGENT_RUNTIME_COLUMNS = {
     "office_agent_runtime_config": ("config_id", "config_version", "max_output_tokens", "max_input_bytes", "max_instructions_bytes", "max_response_bytes", "window_seconds", "actor_runs_per_window", "project_runs_per_window", "actor_concurrency", "project_concurrency", "timeout_seconds", "stale_seconds", "updated_at"),
     "office_engine": ("engine_key", "display_name_key", "model_ref", "credential_id", "transport", "allowed_data_classifications", "binding_fingerprint", "enabled", "activation_epoch", "version", "created_at", "updated_at"),
     "office_agent": ("agent_id", "project_id", "agent_key", "display_name", "instructions", "data_classification", "status", "version", "created_by", "created_at", "updated_at"),
-    "office_agent_binding": ("binding_id", "agent_id", "engine_key", "binding_version", "active", "bound_by", "bound_at"),
+    "office_agent_binding": ("binding_id", "agent_id", "engine_key", "binding_version", "active", "active_agent_id", "bound_by", "bound_at"),
     "office_agent_run": ("run_id", "agent_id", "project_id", "requested_by", "authorization_event_id", "agent_version", "binding_id", "binding_version", "idempotency_key", "input_sha256", "instructions_sha256", "dispatch_snapshot_sha256", "config_version", "engine_key", "engine_version", "engine_binding_fingerprint", "model_ref", "model_id", "credential_id", "credential_fingerprint", "provider_id", "auth_type", "auth_transport", "status", "output_text", "accepted_at", "deadline_at", "fence", "completed_at"),
 }
 # Exact MariaDB 12.3 information_schema.COLUMNS rows for the private-agent
@@ -992,6 +992,7 @@ _AGENT_RUNTIME_COLUMN_METADATA = {
         ("engine_key", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
         ("binding_version", "bigint(20) unsigned", "NO", None, "", None, None),
         ("active", "tinyint(1)", "NO", "1", "", None, None),
+        ("active_agent_id", "bigint(20) unsigned", "YES", "NULL", "STORED GENERATED", None, None),
         ("bound_by", "int(11)", "NO", None, "", None, None),
         ("bound_at", "datetime(6)", "NO", "current_timestamp(6)", "", None, None),
     ),
@@ -1031,7 +1032,7 @@ _AGENT_RUNTIME_INDEXES = {
     "office_agent_runtime_config": {"PRIMARY": (("config_id",), True)},
     "office_engine": {"PRIMARY": (("engine_key",), True), "idx_office_engine_enabled_key": (("enabled", "engine_key"), False)},
     "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False), "idx_office_agent_project_list": (("project_id", "agent_id"), False)},
-    "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
+    "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "uq_office_agent_binding_active_agent": (("active_agent_id",), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
     "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_actor_concurrency": (("requested_by", "status", "deadline_at"), False), "idx_office_agent_run_project_concurrency": (("project_id", "status", "deadline_at"), False)},
 }
 _AGENT_RUNTIME_FKS = {
@@ -1063,7 +1064,7 @@ _AGENT_RUNTIME_CHECK_CLAUSES = {
     "chk_office_agent_binding_version": "`binding_version` >= 1",
     "chk_office_agent_run_key": "`idempotency_key` <> ''",
     "chk_office_agent_run_snapshot": "`agent_version` >= 1 and `binding_version` >= 1 and `config_version` >= 1 and `engine_version` >= 1 and `engine_binding_fingerprint` regexp '^[0-9a-f]{64}$' and `credential_fingerprint` regexp '^[0-9a-f]{64}$' and `provider_id` <> '' and `auth_type` <> '' and `auth_transport` <> '' and `fence` >= 1 and `deadline_at` >= `accepted_at`",
-    "chk_office_agent_run_output": "`status` = 'SUCCEEDED' and `output_text` is not null and `completed_at` is not null or `status` in ('DISPATCHING','UNKNOWN') and `output_text` is null",
+    "chk_office_agent_run_output": "`status` = 'SUCCEEDED' and `output_text` is not null and `completed_at` is not null or `status` = 'DISPATCHING' and `output_text` is null and `completed_at` is null or `status` = 'UNKNOWN' and `output_text` is null and `completed_at` is not null",
 }
 
 
@@ -2350,6 +2351,53 @@ async def stamp_office_runtime_revision(cur) -> None:
     )
 
 
+_OFFICE_AGENT_RUN_OUTPUT_V1 = (
+    "`status` = 'SUCCEEDED' and `output_text` is not null and `completed_at` is not null "
+    "or `status` in ('DISPATCHING','UNKNOWN') and `output_text` is null"
+)
+_OFFICE_AGENT_RUN_OUTPUT_V2 = _AGENT_RUNTIME_CHECK_CLAUSES["chk_office_agent_run_output"]
+
+
+async def _ensure_agent_runtime_invariants(cursor) -> None:
+    """Upgrade only recognized pre-release shapes without rewriting run history."""
+    if not await _column_exists(cursor, "office_agent_binding", "active_agent_id"):
+        await cursor.execute(
+            "SELECT agent_id FROM office_agent_binding WHERE active=TRUE "
+            "GROUP BY agent_id HAVING COUNT(*)>1 LIMIT 1"
+        )
+        if await cursor.fetchone() is not None:
+            raise RuntimeError("Office agent bindings have multiple active rows; historic bindings are not rewritten")
+        await cursor.execute(
+            "ALTER TABLE office_agent_binding ADD COLUMN active_agent_id BIGINT UNSIGNED "
+            "GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED AFTER active, "
+            "ADD UNIQUE KEY uq_office_agent_binding_active_agent (active_agent_id)"
+        )
+    elif not await _index_exists(cursor, "office_agent_binding", "uq_office_agent_binding_active_agent"):
+        raise RuntimeError("Office agent binding active identity index is absent")
+
+    existing = _normalize_mariadb_check(await _check_clause(cursor, "chk_office_agent_run_output"))
+    if existing == _normalize_mariadb_check(_OFFICE_AGENT_RUN_OUTPUT_V2):
+        return
+    if existing != _normalize_mariadb_check(_OFFICE_AGENT_RUN_OUTPUT_V1):
+        raise RuntimeError("Office agent run output constraint is incompatible; historic runs are not rewritten")
+    await cursor.execute(
+        "SELECT 1 FROM office_agent_run WHERE NOT ("
+        "(status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
+        "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
+        "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL)"
+        ") LIMIT 1"
+    )
+    if await cursor.fetchone() is not None:
+        raise RuntimeError("Office agent run output rows are incompatible; historic runs are not rewritten")
+    await cursor.execute(
+        "ALTER TABLE office_agent_run DROP CONSTRAINT chk_office_agent_run_output, "
+        "ADD CONSTRAINT chk_office_agent_run_output CHECK "
+        "((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
+        "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
+        "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL))"
+    )
+
+
 async def apply_office_migrations(cursor) -> None:
     """Apply only Office-owned additive DDL after JAX's namespace migration."""
     # Parse the shared manifest before any DDL.  A malformed/ambiguous ACL
@@ -2372,6 +2420,7 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_AGENT_DDL:
         await cursor.execute(statement)
     await _upgrade_office_agent_list_indexes(cursor)
+    await _ensure_agent_runtime_invariants(cursor)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
     await _ensure_office_list_indexes(cursor)
