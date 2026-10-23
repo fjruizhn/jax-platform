@@ -95,7 +95,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
             return "respuesta GLM lenta"
 
         monkeypatch.setattr(agents_api, "dispatch", slow_dispatch)
-        await sql("UPDATE office_agent_runtime_config SET timeout_seconds=1,stale_seconds=6 WHERE config_id=1")
+        await sql("UPDATE office_agent_runtime_config SET timeout_seconds=1,stale_seconds=6,config_version=config_version+1 WHERE config_id=1")
         user = AuthUser(user_id=str(admin), tenant_id="1", role="operator", account_class="INTERNAL")
         request = AgentRunRequest(input="carrera", idempotency_key="in-flight")
         first_run = asyncio.create_task(run_agent(project, agent_id, request, user))
