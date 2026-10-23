@@ -87,6 +87,7 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     shutil.copy2(MIGRATION / "pair_artifact_readiness.py", root / "libexec" / "pair_artifact_readiness.py")
     calls = tmp_path / "systemctl.calls"
     service_pid = tmp_path / "service.pid"
+    migration_state = tmp_path / "migration.state"
     fake_systemctl = tmp_path / "systemctl"
     test_launcher = tmp_path / "launcher"
     test_launcher.write_text(
@@ -94,11 +95,20 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         encoding="utf-8",
     )
     test_launcher.chmod(0o755)
+    provision_calls = tmp_path / "provision.calls"
+    provisioner = tmp_path / "provisioner"
+    provisioner.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_PROVISION_CALLS\"\n",
+        encoding="utf-8",
+    )
+    provisioner.chmod(0o755)
     fake_systemctl.write_text(
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$JAX_PAIR_TEST_CALLS\"\n"
         "if [ \"$1 $2\" = 'stop jax-platform.service' ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ]; then kill \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null || :; rm -f \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
-        "if [ \"$1\" = show ] && [ \"$2\" = --value ]; then p=$3; pid=0; active=inactive; sub=dead; result=success; if [ \"$4\" = jax-platform.service ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ] && kill -0 \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null; then pid=$(cat \"$JAX_PAIR_TEST_SERVICE_PID\"); active=active; sub=running; fi; case $p in --property=ActiveState) echo $active;; --property=SubState) echo $sub;; --property=MainPID) echo $pid;; --property=Result) echo $result;; esac; exit 0; fi\n"
-        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; \"$JAX_PAIR_TEST_LAUNCHER\" web; env JAX_REPO_PATH=\"$JAX_PAIR_TEST_RELEASE/jax\" sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
+        "if [ \"$1 $2\" = 'stop jax-platform-migrate.service' ]; then rm -f \"$JAX_PAIR_TEST_MIGRATION_STATE\"; fi\n"
+        "if [ \"$1\" = show ] && [ \"$2\" = --value ]; then p=$3; pid=0; active=inactive; sub=dead; result=success; if [ \"$4\" = jax-platform.service ] && [ -f \"$JAX_PAIR_TEST_SERVICE_PID\" ] && kill -0 \"$(cat \"$JAX_PAIR_TEST_SERVICE_PID\")\" 2>/dev/null; then pid=$(cat \"$JAX_PAIR_TEST_SERVICE_PID\"); active=active; sub=running; fi; if [ \"$4\" = jax-platform-migrate.service ] && [ -f \"$JAX_PAIR_TEST_MIGRATION_STATE\" ]; then active=active; sub=exited; fi; case $p in --property=ActiveState) echo $active;; --property=SubState) echo $sub;; --property=MainPID) echo $pid;; --property=Result) echo $result;; esac; exit 0; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform-migrate.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" migrate; : > \"$JAX_PAIR_TEST_MIGRATION_STATE\"; fi\n"
+        "if [ \"$1 $2\" = 'start jax-platform.service' ]; then \"$JAX_PAIR_TEST_LAUNCHER\" web; env JAX_REPO_PATH=\"$JAX_PAIR_TEST_RELEASE/jax\" sleep 5 & echo $! > \"$JAX_PAIR_TEST_SERVICE_PID\"; fi\n"
         "[ -n \"${JAX_PAIR_TEST_SLEEP:-}\" ] && sleep \"$JAX_PAIR_TEST_SLEEP\"\n",
         encoding="utf-8",
     )
@@ -147,11 +157,14 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "JAX_PAIR_TEST_CALLS": str(calls),
         "JAX_PAIR_TEST_LAUNCHER": str(test_launcher),
         "JAX_PAIR_TEST_SERVICE_PID": str(service_pid),
+        "JAX_PAIR_TEST_MIGRATION_STATE": str(migration_state),
         "JAX_PAIR_TEST_RELEASE": str(release),
         "JAX_PAIR_HEALTH_BIN": str(health),
         "JAX_PAIR_TEST_HEALTH_CALLS": str(health_calls),
+        "JAX_PAIR_PROVISIONER_BIN": str(provisioner),
+        "JAX_PAIR_TEST_PROVISION_CALLS": str(provision_calls),
     }
-    command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest]
+    command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], "JAX_PAIR_TEST_SLEEP=0.4", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(release), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", previous_digest, "--measured-grantee-host", "127.0.0.1"]
     script_index = command.index(str(MIGRATION / "activate-platform-pair-release.sh"))
     killed_command = command[:script_index] + ["JAX_PAIR_TEST_KILL_AT=after_publish"] + command[script_index:]
     killed = subprocess.run(killed_command, text=True, capture_output=True, check=False)
@@ -189,9 +202,11 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
     selection = json.loads((root / "platform-pair-selection.json").read_text(encoding="utf-8"))
     assert selection["release"] == str(release)
     assert selection["manifest_sha256"] == digest
-    assert calls.read_text(encoding="utf-8").splitlines()[-27:] == [
+    assert calls.read_text(encoding="utf-8").splitlines()[-32:] == [
         "stop jax-platform.service", "stop jax-platform-migrate.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
+        "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
+        "start jax-platform-migrate.service",
         "show --value --property=ActiveState jax-platform-migrate.service", "show --value --property=SubState jax-platform-migrate.service", "show --value --property=MainPID jax-platform-migrate.service", "show --value --property=Result jax-platform-migrate.service",
         "start jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
@@ -199,22 +214,23 @@ def test_root_temporary_activation_serializes_selection_and_scrubs_environment(t
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
         "show --value --property=ActiveState jax-platform.service", "show --value --property=SubState jax-platform.service", "show --value --property=MainPID jax-platform.service", "show --value --property=Result jax-platform.service",
     ]
+    assert provision_calls.read_text(encoding="utf-8") == f"--env /etc/jax/.env --measured-grantee-host 127.0.0.1\n"
     assert health_calls.read_text(encoding="utf-8") == "3"
     assert output.read_text(encoding="utf-8") == f"{release / 'jax'}|||/usr/bin:/bin"
     lock_inode = (root / ".runtime.lock").stat().st_ino
-    repeat = subprocess.run(command[:-1] + [digest], text=True, capture_output=True, check=False)
+    repeat = subprocess.run(command[:-3] + [digest, *command[-2:]], text=True, capture_output=True, check=False)
     assert repeat.returncode == 0, repeat.stderr
     assert (root / ".runtime.lock").stat().st_ino == lock_inode
     # A different process can bind the health listener after the first state
     # sample.  A successful HTTP response alone must not complete DDL_STARTED.
     negative_env = dict(base_env)
     negative_env["JAX_PAIR_TEST_RELEASE"] = str(next_release)
-    negative_command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in negative_env.items()], "JAX_PAIR_TEST_SLEEP=0", "JAX_PAIR_TEST_SWITCH_PID=1", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(next_release), "--expected-manifest-sha256", next_digest, "--previous-manifest-sha256", digest]
+    negative_command = ["sudo", "-n", "env", *[f"{key}={value}" for key, value in negative_env.items()], "JAX_PAIR_TEST_SLEEP=0", "JAX_PAIR_TEST_SWITCH_PID=1", str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(next_release), "--expected-manifest-sha256", next_digest, "--previous-manifest-sha256", digest, "--measured-grantee-host", "127.0.0.1"]
     changed_pid = subprocess.run(negative_command, text=True, capture_output=True, check=False)
     assert changed_pid.returncode != 0
     assert "web service changed during health check" in changed_pid.stderr
     assert json.loads((root / "activation-journal.json").read_text(encoding="utf-8"))["state"] == "DDL_STARTED"
-    escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", digest], text=True, capture_output=True, check=False)
+    escaped = subprocess.run(["sudo", "-n", "env", *[f"{key}={value}" for key, value in base_env.items()], str(MIGRATION / "activate-platform-pair-release.sh"), "--root", str(root), "--release", str(root / "releases" / ".." / "outside"), "--expected-manifest-sha256", digest, "--previous-manifest-sha256", digest, "--measured-grantee-host", "127.0.0.1"], text=True, capture_output=True, check=False)
     assert escaped.returncode != 0
     assert "unsafe release" in escaped.stderr
     bash_env = tmp_path / "bash-env"; bash_env.write_text(f"touch {tmp_path / 'bash-env-ran'}\n", encoding="utf-8")

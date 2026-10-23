@@ -31,9 +31,14 @@ _RECEIPT_GUARD_2E86051 = (
 
 
 async def _migration_admin_pool():
-    """Use the dedicated migrator when provisioned, never the web principal."""
+    """Use migrator credentials only for the same target as the test DB."""
     migrator = cargar("/etc/jax/migrate.env")
-    credentials = migrator or os.environ
+    target = os.environ
+    same_target = migrator and all(
+        migrator.get(key) == target.get(key)
+        for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME")
+    )
+    credentials = migrator if same_target else target
     return await aiomysql.create_pool(
         host=credentials["JAX_DB_HOST"], port=int(credentials["JAX_DB_PORT"]),
         user=credentials["JAX_DB_USER"], password=credentials["JAX_DB_PASSWORD"],
@@ -114,7 +119,7 @@ def test_invitation_attestation_rejects_a_homonymous_noop_issuance_guard(client)
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
                         'jax_project_membership', 'jax_project_membership_event',
                         'jax_namespace_membership_mutation_request',
                     ):
@@ -160,7 +165,7 @@ def test_invitation_attestation_rejects_extra_foreign_key_index_and_check(client
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
                         'jax_project_membership', 'jax_project_membership_event',
                         'jax_namespace_membership_mutation_request',
                     ):
@@ -201,7 +206,7 @@ def test_invitation_receipt_attestation_rejects_weaker_named_check(client):
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ('jax_users', 'jax_tenants', 'projects', 'jax_project_scope',
+                    for table in ('jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope',
                                   'user_admin_audit', 'jax_project_membership',
                                   'jax_project_membership_event', 'jax_namespace_membership_mutation_request'):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
@@ -351,7 +356,7 @@ def test_predecessor_receipt_guard_upgrades_idempotently(client):
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
                         'jax_project_membership', 'jax_project_membership_event',
                         'jax_namespace_membership_mutation_request',
                     ):
@@ -403,7 +408,7 @@ def test_predecessor_receipt_history_without_causal_event_binding_fails_closed(c
                     proof_event_id, issuer = proof
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                        'jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
                         'jax_project_membership', 'jax_project_membership_event',
                         'jax_namespace_membership_mutation_request',
                     ):
@@ -481,7 +486,7 @@ def test_b44_invitation_guards_resume_expiry_index_repair_in_isolated_schema():
                     try:
                         await cur.execute(f"CREATE DATABASE `{schema}`")
                         for table in (
-                            'jax_users', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
+                            'jax_users', 'provider', 'credential', 'model', 'jax_tenants', 'projects', 'jax_project_scope', 'user_admin_audit',
                             'jax_project_membership', 'jax_project_membership_event',
                             'jax_namespace_membership_mutation_request',
                         ):

@@ -70,7 +70,7 @@ def test_membership_receipt_bootstraps_twice_with_fresh_jax_collation(client):
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -178,7 +178,7 @@ def test_membership_receipt_attestation_rejects_weakened_matrix_and_wrong_digest
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -221,7 +221,7 @@ def test_project_role_receipt_attestation_rejects_weakened_check_and_column_drif
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -281,7 +281,7 @@ def test_terminal_ledger_attestation_rejects_wrong_grant_and_profile_links(clien
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
                     for table in (
-                        "jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
+                        "jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit",
                         "jax_project_membership", "jax_project_membership_event",
                         "jax_namespace_membership_mutation_request",
                     ):
@@ -338,7 +338,7 @@ def test_delegation_tenant_fk_attestation_rejects_homonymous_wrong_target(client
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                    for table in ("jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
@@ -577,7 +577,7 @@ def test_mfa_ledger_fresh_schema_and_legacy_challenge_upgrade_are_idempotent(cli
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                    for table in ("jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     class CrashAfterFreshLedgerCreate:
@@ -711,7 +711,7 @@ def test_mfa_schema_upgrade_resumes_only_attested_ddl_interruptions(client):
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                    for table in ("jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
@@ -781,7 +781,7 @@ def test_mfa_v4_incompatible_evidence_fails_preflight_without_rewrite_or_readine
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(f"CREATE DATABASE `{schema}`")
-                    for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+                    for table in ("jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                         await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
                     await cur.execute(f"USE `{schema}`")
                     await apply_office_migrations(cur)
@@ -864,7 +864,7 @@ def test_mfa_v4_check_upgrade_is_atomic_across_real_disconnects(target, timing, 
             conn = await pool.acquire()
             cur = await conn.cursor()
             await cur.execute(f"CREATE DATABASE `{schema}`")
-            for table in ("jax_users", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
+            for table in ("jax_users", "provider", "credential", "model", "jax_tenants", "projects", "jax_project_scope", "user_admin_audit"):
                 await cur.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
             await cur.execute(f"USE `{schema}`")
             await apply_office_migrations(cur)

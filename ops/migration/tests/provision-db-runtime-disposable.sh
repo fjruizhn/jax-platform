@@ -32,12 +32,14 @@ docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
 
 TEMP=$(mktemp -d /tmp/office-db-provision.XXXXXX)
+MISSING_RUNTIME_TABLES="$TEMP/missing-runtime-tables"
 WEB=officecvweb_$(openssl rand -hex 8)
 MIG=officecvmig_$(openssl rand -hex 8)
 HOST=
 OWNED=0
 cleanup() {
   if [ "$OWNED" = 1 ] && [ -n "$HOST" ]; then printf "DROP USER IF EXISTS '%s'@'%s'; DROP USER IF EXISTS '%s'@'%s';\n" "$WEB" "$HOST" "$MIG" "$HOST" | admin >/dev/null 2>&1 || true; fi
+  if [ -s "$MISSING_RUNTIME_TABLES" ]; then while IFS= read -r table; do printf 'DROP TABLE IF EXISTS `%s`.`%s`;\n' "$DB" "$table"; done < "$MISSING_RUNTIME_TABLES" | admin >/dev/null 2>&1 || true; fi
   rm -rf "$TEMP"
 }
 trap cleanup EXIT
@@ -53,7 +55,7 @@ case "$HOST" in ''|%|*'_'*|*'%'*) echo 'unsafe measured fixture host' >&2; exit 
 
 ENV_FILE="$TEMP/deployment.env"
 printf 'JAX_DB_HOST=127.0.0.1\nJAX_DB_PORT=%s\nJAX_DB_NAME=%s\nJAX_DB_USER=legacy_untouched\nJAX_DB_PASSWORD=legacy-do-not-copy\nJAX_DB_GRANTEE_HOST=%s\nJAX_RUNTIME_DB_USER=%s\nJAX_MIGRATE_DB_USER=%s\nJAX_JWT_SECRET=fixture-runtime-value\n' "$PORT" "$DB" "$HOST" "$WEB" "$MIG" > "$ENV_FILE"
-printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
+printf 'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA=fixture-platform-credential\nJAX_GITHUB_TOKEN=fixture-github-token\nJAX_EJECUTOR_MISIONES=/srv/jax-missions\nJAX_EJECUTOR_POLITICA=/etc/jax/ejecutor-policy.json\nJAX_EJECUTOR_TURNO_TOPE_S=600\nJAX_EJECUTOR_VIGIA_ESPERA_S=420\nJAX_PROXY_CARRIL_MODELO=gpt-5\nJAX_PROXY_CARRIL_MAX_SALIDA_TOKENS=4096\nOFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4\nJAX_LAS_MANOS_CREDENCIAL_JACOBS=must-not-copy\n' >> "$ENV_FILE"
 TRANSPORT="$TEMP/admin-transport"
 printf '#!/bin/sh\nexec docker exec -i %s sh -ec '\''MYSQL_PWD="$(printenv MARIADB_ROOT_PASSWORD)" exec mariadb -uroot --batch --skip-column-names'\''\n' "$CONTAINER" > "$TRANSPORT"
 chmod 700 "$TRANSPORT"
@@ -83,12 +85,29 @@ absent=$(printf "SELECT COUNT(*) FROM mysql.user WHERE (User='%s' OR User='%s') 
 [ "$absent" = 0 ] || { echo 'random fixture principal already exists; refusing ownership' >&2; exit 2; }
 OWNED=1
 
+# The pinned DB is intentionally older than the current runtime grant
+# manifest.  Create minimal stand-ins only for missing manifest tables and
+# remove exactly those stand-ins on exit: this exercises ACL convergence on
+# MariaDB without claiming to test the selector's DDL itself.
+while read -r table privileges; do
+  [[ -z "$table" || "$table" == \#* ]] && continue
+  present=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s';\n" "$DB" "$table" | admin)
+  case "$present" in
+    0) printf '%s\n' "$table" >> "$MISSING_RUNTIME_TABLES" ;;
+    1) ;;
+    *) echo 'runtime fixture table lookup is ambiguous' >&2; exit 2 ;;
+  esac
+done < "$V2_MANIFEST"
+if [ -s "$MISSING_RUNTIME_TABLES" ]; then
+  while IFS= read -r table; do printf 'CREATE TABLE `%s`.`%s` (id BIGINT PRIMARY KEY) ENGINE=InnoDB;\n' "$DB" "$table"; done < "$MISSING_RUNTIME_TABLES" | admin
+fi
+
 run_helper() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only() { JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --migrator-only --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; }
 run_migrator_only
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$WEB" "$HOST" | admin)" = 0
 test "$(printf "SELECT COUNT(*) FROM mysql.user WHERE User='%s' AND Host='%s';\n" "$MIG" "$HOST" | admin)" = 1
-test ! -e "$TEMP/state/runtime.env"
+test -f "$TEMP/state/runtime.env"
 test -f "$TEMP/state/migrate.env"
 printf "SHOW GRANTS FOR '%s'@'%s';\n" "$MIG" "$HOST" | admin | grep -F "CREATE VIEW" | grep -F " ON \`$DB\`.*" >/dev/null
 
@@ -109,10 +128,17 @@ test "$(stat -c '%U:%G:%a' "$TEMP/state/runtime.env")" = root:root:600
 grep -qx "JAX_DB_USER=$WEB" "$TEMP/state/runtime.env"
 ! grep -q 'legacy-do-not-copy\|JAX_MIGRATE_DB_USER' "$TEMP/state/runtime.env"
 ! grep -q 'JAX_RUNTIME_DB_USER\|JAX_DB_GRANTEE_HOST\|JAX_DB_ADMIN_' "$TEMP/state/runtime.env"
+grep -qx 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' "$TEMP/state/runtime.env"
 for entry in OFFICE_INVITATION_LIFETIME_SECONDS=3600 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.example.test OFFICE_PUBLIC_ORIGIN=https://virtualoffice.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
 printf 'OFFICE_INVITATION_LIFETIME_SECONDS=7200\nOFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240\nOFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75\nOFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50\nOFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20\nOFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test\nOFFICE_PUBLIC_ORIGIN=https://office-override.example.test\n' >> "$ENV_FILE"
 run_helper
 for entry in OFFICE_INVITATION_LIFETIME_SECONDS=7200 OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=240 OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=75 OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=50 OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=20 OFFICE_INVITATION_PUBLIC_BASE_URL=https://office-override.example.test OFFICE_PUBLIC_ORIGIN=https://office-override.example.test; do grep -qx "$entry" "$TEMP/state/runtime.env"; done
+grep -qx 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' "$TEMP/state/runtime.env"
+INVALID_BROKER_ENV="$TEMP/invalid-broker.env"
+sed 's#^OFFICE_BROKER_ALLOWED_BASE_URLS=.*#OFFICE_BROKER_ALLOWED_BASE_URLS=http://api.z.ai/api/paas/v4#' "$ENV_FILE" > "$INVALID_BROKER_ENV"
+if JAX_PAIR_EXEC_FIXTURE="$ROOT_DIR/ops/migration/jax-platform-pair-exec.py" "$HELPER" --plan --env "$INVALID_BROKER_ENV" --runtime-env "$TEMP/state/runtime.env" --admin-transport "$TRANSPORT" --measured-grantee-host "$HOST" --skip-os-identities; then
+  echo 'non-HTTPS Office broker allowlist was accepted' >&2; exit 1
+fi
 ROOT_DIR="$ROOT_DIR" RUNTIME_ENV="$TEMP/state/runtime.env" MIGRATE_ENV="$TEMP/state/migrate.env" python3 - <<'PY'
 import importlib.util, os
 from pathlib import Path
@@ -122,6 +148,7 @@ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 runtime = module.credential(Path(os.environ['RUNTIME_ENV']))
 assert runtime['JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA'] == 'fixture-platform-credential'
 assert runtime['JAX_GITHUB_TOKEN'] == 'fixture-github-token'
+assert runtime['OFFICE_BROKER_ALLOWED_BASE_URLS'] == 'https://api.z.ai/api/paas/v4'
 for key in ('JAX_EJECUTOR_MISIONES', 'JAX_EJECUTOR_POLITICA',
             'JAX_EJECUTOR_TURNO_TOPE_S', 'JAX_EJECUTOR_VIGIA_ESPERA_S',
             'JAX_PROXY_CARRIL_MODELO', 'JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS'):
@@ -195,6 +222,29 @@ reset_new_runtime
 printf "GRANT SELECT ON \`%s\`.* TO '%s'@'%s'; GRANT INSERT, UPDATE ON \`%s\`.\`axioma_config\` TO '%s'@'%s';\n" "$DB" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s';\n" "$MIG" "$HOST" | admin >/dev/null
+run_helper
+
+# A runtime principal created before the selector has the exact v2 manifest
+# except for the three selector tables, which sit in the middle of its sorted
+# order.  It must converge without accepting an omitted unrelated row or an
+# extra privilege.
+seed_pre_agent_runtime() {
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'%s'; GRANT SELECT ON \`%s\`.* TO '%s'@'%s';\n" "$WEB" "$HOST" "$DB" "$WEB" "$HOST" | admin >/dev/null
+  while read -r table privileges; do
+    [[ -z "$table" || "$table" == \#* ]] && continue
+    case "$table" in office_agent|office_agent_binding|office_agent_run) continue;; esac
+    printf "GRANT %s ON \`%s\`.\`%s\` TO '%s'@'%s';\n" "$privileges" "$DB" "$table" "$WEB" "$HOST"
+  done < "$V2_MANIFEST" | admin >/dev/null
+}
+seed_pre_agent_runtime
+run_helper
+for table in office_agent office_agent_binding office_agent_run; do
+  printf "SHOW GRANTS FOR '%s'@'%s';\n" "$WEB" "$HOST" | admin | grep -F " ON \`$DB\`.\`$table\`" | grep -F 'INSERT, UPDATE' >/dev/null
+done
+seed_pre_agent_runtime
+printf "GRANT SELECT ON mysql.* TO '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
+if run_helper; then echo 'pre-agent runtime principal with extra privilege was accepted' >&2; exit 1; fi
+printf "REVOKE SELECT ON mysql.* FROM '%s'@'%s';\n" "$WEB" "$HOST" | admin >/dev/null
 run_helper
 
 chmod 644 "$TEMP/state/secrets/$WEB.password"

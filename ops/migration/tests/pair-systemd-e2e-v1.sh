@@ -34,6 +34,9 @@ test "$(systemctl --version | awk 'NR==1 {print $2}')" -ge 259
 root=/opt/jax-platform-pair
 install -d -o root -g root -m 0755 "$root/releases" /etc/jax /usr/local/libexec
 install -m 0755 -o root -g root /workspace/ops/migration/activate-platform-pair-release.sh /usr/local/libexec/activate-platform-pair-release.sh
+install -m 0755 -o root -g root /workspace/ops/migration/provision-db-runtime.sh /usr/local/libexec/provision-db-runtime.sh
+install -m 0644 -o root -g root /workspace/ops/migration/runtime-table-privileges-v1.txt /usr/local/libexec/runtime-table-privileges-v1.txt
+install -m 0644 -o root -g root /workspace/ops/migration/runtime-table-privileges-v2.txt /usr/local/libexec/runtime-table-privileges-v2.txt
 install -m 0644 -o root -g root /workspace/ops/migration/jax-platform-pair-exec.py /usr/local/libexec/jax-platform-pair-exec.py
 install -m 0644 -o root -g root /workspace/ops/migration/pair_artifact_readiness.py /usr/local/libexec/pair_artifact_readiness.py
 install -m 0644 -o root -g root /workspace/ops/migration/systemd-units/jax-platform.service /etc/systemd/system/jax-platform.service
@@ -45,8 +48,17 @@ ExecStart=/bin/sleep infinity
 EOF
 printf 'JAX_TRUSTED_PROXIES=127.0.0.1\n' >/etc/jax/runtime.env
 printf 'JAX_DB_HOST=127.0.0.1\n' >/etc/jax/migrate.env
+printf 'JAX_DB_GRANTEE_HOST=127.0.0.1\n' >/etc/jax/.env
 chown root:root /etc/jax/runtime.env /etc/jax/migrate.env
 chmod 0600 /etc/jax/runtime.env /etc/jax/migrate.env
+chown root:root /etc/jax/.env
+chmod 0600 /etc/jax/.env
+cat >/usr/local/libexec/provision-fixture <<'SH'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >/var/lib/jax-pair-e2e/provision-args
+SH
+chmod 0755 /usr/local/libexec/provision-fixture
 install -d -o jaxmigrate -g jaxmigrate -m 0700 /var/lib/jax-pair-e2e
 
 build_release() {
@@ -121,8 +133,8 @@ python3 /workspace/ops/migration/artifact_readiness.py "$root/releases/predecess
 # SIGKILL after publish leaves the durable PRE_DDL journal and the candidate
 # selected.  A second real invocation must stop the units, recover predecessor,
 # then start the successor through systemd/PID1.
-if JAX_PAIR_TEST_KILL_AT=after_publish /usr/local/libexec/activate-platform-pair-release.sh \
-  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"; then
+if JAX_PAIR_TEST_MODE=1 JAX_PAIR_PROVISIONER_BIN=/usr/local/libexec/provision-fixture JAX_PAIR_TEST_KILL_AT=after_publish /usr/local/libexec/activate-platform-pair-release.sh \
+  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1" --measured-grantee-host 127.0.0.1; then
   echo 'activation cutpoint was not reached' >&2; exit 1
 fi
 test "$(python3 -c "import json; print(json.load(open('$root/activation-journal.json'))['state'])")" = PRE_DDL
@@ -139,10 +151,11 @@ test "$(systemctl show --value --property=ActiveState jax-platform.service)" != 
 # transient state so recovery exercises the activation script's own orderly
 # stop/start path rather than systemd's remembered failure result.
 systemctl reset-failed jax-platform.service jax-platform-migrate.service
-/usr/local/libexec/activate-platform-pair-release.sh \
-  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1"
+JAX_PAIR_TEST_MODE=1 JAX_PAIR_PROVISIONER_BIN=/usr/local/libexec/provision-fixture /usr/local/libexec/activate-platform-pair-release.sh \
+  --release "$root/releases/successor" --expected-manifest-sha256 "$d2" --previous-manifest-sha256 "$d1" --measured-grantee-host 127.0.0.1
 test ! -e "$root/activation-journal.json"
 test "$(cat /var/lib/jax-pair-e2e/migrate-count)" = 1
+test "$(cat /var/lib/jax-pair-e2e/provision-args)" = "--env /etc/jax/.env --measured-grantee-host 127.0.0.1"
 test "$(readlink "$root/current")" = releases/successor
 test "$(systemctl show --value --property=ActiveState jax-platform.service)" = active
 pid=$(systemctl show --value --property=MainPID jax-platform.service)

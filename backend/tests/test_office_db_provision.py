@@ -108,5 +108,5 @@ def test_units_only_load_dedicated_envs_and_run_migration_before_web() -> None:
     assert "User=jaxmigrate" in migrator
     assert "LoadCredential=migrate.env:/etc/jax/migrate.env" in migrator
     assert "/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py migrate ${CREDENTIALS_DIRECTORY}/migrate.env" in migrator
-    assert "RemainAfterExit" not in migrator
+    assert "RemainAfterExit=yes" in migrator
     assert "WorkingDirectory=/" in web and "WorkingDirectory=/" in migrator

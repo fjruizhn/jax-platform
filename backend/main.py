@@ -138,6 +138,7 @@ from api.virtual_office.people import router as virtual_office_people_router
 from api.virtual_office.grants import router as virtual_office_grants_router
 from api.virtual_office.invitations import router as virtual_office_invitations_router
 from api.virtual_office.session import router as virtual_office_session_router
+from api.virtual_office.agents import router as virtual_office_agents_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
@@ -418,6 +419,7 @@ ROUTERS = (
     virtual_office_grants_router,
     virtual_office_invitations_router,
     virtual_office_session_router,
+    virtual_office_agents_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)

@@ -40,6 +40,9 @@ model_catalog_audit INSERT
 motor INSERT,UPDATE
 office_account_profile INSERT,UPDATE
 office_admin_delegation INSERT,UPDATE
+office_agent INSERT,UPDATE
+office_agent_binding INSERT,UPDATE
+office_agent_run INSERT,UPDATE
 office_authorization_event INSERT
 office_bootstrap_state INSERT
 office_external_relation INSERT,UPDATE

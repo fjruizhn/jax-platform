@@ -180,6 +180,8 @@ DB=${CFG[JAX_DB_NAME]}
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   load_runtime_allowlist
+  [[ -n ${RUNTIME_ALLOWED[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} ]] || die "installed runtime credential launcher lacks required key: OFFICE_BROKER_ALLOWED_BASE_URLS"
+  [[ -n ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} && ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]} == https://api.z.ai/api/paas/v4 ]] || die "Office broker allowlist must be the approved HTTPS Z.ai base URL"
   office_keys_in_deployment=0
   for key in "${OFFICE_INVITATION_KEYS[@]}"; do [[ -v "CFG[$key]" ]] && office_keys_in_deployment=$((office_keys_in_deployment + 1)); done
   if [ "$office_keys_in_deployment" = 0 ]; then
@@ -336,7 +338,7 @@ verify_migrator_grants() {
 }
 
 runtime_grant_state() {
-  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index mixed_prefix expected_mixed_count expected_privileges matches remaining
+  local grants schema_line actual_set legacy_set line table privileges expected_count actual_count prefix_count index mixed_prefix expected_mixed_count expected_privileges matches remaining pre_agent_count
   grants=$(show_grants "$RUNTIME_USER") || die "could not inspect runtime grants"
   printf '%s\n' "$grants" | grep -Fx "GRANT USAGE ON *.* TO '$RUNTIME_USER'@'$HOST'" >/dev/null || { printf invalid; return; }
   schema_line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.\\* TO '$RUNTIME_USER'@'$HOST'$" || true)
@@ -414,6 +416,35 @@ runtime_grant_state() {
     done
     [ "$matches" = 1 ] && [ "$mixed_prefix" -lt "${#RUNTIME_TABLES[@]}" ] && [ "$actual_count" -eq "$expected_mixed_count" ] && { printf 'v1-v2-prefix:%s' "$mixed_prefix"; return; }
   elif [ "$actual_set" = "SELECT" ]; then
+    # The Office-agent selector appends these three tables in the middle of
+    # the sorted v2 manifest.  A principal provisioned immediately before
+    # that release has every other exact v2 row, so it is not an ordered v2
+    # prefix.  Accept only that precise predecessor, including an interrupted
+    # ordered grant prefix for these three rows; any missing non-agent row or
+    # extra capability remains invalid.
+    pre_agent_count=0
+    for table in office_agent office_agent_binding office_agent_run; do
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      if [ -z "$line" ]; then
+        break
+      fi
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { printf invalid; return; }
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "${RUNTIME_TABLE_PRIVILEGES[$table]}")" ] || { printf invalid; return; }
+      pre_agent_count=$((pre_agent_count + 1))
+    done
+    matches=1
+    for table in "${RUNTIME_TABLES[@]}"; do
+      case "$table" in office_agent|office_agent_binding|office_agent_run) continue;; esac
+      privileges=${RUNTIME_TABLE_PRIVILEGES[$table]}
+      line=$(printf '%s\n' "$grants" | grep -E "^GRANT .* ON '$DB'\\.'$table' TO '$RUNTIME_USER'@'$HOST'$" || true)
+      [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { matches=0; break; }
+      actual_set=${line#GRANT }; actual_set=${actual_set%% ON *}
+      [ "$(normalize_set "$actual_set")" = "$(normalize_set "$privileges")" ] || { matches=0; break; }
+    done
+    if [ "$matches" = 1 ] && [ "$pre_agent_count" -lt 3 ] && [ "$actual_count" -eq "$((expected_count - 3 + pre_agent_count))" ]; then
+      printf 'pre-agent-prefix:%s' "$pre_agent_count"; return
+    fi
     prefix_count=$((actual_count - 2))
     [ "$prefix_count" -ge 0 ] && [ "$prefix_count" -le "${#RUNTIME_TABLES[@]}" ] || { printf invalid; return; }
     for ((index=0; index<prefix_count; index++)); do
@@ -540,6 +571,15 @@ if [ "$MIGRATOR_ONLY" = 0 ]; then
         printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge mixed v1/v2 runtime table privileges"
       done
       printf 'REVOKE INSERT ON `%s`.* FROM %s@%s;\n' "$DB" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not revoke mixed v1/v2 runtime schema INSERT"
+      ;;
+    pre-agent-prefix:*)
+      prefix_count=${runtime_state#pre-agent-prefix:}
+      [[ "$prefix_count" =~ ^[0-2]$ ]] || die "pre-agent runtime principal transitional state is malformed"
+      agent_tables=(office_agent office_agent_binding office_agent_run)
+      for ((index=prefix_count; index<${#agent_tables[@]}; index++)); do
+        table=${agent_tables[$index]}
+        printf 'GRANT %s ON `%s`.`%s` TO %s@%s;\n' "${RUNTIME_TABLE_PRIVILEGES[$table]}" "$DB" "$table" "$(sql_quote "$RUNTIME_USER")" "$(sql_quote "$HOST")" | admin_sql >/dev/null || die "could not converge pre-agent runtime table privileges"
+      done
       ;;
     *) die "runtime principal is neither the exact legacy nor new grant state" ;;
   esac

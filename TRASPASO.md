@@ -289,3 +289,17 @@ MariaDB desechable cubrió ambas fases y terminó verde. El vhost ahora sirve
 que la directiva nginx `root` coincida con el `site-root/current/dist` recibido.
 Los fixtures root de validador e instalador pasaron. Commit local pendiente de
 integración por la sesión raíz; no se publicó ni se desplegó.
+
+2026-10-22 · Codex · Selector #352 ensamblado sobre `5aa38d55`: agentes
+privados por proyecto con catálogo de motores, transporte GLM y panel ES/EN.
+Los miembros internos ejecutan sin pedir el catálogo de administración; una
+repetición mientras sigue `DISPATCHING` conserva su clave. Se añadió activador
+idempotente del motor y modo `office-engine` del launcher emparejado, que exige
+`/etc/jax/migrate.env` root:root 0600. Validación en MariaDB desechable: 32 corridas
+paralelas contra GLM simulado, p95 0.0375 s y 777.9 rps; no hubo proveedor ni
+producción. Antes del despliegue: instalar launcher, escribir allowlist en
+runtime.env, activar/migrar release, activar motor y publicar frontend.
+Corrección de auditoría Sol: el broker ahora usa `json=` (Content-Type JSON
+explícito); la activación exige exactamente `/etc/jax/migrate.env`, nunca la
+credencial web. En DB desechable, web SELECT-only recibió INSERT denied y el
+principal migrador activó el motor correctamente.

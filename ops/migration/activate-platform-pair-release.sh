@@ -3,22 +3,35 @@
 # builder proves Git ancestry; this program never invokes Git or release code.
 set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
-ROOT=/opt/jax-platform-pair RELEASE= EXPECTED= PREVIOUS= SELECTION=/etc/jax/platform-pair-selection.json SYSTEMCTL=/usr/bin/systemctl HELPER=/usr/local/libexec/pair_artifact_readiness.py HEALTH=/usr/bin/curl
+ROOT=/opt/jax-platform-pair RELEASE= EXPECTED= PREVIOUS= MEASURED_HOST= SELECTION=/etc/jax/platform-pair-selection.json SYSTEMCTL=/usr/bin/systemctl HELPER=/usr/local/libexec/pair_artifact_readiness.py HEALTH=/usr/bin/curl PROVISIONER=/usr/local/libexec/provision-db-runtime.sh ENV_FILE=/etc/jax/.env
 LOCK_WAIT=30
 while [[ $# -gt 0 ]]; do
  case "$1" in
-  --release) RELEASE=${2:?}; shift;; --expected-manifest-sha256) EXPECTED=${2:?}; shift;; --previous-manifest-sha256) PREVIOUS=${2:?}; shift;; --root) ROOT=${2:?}; shift;;
-  -h|--help) echo 'usage: activate-platform-pair-release.sh --release RELEASE --expected-manifest-sha256 SHA --previous-manifest-sha256 SHA'; exit 0;; *) exit 2;; esac; shift
+  --release) RELEASE=${2:?}; shift;; --expected-manifest-sha256) EXPECTED=${2:?}; shift;; --previous-manifest-sha256) PREVIOUS=${2:?}; shift;; --measured-grantee-host) MEASURED_HOST=${2:?}; shift;; --root) ROOT=${2:?}; shift;;
+  -h|--help) echo 'usage: activate-platform-pair-release.sh --release RELEASE --expected-manifest-sha256 SHA --previous-manifest-sha256 SHA --measured-grantee-host HOST'; exit 0;; *) exit 2;; esac; shift
 done
 if [[ $ROOT != /opt/jax-platform-pair ]]; then
   [[ ${JAX_PAIR_TEST_MODE:-} == 1 && $(/usr/bin/id -u) == 0 && $ROOT == /tmp/* ]] || { echo 'test root rejected' >&2; exit 2; }
   SELECTION="$ROOT/platform-pair-selection.json"; HELPER="$ROOT/libexec/pair_artifact_readiness.py"
   [[ -n ${JAX_PAIR_SYSTEMCTL_BIN:-} && -x ${JAX_PAIR_SYSTEMCTL_BIN} && -n ${JAX_PAIR_HEALTH_BIN:-} && -x ${JAX_PAIR_HEALTH_BIN} ]] || { echo 'test tools rejected' >&2; exit 2; }
   SYSTEMCTL=$JAX_PAIR_SYSTEMCTL_BIN; HEALTH=$JAX_PAIR_HEALTH_BIN
+  [[ -z ${JAX_PAIR_PROVISIONER_BIN:-} || -x ${JAX_PAIR_PROVISIONER_BIN} ]] || { echo 'test provisioner rejected' >&2; exit 2; }
+  [[ -z ${JAX_PAIR_PROVISIONER_BIN:-} ]] || PROVISIONER=$JAX_PAIR_PROVISIONER_BIN
+  [[ -z ${JAX_PAIR_PROVISION_ENV:-} ]] || ENV_FILE=$JAX_PAIR_PROVISION_ENV
   [[ -z ${JAX_PAIR_TEST_LOCK_SECONDS:-} || ${JAX_PAIR_TEST_LOCK_SECONDS} =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo 'test lock timeout rejected' >&2; exit 2; }
   [[ -z ${JAX_PAIR_TEST_LOCK_SECONDS:-} ]] || LOCK_WAIT=$JAX_PAIR_TEST_LOCK_SECONDS
 fi
-[[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ && $PREVIOUS =~ ^[0-9a-f]{64}$ ]] || { echo 'external target and predecessor manifest digests required' >&2; exit 2; }
+if [[ ${JAX_PAIR_TEST_MODE:-} == 1 ]]; then
+  [[ -z ${JAX_PAIR_PROVISIONER_BIN:-} || -x ${JAX_PAIR_PROVISIONER_BIN} ]] || { echo 'test provisioner rejected' >&2; exit 2; }
+  [[ -z ${JAX_PAIR_PROVISIONER_BIN:-} ]] || PROVISIONER=$JAX_PAIR_PROVISIONER_BIN
+  [[ -z ${JAX_PAIR_PROVISION_ENV:-} ]] || ENV_FILE=$JAX_PAIR_PROVISION_ENV
+fi
+[[ $(/usr/bin/id -u) == 0 && $EXPECTED =~ ^[0-9a-f]{64}$ && $PREVIOUS =~ ^[0-9a-f]{64}$ && -n $MEASURED_HOST ]] || { echo 'external target and predecessor manifest digests required; measured DB grantee host required' >&2; exit 2; }
+[[ -f $PROVISIONER && ! -L $PROVISIONER ]] || { echo 'runtime DB provisioner unavailable' >&2; exit 1; }
+if [[ $ROOT == /opt/jax-platform-pair ]]; then
+  env_stat=$(/usr/bin/stat -c '%U:%G:%a' "$ENV_FILE" 2>/dev/null || true)
+  [[ $(/usr/bin/stat -c '%U:%G:%a' "$PROVISIONER") == root:root:755 && -f $ENV_FILE && ! -L $ENV_FILE && ( $env_stat == root:root:600 || $env_stat == root:jaxsvc:640 ) ]] || { echo 'runtime DB provisioner or environment is unsafe' >&2; exit 1; }
+fi
 JOURNAL="$ROOT/activation-journal.json"
 
 # All writes are atomic and fsync their file and parent directory. PRE_DDL can
@@ -156,7 +169,19 @@ transaction publish "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 if [[ ${JAX_PAIR_TEST_KILL_AT:-} == after_publish ]]; then kill -KILL $$; fi
 transaction ddl "$ROOT" "$SELECTION" "$JOURNAL" "$RELEASE" "$EXPECTED"
 /usr/bin/flock -u 8; exec 8>&-
-# Starting web triggers its Requires=jax-platform-migrate.service exactly once.
+# The runtime principal cannot receive its exact table grants until this
+# release's migration created its Office tables.  Run that migration first,
+# then converge its grants before the web service has any opportunity to use
+# them.  The migrator stays active after a successful one-shot, so the normal
+# web dependency observes it as satisfied and preserves all other unit
+# requirements without running this migration twice.
+$SYSTEMCTL start jax-platform-migrate.service
+state=$($SYSTEMCTL show --value --property=ActiveState jax-platform-migrate.service)
+substate=$($SYSTEMCTL show --value --property=SubState jax-platform-migrate.service)
+pid=$($SYSTEMCTL show --value --property=MainPID jax-platform-migrate.service)
+result=$($SYSTEMCTL show --value --property=Result jax-platform-migrate.service)
+[[ $state == active && $substate == exited && $pid == 0 && $result == success ]] || { echo 'migration service did not complete cleanly' >&2; exit 1; }
+"$PROVISIONER" --env "$ENV_FILE" --measured-grantee-host "$MEASURED_HOST"
 $SYSTEMCTL start jax-platform.service
 # Type=simple returns from `start` when the process has been forked, before
 # uvicorn has necessarily bound its listener.  Never accept a health response

@@ -23,7 +23,75 @@ RUNTIME_COMPONENT = "virtual-office"
 # process can consider the schema/runtime pair ready.
 # v12 binds the per-table write contract after v11 introduced the pending
 # publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-runtime-v12-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-v13c-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+
+# The Office catalogue is deliberately a binding to the central provider/model
+# catalogue.  A browser never supplies a URL, credential or model id.  The
+# fingerprint makes a changed provider, model or credential identity unusable
+# until an administrator explicitly re-attests and enables the engine.
+OFFICE_ENGINE_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_engine ("
+    "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "display_name_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,model_ref INT NOT NULL,credential_id INT NOT NULL,"
+    "transport ENUM('http_openai_compat') NOT NULL,allowed_data_classifications JSON NOT NULL,"
+    "binding_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,enabled BOOLEAN NOT NULL DEFAULT FALSE,"
+    "activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0,version BIGINT NOT NULL DEFAULT 1,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "KEY idx_office_engine_enabled_key (enabled,engine_key),"
+    "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),CONSTRAINT fk_office_engine_credential FOREIGN KEY (credential_id) REFERENCES credential(id),"
+    "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
+    "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
+    "CONSTRAINT chk_office_engine_fingerprint CHECK (binding_fingerprint REGEXP '^[0-9a-f]{64}$'),"
+    "CONSTRAINT chk_office_engine_epoch CHECK (activation_epoch>=0),CONSTRAINT chk_office_engine_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
+OFFICE_AGENT_RUNTIME_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_agent_runtime_config ("
+    "config_id TINYINT UNSIGNED NOT NULL PRIMARY KEY,config_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,"
+    "max_output_tokens SMALLINT UNSIGNED NOT NULL DEFAULT 2048,max_input_bytes INT UNSIGNED NOT NULL DEFAULT 32768,"
+    "max_instructions_bytes INT UNSIGNED NOT NULL DEFAULT 32768,max_response_bytes INT UNSIGNED NOT NULL DEFAULT 1048576,"
+    "window_seconds INT UNSIGNED NOT NULL DEFAULT 3600,actor_runs_per_window SMALLINT UNSIGNED NOT NULL DEFAULT 30,"
+    "project_runs_per_window SMALLINT UNSIGNED NOT NULL DEFAULT 300,actor_concurrency TINYINT UNSIGNED NOT NULL DEFAULT 2,"
+    "project_concurrency TINYINT UNSIGNED NOT NULL DEFAULT 8,timeout_seconds TINYINT UNSIGNED NOT NULL DEFAULT 45,"
+    "stale_seconds TINYINT UNSIGNED NOT NULL DEFAULT 60,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "CONSTRAINT chk_office_agent_runtime_config_singleton CHECK (config_id=1),CONSTRAINT chk_office_agent_runtime_config_version CHECK (config_version>=1),"
+    "CONSTRAINT chk_office_agent_runtime_config_bounds CHECK (max_output_tokens BETWEEN 1 AND 2048 AND max_input_bytes BETWEEN 1 AND 32768 AND max_instructions_bytes BETWEEN 1 AND 32768 AND max_response_bytes BETWEEN 1 AND 1048576 AND window_seconds BETWEEN 60 AND 3600 AND actor_runs_per_window BETWEEN 1 AND 30 AND project_runs_per_window BETWEEN 1 AND 300 AND actor_concurrency BETWEEN 1 AND 2 AND project_concurrency BETWEEN 1 AND 8 AND timeout_seconds BETWEEN 1 AND 45 AND stale_seconds BETWEEN 6 AND 60 AND stale_seconds>=timeout_seconds+5)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "INSERT IGNORE INTO office_agent_runtime_config (config_id,config_version) VALUES (1,1)",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_agent_runtime_config_update BEFORE UPDATE ON office_agent_runtime_config FOR EACH ROW BEGIN IF NEW.config_id<>1 OR NEW.config_version<>OLD.config_version+1 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office agent runtime config version must advance exactly once'; END IF; END",
+)
+
+OFFICE_AGENT_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_agent ("
+    "agent_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,project_id INT NOT NULL,agent_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "display_name VARCHAR(128) NOT NULL,instructions TEXT NOT NULL,data_classification VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "status ENUM('ACTIVE','DISABLED') NOT NULL DEFAULT 'ACTIVE',version BIGINT UNSIGNED NOT NULL DEFAULT 1,created_by INT NOT NULL,"
+    "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_agent_project_key (project_id,agent_key),KEY idx_office_agent_project (project_id,status,agent_id),KEY idx_office_agent_project_list (project_id,agent_id),"
+    "CONSTRAINT fk_office_agent_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_created_by FOREIGN KEY (created_by) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_agent_key CHECK (agent_key<>''),CONSTRAINT chk_office_agent_name CHECK (display_name<>''),CONSTRAINT chk_office_agent_classification CHECK (data_classification REGEXP '^[A-Z][A-Z0-9_]{0,63}$'),CONSTRAINT chk_office_agent_version CHECK (version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_agent_binding ("
+    "binding_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,agent_id BIGINT UNSIGNED NOT NULL,engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "binding_version BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL DEFAULT TRUE,active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED,bound_by INT NOT NULL,bound_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_agent_binding_version (agent_id,binding_version),UNIQUE KEY uq_office_agent_binding_active_agent (active_agent_id),KEY idx_office_agent_binding_active (agent_id,active,binding_version),"
+    "CONSTRAINT fk_office_agent_binding_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_binding_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_binding_by FOREIGN KEY (bound_by) REFERENCES jax_users(user_id),"
+    "CONSTRAINT chk_office_agent_binding_version CHECK (binding_version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_agent_run ("
+    "run_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,agent_id BIGINT UNSIGNED NOT NULL,project_id INT NOT NULL,requested_by INT NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,agent_version BIGINT UNSIGNED NOT NULL,binding_id BIGINT UNSIGNED NOT NULL,binding_version BIGINT UNSIGNED NOT NULL,"
+    "idempotency_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,input_sha256 BINARY(32) NOT NULL,instructions_sha256 BINARY(32) NOT NULL,dispatch_snapshot_sha256 BINARY(32) NOT NULL,config_version SMALLINT UNSIGNED NOT NULL,"
+    "engine_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,engine_version BIGINT NOT NULL,engine_binding_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,model_ref INT NOT NULL,model_id VARCHAR(255) NOT NULL,"
+    "credential_id INT NOT NULL,credential_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,provider_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "auth_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,auth_transport VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,accepted_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),deadline_at DATETIME(6) NOT NULL,fence BIGINT UNSIGNED NOT NULL,completed_at DATETIME(6) NULL,"
+    "UNIQUE KEY uq_office_agent_run_idempotency (requested_by,agent_id,idempotency_key),KEY idx_office_agent_run_actor_window (requested_by,accepted_at,status,deadline_at),KEY idx_office_agent_run_project_window (project_id,accepted_at,status,deadline_at),KEY idx_office_agent_run_actor_concurrency (requested_by,status,deadline_at),KEY idx_office_agent_run_project_concurrency (project_id,status,deadline_at),"
+    "CONSTRAINT fk_office_agent_run_agent FOREIGN KEY (agent_id) REFERENCES office_agent(agent_id),CONSTRAINT fk_office_agent_run_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_run_requested_by FOREIGN KEY (requested_by) REFERENCES jax_users(user_id),CONSTRAINT fk_office_agent_run_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT fk_office_agent_run_binding FOREIGN KEY (binding_id) REFERENCES office_agent_binding(binding_id),CONSTRAINT fk_office_agent_run_engine FOREIGN KEY (engine_key) REFERENCES office_engine(engine_key),CONSTRAINT fk_office_agent_run_model FOREIGN KEY (model_ref) REFERENCES model(id),CONSTRAINT fk_office_agent_run_credential FOREIGN KEY (credential_id) REFERENCES credential(id),"
+    "CONSTRAINT chk_office_agent_run_key CHECK (idempotency_key<>''),CONSTRAINT chk_office_agent_run_snapshot CHECK (agent_version>=1 AND binding_version>=1 AND config_version>=1 AND engine_version>=1 AND engine_binding_fingerprint REGEXP '^[0-9a-f]{64}$' AND credential_fingerprint REGEXP '^[0-9a-f]{64}$' AND provider_id<>'' AND auth_type<>'' AND auth_transport<>'' AND fence>=1 AND deadline_at>=accepted_at),CONSTRAINT chk_office_agent_run_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR (status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR (status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_mutate_office_agent_run_snapshot BEFORE UPDATE ON office_agent_run FOR EACH ROW BEGIN IF OLD.status IN ('SUCCEEDED','UNKNOWN') OR NEW.run_id<>OLD.run_id OR NEW.agent_id<>OLD.agent_id OR NEW.project_id<>OLD.project_id OR NEW.requested_by<>OLD.requested_by OR NEW.authorization_event_id<>OLD.authorization_event_id OR NEW.agent_version<>OLD.agent_version OR NEW.binding_id<>OLD.binding_id OR NEW.binding_version<>OLD.binding_version OR NEW.idempotency_key<>OLD.idempotency_key OR NEW.input_sha256<>OLD.input_sha256 OR NEW.instructions_sha256<>OLD.instructions_sha256 OR NEW.dispatch_snapshot_sha256<>OLD.dispatch_snapshot_sha256 OR NEW.config_version<>OLD.config_version OR NEW.engine_key<>OLD.engine_key OR NEW.engine_version<>OLD.engine_version OR NEW.engine_binding_fingerprint<>OLD.engine_binding_fingerprint OR NEW.model_ref<>OLD.model_ref OR NEW.model_id<>OLD.model_id OR NEW.credential_id<>OLD.credential_id OR NEW.credential_fingerprint<>OLD.credential_fingerprint OR NEW.provider_id<>OLD.provider_id OR NEW.auth_type<>OLD.auth_type OR NEW.auth_transport<>OLD.auth_transport OR NEW.accepted_at<>OLD.accepted_at OR NEW.deadline_at<>OLD.deadline_at OR NEW.fence<>OLD.fence THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_agent_run snapshot or terminal row is immutable'; END IF; END",
+)
 
 # Global module governance is deliberately distinct from client artefacts.
 # This first schema cut records only pending-contract authority: the canonical
@@ -862,6 +930,235 @@ async def _assert_indexes(cur, *, table: str, expected: dict[str, tuple[tuple[st
             raise RuntimeError(f"Office {table} index {name} is invalid")
 
 
+_AGENT_RUNTIME_COLUMNS = {
+    "office_agent_runtime_config": ("config_id", "config_version", "max_output_tokens", "max_input_bytes", "max_instructions_bytes", "max_response_bytes", "window_seconds", "actor_runs_per_window", "project_runs_per_window", "actor_concurrency", "project_concurrency", "timeout_seconds", "stale_seconds", "updated_at"),
+    "office_engine": ("engine_key", "display_name_key", "model_ref", "credential_id", "transport", "allowed_data_classifications", "binding_fingerprint", "enabled", "activation_epoch", "version", "created_at", "updated_at"),
+    "office_agent": ("agent_id", "project_id", "agent_key", "display_name", "instructions", "data_classification", "status", "version", "created_by", "created_at", "updated_at"),
+    "office_agent_binding": ("binding_id", "agent_id", "engine_key", "binding_version", "active", "active_agent_id", "bound_by", "bound_at"),
+    "office_agent_run": ("run_id", "agent_id", "project_id", "requested_by", "authorization_event_id", "agent_version", "binding_id", "binding_version", "idempotency_key", "input_sha256", "instructions_sha256", "dispatch_snapshot_sha256", "config_version", "engine_key", "engine_version", "engine_binding_fingerprint", "model_ref", "model_id", "credential_id", "credential_fingerprint", "provider_id", "auth_type", "auth_transport", "status", "output_text", "accepted_at", "deadline_at", "fence", "completed_at"),
+}
+# Exact MariaDB 12.3 information_schema.COLUMNS rows for the private-agent
+# catalogue.  Names and ordinal position alone do not prevent a homonymous
+# table from silently widening a field, changing a default, or acquiring a
+# different text collation.  These values are the normalized forms emitted by
+# the canonical DDL above (JSON is reported by MariaDB as longtext).
+_AGENT_RUNTIME_COLUMN_METADATA = {
+    "office_engine": (
+        ("engine_key", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("display_name_key", "varchar(128)", "NO", None, "", "utf8mb4", "utf8mb4_bin"),
+        ("model_ref", "int(11)", "NO", None, "", None, None),
+        ("credential_id", "int(11)", "NO", None, "", None, None),
+        ("transport", "enum('http_openai_compat')", "NO", None, "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("allowed_data_classifications", "longtext", "NO", None, "", "utf8mb4", "utf8mb4_bin"),
+        ("binding_fingerprint", "char(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("enabled", "tinyint(1)", "NO", "0", "", None, None),
+        ("activation_epoch", "bigint(20) unsigned", "NO", "0", "", None, None),
+        ("version", "bigint(20)", "NO", "1", "", None, None),
+        ("created_at", "datetime(6)", "NO", "current_timestamp(6)", "", None, None),
+        ("updated_at", "datetime(6)", "NO", "current_timestamp(6)", "on update current_timestamp(6)", None, None),
+    ),
+    "office_agent_runtime_config": (
+        ("config_id", "tinyint(3) unsigned", "NO", None, "", None, None),
+        ("config_version", "smallint(5) unsigned", "NO", "1", "", None, None),
+        ("max_output_tokens", "smallint(5) unsigned", "NO", "2048", "", None, None),
+        ("max_input_bytes", "int(10) unsigned", "NO", "32768", "", None, None),
+        ("max_instructions_bytes", "int(10) unsigned", "NO", "32768", "", None, None),
+        ("max_response_bytes", "int(10) unsigned", "NO", "1048576", "", None, None),
+        ("window_seconds", "int(10) unsigned", "NO", "3600", "", None, None),
+        ("actor_runs_per_window", "smallint(5) unsigned", "NO", "30", "", None, None),
+        ("project_runs_per_window", "smallint(5) unsigned", "NO", "300", "", None, None),
+        ("actor_concurrency", "tinyint(3) unsigned", "NO", "2", "", None, None),
+        ("project_concurrency", "tinyint(3) unsigned", "NO", "8", "", None, None),
+        ("timeout_seconds", "tinyint(3) unsigned", "NO", "45", "", None, None),
+        ("stale_seconds", "tinyint(3) unsigned", "NO", "60", "", None, None),
+        ("updated_at", "datetime(6)", "NO", "current_timestamp(6)", "on update current_timestamp(6)", None, None),
+    ),
+    "office_agent": (
+        ("agent_id", "bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+        ("project_id", "int(11)", "NO", None, "", None, None),
+        ("agent_key", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("display_name", "varchar(128)", "NO", None, "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("instructions", "text", "NO", None, "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("data_classification", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("status", "enum('ACTIVE','DISABLED')", "NO", "'ACTIVE'", "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("version", "bigint(20) unsigned", "NO", "1", "", None, None),
+        ("created_by", "int(11)", "NO", None, "", None, None),
+        ("created_at", "datetime(6)", "NO", "current_timestamp(6)", "", None, None),
+        ("updated_at", "datetime(6)", "NO", "current_timestamp(6)", "on update current_timestamp(6)", None, None),
+    ),
+    "office_agent_binding": (
+        ("binding_id", "bigint(20) unsigned", "NO", None, "auto_increment", None, None),
+        ("agent_id", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("engine_key", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("binding_version", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("active", "tinyint(1)", "NO", "1", "", None, None),
+        ("active_agent_id", "bigint(20) unsigned", "YES", "NULL", "STORED GENERATED", None, None),
+        ("bound_by", "int(11)", "NO", None, "", None, None),
+        ("bound_at", "datetime(6)", "NO", "current_timestamp(6)", "", None, None),
+    ),
+    "office_agent_run": (
+        ("run_id", "char(36)", "NO", None, "", "ascii", "ascii_bin"),
+        ("agent_id", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("project_id", "int(11)", "NO", None, "", None, None),
+        ("requested_by", "int(11)", "NO", None, "", None, None),
+        ("authorization_event_id", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("agent_version", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("binding_id", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("binding_version", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("idempotency_key", "varchar(128)", "NO", None, "", "ascii", "ascii_bin"),
+        ("input_sha256", "binary(32)", "NO", None, "", None, None),
+        ("instructions_sha256", "binary(32)", "NO", None, "", None, None),
+        ("dispatch_snapshot_sha256", "binary(32)", "NO", None, "", None, None),
+        ("config_version", "smallint(5) unsigned", "NO", None, "", None, None),
+        ("engine_key", "varchar(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("engine_version", "bigint(20)", "NO", None, "", None, None),
+        ("engine_binding_fingerprint", "char(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("model_ref", "int(11)", "NO", None, "", None, None),
+        ("model_id", "varchar(255)", "NO", None, "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("credential_id", "int(11)", "NO", None, "", None, None),
+        ("credential_fingerprint", "char(64)", "NO", None, "", "ascii", "ascii_bin"),
+        ("provider_id", "varchar(128)", "NO", None, "", "ascii", "ascii_bin"),
+        ("auth_type", "varchar(32)", "NO", None, "", "ascii", "ascii_bin"),
+        ("auth_transport", "varchar(32)", "NO", None, "", "ascii", "ascii_bin"),
+        ("status", "enum('DISPATCHING','SUCCEEDED','UNKNOWN')", "NO", None, "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("output_text", "mediumtext", "YES", "NULL", "", "utf8mb4", "utf8mb4_uca1400_ai_ci"),
+        ("accepted_at", "datetime(6)", "NO", "current_timestamp(6)", "", None, None),
+        ("deadline_at", "datetime(6)", "NO", None, "", None, None),
+        ("fence", "bigint(20) unsigned", "NO", None, "", None, None),
+        ("completed_at", "datetime(6)", "YES", "NULL", "", None, None),
+    ),
+}
+_AGENT_RUNTIME_INDEXES = {
+    "office_agent_runtime_config": {"PRIMARY": (("config_id",), True)},
+    "office_engine": {"PRIMARY": (("engine_key",), True), "idx_office_engine_enabled_key": (("enabled", "engine_key"), False)},
+    "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False), "idx_office_agent_project_list": (("project_id", "agent_id"), False)},
+    "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "uq_office_agent_binding_active_agent": (("active_agent_id",), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
+    "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_actor_concurrency": (("requested_by", "status", "deadline_at"), False), "idx_office_agent_run_project_concurrency": (("project_id", "status", "deadline_at"), False)},
+}
+_AGENT_RUNTIME_FKS = {
+    "office_engine": {"fk_office_engine_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_engine_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
+    "office_agent": {"fk_office_agent_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_created_by": (("created_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT")},
+    "office_agent_binding": {"fk_office_agent_binding_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_by": (("bound_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT")},
+    "office_agent_run": {"fk_office_agent_run_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_requested_by": (("requested_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_binding": (("binding_id",), "office_agent_binding", ("binding_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
+}
+
+
+_AGENT_RUNTIME_CHECK_CLAUSES = {
+    # MariaDB 12.3 materializes JSON as longtext plus this automatic check.
+    # The clauses below are the exact information_schema form of the reviewed
+    # DDL, not a substring or a semantic approximation.
+    "allowed_data_classifications": "json_valid(`allowed_data_classifications`)",
+    "chk_office_engine_classifications": "json_type(`allowed_data_classifications`) = 'ARRAY' and json_length(`allowed_data_classifications`) > 0",
+    "chk_office_engine_display_name_key": "`display_name_key` <> ''",
+    "chk_office_engine_epoch": "`activation_epoch` >= 0",
+    "chk_office_engine_fingerprint": "`binding_fingerprint` regexp '^[0-9a-f]{64}$'",
+    "chk_office_engine_key": "`engine_key` <> ''",
+    "chk_office_engine_version": "`version` >= 1",
+    "chk_office_agent_runtime_config_bounds": "`max_output_tokens` between 1 and 2048 and `max_input_bytes` between 1 and 32768 and `max_instructions_bytes` between 1 and 32768 and `max_response_bytes` between 1 and 1048576 and `window_seconds` between 60 and 3600 and `actor_runs_per_window` between 1 and 30 and `project_runs_per_window` between 1 and 300 and `actor_concurrency` between 1 and 2 and `project_concurrency` between 1 and 8 and `timeout_seconds` between 1 and 45 and `stale_seconds` between 6 and 60 and `stale_seconds` >= `timeout_seconds` + 5",
+    "chk_office_agent_runtime_config_singleton": "`config_id` = 1",
+    "chk_office_agent_runtime_config_version": "`config_version` >= 1",
+    "chk_office_agent_classification": "`data_classification` regexp '^[A-Z][A-Z0-9_]{0,63}$'",
+    "chk_office_agent_key": "`agent_key` <> ''",
+    "chk_office_agent_name": "`display_name` <> ''",
+    "chk_office_agent_version": "`version` >= 1",
+    "chk_office_agent_binding_version": "`binding_version` >= 1",
+    "chk_office_agent_run_key": "`idempotency_key` <> ''",
+    "chk_office_agent_run_snapshot": "`agent_version` >= 1 and `binding_version` >= 1 and `config_version` >= 1 and `engine_version` >= 1 and `engine_binding_fingerprint` regexp '^[0-9a-f]{64}$' and `credential_fingerprint` regexp '^[0-9a-f]{64}$' and `provider_id` <> '' and `auth_type` <> '' and `auth_transport` <> '' and `fence` >= 1 and `deadline_at` >= `accepted_at`",
+    "chk_office_agent_run_output": "`status` = 'SUCCEEDED' and `output_text` is not null and `completed_at` is not null or `status` = 'DISPATCHING' and `output_text` is null and `completed_at` is null or `status` = 'UNKNOWN' and `output_text` is null and `completed_at` is not null",
+}
+
+
+def _agent_runtime_check_clauses() -> dict[str, str]:
+    return _AGENT_RUNTIME_CHECK_CLAUSES
+
+
+def _agent_runtime_trigger_bodies() -> dict[str, str]:
+    result = {}
+    for statement in (*OFFICE_AGENT_RUNTIME_DDL, *OFFICE_AGENT_DDL):
+        match = re.match(r"CREATE TRIGGER IF NOT EXISTS ([a-z0-9_]+) .*? FOR EACH ROW (.*)", statement)
+        if match is not None:
+            result[match.group(1)] = match.group(2)
+    return result
+
+
+def _agent_runtime_expected_triggers() -> dict[str, tuple[str, str, str, str, str]]:
+    """Return the full trigger identity, including the protected table."""
+    result = {}
+    for statement in (*OFFICE_AGENT_RUNTIME_DDL, *OFFICE_AGENT_DDL):
+        match = re.match(
+            r"CREATE TRIGGER IF NOT EXISTS ([a-z0-9_]+) (BEFORE|AFTER) (INSERT|UPDATE|DELETE) "
+            r"ON ([a-z0-9_]+) FOR EACH ROW (.*)",
+            statement,
+        )
+        if match is not None:
+            name, timing, event, table, body = match.groups()
+            result[name] = (table, timing, event, "ROW", body)
+    return result
+
+
+def _normalize_trigger_body(value: object) -> str:
+    return re.sub(r"[\s`]", "", str(value).lower())
+
+
+def _agent_runtime_expected_indexes(table: str) -> dict[str, tuple[tuple[str, ...], bool]]:
+    expected = dict(_AGENT_RUNTIME_INDEXES[table])
+    for name, (local, _target, _remote, _update, _delete) in _AGENT_RUNTIME_FKS.get(table, {}).items():
+        if not any(columns[:len(local)] == local for columns, _unique in expected.values()):
+            expected[name] = (local, False)
+    return expected
+
+
+async def assert_office_agent_runtime_metadata(cur) -> None:
+    """Fail closed when a homonymous private-agent table lost its contract."""
+    for table, columns in _AGENT_RUNTIME_COLUMNS.items():
+        if not await _table_exists(cur, table):
+            raise RuntimeError(f"Office agent runtime table {table} is absent")
+        await cur.execute(
+            "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,CHARACTER_SET_NAME,COLLATION_NAME "
+            "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
+            (table,),
+        )
+        found_columns = tuple(tuple(row) for row in await cur.fetchall())
+        if found_columns != _AGENT_RUNTIME_COLUMN_METADATA[table]:
+            raise RuntimeError(f"Office agent runtime columns for {table} are invalid")
+        expected_indexes = _agent_runtime_expected_indexes(table)
+        await _assert_indexes(cur, table=table, expected=expected_indexes)
+        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(expected_indexes):
+            raise RuntimeError(f"Office agent runtime indexes for {table} are invalid")
+        expected_fks = _AGENT_RUNTIME_FKS.get(table, {})
+        await _assert_foreign_keys(cur, table=table, expected=expected_fks)
+        await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(expected_fks):
+            raise RuntimeError(f"Office agent runtime foreign keys for {table} are invalid")
+    await cur.execute(
+        "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_agent_binding' AND COLUMN_NAME='active_agent_id'"
+    )
+    if await cur.fetchone() != ("if(`active`,`agent_id`,NULL)",):
+        raise RuntimeError("Office agent active binding generation is invalid")
+    expected_checks = _agent_runtime_check_clauses()
+    await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME IN ('office_engine','office_agent','office_agent_binding','office_agent_run','office_agent_runtime_config') AND tc.CONSTRAINT_TYPE='CHECK'")
+    found_checks = {str(name): str(clause) for name, clause in await cur.fetchall()}
+    if set(found_checks) != set(expected_checks) or any(_normalize_mariadb_check(found_checks[name]) != _normalize_mariadb_check(clause) for name, clause in expected_checks.items()):
+        raise RuntimeError("Office agent runtime checks are invalid")
+    expected_triggers = _agent_runtime_expected_triggers()
+    placeholders = ",".join("%s" for _table in _AGENT_RUNTIME_COLUMNS)
+    await cur.execute(
+        "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,ACTION_TIMING,EVENT_MANIPULATION,ACTION_ORIENTATION,ACTION_STATEMENT "
+        "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+        f"AND EVENT_OBJECT_TABLE IN ({placeholders})",
+        tuple(_AGENT_RUNTIME_COLUMNS),
+    )
+    found_triggers = {str(name): tuple(row) for name, *row in await cur.fetchall()}
+    if set(found_triggers) != set(expected_triggers) or any(
+        tuple(found_triggers[name][:4]) != expected_triggers[name][:4]
+        or _normalize_trigger_body(found_triggers[name][4]) != _normalize_trigger_body(expected_triggers[name][4])
+        for name in expected_triggers
+    ):
+        raise RuntimeError("Office agent runtime triggers are invalid")
+
+
 async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]],
                                              allow_redacted_trigger_body: bool = False,
                                              primary_key: tuple[str, ...] | None = None) -> None:
@@ -1203,6 +1500,21 @@ async def _upgrade_invitation_outbox_stale_index(cur) -> None:
             "ALTER TABLE office_invitation_outbox ADD KEY "
             "idx_office_invitation_outbox_stale_claim (state,claimed_at,outbox_id)"
         )
+
+
+async def _upgrade_office_agent_list_indexes(cur) -> None:
+    """Add the two exact covering order indexes before selector reads run."""
+    indexes = (
+        ("office_engine", "idx_office_engine_enabled_key", ("enabled", "engine_key")),
+        ("office_agent", "idx_office_agent_project_list", ("project_id", "agent_id")),
+    )
+    for table, name, columns in indexes:
+        if not await _index_exists(cur, table, name):
+            await cur.execute(
+                f"ALTER TABLE {table} ADD KEY {name} (" + ",".join(columns) + ")"
+            )
+        elif not await _index_has_exact_shape(cur, table, name, columns):
+            raise RuntimeError(f"Office {table} selector index is incompatible; historic evidence is not rewritten")
 
 
 async def _upgrade_invitation_guards(cur) -> None:
@@ -2045,6 +2357,53 @@ async def stamp_office_runtime_revision(cur) -> None:
     )
 
 
+_OFFICE_AGENT_RUN_OUTPUT_V1 = (
+    "`status` = 'SUCCEEDED' and `output_text` is not null and `completed_at` is not null "
+    "or `status` in ('DISPATCHING','UNKNOWN') and `output_text` is null"
+)
+_OFFICE_AGENT_RUN_OUTPUT_V2 = _AGENT_RUNTIME_CHECK_CLAUSES["chk_office_agent_run_output"]
+
+
+async def _ensure_agent_runtime_invariants(cursor) -> None:
+    """Upgrade only recognized pre-release shapes without rewriting run history."""
+    if not await _column_exists(cursor, "office_agent_binding", "active_agent_id"):
+        await cursor.execute(
+            "SELECT agent_id FROM office_agent_binding WHERE active=TRUE "
+            "GROUP BY agent_id HAVING COUNT(*)>1 LIMIT 1"
+        )
+        if await cursor.fetchone() is not None:
+            raise RuntimeError("Office agent bindings have multiple active rows; historic bindings are not rewritten")
+        await cursor.execute(
+            "ALTER TABLE office_agent_binding ADD COLUMN active_agent_id BIGINT UNSIGNED "
+            "GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED AFTER active, "
+            "ADD UNIQUE KEY uq_office_agent_binding_active_agent (active_agent_id)"
+        )
+    elif not await _index_exists(cursor, "office_agent_binding", "uq_office_agent_binding_active_agent"):
+        raise RuntimeError("Office agent binding active identity index is absent")
+
+    existing = _normalize_mariadb_check(await _check_clause(cursor, "chk_office_agent_run_output"))
+    if existing == _normalize_mariadb_check(_OFFICE_AGENT_RUN_OUTPUT_V2):
+        return
+    if existing != _normalize_mariadb_check(_OFFICE_AGENT_RUN_OUTPUT_V1):
+        raise RuntimeError("Office agent run output constraint is incompatible; historic runs are not rewritten")
+    await cursor.execute(
+        "SELECT 1 FROM office_agent_run WHERE NOT ("
+        "(status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
+        "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
+        "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL)"
+        ") LIMIT 1"
+    )
+    if await cursor.fetchone() is not None:
+        raise RuntimeError("Office agent run output rows are incompatible; historic runs are not rewritten")
+    await cursor.execute(
+        "ALTER TABLE office_agent_run DROP CONSTRAINT chk_office_agent_run_output, "
+        "ADD CONSTRAINT chk_office_agent_run_output CHECK "
+        "((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
+        "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
+        "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL))"
+    )
+
+
 async def apply_office_migrations(cursor) -> None:
     """Apply only Office-owned additive DDL after JAX's namespace migration."""
     # Parse the shared manifest before any DDL.  A malformed/ambiguous ACL
@@ -2058,6 +2417,16 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute("ALTER TABLE jax_users ADD COLUMN mfa_version BIGINT NOT NULL DEFAULT 0, ADD CONSTRAINT chk_jax_users_mfa_version CHECK (mfa_version >= 0)")
     for statement in OFFICE_DDL:
         await cursor.execute(statement)
+    # v10 has no Office engine or agent tables.  This additive v11 cut is
+    # applied before any route can resolve a binding or create a run.
+    for statement in OFFICE_ENGINE_DDL:
+        await cursor.execute(statement)
+    for statement in OFFICE_AGENT_RUNTIME_DDL:
+        await cursor.execute(statement)
+    for statement in OFFICE_AGENT_DDL:
+        await cursor.execute(statement)
+    await _upgrade_office_agent_list_indexes(cursor)
+    await _ensure_agent_runtime_invariants(cursor)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
     await _ensure_office_list_indexes(cursor)
@@ -2258,3 +2627,4 @@ async def apply_office_migrations(cursor) -> None:
     from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
     await apply_module_candidate_storage_migrations(cursor)
     await apply_module_publication_staging_migrations(cursor)
+    await assert_office_agent_runtime_metadata(cursor)

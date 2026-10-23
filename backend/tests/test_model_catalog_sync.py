@@ -62,6 +62,41 @@ async def _fetch_one(sql, params=()):
             return await cur.fetchone()
 
 
+async def _snapshot_provider_models(provider_id):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, status, source, source_checked_at, consecutive_misses "
+                "FROM model WHERE provider_id=%s", (provider_id,),
+            )
+            return await cur.fetchall()
+
+
+async def _restore_provider_models(provider_id, rows):
+    from db.connection import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            original_ids = [row[0] for row in rows]
+            if original_ids:
+                placeholders = ", ".join(["%s"] * len(original_ids))
+                await cur.execute(
+                    f"DELETE FROM model WHERE provider_id=%s AND id NOT IN ({placeholders})",
+                    (provider_id, *original_ids),
+                )
+                await cur.executemany(
+                    "UPDATE model SET status=%s, source=%s, source_checked_at=%s, "
+                    "consecutive_misses=%s WHERE id=%s",
+                    [(status, source, checked_at, misses, model_id)
+                     for model_id, status, source, checked_at, misses in rows],
+                )
+            else:
+                await cur.execute("DELETE FROM model WHERE provider_id=%s", (provider_id,))
+        await conn.commit()
+
+
 async def _fetch_scalar(sql, params=()):
     row = await _fetch_one(sql, params)
     return row[0] if row else None
@@ -181,6 +216,7 @@ def test_sync_provider_models_never_writes_facet_binding(client, monkeypatch):
         _fetch_scalar,
         "SELECT model_ref FROM facet_binding WHERE facet_key='ada' AND role='primary'",
     )
+    model_rows = client.portal.call(_snapshot_provider_models, "zhipu")
 
     fake = _FakeGetClient(_FakeResponse({"data": [{"id": "totally-different-model"}]}))
     original = http_client._client
@@ -189,6 +225,7 @@ def test_sync_provider_models_never_writes_facet_binding(client, monkeypatch):
         client.portal.call(model_catalog.sync_provider_models, "zhipu")
     finally:
         http_client._client = original
+        client.portal.call(_restore_provider_models, "zhipu", model_rows)
 
     after = client.portal.call(
         _fetch_scalar,

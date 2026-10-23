@@ -151,8 +151,39 @@ El journal fsync ata el release, digest del manifiesto y digest de selección: s
 se restaura un `PRE_DDL` que coincida exactamente con la activación solicitada y
 la restauración ocurre ya con ambos servicios detenidos y el candado runtime
 exclusivo. Desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige recuperación
-humana con backup probado. Sólo inicia web: su dependencia systemd
-ejecuta el migrador una vez. Una modificación, byte extra, enlace, permisos
+humana con backup probado. En un upgrade con tablas Office, la activación corre
+primero el migrador, recompone los privilegios exactos del usuario web sobre las
+tablas recién creadas y recién entonces arranca web. El host de MariaDB del
+principal viene como argumento medido, nunca se deduce de la dirección del DB:
+
+```bash
+sudo /usr/local/libexec/activate-platform-pair-release.sh \
+  --release /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
+  --expected-manifest-sha256 "$MANIFEST_SHA256" \
+  --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256" \
+  --measured-grantee-host "$JAX_DB_GRANTEE_HOST"
+```
+
+Antes de instalar ese paquete y activar el par, agregar la única ruta de
+proveedor aprobada al archivo de despliegue, no a `runtime.env`:
+
+```bash
+sudo install -o root -g jaxsvc -m 0640 /etc/jax/.env /etc/jax/.env.nueva
+sudo sed -i '/^OFFICE_BROKER_ALLOWED_BASE_URLS=/d' /etc/jax/.env.nueva
+printf '%s\n' 'OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4' | sudo tee -a /etc/jax/.env.nueva >/dev/null
+sudo mv /etc/jax/.env.nueva /etc/jax/.env
+```
+
+El provisionador valida esa URL HTTPS de Z.ai y la copia al nuevo `runtime.env`;
+escribirla directamente allí se pierde en la siguiente provisión.
+
+El paquete de runtime instala el provisionador y sus dos manifiestos junto con
+el activador, antes de ejecutar la activación. La migración queda en estado
+`active (exited)` tras completarse: web conserva sus dependencias normales y
+no vuelve a dispararla. En Hall9000 el archivo de despliegue `/etc/jax/.env`
+es `root:jaxsvc 0640`; el activador exige exactamente ese formato, o el formato
+más cerrado `root:root 0600` para un entorno de recuperación. Una modificación,
+byte extra, enlace, permisos
 inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
 arranque antes de importar Python. Antes de borrar el journal, la activación
 comprueba el estado efectivo del unit, el PID principal y que su entorno apunta

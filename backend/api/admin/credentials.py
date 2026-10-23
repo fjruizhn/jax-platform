@@ -96,15 +96,19 @@ async def rotate_credential(
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT id FROM provider WHERE id=%s", (provider_id,))
+            # This is the same first lock as Office engine activation.  It
+            # makes a rotation and the activation that repins the engine one
+            # serial operation, rather than leaving activation to observe an
+            # arbitrary subset of the overlapping credentials.
+            await cur.execute("SELECT id FROM provider WHERE id=%s FOR UPDATE", (provider_id,))
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="Provider no encontrado")
 
             await cur.execute(
-                "SELECT COUNT(*) FROM credential WHERE provider_id=%s AND state='active'",
+                "SELECT id FROM credential WHERE provider_id=%s AND state='active' FOR UPDATE",
                 (provider_id,),
             )
-            (active_count,) = await cur.fetchone()
+            active_count = len(await cur.fetchall())
             if active_count >= _MAX_ACTIVE_PER_PROVIDER:
                 raise HTTPException(
                     status_code=409,
@@ -125,6 +129,45 @@ async def rotate_credential(
             await _audit(cur, new_id, provider_id, "rotate", user, request)
         await conn.commit()
     return {"ok": True, "credential_id": new_id}
+
+
+@router.post("/credentials/{provider_id}/revoke/{credential_id}")
+async def revoke_credential_by_id(
+    provider_id: str, credential_id: int, request: Request,
+    user: AuthUser = Depends(require_superadmin),
+):
+    """Revoke one replaced secret after the Office engine has repinned.
+
+    A currently enabled Office engine keeps its exact credential live; the
+    replacement endpoint therefore cannot accidentally take the agent down.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id FROM provider WHERE id=%s FOR UPDATE", (provider_id,))
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Provider no encontrado")
+            await cur.execute(
+                "SELECT id FROM credential WHERE id=%s AND provider_id=%s AND state='active' FOR UPDATE",
+                (credential_id, provider_id),
+            )
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Credencial activa no encontrada")
+            await cur.execute(
+                "SELECT e.engine_key FROM office_engine e JOIN model m ON m.id=e.model_ref "
+                "WHERE m.provider_id=%s AND e.credential_id=%s AND e.enabled=TRUE FOR UPDATE",
+                (provider_id, credential_id),
+            )
+            if await cur.fetchone():
+                raise HTTPException(status_code=409, detail="La credencial está activa en un motor de Office")
+            await cur.execute(
+                "UPDATE credential SET state='revoked', revoked_at=NOW() "
+                "WHERE id=%s AND provider_id=%s AND state='active'",
+                (credential_id, provider_id),
+            )
+            await _audit(cur, credential_id, provider_id, "revoke", user, request)
+        await conn.commit()
+    return {"ok": True, "credential_id": credential_id, "revoked": True}
 
 
 @router.post("/credentials/{provider_id}/revoke")

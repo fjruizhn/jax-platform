@@ -7,6 +7,7 @@ Before=jax-platform.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 User=jaxmigrate
 WorkingDirectory=/
 LoadCredential=migrate.env:/etc/jax/migrate.env
