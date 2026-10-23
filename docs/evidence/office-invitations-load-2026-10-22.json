@@ -1,0 +1,243 @@
+{
+  "database": "jax_memory_test_1a2b3c4d",
+  "degradation": {
+    "accept": "c=5: 7 HTTP/client errors",
+    "issue_accept": "c=5: p95 57.92ms > 3x baseline 12.47ms",
+    "issue_revoke": "c=5: p95 58.12ms > 3x baseline 10.5ms",
+    "list": "not observed through c=10",
+    "revoke": "c=5: p95 46.6ms > 3x baseline 10.35ms"
+  },
+  "levels": [
+    {
+      "accept": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 176.51,
+        "n": 4,
+        "ok": 4,
+        "p50_ms": 167.92,
+        "p95_ms": 176.51,
+        "p99_ms": 176.51,
+        "rps": 20.03,
+        "statuses": {
+          "200": 4
+        }
+      },
+      "concurrency": 1,
+      "issue_accept": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 12.47,
+        "n": 4,
+        "ok": 4,
+        "p50_ms": 8.42,
+        "p95_ms": 12.47,
+        "p99_ms": 12.47,
+        "rps": 300.61,
+        "statuses": {
+          "200": 4
+        }
+      },
+      "issue_revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 10.5,
+        "n": 4,
+        "ok": 4,
+        "p50_ms": 7.13,
+        "p95_ms": 10.5,
+        "p99_ms": 10.5,
+        "rps": 357.32,
+        "statuses": {
+          "200": 4
+        }
+      },
+      "list": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 34.55,
+        "n": 4,
+        "ok": 4,
+        "p50_ms": 33.03,
+        "p95_ms": 34.55,
+        "p99_ms": 34.55,
+        "rps": 15.7,
+        "statuses": {
+          "200": 4
+        }
+      },
+      "revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 10.35,
+        "n": 4,
+        "ok": 4,
+        "p50_ms": 7.52,
+        "p95_ms": 10.35,
+        "p99_ms": 10.35,
+        "rps": 344.89,
+        "statuses": {
+          "200": 4
+        }
+      }
+    },
+    {
+      "accept": {
+        "error_details": [
+          "{\"detail\":\"Demasiados intentos. Espera y vuelve a intentarlo.\"}"
+        ],
+        "errors": 7,
+        "max_ms": 208.57,
+        "n": 20,
+        "ok": 13,
+        "p50_ms": 184.0,
+        "p95_ms": 207.79,
+        "p99_ms": 208.57,
+        "rps": 61.04,
+        "statuses": {
+          "200": 13,
+          "429": 7
+        }
+      },
+      "concurrency": 5,
+      "issue_accept": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 59.82,
+        "n": 20,
+        "ok": 20,
+        "p50_ms": 38.38,
+        "p95_ms": 57.92,
+        "p99_ms": 59.82,
+        "rps": 313.1,
+        "statuses": {
+          "200": 20
+        }
+      },
+      "issue_revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 60.29,
+        "n": 20,
+        "ok": 20,
+        "p50_ms": 34.76,
+        "p95_ms": 58.12,
+        "p99_ms": 60.29,
+        "rps": 323.91,
+        "statuses": {
+          "200": 20
+        }
+      },
+      "list": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 28.83,
+        "n": 20,
+        "ok": 20,
+        "p50_ms": 19.73,
+        "p95_ms": 27.91,
+        "p99_ms": 28.83,
+        "rps": 46.67,
+        "statuses": {
+          "200": 20
+        }
+      },
+      "revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 52.11,
+        "n": 20,
+        "ok": 20,
+        "p50_ms": 32.52,
+        "p95_ms": 46.6,
+        "p99_ms": 52.11,
+        "rps": 373.82,
+        "statuses": {
+          "200": 20
+        }
+      }
+    },
+    {
+      "accept": {
+        "error_details": [
+          "{\"detail\":\"Demasiados intentos. Espera y vuelve a intentarlo.\"}"
+        ],
+        "errors": 40,
+        "max_ms": null,
+        "n": 40,
+        "ok": 0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "rps": 148.89,
+        "statuses": {
+          "429": 40
+        }
+      },
+      "concurrency": 10,
+      "issue_accept": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 128.84,
+        "n": 40,
+        "ok": 40,
+        "p50_ms": 80.29,
+        "p95_ms": 124.77,
+        "p99_ms": 128.84,
+        "rps": 292.5,
+        "statuses": {
+          "200": 40
+        }
+      },
+      "issue_revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 109.56,
+        "n": 40,
+        "ok": 40,
+        "p50_ms": 63.92,
+        "p95_ms": 107.15,
+        "p99_ms": 109.56,
+        "rps": 340.56,
+        "statuses": {
+          "200": 40
+        }
+      },
+      "list": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 63.56,
+        "n": 40,
+        "ok": 40,
+        "p50_ms": 39.26,
+        "p95_ms": 60.43,
+        "p99_ms": 63.56,
+        "rps": 83.3,
+        "statuses": {
+          "200": 40
+        }
+      },
+      "revoke": {
+        "error_details": [],
+        "errors": 0,
+        "max_ms": 99.3,
+        "n": 40,
+        "ok": 40,
+        "p50_ms": 53.44,
+        "p95_ms": 89.04,
+        "p99_ms": 99.3,
+        "rps": 391.82,
+        "statuses": {
+          "200": 40
+        }
+      }
+    }
+  ],
+  "notes": [
+    "real loopback ASGI HTTP",
+    "real auth and MFA",
+    "outbox bearer decrypted only from the isolated disposable database"
+  ],
+  "run_id": "f2004281",
+  "schema": "office-invitation-load/v1"
+}

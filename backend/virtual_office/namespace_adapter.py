@@ -33,10 +33,14 @@ class OfficeNamespaceAuthorizer:
             raise OfficeNamespaceAuthorizationDenied("Office namespace operation denied")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config)
+        )
         if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
             raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
+        # A root may create Office work only for its own tenant.  This check
+        # runs in JAX's pre-create transaction, before a project scope or its
+        # idempotency request can be written.
+        if decision.tenant_id is None or int(decision.tenant_id) != target_tenant_id:
+            raise OfficeNamespaceAuthorizationDenied("Office project target tenant denied")
         target = await repository.fetch_tenant(cursor, target_tenant_id, for_update=True)
         if target is None or target["status"] != "active":
             raise OfficeNamespaceAuthorizationDenied("Office target tenant is not active")
@@ -79,8 +83,6 @@ class OfficeNamespaceMembershipAuthorizer:
             raise OfficeNamespaceAuthorizationDenied("Office invitation acceptance proof is unavailable")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed:
             raise OfficeNamespaceAuthorizationDenied("Office membership administration denied")

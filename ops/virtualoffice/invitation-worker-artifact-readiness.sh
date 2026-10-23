@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Check committed worker artifacts, and optionally their loaded systemd state.
+set -euo pipefail
+root=${1:?usage: invitation-worker-artifact-readiness.sh REPOSITORY_ROOT [--effective]}
+effective=${2:-}
+service="$root/ops/virtualoffice/invitation-worker.service"
+timer="$root/ops/virtualoffice/invitation-worker.timer"
+readiness="$root/ops/virtualoffice/invitation-worker-runtime-readiness.sh"
+provision="$root/ops/virtualoffice/provision-invitation-worker.sh"
+installer="$root/ops/virtualoffice/install-invitation-worker-release.sh"
+routine_installer="$root/ops/virtualoffice/install-invitation-delivery-routines.sh"
+routine_attestor="$root/ops/virtualoffice/attest-invitation-delivery-routines.sh"
+routine_sql="$root/ops/virtualoffice/office-invitation-delivery-v1.sql"
+for path in "$service" "$timer" "$readiness" "$provision" "$installer" "$routine_installer" "$routine_attestor" "$routine_sql"; do [[ -f "$path" ]] || { printf '%s\n' "missing $path" >&2; exit 1; }; done
+[[ -x "$readiness" && -x "$provision" && -x "$installer" && -x "$routine_installer" && -x "$routine_attestor" ]] || { printf '%s\n' 'worker helper is not executable' >&2; exit 1; }
+[[ $(sha256sum "$routine_sql" | awk '{print $1}') == 39ebe406f1a42e8daac93fde3bd6427cbaaee1bcbbad1ac0ff2cd0438710c32d ]] || { printf '%s\n' 'worker routine SQL digest drift' >&2; exit 1; }
+grep -Fqx 'User=jaxinvite' "$service"
+grep -Fqx 'EnvironmentFile=/etc/jax/invitation-worker.env' "$service"
+grep -Fqx 'WorkingDirectory=/opt/axioma-office-invitation-worker/backend' "$service"
+grep -Fqx 'ExecStartPre=/usr/local/libexec/axioma-office-invitation-worker-readiness' "$service"
+grep -Fqx 'ExecStart=/opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_delivery_worker' "$service"
+grep -Fqx 'NoNewPrivileges=true' "$service"
+grep -Fqx 'PrivateDevices=true' "$service"
+grep -Fqx 'CapabilityBoundingSet=' "$service"
+grep -Fqx 'LimitCORE=0' "$service"
+grep -Fqx 'ProtectSystem=strict' "$service"
+grep -Fqx 'OnFailure=aviso-fallo@%n.service' "$service"
+grep -Fqx 'OnBootSec=30s' "$timer"
+grep -Fqx 'OnUnitInactiveSec=30s' "$timer"
+grep -Fqx 'Persistent=true' "$timer"
+grep -Fq 'GRANT UPDATE ON' "$provision" && grep -Fq 'office_invitation_outbox' "$provision"
+grep -Fq 'GRANT INSERT ON' "$provision" && grep -Fq 'office_invitation_event' "$provision"
+grep -Fq 'git -C "$trusted_repo" archive' "$installer"
+grep -Fq 'chown -R root:root' "$installer"
+if [[ "$effective" == --effective ]]; then
+  systemctl is-enabled axioma-office-invitation-worker.timer | grep -qx enabled
+  systemctl show axioma-office-invitation-worker.service -p User | grep -Fqx 'User=jaxinvite'
+  systemctl show axioma-office-invitation-worker.service -p Group | grep -Fqx 'Group=jaxinvite'
+  systemctl show axioma-office-invitation-worker.service -p WorkingDirectory | grep -Fqx 'WorkingDirectory=/opt/axioma-office-invitation-worker/backend'
+  systemctl show axioma-office-invitation-worker.service -p ExecStart | grep -Fq 'virtual_office.invitation_delivery_worker'
+  systemctl show axioma-office-invitation-worker.service -p ExecStartPre | grep -Fq 'axioma-office-invitation-worker-readiness'
+  systemctl show axioma-office-invitation-worker.service -p EnvironmentFiles | grep -Fq '/etc/jax/invitation-worker.env'
+  systemctl show axioma-office-invitation-worker.service -p OnFailure | grep -Fq 'aviso-fallo@'
+  systemctl show axioma-office-invitation-worker.service -p UMask | grep -Fqx 'UMask=0077'
+  systemctl show axioma-office-invitation-worker.service -p TimeoutStartUSec | grep -Fqx 'TimeoutStartUSec=3h'
+  systemctl show axioma-office-invitation-worker.service -p NoNewPrivileges | grep -Fqx 'NoNewPrivileges=yes'
+  systemctl show axioma-office-invitation-worker.service -p PrivateDevices | grep -Fqx 'PrivateDevices=yes'
+  systemctl show axioma-office-invitation-worker.service -p CapabilityBoundingSet | grep -Fqx 'CapabilityBoundingSet='
+  systemctl show axioma-office-invitation-worker.service -p LimitCORE | grep -Fqx 'LimitCORE=0'
+  systemctl show axioma-office-invitation-worker.service -p ProtectSystem | grep -Fqx 'ProtectSystem=strict'
+  test -x /usr/local/libexec/axioma-office-invitation-worker-readiness
+  test "$(stat -c '%U:%G:%a' /usr/local/libexec/axioma-office-invitation-worker-readiness)" = root:root:755
+  /usr/bin/systemd-run --wait --pipe --collect --property=User=jaxinvite --property=Group=jaxinvite \
+    --property=WorkingDirectory=/opt/axioma-office-invitation-worker/backend \
+    --property=EnvironmentFile=/etc/jax/invitation-worker.env \
+    /usr/local/libexec/axioma-office-invitation-worker-readiness --deep
+  systemctl is-active axioma-office-invitation-worker.timer | grep -qx active
+  systemctl cat aviso-fallo@.service >/dev/null
+fi

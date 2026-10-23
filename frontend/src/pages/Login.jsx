@@ -8,7 +8,6 @@ import api from '../api/client'
 import { codigoDe } from '../api/errores'
 import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
-import Dialogo from '../components/Dialogo'
 import HalEye from '../components/HalEye/HalEye'
 import { TAMANO_BOTON_ACCION, TAMANO_MINIMO_TOQUE } from '../tema/botones'
 
@@ -44,9 +43,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [otp, setOtp] = useState('')
   const [recoveryCode, setRecoveryCode] = useState('')
-  const [recoveryPending, setRecoveryPending] = useState(false)
   const [recoveryTerminal, setRecoveryTerminal] = useState(false)
-  const [confirmAbandonRecovery, setConfirmAbandonRecovery] = useState(false)
   const [challenge, setChallenge] = useState(null)
   const [enrollment, setEnrollment] = useState(null)
   const [enrollmentUnknown, setEnrollmentUnknown] = useState(false)
@@ -59,12 +56,19 @@ export default function Login() {
   const [forgotSent, setForgotSent] = useState(false)
   const otpRef = useRef(null)
   const generation = useRef(0)
-  useEffect(() => () => { generation.current += 1; setPassword(''); setOtp(''); setRecoveryCode(''); setRecoveryPending(false); setChallenge(null); setEnrollment(null); setCodes(null) }, [])
+  useEffect(() => () => { generation.current += 1; setPassword(''); setOtp(''); setRecoveryCode(''); setChallenge(null); setEnrollment(null); setCodes(null) }, [])
   useEffect(() => { if (view === 'challenge' || view === 'setup') otpRef.current?.focus() }, [view])
-  const clearTransient = () => { setChallenge(null); setEnrollment(null); setEnrollmentUnknown(false); setOtp(''); setRecoveryCode(''); setRecoveryPending(false); setRecoveryTerminal(false) }
-  const cancel = () => { generation.current += 1; clearTransient(); setConfirmAbandonRecovery(false); setError(''); setView('login') }
-  const requestCancel = () => recoveryPending ? setConfirmAbandonRecovery(true) : cancel()
-  const destination = (data) => navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
+  const clearTransient = () => { setChallenge(null); setEnrollment(null); setEnrollmentUnknown(false); setOtp(''); setRecoveryCode(''); setRecoveryTerminal(false) }
+  // Local cancellation only prevents this browser from applying a late response;
+  // one-shot server operations are never assumed to have rolled back.
+  const cancel = () => { generation.current += 1; clearTransient(); setError(''); setView('login') }
+  const requestCancel = cancel
+  const destination = (data) => {
+    const invitationFlow = location.state?.officeInvitationFlow
+    if (invitationFlow === 'recovery') return navigate('/virtual-office')
+    if (invitationFlow === 'accept') return navigate('/office/invitation')
+    return navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
+  }
   async function submitLogin(e) {
     e.preventDefault(); setError(''); clearAvisoSesion(); setLoading(true); const request = ++generation.current; const epoch = sessionEpoch
     try {
@@ -92,24 +96,35 @@ export default function Login() {
   async function recover(e) {
     e.preventDefault(); setError(''); const request = ++generation.current; const epoch = sessionEpoch
     if (!/^[A-Za-z0-9_-]{32}$/.test(recoveryCode)) return setError(t.mfa.invalidRecovery)
+    let recoveryAccepted = false
     setLoading(true)
     try {
-      const start = await mfaApi.recover(recoveryCode)
+      const recovered = await mfaApi.recover(recoveryCode)
       if (request !== generation.current || epoch !== currentEpoch()) return
-      setRecoveryPending(false); setEnrollmentUnknown(false); setEnrollment(start.data); setView('setup')
+      recoveryAccepted = true
+      // Both capabilities are one-shot.  The recovery bearer never reaches the
+      // UI state: it is used immediately and is discarded on every outcome.
+      setRecoveryCode('')
+      const start = await mfaApi.recoveryEnrollmentStart(recovered.data.recovery_token)
+      if (request !== generation.current || epoch !== currentEpoch()) return
+      setEnrollmentUnknown(false); setEnrollment(start.data); setView('setup')
     } catch (err) {
       if (request === generation.current && epoch === currentEpoch()) {
-        if (err?.response?.status === 401) { setRecoveryPending(false); setError(t.mfa.invalidRecovery) }
+        if (err?.response?.status === 401 && !recoveryAccepted) setError(t.mfa.invalidRecovery)
+        else if (err?.response?.status === 401) {
+          clearTransient()
+          setError(t.mfa.recoveryAssistance)
+        }
         else if (err?.response?.status === 410) {
-          setRecoveryPending(false)
+          clearTransient()
           setRecoveryTerminal(true)
           setError(t.mfa.recoveryAssistance)
         } else if (err?.response?.status === 503 && codigoDe(err) === 'office_mfa_unavailable') {
-          setRecoveryPending(false)
+          clearTransient()
           setError(errorMfa(err, t))
         } else {
-          setRecoveryPending(true)
-          setError(t.mfa.recoveryRetry)
+          clearTransient()
+          setError(t.mfa.recoveryIndeterminate)
         }
       }
     } finally { if (request === generation.current && epoch === currentEpoch()) setLoading(false) }
@@ -134,9 +149,8 @@ export default function Login() {
   return <div className="min-h-dvh bg-fondo flex items-center justify-center p-4"><div className="w-full max-w-md">{language}
     {view === 'login' && (forgot ? <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.forgotPasswordTitle}</h1><p className="text-sm text-texto-tenue">{t.forgotPasswordDesc}</p>{forgotSent ? <p className="text-sm text-exito">{t.forgotPasswordSent}</p> : <form onSubmit={forgotPassword} className="space-y-4"><label htmlFor="forgot-email" className={LABEL}>{t.emailLabel}</label><input id="forgot-email" type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} className={INPUT} required autoFocus />{forgotError && <AlertaError>{forgotError}</AlertaError>}<button disabled={loading} className={`${TAMANO_BOTON_ACCION} w-full bg-accion text-sobre-color rounded`}>{t.forgotPasswordSend}</button></form>}<button type="button" onClick={() => setForgot(false)} className="w-full text-xs min-h-6 text-texto-tenue">← {t.backToLogin}</button></section> : <><div className="flex justify-center mb-8"><HalEye size={150} reposo /></div><h1 className="text-center text-2xl font-bold text-texto mb-1">{nombre}</h1><p className="text-center text-xs text-texto-tenue mb-8">{t.loginTagline}</p>{avisoSesion && <AlertaError className="text-sm bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2 mb-4">{t[avisoSesion] ?? t.loginError}</AlertaError>}<form onSubmit={submitLogin} className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><div><label htmlFor="login-email" className={LABEL}>{t.emailLabel}</label><input id="login-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={INPUT} placeholder={t.emailPlaceholder} required autoFocus /></div><div><label htmlFor="login-password" className={LABEL}>{t.passwordLabel}</label><PasswordInput id="login-password" value={password} onChange={(e) => setPassword(e.target.value)} className={INPUT} placeholder="••••••••" autoComplete="current-password" required /></div>{failure}<button disabled={loading} className="w-full py-2.5 rounded-lg bg-accion hover:bg-accion-hover disabled:opacity-50 text-sobre-color font-semibold transition-colors">{loading ? t.loggingIn : t.loginButton(nombre)}</button><button type="button" onClick={() => setForgot(true)} className="w-full text-xs min-h-6 text-texto-tenue">{t.forgotPassword}</button></form></>)}
     {view === 'challenge' && <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.mfa.title}</h1><p className="text-sm text-texto-tenue">{t.mfa.challengeIntro}</p><form onSubmit={verifyLogin} className="space-y-4">{otpField('mfa-otp')}{failure}<button disabled={loading} className="w-full py-2.5 rounded-lg bg-accion text-sobre-color font-semibold disabled:opacity-50">{loading ? t.mfa.verifying : t.mfa.verify}</button></form><button type="button" onClick={() => { generation.current += 1; setOtp(''); setError(''); setView('recovery') }} className="w-full min-h-6 text-xs text-info hover:text-info">{t.mfa.recoveryLink}</button>{back}</section>}
-    {view === 'recovery' && <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.mfa.recoveryTitle}</h1><p className="text-sm text-texto-tenue">{t.mfa.recoveryIntro}</p><form onSubmit={recover} className="space-y-4"><div><label htmlFor="recovery-code" className={LABEL}>{t.mfa.recoveryLabel}</label><input id="recovery-code" value={recoveryCode} onChange={(e) => { setRecoveryPending(false); setError(''); setRecoveryCode(e.target.value) }} autoComplete="one-time-code" className={INPUT} required disabled={recoveryTerminal} /></div>{failure}<button disabled={loading || recoveryTerminal} className="w-full py-2.5 rounded-lg bg-accion text-sobre-color font-semibold disabled:opacity-50">{recoveryPending ? t.mfa.retryRecovery : t.mfa.continue}</button></form>{back}</section>}
+    {view === 'recovery' && <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.mfa.recoveryTitle}</h1><p className="text-sm text-texto-tenue">{t.mfa.recoveryIntro}</p><form onSubmit={recover} className="space-y-4"><div><label htmlFor="recovery-code" className={LABEL}>{t.mfa.recoveryLabel}</label><input id="recovery-code" value={recoveryCode} onChange={(e) => { setError(''); setRecoveryCode(e.target.value) }} autoComplete="one-time-code" className={INPUT} required disabled={recoveryTerminal} /></div>{failure}<button disabled={loading || recoveryTerminal} className="w-full py-2.5 rounded-lg bg-accion text-sobre-color font-semibold disabled:opacity-50">{t.mfa.continue}</button></form>{back}</section>}
     {view === 'setup' && <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.mfa.setupTitle}</h1><p className="text-sm text-texto-tenue">{t.mfa.setupIntro}</p><div><p className={LABEL}>{t.mfa.secretLabel}</p><code className="block break-all bg-hundido border border-borde rounded-lg p-3 text-sm text-texto">{enrollment?.secret}</code></div><form onSubmit={confirmEnrollment} className="space-y-4">{otpField('setup-otp')}{failure}<button disabled={loading || enrollmentUnknown} className="w-full py-2.5 rounded-lg bg-accion text-sobre-color font-semibold disabled:opacity-50">{t.mfa.verify}</button></form>{back}</section>}
     {view === 'codes' && <section className="bg-superficie rounded-xl p-6 border border-borde space-y-4"><h1 className="text-xl font-bold text-texto">{t.mfa.codesTitle}</h1><p className="text-sm text-texto-tenue">{t.mfa.codesIntro}</p><ul className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-label={t.mfa.codesTitle}>{codes?.map((code) => <li key={code} className="break-all bg-hundido border border-borde rounded p-2 font-mono text-sm text-texto">{code}</li>)}</ul><button type="button" onClick={() => { setCodes(null); cancel() }} className="w-full py-2.5 rounded-lg bg-accion text-sobre-color font-semibold">{t.mfa.acknowledge}</button></section>}
-    {confirmAbandonRecovery && <Dialogo idTitulo="mfa-abandon-recovery" titulo={t.mfa.recoveryTitle} onCerrar={() => setConfirmAbandonRecovery(false)}><p className="text-sm text-texto-tenue">{t.mfa.recoveryRetry}</p><div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setConfirmAbandonRecovery(false)}>{t.mfa.cancel}</button><button type="button" onClick={cancel} className="rounded bg-peligro px-3 py-1 text-sobre-color">{t.mfa.back}</button></div></Dialogo>}
   </div></div>
 }

@@ -151,7 +151,7 @@ def test_project_admin_can_manage_its_project_but_not_global_administration(clie
     client.portal.call(scenario)
 
 
-def test_derived_mfa_matrix_keeps_collaborator_view_open_and_mutations_recent(client):
+def test_project_admin_normal_project_work_does_not_require_mfa(client):
     async def scenario():
         fixture = await _seed_office_fixture()
         # Ordinary collaboration has no implicit MFA barrier.
@@ -162,21 +162,22 @@ def test_derived_mfa_matrix_keeps_collaborator_view_open_and_mutations_recent(cl
             "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
             "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
         )
-        # A false compatibility flag cannot lower the role-derived requirement.
-        denied = await authorize_office(
-            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
-            require_recent_mfa=False,
-        )
-        assert denied.code == "office_mfa_required"
-        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
+        # Project administration is ordinary Office work, available after
+        # normal sign-in without requiring MFA enrollment or a proof.
         assert (await authorize_office(
             None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
-            **_with_proof(proof),
         )).allowed is True
         assert (await authorize_office(
             None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"],
-            **_with_proof(proof),
         )).allowed is True
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"],
+        )).allowed is True
+        # A caller that has a reason to demand step-up retains that option.
+        assert (await authorize_office(
+            None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"],
+            require_recent_mfa=True,
+        )).code == "office_mfa_required"
     client.portal.call(scenario)
 
 
@@ -184,11 +185,10 @@ def test_project_membership_administration_is_separate_from_content_and_can_clea
     async def scenario():
         fixture = await _seed_office_fixture()
         await _sql("UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]))
-        proof = await _real_mfa_proof(fixture["actor"], step_up=True)
-        assert (await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"], **_with_proof(proof))).allowed is True
+        assert (await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])).allowed is True
         await _sql("UPDATE jax_project_scope SET status='ARCHIVED' WHERE project_id=%s", (fixture["project"],))
         assert (await authorize_office(None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"])).code == "office_namespace_denied"
-        archived_cleanup = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"], **_with_proof(proof))
+        archived_cleanup = await authorize_office(None, fixture["actor"], OfficeOperation.ADMINISTER_PROJECT_MEMBERS, fixture["project"])
         assert archived_cleanup.allowed is True
         assert archived_cleanup.code == "office_project_admin_members"
     client.portal.call(scenario)
@@ -518,9 +518,7 @@ async def _add_internal_office_user(fixture, *, global_role: str = "COLLABORATOR
 @pytest.mark.parametrize(
     ("role_case", "global_role", "grant_role", "professional"),
     (
-        ("office_root", "OFFICE_SUPERUSER", "COLLABORATOR", False),
         ("general_admin", "GENERAL_ADMIN", "COLLABORATOR", False),
-        ("project_admin", "COLLABORATOR", "PROJECT_ADMIN", False),
         ("professional_approver", "COLLABORATOR", "COLLABORATOR", True),
     ),
 )
@@ -529,20 +527,11 @@ def test_privileged_view_requires_current_verified_proof_but_not_recency(
 ):
     async def scenario():
         fixture = await _seed_office_fixture()
-        if role_case == "office_root":
-            actor = fixture["outsider"]
-            await _sql(
-                "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,%s,'ACTIVE')",
-                (actor, global_role),
-            )
-        else:
-            actor = fixture["actor"] if role_case == "project_admin" else await _add_internal_office_user(
-                fixture, global_role=global_role,
-            )
-            await _sql(
-                "UPDATE office_project_grant SET grant_role=%s WHERE project_id=%s AND user_id=%s",
-                (grant_role, fixture["project"], actor),
-            )
+        actor = await _add_internal_office_user(fixture, global_role=global_role)
+        await _sql(
+            "UPDATE office_project_grant SET grant_role=%s WHERE project_id=%s AND user_id=%s",
+            (grant_role, fixture["project"], actor),
+        )
         if professional:
             await _sql(
                 "INSERT INTO office_professional_grant "
@@ -566,7 +555,7 @@ def test_privileged_view_requires_current_verified_proof_but_not_recency(
     client.portal.call(scenario)
 
 
-def test_old_current_proof_cannot_authorize_mutations_and_false_flag_cannot_downgrade(client):
+def test_office_wide_mutations_keep_recent_proof_requirement(client):
     async def scenario():
         fixture = await _seed_office_fixture()
         # Ordinary collaborator view remains open, but explicit recent MFA
@@ -583,22 +572,15 @@ def test_old_current_proof_cannot_authorize_mutations_and_false_flag_cannot_down
             "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
             "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
         )
-        await _real_mfa_proof(fixture["actor"], step_up=True)
-        old_proof_id = await _insert_controlled_step_up_proof(fixture["actor"], timestamp="old")
-        old_proof = type("Proof", (), {"event_id": old_proof_id})()
-        # The compatibility flag never lowers the derived privileged-view bar.
+        # Project-admin operations remain available without MFA, including
+        # where callers pass the default false compatibility flag.
         assert (await authorize_office(
             None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
             require_recent_mfa=False,
-        )).code == "office_mfa_required"
-        assert (await authorize_office(
-            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
-            **_with_proof(old_proof),
         )).allowed is True
         assert (await authorize_office(
             None, fixture["actor"], OfficeOperation.MANAGE_PROJECT, fixture["project"],
-            **_with_proof(old_proof),
-        )).code == "office_mfa_required"
+        )).allowed is True
         root = fixture["outsider"]
         await _sql(
             "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'OFFICE_SUPERUSER','ACTIVE')",
@@ -619,25 +601,22 @@ def test_old_current_proof_cannot_authorize_mutations_and_false_flag_cannot_down
 def test_privileged_view_rejects_untrusted_or_version_stale_durable_proofs(client, case):
     async def scenario():
         fixture = await _seed_office_fixture()
-        await _sql(
-            "UPDATE office_project_grant SET grant_role='PROJECT_ADMIN' "
-            "WHERE project_id=%s AND user_id=%s", (fixture["project"], fixture["actor"]),
-        )
-        await _real_mfa_proof(fixture["actor"], step_up=True)
+        admin = await _add_internal_office_user(fixture, global_role="GENERAL_ADMIN")
+        await _real_mfa_proof(admin, step_up=True)
         if case == "wrong_subject":
             other = await _add_internal_office_user(fixture)
             await _real_mfa_proof(other, step_up=True)
             proof_id = await _insert_controlled_step_up_proof(other)
         else:
             proof_id = await _insert_controlled_step_up_proof(
-                fixture["actor"],
+                admin,
                 timestamp="future" if case == "future" else "current",
                 result="DENIED" if case == "non_verified" else "VERIFIED",
                 token_version_delta=-1 if case == "old_token" else 0,
                 mfa_version_delta=-1 if case == "old_mfa" else 0,
             )
         decision = await authorize_office(
-            None, fixture["actor"], OfficeOperation.VIEW_PROJECT, fixture["project"],
+            None, admin, OfficeOperation.VIEW_PROJECT, fixture["project"],
             **_with_proof(type("Proof", (), {"event_id": proof_id})()),
         )
         assert decision.code == "office_mfa_required", case

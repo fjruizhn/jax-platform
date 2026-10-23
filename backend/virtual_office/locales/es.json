@@ -1,0 +1,7 @@
+{
+  "invitation_email": {
+    "subject": "Axioma — Invitación a Oficina Virtual",
+    "text": "Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:\n\n{url}\n\nVence: {expires_at}",
+    "html": "<p>Abra este enlace seguro para aceptar la invitación a la Oficina Virtual:</p><p><a href=\"{url}\">Aceptar invitación</a></p><p>Vence: {expires_at}</p>"
+  }
+}

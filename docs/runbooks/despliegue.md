@@ -105,50 +105,58 @@ Cada par tiene que dar el mismo número. Si alguno difiere, **no se sigue**.
 > desde la segunda llamada `mariadb` cae al socket local por defecto
 > (`ERROR 2002 ... mysqld.sock`). Medido el mismo día.
 
-## 1 · `jax` (si el cambio lo toca)
+## 1 · Par inmutable JAX + plataforma
+
+El backend no ejecuta checkouts actualizables ni mezcla revisiones. `jaxbuild`,
+sin privilegios, extrae objetos Git exactos y verifica que ambos predecesores son
+ancestros del nuevo par. Root adopta esos bytes sellados sin ejecutar Git, pip ni
+código del release. El instalador histórico de tar/pip está deshabilitado: no
+puede fabricar la atestación, inventario y linaje exigidos por la adopción.
+
+El solicitante root escribe el request v1 completo, con modo `0600`, que ata
+commits, predecesores, inputs sellados, intérprete, digest del builder y nonce.
+No se invoca el builder directamente desde una terminal privilegiada: el
+supervisor root lo ejecuta como `jaxbuild`, recibe el recibo por FD privado y
+lo persiste root-owned antes de permitir adopción.
 
 ```bash
-sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
-  git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax pull --ff-only origin master
-sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax
-sudo find /srv/jax-prod/jax -user root | wc -l   # tiene que dar 0
-# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
-unset SHA
-SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
-if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax -c safe.directory=/srv/jax-prod/jax rev-parse HEAD)" = "$SHA" ]; then
-  sudo systemctl restart jax-las-manos
-else
-  echo "NO desplegado: /srv/jax-prod/jax no está en $SHA (el pull falló); no se reinició"
-fi
+sudo /usr/local/libexec/pair-build-supervisor.py \
+  --request /ruta-root/request.json \
+  --builder /usr/local/libexec/build-pair-jaxbuild.py \
+  --receipt /ruta-root/receipt.json
+MANIFEST_SHA256=<digest-del-manifiesto-verificado-independientemente-en-CI>
+
+# Sólo en el primer par: adopta y publica la selección inicial juntos.
+sudo /usr/local/libexec/bootstrap-pair-predecessor.py \
+  --source /ruta-de-jaxbuild/par \
+  --destination /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
+  --expected-manifest-sha256 "$MANIFEST_SHA256" \
+  --request /ruta-root/request.json --receipt /ruta-root/receipt.json
 ```
 
-La migración corre sola al arrancar (`ensure_schema`). **Comprobar la columna en
-la base, no suponerla:**
+Antes de usarlo en una máquina objetivo se puede reproducir el límite completo
+sin tocar sus cuentas, `/etc` ni `/opt`: `sudo
+ops/migration/tests/pair-supervisor-e2e-v1.sh`. El contenedor
+`python:3.14-bookworm` construye como `jaxbuild`, comprueba el recibo privado,
+rechaza request, recibo e inode de salida forjados y ejecuta el bootstrap sólo
+dentro del contenedor. La salida esperada es `PAIR_SUPERVISOR_E2E_V1_OK`.
 
-```sql
-SHOW COLUMNS FROM jax_memory.facts LIKE 'verified_by';
-```
-
-## 2 · Backend de la plataforma
-
-> **Si el cambio toca el ejecutor del catálogo o el nombre de su candado, NO sigas
-> acá:** usa «Caso general: un cambio toca el nombre del candado o el ejecutor
-> programado», más abajo.
-
-```bash
-sudo GIT_SSH_COMMAND="ssh -i /home/fruiz/.ssh/id_ed25519 -o IdentitiesOnly=yes" \
-  git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform pull --ff-only origin master
-sudo chown -R jaxsvc:jaxsvc /srv/jax-prod/jax-platform
-sudo find /srv/jax-prod/jax-platform -user root | wc -l   # tiene que dar 0
-# Solo reinicia si el checkout quedó EXACTAMENTE en el SHA del merge (si el pull falló, no reinicia)
-unset SHA
-SHA='PEGAR-AQUI-EL-SHA-DE-40-DEL-MERGE'
-if [[ $SHA =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C /srv/jax-prod/jax-platform -c safe.directory=/srv/jax-prod/jax-platform rev-parse HEAD)" = "$SHA" ]; then
-  sudo systemctl restart jax-platform
-else
-  echo "NO desplegado: /srv/jax-prod/jax-platform no está en $SHA (el pull falló); no se reinició"
-fi
-```
+El launcher lee una selección JSON root-owned, toma el candado compartido de
+runtime durante todo el proceso y exige que coincida con `current`; fija
+`JAX_REPO_PATH` después de limpiar el entorno importado;
+`runtime.env` no puede sustituir el núcleo del par. La activación toma candados
+con timeout en el orden `activation` y después `runtime`, detiene ambos servicios
+y verifica `ActiveState=inactive`, `SubState=dead`, `MainPID=0` y `Result=success`.
+El journal fsync ata el release, digest del manifiesto y digest de selección: sólo
+se restaura un `PRE_DDL` que coincida exactamente con la activación solicitada y
+la restauración ocurre ya con ambos servicios detenidos y el candado runtime
+exclusivo. Desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige recuperación
+humana con backup probado. Sólo inicia web: su dependencia systemd
+ejecuta el migrador una vez. Una modificación, byte extra, enlace, permisos
+inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
+arranque antes de importar Python. Antes de borrar el journal, la activación
+comprueba el estado efectivo del unit, el PID principal y que su entorno apunta
+al release seleccionado; un `200` de otro proceso no completa la transacción.
 
 Verificar **por comportamiento**, no por `is-active`:
 

@@ -6,6 +6,7 @@ jax_users.must_change_password y, mientras la tenga, su sesión sólo sirve para
 /me, /me/password, /refresh y /logout (403 cambio_de_password_requerido en
 todo lo demás, y WS/SSE rechazados). Mi cuenta y el reset por enlace la limpian.
 """
+import os
 import uuid
 from datetime import timedelta
 
@@ -486,7 +487,7 @@ def test_mi_cuenta_no_deshace_una_contrasena_fijada_en_el_medio(client, usuarios
         ok = await verificar_real(plain, hashed)
         from httpx import ASGITransport, AsyncClient
         from main import app
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url=os.environ.get("FRONTEND_ORIGIN", "http://testserver")) as c:
             r = await c.post(f"/api/admin/users/{u}/password", json={"new_password": FIJADA}, headers=_admin())
             assert r.status_code == 200, r.text
         return ok

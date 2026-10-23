@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from auth.office_barrier import OfficeSurfaceBarrierMiddleware
 from auth.office_barrier import require_classic_stream_user
+from auth.browser_security import BrowserOriginGuard, HostBoundCORSMiddleware, load_browser_security_config
 
 # El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
 # plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
@@ -135,6 +136,7 @@ from api.proyectos_documentos import router as proyectos_documentos_router
 from api.virtual_office.projects import router as virtual_office_projects_router
 from api.virtual_office.people import router as virtual_office_people_router
 from api.virtual_office.grants import router as virtual_office_grants_router
+from api.virtual_office.invitations import router as virtual_office_invitations_router
 from api.virtual_office.session import router as virtual_office_session_router
 from api.image import router as image_router
 from api.upload import router as upload_router
@@ -369,13 +371,14 @@ class _OfficeNoStoreMiddleware:
 # bearer response.
 app.add_middleware(_OfficeNoStoreMiddleware)
 
+_browser_security = load_browser_security_config()
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o for o in [os.getenv("FRONTEND_ORIGIN", "")] if o],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    HostBoundCORSMiddleware,
+    host_origins=_browser_security.host_origins,
 )
+app.add_middleware(BrowserOriginGuard, host_origins=_browser_security.host_origins)
+if _browser_security.allowed_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(_browser_security.allowed_hosts))
 
 ROUTERS = (
     health_router,
@@ -413,6 +416,7 @@ ROUTERS = (
     virtual_office_projects_router,
     virtual_office_people_router,
     virtual_office_grants_router,
+    virtual_office_invitations_router,
     virtual_office_session_router,
 )
 for _router in ROUTERS:

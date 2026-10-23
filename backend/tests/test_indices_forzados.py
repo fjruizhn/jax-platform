@@ -37,12 +37,14 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("project_documents", "idx_project_documents_despacho"),
         ("office_external_relation", "idx_office_external_relation_list"),
         ("office_mfa_security_event", "idx_office_mfa_security_event_proof"),
+        ("office_invitation", "idx_office_invitation_status_expiry"),
     }, forzados
     for (tabla, _indice), donde in forzados.items():
         origen = (
             "proyectos_documentos/repositorio.py:" if tabla == "project_documents"
             else "api/virtual_office/projects.py:" if tabla == "office_external_relation"
             else "virtual_office/mfa.py:" if tabla == "office_mfa_security_event"
+            else "virtual_office/invitations.py:" if tabla == "office_invitation"
             else "api/pipelines.py:"
         )
         assert all(d.startswith(origen) for d in donde), donde

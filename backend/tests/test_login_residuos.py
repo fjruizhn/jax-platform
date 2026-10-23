@@ -66,6 +66,7 @@ def test_el_limitador_exige_un_solo_proceso():
     exigir({"WEB_CONCURRENCY": "1"}, ["uvicorn", "main:app", "--workers", "1"])
     for env, argv in (
         ({"WEB_CONCURRENCY": "2"}, ["uvicorn", "main:app"]),
+        ({"UVICORN_WORKERS": "2"}, ["uvicorn", "main:app"]),
         ({}, ["uvicorn", "main:app", "--workers", "3"]),
         ({}, ["uvicorn", "main:app", "--workers=2"]),
     ):
@@ -185,6 +186,37 @@ def test_recuperacion_de_cuenta_real_crea_token_y_manda_el_correo(client, monkey
         assert len(filas) == 1 and filas[0][1] == "203.0.113.5", filas
         assert len(enviados) == 1 and enviados[0][:2] == ("mail.example.test", email)
         assert filas[0][0] in enviados[0][2], "el enlace no lleva el token guardado"
+    finally:
+        client.portal.call(_borrar, email)
+
+
+def test_recuperacion_office_entrega_el_enlace_en_su_origen_publico(client, monkeypatch):
+    """Changing the account class selection back to FRONTEND_ORIGIN leaks an
+    Office reset capability into the classic surface and must fail here."""
+    import smtp_config
+    from api import auth as auth_mod
+
+    enviados = []
+
+    async def configurado():
+        return _smtp_de_prueba()
+
+    monkeypatch.setattr(smtp_config, "cargar_settings", configurado)
+    monkeypatch.setattr(auth_mod, "_send_reset_email", lambda _s, _to, link: enviados.append(link))
+    monkeypatch.setenv("FRONTEND_ORIGIN", "https://classic.example.test")
+    monkeypatch.setenv("OFFICE_PUBLIC_ORIGIN", "https://office.example.test")
+    monkeypatch.setenv(
+        "JAX_PUBLIC_HOST_ORIGIN_BINDINGS",
+        "classic.example.test=https://classic.example.test;office.example.test=https://office.example.test",
+    )
+    email = _email()
+    user_id = client.portal.call(
+        _crear_con_hash, email, bcrypt.hashpw(b"clave-x", bcrypt.gensalt(rounds=4)).decode())
+    try:
+        client.portal.call(_sql, "UPDATE jax_users SET account_class='OFFICE_INTERNAL' WHERE user_id=%s", (user_id,))
+        client.portal.call(auth_mod._procesar_recuperacion, email, "203.0.113.5")
+        assert len(enviados) == 1
+        assert enviados[0].startswith("https://office.example.test/reset-password?token=")
     finally:
         client.portal.call(_borrar, email)
 

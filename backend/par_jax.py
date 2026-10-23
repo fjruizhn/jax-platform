@@ -26,7 +26,7 @@ class ParJaxIncompatible(RuntimeError):
     """El jax configurado no es el par con el que esta plataforma fue revisada."""
 
 
-OFFICE_NAMESPACE_CONTRACT_VERSION = "office-namespace.2"
+OFFICE_NAMESPACE_CONTRACT_VERSION = "office-namespace.3"
 
 
 def _verificar_office_namespace_contract() -> None:

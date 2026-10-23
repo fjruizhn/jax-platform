@@ -331,12 +331,26 @@ def test_patch_ya_no_existe_405(client):
 
 
 def test_cors_permite_idempotency_key_y_put():
-    from fastapi.middleware.cors import CORSMiddleware
+    from auth.browser_security import HostBoundCORSMiddleware
+    from fastapi.testclient import TestClient
     from main import app
+    from urllib.parse import urlsplit
 
-    opciones = next(mw.kwargs for mw in app.user_middleware if mw.cls is CORSMiddleware)
-    assert "Idempotency-Key" in opciones["allow_headers"]
-    assert "PUT" in opciones["allow_methods"] and "PATCH" not in opciones["allow_methods"]
+    opciones = next(mw.kwargs for mw in app.user_middleware if mw.cls is HostBoundCORSMiddleware)
+    origin = next(iter(opciones["host_origins"].values()))
+    response = TestClient(app).options(
+        "/api/proyectos",
+        headers={
+            "Host": urlsplit(origin).hostname,
+            "Origin": origin,
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "Idempotency-Key",
+        },
+    )
+    assert response.status_code == 200
+    assert "idempotency-key" in response.headers["access-control-allow-headers"]
+    assert "PUT" in response.headers["access-control-allow-methods"]
+    assert "PATCH" not in response.headers["access-control-allow-methods"]
 
 
 def _422(r):

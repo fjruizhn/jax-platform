@@ -1144,8 +1144,16 @@ jobs:
             //   MEDIDO local sobre la mezcla con `npx vitest run`: 1414/0/1414, 113 archivos. A confirmar en el runner.
             // 1414 -> 1469 (Oficina Virtual, 2026-10-22): medido local y en el
             // runner de GitHub 119836841170: 1469/0/1469, 118 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1469) {
-              console.error("PISO ROTO: se esperaban 1469 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1469 -> 1501 (invitaciones Office, 2026-10-22): medido en el runner
+            // de GitHub 119942966889 y 119943131447: 1501/0/1501, 121 archivos.
+            // 1501 -> 1506 (recuperación MFA, 2026-10-22): medido en los runners
+            // de GitHub 119972590490 y 119972668257: 1506/0/1506, 121 archivos.
+            // 1506 -> 1513 (administración Office, 2026-10-22): medido local
+            // sobre el árbol unido de #229: 1513/0/1513, 121 archivos.
+            // 1514 -> 1518 (activacion y reintentos Office, 2026-10-22):
+            // medido en CI sobre el release integrado: 1518 passed, 0 fallidos, 121 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1518) {
+              console.error("PISO ROTO: se esperaban 1518 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
@@ -1386,9 +1394,9 @@ jobs:
         # The generic suite uses the exact JAX head that supplies the additive
         # F2-C structured projection and F2-D canonical-byte transport APIs.
         run: |
-          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # PIN = head auditado de jax#409: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
+          PIN=d62721f4438cd80a579e2ba48fcf05c04dffdc19
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD
@@ -1583,8 +1591,9 @@ jobs:
           # The secrets test skips only when GitHub Actions lacks the production
           # /etc/jax/.env needed to exercise its comparison.  It is accredited
           # by its full junit identity so another environmental skip cannot
-          # silently replace it.  The sole gated skip is the MariaDB SR2 test;
-          # its exact identity is exercised by f2e-sr2-step-status-exact-pair.
+          # silently replace it. The source and wheelhouse tests also require
+          # local Hall9000 inputs unavailable on GitHub runners. The sole gated
+          # skip is the MariaDB SR2 test, exercised by its exact-pair job.
           env_only_test = (
               "tests.test_conftest_no_carga_secretos_no_necesarios",
               "test_fernet_key_y_jwt_secret_se_fuerzan_aunque_ya_vengan_puestos_en_el_ambiente",
@@ -1595,7 +1604,20 @@ jobs:
               "test_exact_pair_reads_real_canonical_step_owner_join_and_index_plan",
               "requires the isolated SR2 exact-pair MariaDB job",
           )
+          runner_only_tests = {
+              (
+                  "tests.test_platform_pair_builder",
+                  "test_real_jax_commit_extracts_all_internal_links_in_disposable_clone",
+                  "local JAX source unavailable",
+              ),
+              (
+                  "tests.test_platform_pair_credentials",
+                  "test_isolated_child_uses_real_venv_site_packages",
+                  "pinned wheelhouse unavailable",
+              ),
+          }
           env_only_skips = 0
+          runner_only_skips = set()
           sr2_gated_skips = 0
           for case in root.iter("testcase"):
               skipped = case.find("skipped")
@@ -1604,13 +1626,17 @@ jobs:
               identity = (case.get("classname"), case.get("name"), skipped.get("message"))
               if identity == env_only_test:
                   env_only_skips += 1
+              elif identity in runner_only_tests:
+                  if identity in runner_only_skips:
+                      sys.exit(f"skip de runner repetido: {identity[:2]}")
+                  runner_only_skips.add(identity)
               elif identity == sr2_gated_test:
                   sr2_gated_skips += 1
           if env_only_skips > 1:
               sys.exit(f"skip de entorno repetido inesperadamente: {env_only_skips}")
           if sr2_gated_skips > 1:
               sys.exit(f"skip SR2 repetido inesperadamente: {sr2_gated_skips}")
-          gated_skips = skip - env_only_skips
+          gated_skips = skip - env_only_skips - len(runner_only_skips)
           if gated_skips != sr2_gated_skips:
               sys.exit(
                   "skip no acreditado: sólo el skip SR2 exacto puede consumir "
@@ -4959,9 +4985,9 @@ jobs:
         # Keep the no-DB suite on the same exact structured-output API consumed
         # by the platform integration.
         run: |
-          # PIN = head revisado de jax#408: aporta el namespace de Oficina Virtual.
+          # PIN = head auditado de jax#409: aporta el namespace de Oficina Virtual.
           # Se conserva el checkout por SHA exacto; nunca se sigue una rama dinamica.
-          PIN=ca024c2c3ff73b18aa7e9c46487e67bd0094089b
+          PIN=d62721f4438cd80a579e2ba48fcf05c04dffdc19
           git clone --depth=1 https://github.com/fjruizhn/Jax.git /tmp/jax
           git -C /tmp/jax fetch --depth=1 origin "$PIN"
           git -C /tmp/jax checkout --detach FETCH_HEAD

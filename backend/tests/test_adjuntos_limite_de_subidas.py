@@ -7,6 +7,8 @@ de leer el cuerpo: FastAPI lee el multipart entero antes de resolver las
 dependencias (lo fija el primer test), así que un Depends llegaría tarde."""
 import asyncio
 import json
+import os
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi import Depends, FastAPI, File, UploadFile
@@ -46,7 +48,8 @@ class _Canal:
 
 def _llamar(app, token=None, path=RUTA, method="POST", autorizacion=None):
     tipo, partes = _multipart()
-    headers = [(b"content-type", tipo.encode())]
+    host = urlsplit(os.environ.get("FRONTEND_ORIGIN", "http://testserver")).hostname
+    headers = [(b"host", host.encode()), (b"content-type", tipo.encode())]
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode()))
     elif autorizacion is not None:
@@ -209,7 +212,7 @@ def _ruta_sola():
     """La ruta real con su dependencia de auth, SIN el middleware de subidas:
     su 401 es la referencia.
 
-    Envuelta en el MISMO CORSMiddleware de main.app (su configuración real, no
+    Envuelta en el MISMO HostBoundCORSMiddleware de main.app (su configuración real, no
     una copia): en producción la ruta y el middleware responden los dos por
     dentro de CORS, y lo que se compara es lo que ve el cliente. Starlette
     1.7.0 (2026-09-23) agrega `Vary: Origin` a toda respuesta CORS; con una
@@ -217,10 +220,10 @@ def _ruta_sola():
     sin que el middleware hubiera cambiado."""
     import api.upload as upload_mod
     import main
-    from starlette.middleware.cors import CORSMiddleware
+    from auth.browser_security import HostBoundCORSMiddleware
     app = FastAPI()
     app.include_router(upload_mod.router)
-    [cors] = [m for m in main.app.user_middleware if m.cls is CORSMiddleware]
+    [cors] = [m for m in main.app.user_middleware if m.cls is HostBoundCORSMiddleware]
     app.add_middleware(cors.cls, *cors.args, **cors.kwargs)
     return app
 
@@ -332,10 +335,10 @@ def test_la_app_monta_el_middleware_dentro_de_cors():
     """CORS tiene que envolver al 429 (si no, el navegador de otro origen no
     lo puede leer); en la lista de Starlette, el primero es el de afuera."""
     import main
-    from fastapi.middleware.cors import CORSMiddleware
+    from auth.browser_security import HostBoundCORSMiddleware
     clases = [m.cls for m in main.app.user_middleware]
     assert mod.LimiteDeSubidas in clases
-    assert clases.index(CORSMiddleware) < clases.index(mod.LimiteDeSubidas)
+    assert clases.index(HostBoundCORSMiddleware) < clases.index(mod.LimiteDeSubidas)
 
 
 # ------------------------------------------------------ por HTTP (con DB)
@@ -496,6 +499,17 @@ def _ruta_frenable_sola():
     return app
 
 
+def _usuario_interno_sin_db(monkeypatch):
+    """Keep this middleware test independent of the Office account lookup."""
+    from auth.models import AuthUser
+    from auth import office_barrier
+
+    async def verificar(*args, **kwargs):
+        return AuthUser(user_id="5", tenant_id="1", role="operator")
+
+    monkeypatch.setattr(office_barrier, "verificar_sesion", verificar)
+
+
 def test_frenado_sin_token_es_el_401_con_espera(limite):
     import main
     _poner_freno()
@@ -504,8 +518,9 @@ def test_frenado_sin_token_es_el_401_con_espera(limite):
     assert limite == [1.0]
 
 
-def test_frenado_con_token_valido_el_middleware_da_el_mismo_423_que_la_ruta_sin_leer_el_cuerpo(limite):
+def test_frenado_con_token_valido_el_middleware_da_el_mismo_423_que_la_ruta_sin_leer_el_cuerpo(limite, monkeypatch):
     import main
+    _usuario_interno_sin_db(monkeypatch)
     _poner_freno()
     ref_status, ref_headers, ref_cuerpo, ref_canal = _llamar(_ruta_frenable_sola(), token_para(5))
     assert ref_status == 423 and json.loads(ref_cuerpo) == {"detail": "kill_switch_activo"}
@@ -547,6 +562,7 @@ def test_freno_ilegible_es_423_como_la_ruta(limite, monkeypatch):
     existe" (permiso, E/S) cuenta como freno PUESTO."""
     import interruptor
     import main
+    _usuario_interno_sin_db(monkeypatch)
     stat_real = interruptor.os.stat
     freno = str(interruptor.ruta_del_interruptor())
 

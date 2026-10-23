@@ -1,0 +1,37 @@
+[Unit]
+Description=Axioma Virtual Office invitation delivery (one bounded batch)
+After=network-online.target jax-platform-migrate.service
+Wants=network-online.target
+ConditionPathIsReadWrite=/run
+OnFailure=aviso-fallo@%n.service
+
+[Service]
+Type=oneshot
+User=jaxinvite
+Group=jaxinvite
+EnvironmentFile=/etc/jax/invitation-worker.env
+WorkingDirectory=/opt/axioma-office-invitation-worker/backend
+# The preflight runs as the dedicated principal; no code under the release
+# tree may run with root privileges.
+ExecStartPre=/usr/local/libexec/axioma-office-invitation-worker-readiness
+ExecStart=/opt/axioma-office-invitation-worker/backend/.venv/bin/python -Es -m virtual_office.invitation_delivery_worker
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+LimitCORE=0
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077
+# SMTP timeouts apply per protocol exchange, including repeated AUTH
+# challenges.  A 25-row cap leaves conservative room under this deadline.
+TimeoutStartSec=3h
+KillMode=control-group

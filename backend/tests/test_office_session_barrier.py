@@ -56,7 +56,7 @@ def test_restricted_pending_password_upload_stops_before_limiter_body_kill_or_qu
     # The installed order is a regression guard for aliases and future routes:
     # CORS outer -> Office barrier -> upload limiter -> JSON/body/handler.
     names = [entry.cls.__name__ for entry in app.user_middleware]
-    assert names.index("CORSMiddleware") < names.index("OfficeSurfaceBarrierMiddleware") < names.index("LimiteDeSubidas")
+    assert names.index("HostBoundCORSMiddleware") < names.index("OfficeSurfaceBarrierMiddleware") < names.index("LimiteDeSubidas")
 
 
 def test_restricted_bearer_with_extra_spaces_stops_before_limiter_body_or_handler(client, usuarios, monkeypatch):

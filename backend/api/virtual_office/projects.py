@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
+from pymysql.err import OperationalError
 
 from auth.middleware import get_current_user
 from auth.models import AuthUser
 from db.connection import get_pool
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from virtual_office.audit import record_authorization_event
 from virtual_office.authority import authorize_office_in_cursor
 from virtual_office.capabilities import OfficeOperation
+from virtual_office.invitations import (
+    InvitationError, can_manage_invitations_in_cursor,
+    lock_office_actor_project_tenants_in_cursor,
+)
 from virtual_office.mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_verified_in_cursor
 from virtual_office.namespace_adapter import (
     OfficeNamespaceAuthorizationDenied,
@@ -41,8 +47,6 @@ class _OfficeProjectMetadataAuthorizer:
             raise AuthorizationDenied("Office metadata authority context is invalid")
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed or decision.tenant_id != target_tenant_id:
             raise AuthorizationDenied("Office project metadata authority is required")
@@ -53,13 +57,13 @@ class _PhaseBRetryable(RuntimeError):
 
 
 async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
-                                   project_id: int, idempotency_key: str,
-                                   proof_event_id: int, mfa_config) -> None:
+                                   project_id: int, idempotency_key: str) -> None:
     """Finish the Office-owned phase after JAX committed the canonical project.
 
-    This intentionally has its own transaction.  A failed recipient-group
-    initialization leaves the confidential JAX scope inaccessible and is
-    repaired only by an authorized replay of the original key.
+    This intentionally has its own transaction.  A failed companion phase
+    leaves the confidential JAX scope inaccessible and is repaired only by an
+    authorized replay of the original key.  The creator's canonical JAX
+    membership, Office grant, receipt, and client group commit together.
     """
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
@@ -83,10 +87,9 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
 
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.CREATE_OFFICE_PROJECT,
-                require_recent_mfa=True, mfa_proof_event_id=proof_event_id,
-                mfa_config=mfa_config,
             )
-            if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
+            if (not decision.allowed or decision.global_role != "OFFICE_SUPERUSER"
+                    or decision.tenant_id != target_tenant_id):
                 raise OfficeNamespaceAuthorizationDenied("Office project creation requires an active Office superuser")
 
             await cur.execute(
@@ -106,6 +109,80 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
             request = await cur.fetchone()
             if request is None or tuple(map(int, request)) != (actor_user_id, target_tenant_id, project_id):
                 raise _PhaseBRetryable("office project creation request is unavailable")
+
+            # This is the one narrowly-defined self-grant: it binds the
+            # creator to the scope that the same canonical CREATE request has
+            # just created.  JAX validates that exception under these locks;
+            # JXP supplies the current Office-root authority and records the
+            # Office companion in this same Phase-B transaction.
+            from api.virtual_office.grants import (
+                _OfficeMembershipAuthorizer,
+                _assert_receipt_companion,
+                _locked_membership_receipt,
+                _membership_receipt_digest,
+                _write_membership_receipt,
+            )
+            from jax.memory.b9_mariadb import MariaDBB9Store
+            from jax.memory.project_authority import (
+                NamespacedMemberKind,
+                ProjectAuthorityAdmin,
+                ProjectNamespace,
+            )
+
+            result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).grant_namespaced_member_in_transaction(
+                cur, actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
+                project_id=project_id, target_user_id=actor_user_id,
+                namespace=ProjectNamespace.OFFICE_CONFIDENTIAL,
+                member_kind=NamespacedMemberKind.INTERNAL,
+                idempotency_key=idempotency_key,
+                execution=None,
+                authorizer=_OfficeMembershipAuthorizer(
+                    proof_event_id=None, mfa_config=None, grant_role="PROJECT_ADMIN"),
+            )
+            digest = _membership_receipt_digest(
+                operation="GRANT_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                target_tenant_id=target_tenant_id, project_id=project_id,
+                target_user_id=actor_user_id, expected_version=0,
+                grant_role="PROJECT_ADMIN", audience="INTERNAL",
+            )
+            receipt = await _locked_membership_receipt(cur, idempotency_key=idempotency_key)
+            if receipt is not None:
+                if (not result.replayed or receipt[0] != digest
+                        or str(receipt[1]) != result.membership_id
+                        or str(receipt[2]) != result.event_id):
+                    raise _PhaseBRetryable("office creator grant replay is unavailable")
+                await _assert_receipt_companion(
+                    cur, project_id=project_id, target_user_id=actor_user_id,
+                    receipt=receipt)
+            else:
+                if result.replayed:
+                    # A canonical replay without JXP's terminal receipt is a
+                    # torn or incompatible companion, never a license to
+                    # manufacture missing authorization evidence.
+                    raise _PhaseBRetryable("office creator grant receipt is unavailable")
+                await cur.execute(
+                    "SELECT grant_role,audience,status,version FROM office_project_grant "
+                    "WHERE project_id=%s AND user_id=%s FOR UPDATE",
+                    (project_id, actor_user_id),
+                )
+                if await cur.fetchone() is not None:
+                    raise _PhaseBRetryable("office creator grant is unavailable")
+                await cur.execute(
+                    "INSERT INTO office_project_grant "
+                    "(project_id,user_id,grant_role,audience,status,granted_by) "
+                    "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+                    (project_id, actor_user_id, actor_user_id),
+                )
+                authorization_event_id = await record_authorization_event(cur, decision)
+                await _write_membership_receipt(
+                    cur, idempotency_key=idempotency_key, digest=digest,
+                    operation="GRANT_OFFICE_MEMBER", actor_user_id=actor_user_id,
+                    target_tenant_id=target_tenant_id, project_id=project_id,
+                    target_user_id=actor_user_id, expected_version=0,
+                    grant_role="PROJECT_ADMIN", audience="INTERNAL", result=result,
+                    office_grant_version=1, office_grant_status="ACTIVE",
+                    authorization_event_id=authorization_event_id,
+                )
 
             await cur.execute(
                 "SELECT recipient_group_id,tenant_id,status FROM office_recipient_group "
@@ -190,9 +267,9 @@ async def list_projects(
             )
         predicate = " AND p.id>%s" if after_id is not None else ""
         cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
-        if profile["global_role"] in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}:
-            # Both global roles require verified MFA for every project view;
-            # never discover scopes when it is absent or unverifiable.
+        if profile["global_role"] == "GENERAL_ADMIN":
+            # General administration remains MFA-bound.  An Office root can
+            # bootstrap and manage its Office projects after normal sign-in.
             if not proof_valid:
                 return {"projects": [], "next_after_id": None}
         if profile["global_role"] == "OFFICE_SUPERUSER":
@@ -214,7 +291,7 @@ async def list_projects(
             )
             if not proof_valid:
                 query += (
-                    " AND g.grant_role='COLLABORATOR' AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
+                    " AND NOT EXISTS (SELECT 1 FROM office_professional_grant pg "
                     "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
                     "AND pg.status='ACTIVE')"
                 )
@@ -279,16 +356,18 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
     The row is locked for mutation callers.  Reads use the same resolver and
     intentionally omit confidential metadata for a published-client grant.
     """
+    # Share the tenant → actor → scope prefix with invitation issuance and
+    # listing before either resolver can lock actor/scope rows.  Both later
+    # authorizations re-read all authority facts in this same transaction.
+    await lock_office_actor_project_tenants_in_cursor(
+        cur, actor_user_id=actor_user_id, project_id=project_id,
+    )
     await cur.execute(
         "SELECT p.id,p.name,p.description,s.tenant_id,s.version FROM projects p "
-        "JOIN jax_project_scope s ON s.project_id=p.id "
-        "WHERE p.id=%s AND s.authorization_namespace='OFFICE_CONFIDENTIAL' "
-        "AND s.status='ACTIVE'",
+        "JOIN jax_project_scope s ON s.project_id=p.id WHERE p.id=%s",
         (project_id,),
     )
     row = await cur.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="office_project_not_found")
     # The recipient group is relevant only for external callers.  Resolve it
     # from the server-owned relationship; callers never submit it as a query
     # parameter capable of selecting another client's publication.
@@ -303,16 +382,27 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         recipient_group_id=None if relation is None else int(relation[0]),
         mfa_proof_event_id=proof_event_id, mfa_config=mfa_config,
     )
-    if not decision.allowed:
-        # Do not turn a guessed confidential project id into an authority
-        # oracle.  A caller with a live Office identity sees a generic deny;
-        # unprovisioned callers are handled by the middleware/profile paths.
-        raise HTTPException(status_code=403, detail="office_project_access_denied")
+    if row is None or not decision.allowed:
+        # Keep absent, inactive, non-Office and inaccessible scopes
+        # indistinguishable.  It runs even for an absent scope, preserving
+        # the canonical authority/audit path for every request.
+        raise HTTPException(status_code=404, detail="office_project_not_found")
+    try:
+        manage_invitations = await can_manage_invitations_in_cursor(
+            cur, actor_user_id=actor_user_id, project_id=project_id,
+            proof_event_id=proof_event_id, mfa_config=mfa_config,
+        )
+    except InvitationError as error:
+        # A normal authorization/MFA denial has already become ``False`` in
+        # the helper.  Any remaining domain error is incomplete operational
+        # state, never a capability that the browser may safely infer.
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
     return {
         "id": int(row[0]), "name": row[1],
         "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],
         "tenant_id": int(row[3]), "scope_version": int(row[4]),
         "audience": decision.audience or "INTERNAL",
+        "capabilities": {"manage_invitations": manage_invitations},
     }
 
 
@@ -322,12 +412,15 @@ async def get_project(project_id: int, user: AuthUser = Depends(get_current_user
         actor_user_id = int(user.user_id)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=403, detail="office_project_access_denied") from error
-    async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        return await _project_detail_in_cursor(
-            cur, actor_user_id=actor_user_id, project_id=project_id,
-            proof_event_id=user.mfa_proof_event_id,
-            mfa_config=load_mfa_config_from_environment(),
-        )
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            return await _project_detail_in_cursor(
+                cur, actor_user_id=actor_user_id, project_id=project_id,
+                proof_event_id=user.mfa_proof_event_id,
+                mfa_config=load_mfa_config_from_environment(),
+            )
+    except OperationalError as error:
+        raise HTTPException(status_code=503, detail="office_invitation_unavailable") from error
 
 
 @router.put("/{project_id}")
@@ -354,8 +447,6 @@ async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdat
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.MANAGE_PROJECT, project_id,
-                require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
-                mfa_config=config,
             )
             if not decision.allowed or decision.tenant_id is None:
                 raise HTTPException(status_code=403, detail="office_project_update_denied")
@@ -382,9 +473,6 @@ async def update_project_metadata(project_id: int, payload: ProjectMetadataUpdat
 @router.post("")
 async def create_project(payload: ProjectCreate, idempotency_key: str = Header(alias="Idempotency-Key"),
                          user: AuthUser = Depends(get_current_user)):
-    config = load_mfa_config_from_environment()
-    if config is None or user.mfa_proof_event_id is None:
-        raise HTTPException(status_code=403, detail="office_mfa_required")
     from jax.memory.b9_mariadb import MariaDBB9Store
     from jax.memory.project_authority import (
         AuthorizationDenied,
@@ -403,7 +491,7 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
             namespace=ProjectNamespace.OFFICE_CONFIDENTIAL, name=payload.name,
             description=payload.description, idempotency_key=idempotency_key,
-            authorizer=OfficeNamespaceAuthorizer(mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config),
+            authorizer=OfficeNamespaceAuthorizer(),
         )
     except ProjectAuthorityRetryable as error:
         raise HTTPException(status_code=503, detail="office_project_create_retryable") from error
@@ -422,7 +510,6 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
         await _initialize_client_group(
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
             project_id=result.project_id, idempotency_key=idempotency_key,
-            proof_event_id=user.mfa_proof_event_id, mfa_config=config,
         )
     except _PhaseBRetryable as error:
         raise HTTPException(status_code=503, detail="office_project_initialization_retryable") from error

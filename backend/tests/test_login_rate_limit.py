@@ -15,7 +15,13 @@ Reglas:
     proxy de confianza (JAX_TRUSTED_PROXIES); si no, cualquiera la falsifica;
   - memoria acotada: un tope de claves, sin fuga con millones de IPs.
 """
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from auth import rate_limit
@@ -54,11 +60,108 @@ def test_memoria_acotada_con_muchas_claves():
     assert len(lim) <= 100
 
 
+def test_invitation_limiters_are_independent_from_login_and_each_other(monkeypatch):
+    """A bearer flood must neither consume nor evict the login buckets."""
+    login_ip = SlidingWindowLimiter(1, 60, 2)
+    invitation_ip = SlidingWindowLimiter(100, 60, 2)
+    invitation_token = SlidingWindowLimiter(1, 300, 2)
+    monkeypatch.setattr(rate_limit, "LOGIN_IP_LIMITER", login_ip)
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_IP_LIMITER", invitation_ip)
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_TOKEN_LIMITER", invitation_token)
+    monkeypatch.setattr(rate_limit, "TRUSTED_PROXIES", frozenset())
+
+    request = _request("198.51.100.9")
+    rate_limit.check_login_rate(request, "person@example.test")
+    for index in range(50):
+        rate_limit.check_invitation_accept_rate(request, f"digest-{index}")
+    assert len(invitation_token) <= 2
+    with pytest.raises(HTTPException) as login_limited:
+        rate_limit.check_login_rate(request, "other@example.test")
+    assert login_limited.value.status_code == 429
+
+    rate_limit.check_invitation_accept_rate(request, "same-token")
+    monkeypatch.setattr(rate_limit, "TRUSTED_PROXIES", frozenset({"proxy.test"}))
+    with pytest.raises(HTTPException) as invitation_limited:
+        rate_limit.check_invitation_accept_rate(
+            _request("proxy.test", {"X-Real-IP": "203.0.113.10"}), "same-token")
+    assert invitation_limited.value.status_code == 429
+
+
+def test_invitation_ip_threshold_blocks_but_distinct_bearers_share_a_nat(monkeypatch):
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_IP_LIMITER", SlidingWindowLimiter(10, 60, 100))
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_TOKEN_LIMITER", SlidingWindowLimiter(10, 300, 100))
+    monkeypatch.setattr(rate_limit, "TRUSTED_PROXIES", frozenset())
+    request = _request("198.51.100.9")
+    for index in range(10):
+        rate_limit.check_invitation_accept_rate(request, f"digest-{index}")
+    with pytest.raises(HTTPException) as rejected:
+        rate_limit.check_invitation_accept_rate(request, "digest-over-limit")
+    assert rejected.value.status_code == 429
+    assert int(rejected.value.headers["Retry-After"]) >= 1
+
+
+def test_invitation_untrusted_proxy_cannot_evade_and_rejected_hits_do_not_extend(monkeypatch):
+    ip = SlidingWindowLimiter(1, 10, 100)
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_IP_LIMITER", ip)
+    monkeypatch.setattr(rate_limit, "INVITATION_ACCEPT_TOKEN_LIMITER", SlidingWindowLimiter(100, 300, 100))
+    monkeypatch.setattr(rate_limit, "TRUSTED_PROXIES", frozenset())
+    first = _request("198.51.100.9", {"X-Real-IP": "10.0.0.1"})
+    assert ip.hit(rate_limit.client_ip(first, rate_limit.TRUSTED_PROXIES), now=0) is None
+    for now in (1, 5, 9):
+        assert ip.hit(rate_limit.client_ip(_request("198.51.100.9", {"X-Real-IP": f"10.0.0.{now}"}),
+                                           rate_limit.TRUSTED_PROXIES), now=now) is not None
+    assert ip.hit("198.51.100.9", now=10.5) is None
+
+
 def test_parse_rate():
     assert parse_rate("20/60") == (20, 60.0)
-    for malo in ("", "20", "0/60", "20/0", "x/y", "-1/60"):
+    for malo in ("", "20", "0/60", "20/0", "x/y", "-1/60", "1/nan", "1/inf", "1/-inf"):
         with pytest.raises(ValueError):
             parse_rate(malo)
+    for malo in ("", "0", "-1", "many"):
+        with pytest.raises(ValueError):
+            rate_limit.parse_max_keys(malo)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("JAX_OFFICE_INVITATION_ACCEPT_RATE_IP", "not-a-rate"),
+        ("JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN", "0/300"),
+        ("JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN", "1/nan"),
+        ("JAX_OFFICE_INVITATION_ACCEPT_RATE_TOKEN", "1/inf"),
+        ("JAX_OFFICE_INVITATION_ACCEPT_RATE_MAX_KEYS", "0"),
+    ],
+)
+def test_invalid_invitation_limiter_environment_fails_module_startup(name, value):
+    env = dict(os.environ)
+    env[name] = value
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        [sys.executable, "-c", "import auth.rate_limit"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "inválido" in result.stderr
+
+
+def test_uvicorn_workers_environment_fails_module_startup():
+    env = dict(os.environ)
+    env["UVICORN_WORKERS"] = "2"
+    env["WEB_CONCURRENCY"] = "1"
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        [sys.executable, "-c", "import auth.rate_limit"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "UVICORN_WORKERS=2" in result.stderr
+
+
+@pytest.mark.parametrize("window", [float("nan"), float("inf"), float("-inf")])
+def test_limiter_constructor_rejects_non_finite_windows(window):
+    with pytest.raises(ValueError):
+        SlidingWindowLimiter(1, window)
 
 
 def _request(peer: str, headers: dict | None = None) -> Request:

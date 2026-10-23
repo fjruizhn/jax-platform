@@ -10,6 +10,7 @@ from virtual_office.migrations import assert_bootstrap_runtime_metadata
 from virtual_office.migrations import assert_membership_receipt_runtime_metadata
 from virtual_office.migrations import assert_profile_revocation_runtime_metadata
 from virtual_office.module_release_ledger import assert_module_candidate_storage_metadata
+from virtual_office.migrations import assert_module_publication_staging_metadata
 from .runtime_privileges import runtime_table_privilege_map
 
 FENCE_KEY = "office-audit-fence-v1"
@@ -111,6 +112,14 @@ async def _module_candidate_storage_metadata(cur):
         raise RuntimeDbContractError("Office module candidate storage metadata is invalid") from error
 
 
+async def _module_publication_staging_metadata(cur):
+    """A runtime may observe staged records, never a trusted publication."""
+    try:
+        await assert_module_publication_staging_metadata(cur, allow_redacted_trigger_body=True)
+    except RuntimeError as error:
+        raise RuntimeDbContractError("Office module publication staging metadata is invalid") from error
+
+
 async def _revision(cur):
     await cur.execute("SELECT revision FROM office_schema_revision WHERE component=%s", (SCHEMA_COMPONENT,))
     row = await cur.fetchone()
@@ -119,7 +128,7 @@ async def _revision(cur):
 
 
 _CURRENT_GRANTEE = "CONCAT(\"'\",SUBSTRING_INDEX(CURRENT_USER(),'@',1),\"'@'\",SUBSTRING_INDEX(CURRENT_USER(),'@',-1),\"'\")"
-_RUNTIME_SCHEMA_PRIVILEGES = frozenset(("SELECT", "INSERT"))
+_RUNTIME_SCHEMA_PRIVILEGES = frozenset(("SELECT",))
 
 
 async def _effective_privilege_guard(cur) -> None:
@@ -372,8 +381,8 @@ async def _insert_rolled_back_bootstrap_canary(cur):
     proof_id = cur.lastrowid
     await cur.execute(
         "INSERT INTO office_bootstrap_state "
-        "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref,completed_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+        "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method,basis_ref,completed_at) "
+        "VALUES (%s,%s,%s,%s,%s,'MFA',%s,UTC_TIMESTAMP(6))",
         (BOOTSTRAP_KEY, user_id, user_id, proof_id, audit_id, basis_ref),
     )
     return {
@@ -494,7 +503,11 @@ async def assert_runtime_db_contract(pool) -> None:
             await _bootstrap_metadata(cur)
             await _membership_receipt_metadata(cur)
             await _profile_revocation_metadata(cur)
-            await _module_candidate_storage_metadata(cur)
+    # MariaDB intentionally hides CHECK_CONSTRAINTS from the restricted web
+    # principal, even when it has schema SELECT.  Both module schemas are
+    # attested by the migrator before it stamps _revision; the web principal
+    # cannot change either their metadata or that stamp.  Re-querying them
+    # here would turn metadata visibility into a false readiness failure.
     await _probe(pool, "UPDATE office_authorization_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")
     await _probe(pool, "DELETE FROM office_authorization_event WHERE fence_key=%s")
     await _mfa_probe(pool, "UPDATE office_mfa_security_event SET occurred_at=DATE_ADD(occurred_at, INTERVAL 1 MICROSECOND) WHERE fence_key=%s")

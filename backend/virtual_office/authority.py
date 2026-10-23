@@ -7,7 +7,9 @@ from db.connection import get_pool
 from .capabilities import ADMIN_OPERATIONS, OfficeOperation, grant_permits, operation_requires_project
 from .models import OfficeDecision
 from . import repository
-from .mfa import MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor, reload_current_self_mfa_verified_in_cursor
+from .mfa import (MFAConfig, MFADenied, reload_current_self_mfa_proof_in_cursor,
+                  reload_current_self_mfa_verified_in_cursor,
+                  reload_issued_invitation_mfa_proof_in_cursor)
 
 
 def _decision(allowed: bool, code: str, actor: int, operation: OfficeOperation, project: int | None, tenant=None, role=None,
@@ -57,6 +59,58 @@ async def authorize_office_in_cursor(cur, actor_user_id: int, operation: OfficeO
     return await _apply_mfa_requirement(cur, decision, require_recent_mfa, mfa_proof_event_id, mfa_config)
 
 
+async def authorize_invitation_issuer_in_cursor(cur, *, issuer_user_id: int,
+                                                 project_id: int, proof_event_id: int,
+                                                 issued_mfa_version: int,
+                                                 issued_mfa_at) -> OfficeDecision:
+    """Revalidate an issuance proof for delegated acceptance without its age.
+
+    This narrow resolver is intentionally separate from the general MFA
+    switch: only the immutable invitation proof may be older than the normal
+    interactive recency window, and its user token/MFA versions plus present
+    Office authority are still reread under the caller transaction locks.
+    """
+    _validate(issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id, None)
+    # Discover tenant keys without trusting them, then acquire the canonical
+    # tenant locks before the resolver locks the issuer/profile and scope.
+    # The resolver re-reads all facts below; this only establishes order with
+    # JAX membership mutations (tenant → actor → target → scope).
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (issuer_user_id,))
+    issuer_tenant = await cur.fetchone()
+    await cur.execute("SELECT tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,))
+    scope_tenant = await cur.fetchone()
+    if issuer_tenant is not None and scope_tenant is not None:
+        for tenant_id in sorted({int(issuer_tenant[0]), int(scope_tenant[0])}):
+            await cur.execute("SELECT tenant_id FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (tenant_id,))
+            if await cur.fetchone() is None:
+                return _decision(False, "office_tenant_inactive", issuer_user_id,
+                                 OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id)
+    decision = await _authorize(cur, issuer_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS,
+                                project_id, None, False, True)
+    if not decision.allowed:
+        return decision
+    # ADMINISTER_PROJECT_MEMBERS deliberately permits cleanup against an
+    # archived scope.  Delegated acceptance is a grant, never cleanup, so its
+    # narrow capability must separately require the current scope to be live.
+    await cur.execute(
+        "SELECT status FROM jax_project_scope WHERE project_id=%s FOR UPDATE", (project_id,))
+    scope = await cur.fetchone()
+    if scope is None or scope[0] != "ACTIVE":
+        return _decision(False, "office_invitation_project_inactive", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
+    proof = await reload_issued_invitation_mfa_proof_in_cursor(
+        cur, issuer_user_id=issuer_user_id, proof_event_id=proof_event_id,
+        issued_mfa_version=issued_mfa_version, issued_at=issued_mfa_at)
+    if isinstance(proof, MFADenied):
+        return _decision(False, "office_invitation_issuer_proof_invalid", issuer_user_id,
+                         OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                         decision.tenant_id, decision.global_role, decision.audience,
+                         decision.grant_role, decision.recipient_group_id, decision.project_id)
+    return decision
+
+
 async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_mfa: bool,
                                  proof_event_id: int | None, config: MFAConfig | None) -> OfficeDecision:
     """Apply the role-derived MFA rule after canonical grants are resolved.
@@ -68,8 +122,7 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
         return decision
     privileged_view = (
         decision.operation == OfficeOperation.VIEW_PROJECT.value
-        and (decision.global_role in {"OFFICE_SUPERUSER", "GENERAL_ADMIN"}
-             or decision.grant_role == "PROJECT_ADMIN")
+        and decision.global_role == "GENERAL_ADMIN"
     )
     # A professional approver is privileged even when their ordinary project
     # grant says COLLABORATOR.  Resolve this current, indexed grant rather
@@ -81,7 +134,17 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
             OfficeOperation.PROFESSIONAL_ACTION, for_update=False,
         )
         professional_view = professional is not None and professional["status"] == "ACTIVE"
-    derived_recent = decision.operation != OfficeOperation.VIEW_PROJECT.value
+    # A project administrator's ordinary work is intentionally usable after
+    # normal sign-in: viewing its project, maintaining project content, and
+    # administering that project's members do not silently turn MFA into a
+    # prerequisite.  MFA remains a derived, recent-proof requirement for
+    # actions that exercise professional or Office-wide authority.  A caller
+    # may still explicitly request step-up for any operation.
+    derived_recent = decision.operation in {
+        OfficeOperation.PROFESSIONAL_ACTION.value,
+        OfficeOperation.ADMINISTER_OFFICE.value,
+        OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY.value,
+    }
     # An explicit caller requirement hardens even an otherwise ordinary
     # collaborator view.  It is additive, like the role-derived conditions;
     # callers can never use ``False`` to lower either rule.

@@ -23,12 +23,19 @@ const SESION_INVALIDA = 'sesion_invalida'
 const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
   '/auth/login', '/auth/refresh', '/auth/logout',
   '/auth/mfa/login/verify', '/auth/mfa/recover',
+  '/auth/mfa/recovery/enrollment/start',
   '/auth/mfa/enrollment/start',
   '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up',
   // Mutaciones sensibles: una respuesta 401/no disponible no permite saber
   // si el servidor consumió OTP, contraseña o capacidad. Nunca se repiten.
   '/auth/mfa/reenrollment/start', '/auth/mfa/recovery-codes/regenerate',
   '/auth/mfa/disable', '/auth/mfa/step-up/verify',
+  // El bearer de invitación puede consumirse aunque una respuesta se pierda.
+  // Es una capacidad pública, no una sesión que un refresh pueda recuperar.
+  '/virtual-office/invitations/accept',
+  // Promover la primera cuenta Office revoca esta misma sesión. Un 401 es una
+  // contraseña incorrecta, no una señal para refrescar y reenviar el POST.
+  '/virtual-office/bootstrap',
 ]
 
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de
@@ -66,6 +73,12 @@ const api = axios.create({
 })
 
 api.interceptors.request.use((config) => {
+  // A new-account invitation must remain a bearer-only request even if an
+  // unrelated session finishes restoring between click and dispatch.
+  if (config._officeInvitationNoAuth) {
+    config._epoch = useJaxStore.getState()._sessionEpoch
+    return config
+  }
   const token = useJaxStore.getState().token
   if (token && !config.headers.Authorization) {
     config.headers.Authorization = `Bearer ${token}`

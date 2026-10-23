@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from hashlib import sha256
+from pathlib import Path
 
 import aiomysql
 import pytest
@@ -39,11 +41,27 @@ async def _errno(pool, statement: str) -> int:
 
 async def _grant_exact_runtime_acl(cur, database: str, user: str) -> None:
     """Grant the checked-in runtime ACL to a disposable test principal."""
-    await cur.execute(f"GRANT SELECT, INSERT ON `{database}`.* TO `{user}`@'%'")
+    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
     for table, privileges in runtime_table_privilege_map().items():
         await cur.execute(
             f"GRANT {', '.join(sorted(privileges))} ON `{database}`.`{table}` TO `{user}`@'%'"
         )
+
+
+async def _grant_bootstrap_probe_acl(cur, database: str, user: str) -> None:
+    """Grant only the v2 rows used by the isolated bootstrap probe fixture."""
+    grants = runtime_table_privilege_map()
+    required = (
+        "jax_tenants", "jax_users", "user_admin_audit", "office_mfa_challenge",
+        "office_mfa_security_event", "office_bootstrap_state",
+    )
+    await cur.execute(f"GRANT SELECT ON `{database}`.* TO `{user}`@'%'")
+    for table in required:
+        # The fixture needs only its append path.  Some production tables
+        # (jax_users) also have a v2 UPDATE grant, which must not leak into
+        # this minimal empty-schema principal.
+        assert "INSERT" in grants[table], table
+        await cur.execute(f"GRANT INSERT ON `{database}`.`{table}` TO `{user}`@'%'")
 
 
 async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) -> None:
@@ -76,18 +94,27 @@ async def _assert_manifest_dml_smoke(admin_pool, runtime_pool, database: str) ->
                     await cur.execute(f"DELETE FROM `{table}` WHERE 1=0")
 
 
-def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_evidence():
+def test_runtime_table_privilege_manifest_is_ordered_and_excludes_protected_module_state():
     rows = load_runtime_table_privileges()
-    assert MANIFEST_VERSION == "runtime-table-privileges-v1"
+    assert MANIFEST_VERSION == "runtime-table-privileges-v2"
     assert [table for table, _ in rows] == sorted(table for table, _ in rows)
-    assert runtime_table_privilege_digest() == "de21df731d20cf744c50fbd1c5eb7d30b0f0d4b103c39b53c86c1989b3d999ea"
+    assert re.fullmatch(r"[0-9a-f]{64}", runtime_table_privilege_digest())
     grants = runtime_table_privilege_map()
+    for classic_insert in (
+        "axioma_usage", "capability_motor", "credential_audit",
+        "jax_tenants", "pipeline_aviso_enviado",
+    ):
+        assert grants[classic_insert] == frozenset(("INSERT",))
     for protected in (
-        "office_authorization_event", "office_bootstrap_state",
-        "office_invitation_event", "office_invitation_issuance",
-        "office_mfa_security_event", "office_schema_revision",
+        "office_schema_revision", "office_module_candidate",
+        "office_module_candidate_revision", "office_module_candidate_evidence",
+        "office_module_creative_review_event", "office_module_creative_review_head",
+        "office_module_rights_review_event", "office_module_rights_review_head",
+        "office_module_release_event", "office_module_release",
     ):
         assert protected not in grants
+    assert "INSERT" in grants["office_authorization_event"]
+    assert "INSERT" in grants["office_invitation_event"]
 
 
 def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(client):
@@ -120,6 +147,8 @@ def test_restricted_runtime_principal_cannot_escape_audit_or_schema_contract(cli
                 await assert_runtime_db_contract(runtime)
             runtime.close(); await runtime.wait_closed(); runtime = None
             runtime = await _runtime_pool(user, password)
+            assert await _errno(runtime, "INSERT INTO office_module_candidate () VALUES ()") == 1142
+            assert await _errno(runtime, "INSERT INTO office_schema_revision () VALUES ()") == 1142
             assert await _errno(runtime, "TRUNCATE TABLE office_authorization_event") == 1142
             assert await _errno(runtime, "DROP TABLE office_schema_revision") == 1142
             assert await _errno(runtime, "ALTER TABLE office_schema_revision ADD COLUMN office_runtime_probe INT") == 1142
@@ -279,6 +308,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
         denied_target, _ = await crear_usuario()
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (denied_target,))
+        receipt_denied_target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (receipt_denied_target,))
         project = await sql(
             "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
             ("office-runtime-http-" + tag,),
@@ -300,7 +331,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             "VALUES (%s,'COLLABORATOR','ACTIVE',%s,%s)",
             (profile_target, root, audit_id),
         )
-        return root, token_version, mfa_version, proof, project, target, denied_target, delegate, profile_target
+        return (root, token_version, mfa_version, proof, project, target, denied_target,
+                receipt_denied_target, delegate, profile_target)
 
     async def close_application_pool():
         from db.connection import close_pool
@@ -315,7 +347,8 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
                 await cur.execute(f"DROP USER IF EXISTS `{denied_runtime_user}`@'%'")
 
     try:
-        root, tv, mv, proof, project, target, denied_target, delegate, profile_target = client.portal.call(seed)
+        (root, tv, mv, proof, project, target, denied_target,
+         receipt_denied_target, delegate, profile_target) = client.portal.call(seed)
         headers = _headers(root, tv, mv, proof)
         monkeypatch.setenv("JAX_DB_USER", runtime_user)
         monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
@@ -327,8 +360,21 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert granted.status_code == 200, granted.text
+        role_key = str(uuid.uuid4())
+        promoted = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": role_key},
+        )
+        assert promoted.status_code == 200, promoted.text
+        role_replay = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": role_key},
+        )
+        assert role_replay.status_code == 200 and role_replay.json()["replayed"] is True, role_replay.text
         revoked = client.delete(
-            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=1",
+            f"/api/virtual-office/projects/{project}/members/{target}?expected_version=2",
             headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
         )
         assert revoked.status_code == 200, revoked.text
@@ -341,6 +387,54 @@ def test_restricted_runtime_principal_executes_office_http_mutations(client, mon
             json={"expected_version": 0}, headers=headers,
         )
         assert delegation.status_code == 200, delegation.text
+
+        # Missing precisely the new terminal INSERT must roll back the role
+        # CAS and its authorization event, even though this principal retains
+        # every other web capability.
+        receipt_grant = client.put(
+            f"/api/virtual-office/projects/{project}/members/{receipt_denied_target}",
+            json={"grant_role": "COLLABORATOR", "audience": "INTERNAL", "expected_version": 0},
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert receipt_grant.status_code == 200, receipt_grant.text
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        client.portal.call(
+            sql,
+            f"REVOKE INSERT ON `{database}`.`office_project_role_mutation_receipt` FROM `{runtime_user}`@'%%'",
+        )
+        role_audits_before = client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s "
+            "AND operation='ADMINISTER_PROJECT_MEMBERS'", (root, project), True,
+        )
+        monkeypatch.setenv("JAX_DB_USER", runtime_user)
+        monkeypatch.setenv("JAX_DB_PASSWORD", runtime_password)
+        client.portal.call(close_application_pool)
+        denied_role_key = str(uuid.uuid4())
+        denied_role = client.patch(
+            f"/api/virtual-office/projects/{project}/members/{receipt_denied_target}/role",
+            json={"grant_role": "PROJECT_ADMIN", "expected_version": 1},
+            headers={**headers, "Idempotency-Key": denied_role_key},
+        )
+        assert denied_role.status_code == 503, denied_role.text
+        client.portal.call(close_application_pool)
+        for name, value in original_credentials.items():
+            os.environ[name] = value
+        assert client.portal.call(
+            sql, "SELECT grant_role,version FROM office_project_grant WHERE project_id=%s AND user_id=%s",
+            (project, receipt_denied_target), True,
+        ) == (("COLLABORATOR", 1),)
+        assert client.portal.call(
+            sql, "SELECT idempotency_key FROM office_project_role_mutation_receipt WHERE idempotency_key=%s",
+            (denied_role_key,), True,
+        ) == ()
+        assert client.portal.call(
+            sql,
+            "SELECT COUNT(*) FROM office_authorization_event WHERE actor_user_id=%s AND project_id=%s "
+            "AND operation='ADMINISTER_PROJECT_MEMBERS'", (root, project), True,
+        ) == role_audits_before
 
         # A second principal differs by precisely one required UPDATE grant.
         # It can create the initial membership, but the HTTP revoke must fail
@@ -439,26 +533,42 @@ def test_failed_late_platform_migration_never_leaves_office_ready(client, monkey
 
 
 def test_previous_ready_revision_is_denied_until_the_runner_restamps_it(client):
-    """A v1 marker cannot certify schema that predates the audit-shape CHECK."""
+    """A v11 marker cannot certify the v12 per-table INSERT contract."""
     async def scenario():
         from db.connection import get_pool
         from db.migrations import run_migrations
         from db.runtime_contract import _revision
 
         pool = await get_pool()
+        assert SCHEMA_REVISION.startswith("office-runtime-v12-")
+        # v11 used the checked-in v1 table contract.  Do not fabricate a v11
+        # marker by retaining the v2 digest: that state was never a deployable
+        # predecessor and would not exercise the actual migration boundary.
+        v1_manifest = (
+            Path(__file__).resolve().parents[2]
+            / "ops" / "migration" / "runtime-table-privileges-v1.txt"
+        )
+        v1_rows = [
+            line.strip() for line in v1_manifest.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        predecessor = (
+            "office-runtime-v11-runtime-table-privileges-v1-"
+            + sha256("\n".join(v1_rows).encode("ascii")).hexdigest()[:16]
+        )
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await apply_office_migrations(cur)
                 await cur.execute(
-                    "UPDATE office_schema_revision SET revision='office-runtime-v1' "
-                    "WHERE component='virtual-office'"
+                    "UPDATE office_schema_revision SET revision=%s "
+                    "WHERE component='virtual-office'", (predecessor,)
                 )
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 with pytest.raises(RuntimeDbContractError, match="revision is absent"):
                     await _revision(cur)
         await run_migrations()
-        assert SCHEMA_REVISION != 'office-runtime-v1'
+        assert SCHEMA_REVISION != predecessor
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await _revision(cur)
@@ -658,7 +768,9 @@ def test_bootstrap_probe_rolls_back_its_tenant_fixture_on_an_empty_tenant_schema
                 await cur.execute(f"USE `{schema}`")
                 await apply_office_migrations(cur)
                 await cur.execute(f"CREATE USER `{user}`@'%%' IDENTIFIED BY %s", (password,))
-                await cur.execute(f"GRANT SELECT, INSERT ON `{schema}`.* TO `{user}`@'%'")
+                # This empty-tenant path has only the fixture tables, so it
+                # receives its exact v2 subset, including jax_tenants INSERT.
+                await _grant_bootstrap_probe_acl(cur, schema, user)
             runtime = await _runtime_pool(user, password, schema)
             await _bootstrap_append_only_probe(runtime)
             async with admin.cursor() as cur:

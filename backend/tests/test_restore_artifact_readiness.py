@@ -22,20 +22,18 @@ def _artifact(tmp_path: Path) -> Path:
 
 
 def _contract(artifact: Path) -> dict[str, dict[str, object]]:
-    backend = str(artifact / "backend")
     return {
         "jax-platform.service": {
-            "WorkingDirectory": backend, "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
-            "Environment": ["PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/home/fruiz/.local/bin:/usr/local/bin:/usr/bin:/bin"],
-            "EnvironmentFiles": [["/etc/jax/runtime.env", False]],
-            "ExecStartEx": [[f"{backend}/.venv/bin/uvicorn", [f"{backend}/.venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--log-level", "warning"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "WorkingDirectory": "/", "User": "jaxweb", "Group": "", "SupplementaryGroups": [],
+            "Environment": [], "EnvironmentFiles": [], "LoadCredential": [["runtime.env", "/etc/jax/runtime.env"]], "UnsetEnvironment": [],
+            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "web", "${CREDENTIALS_DIRECTORY}/runtime.env"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "simple", "RemainAfterExit": False,
             "Requires": ["jax-platform-migrate.service"], "After": ["network.target", "docker.service", "jax-las-manos.service", "jax-platform-migrate.service"],
         },
         "jax-platform-migrate.service": {
-            "WorkingDirectory": backend, "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
-            "Environment": [], "EnvironmentFiles": [["/etc/jax/migrate.env", False]],
-            "ExecStartEx": [[f"{backend}/.venv/bin/python", [f"{backend}/.venv/bin/python", "-m", "db.migrate"], [], 0, 0, 0, 0, 0, 0, 0]],
+            "WorkingDirectory": "/", "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
+            "Environment": [], "EnvironmentFiles": [], "LoadCredential": [["migrate.env", "/etc/jax/migrate.env"]], "UnsetEnvironment": [],
+            "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "migrate", "${CREDENTIALS_DIRECTORY}/migrate.env"], [], 0, 0, 0, 0, 0, 0, 0]],
             "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
         },
@@ -54,7 +52,7 @@ def _fake_busctl(tmp_path: Path, contract: dict[str, dict[str, object]]) -> Path
         " unit=args[-1]; print(json.dumps({'type':'o','data':['/org/freedesktop/systemd1/unit/'+unit.replace('-', '_2d').replace('.', '_2e')]})); raise SystemExit(0)\n"
         "if args[:3] == ['--json=short', 'get-property', 'org.freedesktop.systemd1']:\n"
         " prop=args[-1]; unit='jax-platform-migrate.service' if 'migrate' in args[3] else 'jax-platform.service'; value=contract[unit][prop]\n"
-        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','ExecStartEx':'a(sasasttttuii)','ExecStartPreEx':'a(sasasttttuii)','ExecStartPostEx':'a(sasasttttuii)','ExecConditionEx':'a(sasasttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
+        " types={'WorkingDirectory':'s','User':'s','Group':'s','SupplementaryGroups':'as','Environment':'as','EnvironmentFiles':'a(sb)','LoadCredential':'a(ss)','UnsetEnvironment':'as','ExecStartEx':'a(sasasttttuii)','ExecStartPreEx':'a(sasasttttuii)','ExecStartPostEx':'a(sasasttttuii)','ExecConditionEx':'a(sasasttttuii)','Type':'s','RemainAfterExit':'b','Requires':'as','After':'as'}\n"
         " print(json.dumps({'type':types[prop],'data':value})); raise SystemExit(0)\nraise SystemExit(9)\n",
         encoding="utf-8",
     )
@@ -109,12 +107,6 @@ def test_restore_rejects_effective_contract_tampering(tmp_path: Path) -> None:
 
 
 def test_restore_rejects_missing_artifact_or_invalid_dbus_reply(tmp_path: Path) -> None:
-    artifact = _artifact(tmp_path)
-    (artifact / "backend" / ".venv" / "bin" / "uvicorn").unlink()
-    result = _run(artifact, _fake_busctl(tmp_path, _contract(artifact)))
-    assert result.returncode != 0
-    assert "missing executable" in result.stderr
-
     for name, payload in {
         "corrupt": "{not-json}",
         "unsupported": '{"type":"x","data":[]}',

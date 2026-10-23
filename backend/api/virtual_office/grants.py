@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -33,6 +34,152 @@ class ProjectGrantUpdate(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+class ProjectMemberRoleUpdate(BaseModel):
+    grant_role: Literal["PROJECT_ADMIN", "COLLABORATOR"]
+    expected_version: int = Field(ge=1)
+
+
+@router.get("/{project_id}/members")
+async def list_project_members(project_id: int, cursor: int = Query(default=0, ge=0),
+                               limit: int = Query(default=50, ge=1, le=100),
+                               user: AuthUser = Depends(get_current_user)):
+    """Return the Office-side mutable grant state for project administrators.
+
+    This deliberately exposes no profile or tenant fields.  ``user_id`` is
+    the only identity needed by the caller to submit the existing versioned
+    grant/revoke operations.  The cursor is exclusive and ordered by that
+    stable identifier, so clients can safely continue while roles change.
+    """
+    actor_user_id = _actor_id(user)
+    if project_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_grant_denied")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await authorize_office_in_cursor(
+            cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+        )
+        if not decision.allowed:
+            # Do not let a non-member distinguish a missing project from a
+            # project that has no grants.
+            raise HTTPException(status_code=403, detail="office_project_grant_denied")
+        await cur.execute(
+            "SELECT g.user_id,u.email,g.grant_role,g.audience,g.status,g.version "
+            "FROM office_project_grant g JOIN jax_users u ON u.user_id=g.user_id "
+            "WHERE g.project_id=%s AND g.user_id>%s ORDER BY g.user_id ASC LIMIT %s",
+            (project_id, cursor, limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    members = [
+        {"user_id": int(member[0]), "email": str(member[1]),
+         "grant_role": str(member[2]), "audience": str(member[3]),
+         "status": str(member[4]), "version": int(member[5])}
+        for member in page
+    ]
+    return {
+        "project_id": project_id,
+        "members": members,
+        "next_cursor": int(page[-1][0]) if len(rows) > limit else None,
+    }
+
+
+@router.patch("/{project_id}/members/{target_user_id}/role")
+async def change_project_member_role(project_id: int, target_user_id: int,
+                                     payload: ProjectMemberRoleUpdate,
+                                     idempotency_key: str = Header(alias="Idempotency-Key"),
+                                     user: AuthUser = Depends(get_current_user)):
+    """Change an active internal member's Office role without mutating JAX.
+
+    Membership creation/removal belongs to JAX.  This narrower operation is
+    deliberately limited to Office-root role changes and has its own durable
+    replay evidence, so a retry cannot become a different promotion.
+    """
+    actor_user_id = _actor_id(user)
+    if project_id < 1 or target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_project_role_not_found")
+    key = _validated_role_idempotency_key(idempotency_key)
+    config = load_mfa_config_from_environment()
+    try:
+        async with transaccion(AISLAMIENTO_ADMIN) as cur:
+            target_tenant_id = await _lock_grant_identities(
+                cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
+                audience="INTERNAL")
+            decision = await authorize_office_in_cursor(
+                cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
+                mfa_proof_event_id=user.mfa_proof_event_id, mfa_config=config,
+            )
+            if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
+                raise HTTPException(status_code=403, detail="office_project_role_denied")
+            await cur.execute(
+                "SELECT m.tenant_id,m.status,g.grant_role,g.audience,g.status,g.version,"
+                "s.tenant_id,s.status,s.authorization_namespace "
+                "FROM jax_project_membership m "
+                "JOIN office_project_grant g ON g.project_id=m.project_id AND g.user_id=m.user_id "
+                "JOIN jax_project_scope s ON s.project_id=m.project_id AND s.tenant_id=m.tenant_id "
+                "WHERE m.project_id=%s AND m.user_id=%s FOR UPDATE",
+                (project_id, target_user_id),
+            )
+            member = await cur.fetchone()
+            if member is None:
+                raise HTTPException(status_code=404, detail="office_project_role_not_found")
+            (membership_tenant, membership_status, old_role, audience, grant_status,
+             grant_version, scope_tenant, scope_status, namespace) = member
+            if (int(membership_tenant) != target_tenant_id or int(scope_tenant) != target_tenant_id
+                    or decision.tenant_id != target_tenant_id or membership_status != "ACTIVE"
+                    or grant_status != "ACTIVE" or audience != "INTERNAL"
+                    or scope_status != "ACTIVE" or namespace != "OFFICE_CONFIDENTIAL"):
+                raise HTTPException(status_code=409, detail="office_project_role_member_ineligible")
+            digest = _project_role_receipt_digest(
+                actor_user_id=actor_user_id, target_tenant_id=target_tenant_id,
+                project_id=project_id, target_user_id=target_user_id,
+                grant_role=payload.grant_role, expected_version=payload.expected_version,
+            )
+            await cur.execute(
+                "SELECT request_digest,actor_user_id,target_tenant_id,project_id,target_user_id,"
+                "old_grant_role,new_grant_role,expected_version,result_version "
+                "FROM office_project_role_mutation_receipt WHERE idempotency_key=%s FOR UPDATE",
+                (key,),
+            )
+            receipt = await cur.fetchone()
+            if receipt is not None:
+                if (receipt[0] != digest or tuple(map(int, receipt[1:5])) !=
+                        (actor_user_id, target_tenant_id, project_id, target_user_id)
+                        or receipt[6] != payload.grant_role or int(receipt[7]) != payload.expected_version):
+                    raise HTTPException(status_code=409, detail="office_project_role_idempotency_conflict")
+                if old_role != receipt[6] or int(grant_version) != int(receipt[8]):
+                    raise HTTPException(status_code=503, detail="office_project_role_retryable")
+                return {"project_id": project_id, "user_id": target_user_id,
+                        "grant_role": str(receipt[6]), "version": int(receipt[8]), "replayed": True}
+            if int(grant_version) != payload.expected_version:
+                raise HTTPException(status_code=409, detail="office_project_role_version_conflict")
+            if old_role == payload.grant_role:
+                raise HTTPException(status_code=409, detail="office_project_role_no_change")
+            await cur.execute(
+                "UPDATE office_project_grant SET grant_role=%s,version=version+1,"
+                "updated_at=UTC_TIMESTAMP(6) WHERE project_id=%s AND user_id=%s AND version=%s "
+                "AND status='ACTIVE' AND audience='INTERNAL'",
+                (payload.grant_role, project_id, target_user_id, payload.expected_version),
+            )
+            if cur.rowcount != 1:
+                raise HTTPException(status_code=409, detail="office_project_role_version_conflict")
+            authorization_event_id = await record_authorization_event(cur, decision)
+            result_version = payload.expected_version + 1
+            await cur.execute(
+                "INSERT INTO office_project_role_mutation_receipt "
+                "(receipt_id,idempotency_key,request_digest,actor_user_id,target_tenant_id,project_id,target_user_id,"
+                "old_grant_role,new_grant_role,expected_version,result_version,authorization_event_id,created_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+                (str(uuid.uuid4()), key, digest, actor_user_id, target_tenant_id, project_id,
+                 target_user_id, old_role, payload.grant_role, payload.expected_version,
+                 result_version, authorization_event_id),
+            )
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="office_project_role_retryable") from error
+    return {"project_id": project_id, "user_id": target_user_id,
+            "grant_role": payload.grant_role, "version": result_version, "replayed": False}
+
+
 def _membership_receipt_digest(*, operation: str, actor_user_id: int,
                                target_tenant_id: int, project_id: int,
                                target_user_id: int, expected_version: int,
@@ -52,6 +199,31 @@ def _membership_receipt_digest(*, operation: str, actor_user_id: int,
         "target_tenant_id": target_tenant_id, "target_user_id": target_user_id,
     }, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(canonical).digest()
+
+
+def _project_role_receipt_digest(*, actor_user_id: int, target_tenant_id: int,
+                                 project_id: int, target_user_id: int,
+                                 grant_role: str, expected_version: int) -> bytes:
+    canonical = json.dumps({
+        "actor_user_id": actor_user_id,
+        "domain": "office-project-role/v1",
+        "expected_version": expected_version,
+        "grant_role": grant_role,
+        "project_id": project_id,
+        "target_tenant_id": target_tenant_id,
+        "target_user_id": target_user_id,
+    }, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(canonical).digest()
+
+
+def _validated_role_idempotency_key(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail="office_project_role_idempotency_invalid") from error
+    if str(parsed) != value.lower():
+        raise HTTPException(status_code=422, detail="office_project_role_idempotency_invalid")
+    return str(parsed)
 
 
 async def _locked_membership_receipt(cur, *, idempotency_key: str):
@@ -121,8 +293,6 @@ class _OfficeMembershipAuthorizer:
         from jax.memory.project_authority import AuthorizationDenied
         decision = await authorize_office_in_cursor(
             cursor, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-            require_recent_mfa=True, mfa_proof_event_id=self._proof_event_id,
-            mfa_config=self._mfa_config,
         )
         if not decision.allowed:
             raise AuthorizationDenied("Office project-member authority is required")
@@ -156,7 +326,6 @@ async def _current_project_grant_decision(cur, *, actor_user_id: int, project_id
                                           proof_event_id: int | None, config):
     decision = await authorize_office_in_cursor(
         cur, actor_user_id, OfficeOperation.ADMINISTER_PROJECT_MEMBERS, project_id,
-        require_recent_mfa=True, mfa_proof_event_id=proof_event_id, mfa_config=config,
     )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_project_grant_denied")

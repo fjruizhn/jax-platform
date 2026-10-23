@@ -188,7 +188,8 @@ def test_el_modulo_se_niega_a_correr_con_varios_workers():
         capture_output=True, text=True, timeout=60,
     )
     assert r.returncode != 0
-    assert "workers" in r.stderr
+    assert "WEB_CONCURRENCY=2" in r.stderr
+    assert "un solo worker" in r.stderr
 
 
 async def test_ajuste_ilegible_responde_503_con_codigo_y_clave():

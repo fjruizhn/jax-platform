@@ -102,8 +102,8 @@ def test_office_projects_list_enforces_namespace_profile_and_external_publicatio
     client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (office, member))
     assert client.get(page, headers=_headers(member)).json()["projects"] == []
     client.portal.call(sql, "UPDATE jax_project_membership SET status='ACTIVE' WHERE project_id=%s AND user_id=%s", (office, member))
-    # Root is global only after the current verified MFA proof is reread.
-    assert client.get(page, headers=_headers(root)).json()["projects"] == []
+    # The Office root can list projects without an MFA step-up.
+    assert office in [row["id"] for row in client.get(page, headers=_headers(root)).json()["projects"]]
     external_projects = client.get(page, headers=_headers(external)).json()["projects"]
     assert [row["id"] for row in external_projects] == [office]
     assert external_projects[0]["description"] is None
@@ -203,7 +203,7 @@ def test_project_list_never_uses_hidden_lookahead_as_a_cursor(client):
     }
 
 
-def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
+def test_list_prefilter_keeps_project_admin_rows_without_mfa_once(client):
     async def scenario():
         user_id, _ = await crear_usuario()
         await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
@@ -218,8 +218,7 @@ def test_list_prefilter_excludes_privileged_view_rows_without_mfa_once(client):
 
     user_id, (admin_a, admin_b, collaborator_c) = client.portal.call(scenario)
     page = client.get("/api/virtual-office/projects?limit=3", headers=_headers(user_id)).json()
-    assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [collaborator_c]
-    assert page["next_after_id"] is None
+    assert [row["id"] for row in page["projects"] if row["id"] in {admin_a, admin_b, collaborator_c}] == [admin_a, admin_b, collaborator_c]
 
 
 
@@ -245,19 +244,80 @@ def test_list_fails_closed_for_global_admin_or_missing_mfa_runtime_config(client
     collaborator, tv, mv, proof, general_admin, admin_proof, projects = client.portal.call(scenario)
     monkeypatch.setattr(projects_api, "load_mfa_config_from_environment", lambda: None)
     # The durable proof alone is not candidate eligibility if the canonical
-    # resolver cannot receive its runtime configuration.  A/B stay hidden;
-    # ordinary C remains available without a resolver mismatch.
+    # resolver cannot receive its runtime configuration.  The ordinary
+    # project-admin A and collaborator C remain available; professional B is
+    # still excluded without a verified proof.
     collaborator_response = client.get(
         "/api/virtual-office/projects?limit=3",
         headers=_proof_headers(collaborator, tv, mv, proof, str(uuid.uuid4())),
     )
     assert collaborator_response.status_code == 200
-    assert [row["id"] for row in collaborator_response.json()["projects"] if row["id"] in projects] == [projects[2]]
+    assert [row["id"] for row in collaborator_response.json()["projects"] if row["id"] in projects] == [projects[0], projects[2]]
     # GENERAL_ADMIN is privileged for all views.  With no proof it returns the
     # same opaque empty page regardless of a cursor at a real scope boundary.
     for headers in (_headers(general_admin), _proof_headers(general_admin, 0, 0, admin_proof, str(uuid.uuid4()))):
         assert client.get("/api/virtual-office/projects", headers=headers).json() == {"projects": [], "next_after_id": None}
         assert client.get(f"/api/virtual-office/projects?after_id={projects[1]}", headers=headers).json() == {"projects": [], "next_after_id": None}
+
+
+def test_project_admin_lists_views_and_manages_invitations_without_mfa(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+
+    async def scenario():
+        user_id, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (user_id,))
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,description,status) VALUES (UUID(),%s,%s,'active')",
+            ("project-admin-no-mfa-" + uuid.uuid4().hex, "admin detail"),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,),
+        )
+        await sql(
+            "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), project_id, user_id),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)",
+            (project_id, user_id, user_id),
+        )
+        collaborator, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (collaborator,))
+        await sql(
+            "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))",
+            (str(uuid.uuid4()), project_id, collaborator),
+        )
+        await sql(
+            "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (project_id, collaborator, user_id),
+        )
+        return user_id, collaborator, project_id
+
+    user_id, collaborator, project_id = client.portal.call(scenario)
+    for name in (
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+    ):
+        monkeypatch.delenv(name)
+    headers = _headers(user_id)
+    # The disposable schema can retain Office rows from preceding tests.  Seek
+    # to this creation instead of assuming it fits on the first root page.
+    listed = client.get(f"/api/virtual-office/projects?after_id={project_id - 1}", headers=headers)
+    assert listed.status_code == 200
+    assert project_id in [project["id"] for project in listed.json()["projects"]]
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["id"] == project_id
+    assert detail.json()["capabilities"]["manage_invitations"] is True
+    denied = client.get(f"/api/virtual-office/projects/{project_id}", headers=_headers(collaborator))
+    assert denied.status_code == 200
+    assert denied.json()["capabilities"]["manage_invitations"] is False
 
 def test_list_aborts_whole_page_when_central_resolver_detects_a_revocation_race(client, monkeypatch):
     import api.virtual_office.projects as projects_api
@@ -439,17 +499,71 @@ def test_create_project_jax_first_then_exact_replay_and_one_client_group(client,
     assert replay.status_code == 200
     assert replay.json() == {"id": project_id, "created": False}
     assert client.portal.call(sql, "SELECT authorization_namespace,tenant_id FROM jax_project_scope WHERE project_id=%s", (project_id,), True) == (("OFFICE_CONFIDENTIAL", 1),)
+    assert client.portal.call(
+        sql,
+        "SELECT m.project_role,m.status,g.grant_role,g.audience,g.status,g.version "
+        "FROM jax_project_membership m JOIN office_project_grant g "
+        "ON g.project_id=m.project_id AND g.user_id=m.user_id "
+        "WHERE m.project_id=%s AND m.user_id=%s",
+        (project_id, root), True,
+    ) == (("CONTRIBUTOR", "ACTIVE", "PROJECT_ADMIN", "INTERNAL", "ACTIVE", 1),)
+    assert client.portal.call(
+        sql,
+        "SELECT operation,target_user_id,expected_version,grant_role,audience,office_grant_version,office_grant_status "
+        "FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s",
+        (key,), True,
+    ) == (("GRANT_OFFICE_MEMBER", root, 0, "PROJECT_ADMIN", "INTERNAL", 1, "ACTIVE"),)
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT' AND status='ACTIVE'", (project_id,), True) == ((1,),)
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_project_membership_event WHERE project_id=%s AND target_user_id=%s),"
+        "(SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id=%s),"
+        "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s),"
+        "(SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT')",
+        (project_id, root, project_id, root, key, project_id), True,
+    ) == ((1, 1, 1, 1),)
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=_proof_headers(root, tv, mv, proof, str(uuid.uuid4())))
+    assert detail.status_code == 200
+    assert detail.json()["capabilities"]["manage_invitations"] is True
 
 
-def test_create_project_denies_nonroot_and_expired_proof_before_jax_write(client, monkeypatch):
+def test_root_bootstrap_creates_lists_and_views_project_without_mfa_or_config(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, _token_version, _mfa_version, _proof = client.portal.call(_office_root_with_current_proof)
+    for name in (
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+    ):
+        monkeypatch.delenv(name)
+    headers = {"Authorization": "Bearer " + create_access_token(str(root), "1", "operator")}
+    created = client.post(
+        "/api/virtual-office/projects", json=_project_payload(),
+        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert created.status_code == 200
+    project_id = created.json()["id"]
+    listed = client.get(f"/api/virtual-office/projects?after_id={project_id - 1}", headers=headers)
+    assert listed.status_code == 200
+    assert project_id in [project["id"] for project in listed.json()["projects"]]
+    detail = client.get(f"/api/virtual-office/projects/{project_id}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["id"] == project_id
+    assert detail.json()["capabilities"]["manage_invitations"] is True
+
+
+def test_create_project_denies_nonroot_but_allows_office_root_without_mfa(client, monkeypatch):
     _configure_mfa(monkeypatch)
     ordinary, tv, mv, proof = client.portal.call(lambda: _office_root_with_current_proof(role="COLLABORATOR"))
     assert client.post("/api/virtual-office/projects", json=_project_payload(), headers=_proof_headers(ordinary, tv, mv, proof, str(uuid.uuid4()))).status_code == 403
-    root, tv, mv, old_proof = client.portal.call(
+    root, _tv, _mv, _old_proof = client.portal.call(
         lambda: _office_root_with_current_proof(proof_time_sql="DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 301 SECOND)")
     )
-    assert client.post("/api/virtual-office/projects", json=_project_payload(), headers=_proof_headers(root, tv, mv, old_proof, str(uuid.uuid4()))).status_code == 403
+    response = client.post("/api/virtual-office/projects", json=_project_payload(), headers={
+        "Authorization": "Bearer " + create_access_token(str(root), "1", "operator"),
+        "Idempotency-Key": str(uuid.uuid4()),
+    })
+    assert response.status_code == 200
 
 
 def test_create_project_group_fault_is_partial_and_same_key_repairs(client, monkeypatch):
@@ -464,12 +578,41 @@ def test_create_project_group_fault_is_partial_and_same_key_repairs(client, monk
         assert first.status_code == 503
         project_id = client.portal.call(sql, "SELECT project_id FROM jax_namespace_project_creation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s", (key,), True)[0][0]
         assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s", (project_id,), True) == ((0,),)
+        assert client.portal.call(
+            sql,
+            "SELECT (SELECT COUNT(*) FROM jax_project_membership WHERE project_id=%s AND user_id=%s),"
+            "(SELECT COUNT(*) FROM office_project_grant WHERE project_id=%s AND user_id=%s),"
+            "(SELECT COUNT(*) FROM office_membership_mutation_receipt WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s),"
+            "(SELECT COUNT(*) FROM jax_namespace_membership_mutation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s)",
+            (project_id, root, project_id, root, key, key), True,
+        ) == ((0, 0, 0, 0),)
     finally:
         client.portal.call(sql, "DROP TRIGGER " + trigger)
     repaired = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
     assert repaired.status_code == 200
     assert repaired.json()["created"] is False
     assert client.portal.call(sql, "SELECT COUNT(*) FROM office_recipient_group WHERE project_id=%s AND status='ACTIVE'", (project_id,), True) == ((1,),)
+
+
+def test_create_project_rejects_cross_tenant_before_phase_a(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    tenant_name = "office-cross-create-" + uuid.uuid4().hex[:12]
+    client.portal.call(sql, "INSERT INTO jax_tenants (name,plan,status) VALUES (%s,'test','active')", (tenant_name,))
+    target_tenant = client.portal.call(sql, "SELECT tenant_id FROM jax_tenants WHERE name=%s", (tenant_name,), True)[0][0]
+    key = str(uuid.uuid4())
+    response = client.post(
+        "/api/virtual-office/projects",
+        json={"tenant_id": target_tenant, "name": "cross-tenant", "description": None},
+        headers=_proof_headers(root, tv, mv, proof, key),
+    )
+    assert (response.status_code, response.json()) == (403, {"detail": "office_project_create_denied"})
+    assert client.portal.call(
+        sql,
+        "SELECT (SELECT COUNT(*) FROM jax_project_scope WHERE tenant_id=%s AND authorization_namespace='OFFICE_CONFIDENTIAL'),"
+        "(SELECT COUNT(*) FROM jax_namespace_project_creation_request WHERE namespace='OFFICE_CONFIDENTIAL' AND idempotency_key=%s)",
+        (target_tenant, key), True,
+    ) == ((0, 0),)
 
 
 def test_create_project_revoked_actor_cannot_repair_or_reactivate_group(client, monkeypatch):

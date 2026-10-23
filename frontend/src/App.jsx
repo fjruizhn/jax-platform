@@ -11,6 +11,8 @@ import Admin from './pages/Admin'
 import ResetPassword from './pages/ResetPassword'
 import AccountSecurity from './pages/AccountSecurity'
 import VirtualOffice from './pages/VirtualOffice'
+import OfficeInvitation from './pages/OfficeInvitation'
+import OfficeBootstrap from './pages/OfficeBootstrap'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 import { officeSessionApi } from './api/virtualOffice'
@@ -32,6 +34,17 @@ function respuestaOfficeValida(data, userId) {
     && typeof data.capabilities?.administer_identity_security === 'boolean'
 }
 
+function respuestaBootstrapValida(data, userId) {
+  return data && typeof data === 'object'
+    && data.state === 'BOOTSTRAP_REQUIRED'
+    && data.identity?.user_id === userId
+    && typeof data.identity.tenant_id === 'number'
+    && typeof data.identity.account_class === 'string'
+    && data.identity.global_role === null
+    && data.bootstrap?.method === 'CURRENT_PASSWORD'
+    && data.bootstrap.target_user_id === userId
+}
+
 function RequireOfficeSession({ children }) {
   const user = useJaxStore((s) => s.user)
   const token = useJaxStore((s) => s.token)
@@ -49,13 +62,20 @@ function RequireOfficeSession({ children }) {
     }
     setDecision({ status: 'pending', ...snapshot })
     officeSessionApi.read()
-      .then(({ data }) => { if (sigueSiendoLaMismaSesion()) setDecision({ status: respuestaOfficeValida(data, snapshot.userId) ? 'allowed' : 'denied', ...snapshot }) })
+      .then(({ data }) => {
+        if (!sigueSiendoLaMismaSesion()) return
+        const status = respuestaOfficeValida(data, snapshot.userId)
+          ? 'allowed'
+          : respuestaBootstrapValida(data, snapshot.userId) ? 'bootstrap' : 'denied'
+        setDecision({ status, officeSession: data, ...snapshot })
+      })
       .catch(() => { if (sigueSiendoLaMismaSesion()) setDecision({ status: 'denied', ...snapshot }) })
     return () => { active = false }
   }, [epoch, token, user?.user_id])
 
   const decisionVigente = decision.epoch === snapshotActual.epoch && decision.token === snapshotActual.token && decision.userId === snapshotActual.userId
   if (!decisionVigente || decision.status === 'pending') return null
+  if (decision.status === 'bootstrap') return <OfficeBootstrap officeSession={decision.officeSession} />
   if (decision.status !== 'allowed') return <Navigate to="/account/security" replace state={{ from: location }} />
   const invalidateOffice = () => setDecision((current) => (
     current.status === 'allowed' && current.epoch === snapshotActual.epoch && current.token === snapshotActual.token && current.userId === snapshotActual.userId
@@ -84,6 +104,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/office/invitation" element={<OfficeInvitation />} />
         <Route path="/account/security" element={<RequireAuth allowOfficeAccount><AccountSecurity /></RequireAuth>} />
         <Route
           path="/virtual-office"

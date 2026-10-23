@@ -6,6 +6,7 @@ import re
 
 from auth.conexiones import _cortar_conexiones
 from auth.models import AuthUser
+from db.seed import verify_password
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
 
 from .mfa import MFADenied, load_mfa_config_from_environment, reload_current_self_mfa_proof_in_cursor
@@ -23,8 +24,9 @@ class BootstrapDenied(RuntimeError):
 class BootstrapReceipt:
     ceremony_key: str
     target_user_id: int
-    identity_proof_event_id: int
-    credential_audit_id: int
+    identity_proof_event_id: int | None
+    credential_audit_id: int | None
+    verification_method: str
     replay: bool
 
 
@@ -93,6 +95,42 @@ async def credential_self_control_in_cursor(cur, *, user_id: int) -> int | None:
     return latest_self_id
 
 
+async def _locked_password_reauth_target(cur, *, user_id: int, bearer_tenant_id: int,
+                                         bearer_token_version: int, password: str) -> bool:
+    """Authenticate the current bearer again while its canonical row is locked.
+
+    This is intentionally a one-time initial ceremony for the pre-Office
+    classic superadmin.  It never accepts an administrator-created password
+    change, a stale bearer, or an account that has been forced to change its
+    password before using the Office.
+    """
+    await cur.execute("SELECT tenant_id FROM jax_users WHERE user_id=%s", (user_id,))
+    discovered = await cur.fetchone()
+    if discovered is None or int(discovered[0]) != bearer_tenant_id:
+        return False
+    await cur.execute("SELECT status FROM jax_tenants WHERE tenant_id=%s FOR UPDATE", (bearer_tenant_id,))
+    tenant = await cur.fetchone()
+    if tenant is None or tenant[0] != "active":
+        return False
+    await cur.execute(
+        "SELECT status,account_class,role,must_change_password,token_version,password_hash "
+        "FROM jax_users WHERE user_id=%s FOR UPDATE",
+        (user_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return False
+    status, account_class, role, must_change_password, token_version, password_hash = row
+    return bool(
+        status == "active"
+        and account_class == "INTERNAL"
+        and role == "superadmin"
+        and not bool(must_change_password)
+        and int(token_version) == bearer_token_version
+        and await verify_password(password, password_hash)
+    )
+
+
 async def bootstrap_initial_office_root(*, session_user: AuthUser, target_user_id: int,
                                        expected_email: str, basis_ref: str) -> BootstrapReceipt:
     """Create the one initial binding, or return its immutable receipt.
@@ -132,18 +170,19 @@ async def bootstrap_initial_office_root(*, session_user: AuthUser, target_user_i
         if credential_audit_id is None:
             raise BootstrapDenied("bootstrap_denied")
         await cur.execute(
-            "SELECT target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref "
+            "SELECT target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method,basis_ref "
             "FROM office_bootstrap_state WHERE ceremony_key=%s FOR UPDATE",
             (CEREMONY_KEY,),
         )
         state = await cur.fetchone()
         if state is not None:
-            state_target, state_actor, state_proof, state_audit, state_basis = state
-            if int(state_target) != target_user_id or int(state_actor) != actor_user_id or state_basis != basis_ref:
+            state_target, state_actor, state_proof, state_audit, method, state_basis = state
+            if (int(state_target) != target_user_id or int(state_actor) != actor_user_id or
+                    method != "MFA" or state_basis != basis_ref):
                 raise BootstrapDenied("bootstrap_denied")
             # A replay is receipt retrieval under a fresh session.  It never
             # heals a revoked/changed profile and never rewrites provenance.
-            return BootstrapReceipt(CEREMONY_KEY, int(state_target), int(state_proof), int(state_audit), True)
+            return BootstrapReceipt(CEREMONY_KEY, int(state_target), int(state_proof), int(state_audit), "MFA", True)
         if existing_profile is not None:
             raise BootstrapDenied("bootstrap_denied")
         await cur.execute(
@@ -155,12 +194,74 @@ async def bootstrap_initial_office_root(*, session_user: AuthUser, target_user_i
         await cur.execute("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (target_user_id,))
         await cur.execute(
             "INSERT INTO office_bootstrap_state "
-            "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,basis_ref,completed_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+            "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method,basis_ref,completed_at) "
+            "VALUES (%s,%s,%s,%s,%s,'MFA',%s,UTC_TIMESTAMP(6))",
             (CEREMONY_KEY, target_user_id, actor_user_id, proof.event_id, credential_audit_id, basis_ref),
         )
         cut_connections = True
-        receipt = BootstrapReceipt(CEREMONY_KEY, target_user_id, proof.event_id, credential_audit_id, False)
+        receipt = BootstrapReceipt(CEREMONY_KEY, target_user_id, proof.event_id, credential_audit_id, "MFA", False)
     if cut_connections:
         await _cortar_conexiones(target_user_id)
+    return receipt
+
+
+async def bootstrap_initial_office_root_after_password_reauth(*, session_user: AuthUser,
+                                                              current_password: str) -> BootstrapReceipt:
+    """Bootstrap the first Office root from a verified classic-superadmin session.
+
+    The current password is rechecked under the authoritative user lock.  It
+    is proof for this ceremony only and is never stored or represented as an
+    MFA event.  Elevation cuts every bearer session, including this request's
+    bearer; callers must obtain a fresh session before entering the Office.
+    """
+    if not isinstance(current_password, str) or not current_password:
+        raise BootstrapDenied("bootstrap_denied")
+    try:
+        actor_user_id = int(session_user.user_id)
+        tenant_id = int(session_user.tenant_id)
+        token_version = int(session_user.token_version)
+    except (TypeError, ValueError) as exc:
+        raise BootstrapDenied("bootstrap_denied") from exc
+    if not _positive_id(actor_user_id) or not _positive_id(tenant_id) or token_version < 0:
+        raise BootstrapDenied("bootstrap_denied")
+
+    cut_connections = False
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _locked_password_reauth_target(
+            cur, user_id=actor_user_id, bearer_tenant_id=tenant_id,
+            bearer_token_version=token_version, password=current_password,
+        ):
+            raise BootstrapDenied("bootstrap_denied")
+        await cur.execute("SELECT user_id FROM office_account_profile WHERE user_id=%s FOR UPDATE", (actor_user_id,))
+        existing_profile = await cur.fetchone()
+        await cur.execute(
+            "SELECT target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method "
+            "FROM office_bootstrap_state WHERE ceremony_key=%s FOR UPDATE",
+            (CEREMONY_KEY,),
+        )
+        state = await cur.fetchone()
+        if state is not None:
+            state_target, state_actor, state_proof, state_audit, method = state
+            if int(state_target) != actor_user_id or int(state_actor) != actor_user_id:
+                raise BootstrapDenied("bootstrap_denied")
+            return BootstrapReceipt(CEREMONY_KEY, actor_user_id, state_proof, state_audit, str(method), True)
+        if existing_profile is not None:
+            raise BootstrapDenied("bootstrap_denied")
+        await cur.execute(
+            "INSERT INTO office_account_profile (user_id,global_role,status,version,created_at,updated_at) "
+            "VALUES (%s,'OFFICE_SUPERUSER','ACTIVE',1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+            (actor_user_id,),
+        )
+        await cur.execute("DELETE FROM password_reset_tokens WHERE user_id=%s AND used=FALSE", (actor_user_id,))
+        await cur.execute("UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (actor_user_id,))
+        await cur.execute(
+            "INSERT INTO office_bootstrap_state "
+            "(ceremony_key,target_user_id,identity_actor_user_id,identity_proof_event_id,credential_audit_id,verification_method,basis_ref,completed_at) "
+            "VALUES (%s,%s,%s,NULL,NULL,'PASSWORD_REAUTH','session-current-password',UTC_TIMESTAMP(6))",
+            (CEREMONY_KEY, actor_user_id, actor_user_id),
+        )
+        cut_connections = True
+        receipt = BootstrapReceipt(CEREMONY_KEY, actor_user_id, None, None, "PASSWORD_REAUTH", False)
+    if cut_connections:
+        await _cortar_conexiones(actor_user_id)
     return receipt

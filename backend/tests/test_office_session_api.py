@@ -77,6 +77,7 @@ def test_office_session_derives_root_capabilities_from_db_and_current_mfa(client
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
+        "state": "ACTIVE",
         "identity": {"user_id": user_id, "tenant_id": 1, "account_class": "INTERNAL", "global_role": "OFFICE_SUPERUSER"},
         "mfa": {"verified": True, "recent": True},
         "capabilities": {
@@ -84,6 +85,64 @@ def test_office_session_derives_root_capabilities_from_db_and_current_mfa(client
             "administer_office": True,
             "administer_identity_security": True,
         },
+    }
+
+
+def test_classic_superadmin_can_bootstrap_office_with_current_password_without_mfa(client):
+    async def scenario():
+        from db.connection import get_pool
+        from virtual_office.migrations import OFFICE_BOOTSTRAP_DDL, apply_office_migrations
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await apply_office_migrations(cur)
+                await cur.execute("DROP TRIGGER IF EXISTS no_update_office_bootstrap_state")
+                await cur.execute("DROP TRIGGER IF EXISTS no_delete_office_bootstrap_state")
+                await cur.execute("DROP TABLE IF EXISTS office_bootstrap_state")
+                for statement in OFFICE_BOOTSTRAP_DDL:
+                    await cur.execute(statement)
+        user_id, _ = await crear_usuario(role="superadmin", password="office-bootstrap-current-password")
+        return user_id
+
+    user_id = client.portal.call(scenario)
+    token = create_access_token(str(user_id), "1", "superadmin", 0)
+    headers = {"Authorization": "Bearer " + token}
+    entry = client.get("/api/virtual-office/session", headers=headers)
+    assert entry.status_code == 200
+    assert entry.json() == {
+        "state": "BOOTSTRAP_REQUIRED",
+        "identity": {"user_id": user_id, "tenant_id": 1, "account_class": "INTERNAL", "global_role": None},
+        "bootstrap": {"method": "CURRENT_PASSWORD", "target_user_id": user_id},
+    }
+    rejected = client.post("/api/virtual-office/bootstrap", headers=headers, json={"current_password": "wrong"})
+    assert (rejected.status_code, rejected.json()) == (401, {"detail": "bootstrap_reauth_failed"})
+    activated = client.post(
+        "/api/virtual-office/bootstrap", headers=headers,
+        json={"current_password": "office-bootstrap-current-password"},
+    )
+    assert activated.status_code == 200
+    payload = activated.json()
+    assert payload["state"] == "ACTIVE"
+    assert payload["verification_method"] == "PASSWORD_REAUTH"
+    assert payload["replay"] is False
+    assert isinstance(payload["access_token"], str)
+    assert client.get("/api/virtual-office/session", headers=headers).status_code == 401
+    fresh = {"Authorization": "Bearer " + payload["access_token"]}
+    fresh_session = client.get("/api/virtual-office/session", headers=fresh)
+    assert (fresh_session.status_code, fresh_session.json().get("state")) == (200, "ACTIVE"), fresh_session.json()
+
+
+def test_office_session_allows_root_project_creation_without_mfa(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    user_id, token_version, _mfa_version, _proof = client.portal.call(_office_user)
+    response = client.get("/api/virtual-office/session", headers=_headers(user_id, token_version, 0, None))
+    assert response.status_code == 200
+    assert response.json()["mfa"] == {"verified": False, "recent": False}
+    assert response.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
     }
 
 
@@ -121,7 +180,11 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     expired_response = client.get("/api/virtual-office/session", headers=_headers(expired, tv, mv, expired_proof))
     assert expired_response.status_code == 200
     assert expired_response.json()["mfa"] == {"verified": True, "recent": False}
-    assert all(value is False for value in expired_response.json()["capabilities"].values())
+    assert expired_response.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
+    }
 
     revoked, old_tv, mv, revoked_proof = client.portal.call(_office_user)
     client.portal.call(sql, "UPDATE jax_users SET token_version=token_version+1 WHERE user_id=%s", (revoked,))
@@ -130,7 +193,9 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     assert (revoked_response.status_code, revoked_response.json()) == (401, {"detail": "sesion_invalida"})
     assert unknown_response.status_code == 200
     assert unknown_response.json()["mfa"] == {"verified": False, "recent": False}
-    assert all(value is False for value in unknown_response.json()["capabilities"].values())
+    assert unknown_response.json()["capabilities"] == {
+        "create_project": True, "administer_office": False, "administer_identity_security": False,
+    }
 
 
 def test_office_session_rechecks_token_cut_after_dependency_before_response(client, monkeypatch):
@@ -150,15 +215,21 @@ def test_office_session_rechecks_token_cut_after_dependency_before_response(clie
     assert (response.status_code, response.json()) == (401, {"detail": "sesion_invalida"})
 
 
-def test_office_session_never_returns_partial_capabilities_on_configuration_or_database_failure(client, monkeypatch):
+def test_office_session_keeps_entry_available_when_mfa_configuration_is_absent(client, monkeypatch):
     _configure_mfa(monkeypatch)
     user_id, tv, mv, proof = client.portal.call(_office_user)
     for name in ("OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
                  "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
                  "OFFICE_MFA_RECOVERY_CODE_COUNT"):
         monkeypatch.delenv(name)
-    unavailable = client.get("/api/virtual-office/session", headers=_headers(user_id, tv, mv, proof))
-    assert (unavailable.status_code, unavailable.json()) == (503, {"detail": "office_session_unavailable"})
+    without_mfa_config = client.get("/api/virtual-office/session", headers=_headers(user_id, tv, mv, proof))
+    assert without_mfa_config.status_code == 200
+    assert without_mfa_config.json()["mfa"] == {"verified": False, "recent": False}
+    assert without_mfa_config.json()["capabilities"] == {
+        "create_project": True,
+        "administer_office": False,
+        "administer_identity_security": False,
+    }
 
     _configure_mfa(monkeypatch)
     import api.virtual_office.session as session_api

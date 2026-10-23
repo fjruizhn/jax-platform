@@ -470,6 +470,42 @@ async def reload_current_self_mfa_verified_in_cursor(cur, *, actor_user_id: int,
     return MFAProofReceipt(proof_event_id, actor_user_id, purpose, int(tv), int(mv), _utc(when))
 
 
+async def reload_issued_invitation_mfa_proof_in_cursor(
+    cur, *, issuer_user_id: int, proof_event_id: int,
+    issued_mfa_version: int, issued_at: dt.datetime,
+):
+    """Verify immutable invitation emission evidence without revoking it on login.
+
+    This is deliberately narrower than the general current-proof verifier:
+    a subsequent LOGIN changes ``token_version`` but must not invalidate an
+    already-issued invitation.  An MFA state change still revokes it through
+    ``mfa_version``.  The caller supplies all bindings from the locked
+    issuance row; none comes from the browser request.
+    """
+    versions = await _user(cur, issuer_user_id)
+    if versions is None or versions[1] != issued_mfa_version:
+        return MFADenied("invitation_proof_invalid", terminal=True)
+    await cur.execute(
+        "SELECT subject_user_id,purpose,mfa_version,occurred_at,result,principal_kind,actor_user_id,event_kind "
+        "FROM office_mfa_security_event WHERE event_id=%s FOR UPDATE", (proof_event_id,))
+    row = await cur.fetchone()
+    if row is None:
+        return MFADenied("invitation_proof_invalid", terminal=True)
+    subject, purpose, mfa_version, occurred_at, result, principal, actor, event_kind = row
+    expected_at = _utc(issued_at)
+    actual_at = _utc(occurred_at)
+    valid_principal = (
+        (purpose == "LOGIN" and principal == "PASSWORD_PREAUTH" and actor is None)
+        or (purpose == "STEP_UP" and principal == "USER_SESSION" and actor == issuer_user_id)
+    )
+    if (subject != issuer_user_id or event_kind != "MFA_PROOF" or result != "VERIFIED"
+            or not valid_principal or int(mfa_version) != issued_mfa_version
+            or actual_at != expected_at):
+        return MFADenied("invitation_proof_invalid", terminal=True)
+    return MFAProofReceipt(proof_event_id, issuer_user_id, purpose,
+                           versions[0], issued_mfa_version, actual_at)
+
+
 async def reload_current_self_mfa_proof_in_cursor(cur, *, actor_user_id: int, proof_event_id: int, config: MFAConfig):
     proof = await reload_current_self_mfa_verified_in_cursor(
         cur, actor_user_id=actor_user_id, proof_event_id=proof_event_id,

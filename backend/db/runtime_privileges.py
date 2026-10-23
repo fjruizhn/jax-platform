@@ -2,9 +2,10 @@
 
 The manifest lives beside the provisioner so both the root-only provisioning
 path and the runtime guard consume the same reviewed, deterministic contract.
-Schema-level SELECT/INSERT are intentional; UPDATE and DELETE are granted
-only to the tables listed here.  Migration-only and append-only tables must
-never be added.
+Only schema-level SELECT is intentional. Every runtime write is named in the
+manifest, including append-only evidence that the ordinary web process must
+produce. Module publication/candidate state and schema readiness remain
+migrator-only.
 """
 from __future__ import annotations
 
@@ -13,26 +14,25 @@ from pathlib import Path
 import re
 
 
-MANIFEST_VERSION = "runtime-table-privileges-v1"
-_ALLOWED_PRIVILEGES = frozenset(("UPDATE", "DELETE"))
+MANIFEST_VERSION = "runtime-table-privileges-v2"
+_ALLOWED_PRIVILEGES = frozenset(("INSERT", "UPDATE", "DELETE"))
 _FORBIDDEN_TABLES = frozenset((
-    "office_authorization_event",
-    "office_bootstrap_state",
-    "office_invitation_event",
-    "office_invitation_issuance",
-    "office_mfa_security_event",
-    "office_membership_mutation_receipt",
-    "office_profile_revocation_event",
     "office_schema_revision",
     "office_module_candidate",
     "office_module_candidate_revision",
     "office_module_candidate_evidence",
+    "office_module_creative_review_event",
+    "office_module_rights_review_event",
+    "office_module_release_event",
+    "office_module_creative_review_head",
+    "office_module_rights_review_head",
+    "office_module_release",
 ))
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 def manifest_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "ops" / "migration" / "runtime-table-privileges-v1.txt"
+    return Path(__file__).resolve().parents[2] / "ops" / "migration" / "runtime-table-privileges-v2.txt"
 
 
 def load_runtime_table_privileges() -> tuple[tuple[str, tuple[str, ...]], ...]:
