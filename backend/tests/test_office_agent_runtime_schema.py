@@ -24,7 +24,7 @@ def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
     assert "project_concurrency TINYINT UNSIGNED NOT NULL DEFAULT 8" in ddl
     assert "timeout_seconds TINYINT UNSIGNED NOT NULL DEFAULT 45" in ddl
     assert "stale_seconds TINYINT UNSIGNED NOT NULL DEFAULT 60" in ddl
-    assert "INSERT INTO office_agent_runtime_config" in ddl
+    assert "INSERT IGNORE INTO office_agent_runtime_config" in ddl
     assert "max_output_tokens BETWEEN 1 AND 2048" in ddl
     assert "window_seconds BETWEEN 60 AND 3600" in ddl
     assert "actor_concurrency BETWEEN 1 AND 2" in ddl
