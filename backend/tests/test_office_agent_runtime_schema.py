@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import aiomysql
+import uuid
 
 
 def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
@@ -191,18 +192,127 @@ def test_runtime_schema_attestation_rejects_an_extra_homonymous_trigger(client) 
 
 
 def test_runtime_quota_queries_use_their_four_real_indexes(client) -> None:
-    from tests.identidades import sql
+    """Use skewed durable rows; an empty table makes MariaDB's choice arbitrary."""
+    from tests.identidades import crear_usuario, sql
 
     async def exercise() -> None:
+        actor, _ = await crear_usuario()
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("quota-index-" + uuid.uuid4().hex,),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,),
+        )
+        model_ref, credential_id = (await sql(
+            "SELECT m.id,c.id FROM model m JOIN credential c ON c.provider_id=m.provider_id AND c.state='active' "
+            "WHERE m.provider_id='zhipu' AND m.model_id='glm-5.3' LIMIT 1", (), True,
+        ))[0]
+        engine_key = "quota-engine-" + uuid.uuid4().hex
+        await sql(
+            "INSERT INTO office_engine (engine_key,display_name_key,model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) "
+            "VALUES (%s,'Quota',%s,%s,'http_openai_compat',JSON_ARRAY('INTERNAL_CONFIDENTIAL'),%s,FALSE,0,1)",
+            (engine_key, model_ref, credential_id, "0" * 64),
+        )
+        agent_id = await sql(
+            "INSERT INTO office_agent (project_id,agent_key,display_name,instructions,data_classification,created_by) "
+            "VALUES (%s,'quota','Quota','x','INTERNAL_CONFIDENTIAL',%s)", (project_id, actor),
+        )
+        binding_id = await sql(
+            "INSERT INTO office_agent_binding (agent_id,engine_key,binding_version,bound_by) VALUES (%s,%s,1,%s)",
+            (agent_id, engine_key, actor),
+        )
+        event_id = await sql(
+            "INSERT INTO office_authorization_event (actor_user_id,operation,requested_project_id,project_id,tenant_id,result,reason_code,occurred_at) "
+            "VALUES (%s,'VIEW_PROJECT',%s,%s,1,'ALLOWED','test',UTC_TIMESTAMP(6))", (actor, project_id, project_id),
+        )
+        insert_run = (
+            "INSERT INTO office_agent_run (run_id,agent_id,project_id,requested_by,authorization_event_id,agent_version,binding_id,binding_version,"
+            "idempotency_key,input_sha256,instructions_sha256,dispatch_snapshot_sha256,config_version,engine_key,engine_version,engine_binding_fingerprint,"
+            "model_ref,model_id,credential_id,credential_fingerprint,provider_id,auth_type,auth_transport,status,accepted_at,deadline_at,fence,completed_at) "
+            "VALUES (UUID(),%s,%s,%s,%s,1,%s,1,%s,%s,%s,%s,1,%s,1,%s,%s,'glm-5.3',%s,%s,'zhipu','api_key','bearer',%s,"
+            "UTC_TIMESTAMP(6)-INTERVAL %s SECOND,UTC_TIMESTAMP(6)+INTERVAL %s SECOND,1,%s)"
+        )
+        common = (agent_id, project_id, actor, event_id, binding_id)
+        for number in range(80):
+            dispatching = number < 2
+            await sql(
+                insert_run,
+                (*common, f"quota-old-{number}", b"a" * 32, b"b" * 32, b"c" * 32, engine_key, "0" * 64,
+                 model_ref, credential_id, "0" * 64, "DISPATCHING" if dispatching else "UNKNOWN",
+                 7200, 30 if dispatching else 0, None),
+            )
+        for number in range(8):
+            await sql(
+                insert_run,
+                (*common, f"quota-live-{number}", b"d" * 32, b"e" * 32, b"f" * 32, engine_key, "0" * 64,
+                 model_ref, credential_id, "0" * 64, "DISPATCHING" if number < 2 else "UNKNOWN",
+                 60, 30 if number < 2 else 0, None),
+            )
         queries = (
-            ("idx_office_agent_run_actor_window", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (1,)),
-            ("idx_office_agent_run_project_window", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (1,)),
-            ("idx_office_agent_run_actor_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (1,)),
-            ("idx_office_agent_run_project_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (1,)),
+            ("idx_office_agent_run_actor_window", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (actor,)),
+            ("idx_office_agent_run_project_window", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (project_id,)),
+            ("idx_office_agent_run_actor_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (actor,)),
+            ("idx_office_agent_run_project_concurrency", "SELECT COUNT(*) FROM office_agent_run WHERE project_id=%s AND status='DISPATCHING' AND deadline_at>=UTC_TIMESTAMP(6)", (project_id,)),
         )
         for expected, statement, params in queries:
             plan = (await sql("EXPLAIN " + statement, params, True))[0]
             assert plan[5] == expected
+
+    client.portal.call(exercise)
+
+
+def test_agent_selector_queries_use_ordered_indexes_on_real_database(client) -> None:
+    """Bias the optimizer with skewed rows, then assert its unhinted real plans."""
+    from tests.identidades import crear_usuario, sql
+
+    async def exercise() -> None:
+        user_id, _ = await crear_usuario()
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("selector-index-" + uuid.uuid4().hex,),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope (project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',NOW(6),'test',NOW(6))", (project_id,),
+        )
+        for number in range(48):
+            await sql(
+                "INSERT INTO office_agent (project_id,agent_key,display_name,instructions,data_classification,created_by) "
+                "VALUES (%s,%s,'Selector','x','INTERNAL_CONFIDENTIAL',%s)",
+                (project_id, f"selector-{number:02d}", user_id),
+            )
+
+        model_ref, credential_id = (await sql(
+            "SELECT m.id,c.id FROM model m JOIN credential c ON c.provider_id=m.provider_id AND c.state='active' "
+            "WHERE m.provider_id='zhipu' AND m.model_id='glm-5.3' LIMIT 1", (), True,
+        ))[0]
+        for number in range(48):
+            await sql(
+                "INSERT INTO office_engine (engine_key,display_name_key,model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) "
+                "VALUES (%s,'Selector',%s,%s,'http_openai_compat',JSON_ARRAY('INTERNAL_CONFIDENTIAL'),%s,FALSE,0,1)",
+                ("selector-disabled-" + uuid.uuid4().hex, model_ref, credential_id, "0" * 64),
+            )
+        engine_key = "selector-enabled-" + uuid.uuid4().hex
+        await sql(
+            "INSERT INTO office_engine (engine_key,display_name_key,model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) "
+            "VALUES (%s,'Selector',%s,%s,'http_openai_compat',JSON_ARRAY('INTERNAL_CONFIDENTIAL'),%s,TRUE,1,1)",
+            (engine_key, model_ref, credential_id, "0" * 64),
+        )
+
+        agent_plan = (await sql(
+            "EXPLAIN SELECT agent_id FROM office_agent WHERE project_id=%s ORDER BY agent_id", (project_id,), True,
+        ))[0]
+        engine_plan_rows = await sql(
+            "EXPLAIN SELECT e.engine_key,e.display_name_key,m.model_id,e.allowed_data_classifications "
+            "FROM office_engine e JOIN model m ON m.id=e.model_ref WHERE e.enabled=TRUE ORDER BY e.engine_key", (), True,
+        )
+        engine_plan = next(row for row in engine_plan_rows if row[2] == "e")
+        assert agent_plan[5] == "idx_office_agent_project_list"
+        assert engine_plan[5] == "idx_office_engine_enabled_key"
+        assert "filesort" not in str(agent_plan[9]).lower()
+        assert "filesort" not in str(engine_plan[9]).lower()
 
     client.portal.call(exercise)
 
@@ -222,6 +332,13 @@ def test_run_schema_pins_every_dispatch_snapshot_and_actor_idempotency() -> None
     assert "idx_office_agent_run_actor_window (requested_by,accepted_at,status,deadline_at)" in ddl
     assert "idx_office_agent_run_project_window (project_id,accepted_at,status,deadline_at)" in ddl
     assert "no_mutate_office_agent_run_snapshot" in ddl
+
+
+def test_agent_selector_indexes_are_part_of_the_attested_schema() -> None:
+    from virtual_office import migrations
+
+    assert migrations._AGENT_RUNTIME_INDEXES["office_agent"]["idx_office_agent_project_list"] == (("project_id", "agent_id"), False)
+    assert migrations._AGENT_RUNTIME_INDEXES["office_engine"]["idx_office_engine_enabled_key"] == (("enabled", "engine_key"), False)
 
 
 def test_engine_binding_v2_includes_the_exact_credential_identity() -> None:

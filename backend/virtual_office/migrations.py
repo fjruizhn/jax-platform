@@ -23,7 +23,7 @@ RUNTIME_COMPONENT = "virtual-office"
 # process can consider the schema/runtime pair ready.
 # v12 binds the per-table write contract after v11 introduced the pending
 # publication staging.  Its digest forces a migrator restamp.
-RUNTIME_REVISION = f"office-v13b-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
+RUNTIME_REVISION = f"office-v13c-{MANIFEST_VERSION}-{runtime_table_privilege_digest()[:16]}"
 
 # The Office catalogue is deliberately a binding to the central provider/model
 # catalogue.  A browser never supplies a URL, credential or model id.  The
@@ -37,6 +37,7 @@ OFFICE_ENGINE_DDL = (
     "binding_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,enabled BOOLEAN NOT NULL DEFAULT FALSE,"
     "activation_epoch BIGINT UNSIGNED NOT NULL DEFAULT 0,version BIGINT NOT NULL DEFAULT 1,"
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "KEY idx_office_engine_enabled_key (enabled,engine_key),"
     "CONSTRAINT fk_office_engine_model FOREIGN KEY (model_ref) REFERENCES model(id),CONSTRAINT fk_office_engine_credential FOREIGN KEY (credential_id) REFERENCES credential(id),"
     "CONSTRAINT chk_office_engine_key CHECK (engine_key<>''),CONSTRAINT chk_office_engine_display_name_key CHECK (display_name_key<>''),"
     "CONSTRAINT chk_office_engine_classifications CHECK (JSON_TYPE(allowed_data_classifications)='ARRAY' AND JSON_LENGTH(allowed_data_classifications)>0),"
@@ -67,7 +68,7 @@ OFFICE_AGENT_DDL = (
     "display_name VARCHAR(128) NOT NULL,instructions TEXT NOT NULL,data_classification VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
     "status ENUM('ACTIVE','DISABLED') NOT NULL DEFAULT 'ACTIVE',version BIGINT UNSIGNED NOT NULL DEFAULT 1,created_by INT NOT NULL,"
     "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
-    "UNIQUE KEY uq_office_agent_project_key (project_id,agent_key),KEY idx_office_agent_project (project_id,status,agent_id),"
+    "UNIQUE KEY uq_office_agent_project_key (project_id,agent_key),KEY idx_office_agent_project (project_id,status,agent_id),KEY idx_office_agent_project_list (project_id,agent_id),"
     "CONSTRAINT fk_office_agent_project FOREIGN KEY (project_id) REFERENCES projects(id),CONSTRAINT fk_office_agent_created_by FOREIGN KEY (created_by) REFERENCES jax_users(user_id),"
     "CONSTRAINT chk_office_agent_key CHECK (agent_key<>''),CONSTRAINT chk_office_agent_name CHECK (display_name<>''),CONSTRAINT chk_office_agent_classification CHECK (data_classification REGEXP '^[A-Z][A-Z0-9_]{0,63}$'),CONSTRAINT chk_office_agent_version CHECK (version>=1)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -1028,8 +1029,8 @@ _AGENT_RUNTIME_COLUMN_METADATA = {
 }
 _AGENT_RUNTIME_INDEXES = {
     "office_agent_runtime_config": {"PRIMARY": (("config_id",), True)},
-    "office_engine": {"PRIMARY": (("engine_key",), True)},
-    "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False)},
+    "office_engine": {"PRIMARY": (("engine_key",), True), "idx_office_engine_enabled_key": (("enabled", "engine_key"), False)},
+    "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False), "idx_office_agent_project_list": (("project_id", "agent_id"), False)},
     "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
     "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_actor_concurrency": (("requested_by", "status", "deadline_at"), False), "idx_office_agent_run_project_concurrency": (("project_id", "status", "deadline_at"), False)},
 }
@@ -1492,6 +1493,21 @@ async def _upgrade_invitation_outbox_stale_index(cur) -> None:
             "ALTER TABLE office_invitation_outbox ADD KEY "
             "idx_office_invitation_outbox_stale_claim (state,claimed_at,outbox_id)"
         )
+
+
+async def _upgrade_office_agent_list_indexes(cur) -> None:
+    """Add the two exact covering order indexes before selector reads run."""
+    indexes = (
+        ("office_engine", "idx_office_engine_enabled_key", ("enabled", "engine_key")),
+        ("office_agent", "idx_office_agent_project_list", ("project_id", "agent_id")),
+    )
+    for table, name, columns in indexes:
+        if not await _index_exists(cur, table, name):
+            await cur.execute(
+                f"ALTER TABLE {table} ADD KEY {name} (" + ",".join(columns) + ")"
+            )
+        elif not await _index_has_exact_shape(cur, table, name, columns):
+            raise RuntimeError(f"Office {table} selector index is incompatible; historic evidence is not rewritten")
 
 
 async def _upgrade_invitation_guards(cur) -> None:
@@ -2355,6 +2371,7 @@ async def apply_office_migrations(cursor) -> None:
         await cursor.execute(statement)
     for statement in OFFICE_AGENT_DDL:
         await cursor.execute(statement)
+    await _upgrade_office_agent_list_indexes(cursor)
     await _ensure_profile_binding_evidence(cursor)
     await _ensure_published_grant_role_check(cursor)
     await _ensure_office_list_indexes(cursor)
