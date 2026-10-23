@@ -1,4 +1,11 @@
-"""Sealed artifact-set/v1 package boundary; this does not publish a module."""
+"""Sealed artifact-set/v1 package boundary; this does not publish a module.
+
+The v1 preimage is UTF-8 canonical JSON (sorted keys, compact separators) of
+``{domain, entries, schema_version}``, where entries are sorted by UTF-8 path
+bytes and each is exactly ``{path, size, mode, digest}``.  ``root_digest`` is
+``sha256:`` plus SHA-256 of that preimage.  Signatures and approval/release
+records are deliberately outside this inventory.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -13,6 +20,7 @@ from typing import Any
 _DOMAIN = "axioma.office.module-artifact"
 _MAX_FILES, _MAX_DIRECTORIES = 10_000, 10_000
 _MAX_FILE_BYTES, _MAX_TOTAL_BYTES = 1 << 30, 2 << 30
+_MAX_PATH_BYTES = 1024
 _SAFE_MODES = {0o444, 0o555, 0o644, 0o755}
 
 
@@ -39,14 +47,40 @@ def _digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _utf8_bytes_with_limit(value: str, limit: int) -> int:
+    """Count UTF-8 bytes without allocating an attacker-controlled encoding."""
+    total = 0
+    for character in value:
+        codepoint = ord(character)
+        if 0xD800 <= codepoint <= 0xDFFF:
+            _reject("artifact path is not valid UTF-8")
+        total += 1 if codepoint <= 0x7F else 2 if codepoint <= 0x7FF else 3 if codepoint <= 0xFFFF else 4
+        if total > limit:
+            _reject(f"artifact path exceeds {_MAX_PATH_BYTES} UTF-8 bytes")
+    return total
+
+
+def _inventory_parts(path: str) -> tuple[str, ...]:
+    """Preflight before splitting a hostile inventory path into many objects."""
+    _utf8_bytes_with_limit(path, _MAX_PATH_BYTES)
+    return tuple(path.split("/"))
+
+
+def _name_sort_key(name: str) -> bytes:
+    _utf8_bytes_with_limit(name, _MAX_PATH_BYTES)
+    return name.encode("utf-8")
+
+
 def _path(parts: tuple[str, ...]) -> str:
     if not parts or any(part in {"", ".", ".."} for part in parts): _reject("artifact path is not a relative POSIX path")
+    remaining = _MAX_PATH_BYTES - len(parts) + 1
+    if remaining < 0:
+        _reject(f"artifact path exceeds {_MAX_PATH_BYTES} UTF-8 bytes")
+    for part in parts:
+        remaining -= _utf8_bytes_with_limit(part, remaining)
     value = "/".join(parts)
     if "\\" in value or any(ord(c) <= 31 or 127 <= ord(c) <= 159 for c in value): _reject("artifact path contains a forbidden character")
     if unicodedata.normalize("NFC", value) != value: _reject("artifact path must be NFC")
-    try: encoded = value.encode("utf-8")
-    except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
-    if len(encoded) > 1024: _reject("artifact path exceeds 1024 UTF-8 bytes")
     return value
 
 
@@ -61,14 +95,13 @@ def _frame(fd: int, parts: tuple[str, ...], budget: list[int]) -> dict[str, Any]
         names = []
         with os.scandir(fd) as listing:
             for entry in listing:
-                try: entry.name.encode("utf-8")
-                except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
+                _name_sort_key(entry.name)
                 budget[0] += 1
                 if budget[0] > _MAX_FILES + _MAX_DIRECTORIES - 1: _reject("artifact exceeds entry count limit")
                 names.append(entry.name)
     except OSError as error:
         raise ModuleReleaseContractRejected("artifact directory cannot be read safely") from error
-    names.sort(key=lambda value: value.encode())
+    names.sort(key=_name_sort_key)
     return {"fd": fd, "parts": parts, "before": before, "names": names, "index": 0}
 
 
@@ -104,14 +137,20 @@ def build_artifact_set(root: str | Path, *, _allow_proc_fd: bool = False) -> dic
                     with os.scandir(current["fd"]) as listing:
                         names_after = []
                         for entry in listing:
-                            try: entry.name.encode("utf-8")
-                            except UnicodeEncodeError as error: raise ModuleReleaseContractRejected("artifact path is not valid UTF-8") from error
+                            _name_sort_key(entry.name)
                             names_after.append(entry.name)
-                    names_after.sort(key=lambda value: value.encode("utf-8"))
+                    names_after.sort(key=_name_sort_key)
                 except OSError as error:
                     raise ModuleReleaseContractRejected("artifact directory cannot be read safely") from error
                 if names_after != current["names"] or after.st_mtime_ns != current["before"].st_mtime_ns or after.st_ctime_ns != current["before"].st_ctime_ns: _reject("artifact directory changed during traversal")
-                os.close(current["fd"]); owned_fds.discard(current["fd"]); stack.pop(); continue
+                fd = current["fd"]
+                owned_fds.discard(fd)
+                stack.pop()
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    raise ModuleReleaseContractRejected("artifact descriptor close failed") from error
+                continue
             name = current["names"][current["index"]]; current["index"] += 1
             path = _path(current["parts"] + (name,))
             try: before = os.stat(name, dir_fd=current["fd"], follow_symlinks=False)
@@ -145,14 +184,19 @@ def build_artifact_set(root: str | Path, *, _allow_proc_fd: bool = False) -> dic
                     if count > _MAX_FILE_BYTES: _reject(f"artifact file exceeds byte limit: {path}")
                     hashed.update(chunk)
                 if _stable(os.fstat(file_fd)) != _stable(before) or count != before.st_size: _reject(f"artifact file changed during read: {path}")
-            finally: os.close(file_fd)
+            finally:
+                try:
+                    os.close(file_fd)
+                except OSError as error:
+                    raise ModuleReleaseContractRejected("artifact descriptor close failed") from error
             key = path.casefold()
             if key in folded: _reject(f"artifact has case-fold path collision: {path}")
             folded.add(key); total += count
             entries.append({"path": path, "size": count, "mode": f"{mode:04o}", "digest": f"sha256:{hashed.hexdigest()}"})
     finally:
         close_error: OSError | None = None
-        for fd in owned_fds:
+        while owned_fds:
+            fd = owned_fds.pop()
             try: os.close(fd)
             except OSError as error:
                 if close_error is None: close_error = error
@@ -172,7 +216,7 @@ def validate_artifact_set(artifact_set: dict[str, Any]) -> None:
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != {"path", "size", "mode", "digest"}: _reject("artifact inventory entry is invalid")
         path = entry["path"]
-        if not isinstance(path, str) or _path(tuple(path.split("/"))) != path: _reject("artifact inventory path is invalid")
+        if not isinstance(path, str) or _path(_inventory_parts(path)) != path: _reject("artifact inventory path is invalid")
         if not isinstance(entry["size"], int) or isinstance(entry["size"], bool) or not 0 <= entry["size"] <= _MAX_FILE_BYTES: _reject("artifact inventory size is invalid")
         digest = entry["digest"]
         mode = entry["mode"]

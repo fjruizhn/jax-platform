@@ -1,5 +1,5 @@
 from __future__ import annotations
-import importlib.util, os, stat, sys
+import base64, contextlib, importlib.util, os, stat, sys, tracemalloc
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -137,3 +137,101 @@ def test_close_failure_still_closes_remaining_directories(tmp_path, monkeypatch)
         module.build_artifact_set(tmp_path)
     assert calls >= 2
     assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_close_error_after_fd_reuse_never_closes_a_foreign_descriptor(tmp_path, monkeypatch):
+    file(tmp_path)
+    foreign_path = tmp_path / "foreign.txt"; foreign_path.write_text("keep", encoding="utf-8")
+    real_close = module.os.close
+    source_fd = os.open(foreign_path, os.O_RDONLY)
+    replacement: list[int] = []
+    def close_then_reuse(fd):
+        is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        real_close(fd)
+        if is_directory and not replacement:
+            os.dup2(source_fd, fd)
+            replacement.append(fd)
+            raise OSError("close reported after descriptor reuse")
+    monkeypatch.setattr(module.os, "close", close_then_reuse)
+    try:
+        with pytest.raises(module.ModuleReleaseContractRejected, match="descriptor close failed"):
+            module.build_artifact_set(tmp_path)
+        assert replacement
+        assert os.fstat(replacement[0]).st_size == len("keep")
+    finally:
+        if replacement:
+            with contextlib.suppress(OSError):
+                real_close(replacement[0])
+        real_close(source_fd)
+
+
+def test_rejects_hostile_inventory_path_before_split_amplifies_memory(tmp_path):
+    file(tmp_path)
+    artifact = module.build_artifact_set(tmp_path)
+    artifact["entries"][0]["path"] = "a/" * 1_000_000 + "a"
+    tracemalloc.start()
+    try:
+        with pytest.raises(module.ModuleReleaseContractRejected, match="path exceeds"):
+            module.validate_artifact_set(artifact)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 * 1024 * 1024
+
+
+def test_file_close_error_is_typed_and_never_retries_a_reused_descriptor(tmp_path, monkeypatch):
+    asset = file(tmp_path)
+    foreign_path = tmp_path / "foreign.txt"; foreign_path.write_text("keep", encoding="utf-8")
+    real_close = module.os.close
+    source_fd = os.open(foreign_path, os.O_RDONLY)
+    replacement: list[int] = []
+    def close_then_reuse(fd):
+        is_asset = os.fstat(fd).st_ino == asset.stat().st_ino
+        real_close(fd)
+        if is_asset and not replacement:
+            os.dup2(source_fd, fd)
+            replacement.append(fd)
+            raise OSError("file close reported after descriptor reuse")
+    monkeypatch.setattr(module.os, "close", close_then_reuse)
+    try:
+        with pytest.raises(module.ModuleReleaseContractRejected, match="descriptor close failed"):
+            module.build_artifact_set(tmp_path)
+        assert replacement
+        assert os.fstat(replacement[0]).st_size == len("keep")
+    finally:
+        if replacement:
+            with contextlib.suppress(OSError):
+                real_close(replacement[0])
+        real_close(source_fd)
+
+
+def test_artifact_set_v1_golden_glm_vector_is_byte_stable(tmp_path):
+    vectors = {
+        "Zeta.txt": ("b3JkZW46IGxhIFogKDB4NUEpIG9yZGVuYSBhbnRlcyBxdWUgbGEgYSAoMHg2MSkgZW4gYnl0ZXMK", 0o644),
+        "alfa.txt": ("b3JkZW46IGxhIGEgbWluw7pzY3VsYSBkZXNwdcOpcyBkZSBsYSBtYXnDunNjdWxhCg==", 0o644),
+        "copy/taglines.txt": ("MSkgwqtMYSBiYW5jYSBxdWUgaGFibGEgdHUgaWRpb21hLsK7CjIpIMKrVHUgQmFuY28gSWRlYWwsIGRlIGxhIGdlbnRlLsK7CjMpIMKrQ3VlbnRhcyBjbGFyYXMsIGZ1dHVybyBzZWd1cm8uwrsK", 0o444),
+        "ilustración/hopper.svg": ("PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIvPjwvc3ZnPgo=", 0o644),
+        "web/portada.html": ("PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVzIj4KPGJvZHk+PGgxPkJESTwvaDE+PC9ib2R5Pgo8L2h0bWw+Cg==", 0o644),
+    }
+    for name, (encoded, mode) in vectors.items():
+        target = tmp_path / name; target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(encoded)); target.chmod(mode)
+    artifact = module.build_artifact_set(tmp_path)
+    assert artifact["root_digest"] == "sha256:1a665d437e9b3c931ca53a2907c208f382679f10fa86585d144728486e635221"
+    assert [entry["path"] for entry in artifact["entries"]] == ["Zeta.txt", "alfa.txt", "copy/taglines.txt", "ilustración/hopper.svg", "web/portada.html"]
+
+
+def test_artifact_set_v1_rejects_casefold_special_file_limits_and_v2(tmp_path, monkeypatch):
+    file(tmp_path, "Logo.svg"); file(tmp_path, "logo.svg")
+    with pytest.raises(module.ModuleReleaseContractRejected, match="case-fold"):
+        module.build_artifact_set(tmp_path)
+    (tmp_path / "logo.svg").unlink(); os.mkfifo(tmp_path / "pipe")
+    with pytest.raises(module.ModuleReleaseContractRejected, match="non-regular"):
+        module.build_artifact_set(tmp_path)
+    (tmp_path / "pipe").unlink(); artifact = module.build_artifact_set(tmp_path)
+    artifact["schema_version"] = 2
+    with pytest.raises(module.ModuleReleaseContractRejected, match="artifact-set/v1"):
+        module.validate_artifact_set(artifact)
+    monkeypatch.setattr(module, "_MAX_FILES", 1); file(tmp_path, "second.txt")
+    with pytest.raises(module.ModuleReleaseContractRejected, match="file count"):
+        module.build_artifact_set(tmp_path)
