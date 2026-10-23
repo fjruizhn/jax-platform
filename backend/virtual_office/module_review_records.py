@@ -33,7 +33,7 @@ class ModuleReviewRecordRejected(ValueError):
 
 @dataclass(frozen=True)
 class ReviewRecordStatus:
-    """Review state that deliberately stops before an effective release."""
+    """Structural state that deliberately grants no review or release authority."""
 
     state: str
     artifact_digest: str
@@ -96,11 +96,15 @@ def _validate_rights(record: dict[str, Any], root_digest: str) -> str:
 
 
 def assess_review_records(artifact_set: Any, records: Any) -> ReviewRecordStatus:
-    """Assess detached v1 review records without granting a release.
+    """Validate detached v1 review-record shape without granting authority.
 
-    Both record types must bind to the exact ``artifact-set/v1`` root.  A
-    human creative approval plus a PASS rights verdict becomes only
-    ``PENDING_RELEASE_DECISION``; an Office release authority remains required.
+    Both record types must bind to the exact ``artifact-set/v1`` root.  The
+    identity strings, receipt reference, and evidence identifiers are all
+    unverified caller claims at this boundary, so they never become a creative
+    approval, rights PASS, or release-ready state.  A later contract must
+    authenticate the human, verify a signed critic receipt against its
+    candidate/revision/manifest/artifact binding, and resolve evidence before
+    any authority can be derived.
     """
 
     try:
@@ -111,27 +115,23 @@ def assess_review_records(artifact_set: Any, records: Any) -> ReviewRecordStatus
     if not isinstance(records, list) or len(records) > 2:
         _reject("review records must be a bounded list")
 
-    creative_approved = False
-    rights_decision: str | None = None
+    creative_seen = False
+    rights_seen = False
     for record in records:
         if not isinstance(record, dict):
             _reject("review record must be an object")
         record_type = record.get("record_type")
         if record_type == "creative-approval":
-            if creative_approved:
+            if creative_seen:
                 _reject("duplicate creative approval")
             _validate_creative(record, root_digest)
-            creative_approved = True
+            creative_seen = True
         elif record_type == "rights-verdict":
-            if rights_decision is not None:
+            if rights_seen:
                 _reject("duplicate rights verdict")
-            rights_decision = _validate_rights(record, root_digest)
+            _validate_rights(record, root_digest)
+            rights_seen = True
         else:
             _reject("review record type is invalid")
 
-    state = (
-        "PENDING_RELEASE_DECISION"
-        if creative_approved and rights_decision == "PASS"
-        else "REVIEW_REQUIRED"
-    )
-    return ReviewRecordStatus(state, root_digest, creative_approved, rights_decision)
+    return ReviewRecordStatus("PENDING_CONTRACT", root_digest, False, None)

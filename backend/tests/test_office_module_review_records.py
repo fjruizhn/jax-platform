@@ -39,7 +39,7 @@ def _rights(digest: str, decision: str = "PASS"):
     }
 
 
-def test_two_distinct_records_on_the_same_artifact_are_ready_for_a_separate_release_decision(tmp_path):
+def test_spoofed_identity_and_evidence_fields_remain_pending_contract(tmp_path):
     artifact_set = _artifact_set(tmp_path)
 
     result = assess_review_records(
@@ -47,20 +47,20 @@ def test_two_distinct_records_on_the_same_artifact_are_ready_for_a_separate_rele
         [_creative(artifact_set["root_digest"]), _rights(artifact_set["root_digest"])],
     )
 
-    assert result.state == "PENDING_RELEASE_DECISION"
+    assert result.state == "PENDING_CONTRACT"
     assert result.artifact_digest == artifact_set["root_digest"]
-    assert result.creative_approved is True
-    assert result.rights_decision == "PASS"
+    assert result.creative_approved is False
+    assert result.rights_decision is None
 
 
-def test_rights_pass_is_not_a_human_creative_approval(tmp_path):
+def test_spoofed_rights_pass_remains_pending_contract(tmp_path):
     artifact_set = _artifact_set(tmp_path)
 
     result = assess_review_records(artifact_set, [_rights(artifact_set["root_digest"])])
 
-    assert result.state == "REVIEW_REQUIRED"
+    assert result.state == "PENDING_CONTRACT"
     assert result.creative_approved is False
-    assert result.rights_decision == "PASS"
+    assert result.rights_decision is None
 
 
 def test_rejects_records_bound_to_another_artifact_set(tmp_path):
@@ -82,7 +82,7 @@ def test_rejects_critic_principal_as_a_creative_approver(tmp_path):
         assess_review_records(artifact_set, [creative, _rights(artifact_set["root_digest"])])
 
 
-def test_rights_failure_remains_review_required_even_with_human_approval(tmp_path):
+def test_spoofed_rights_failure_remains_pending_contract_even_with_human_text(tmp_path):
     artifact_set = _artifact_set(tmp_path)
 
     result = assess_review_records(
@@ -90,9 +90,9 @@ def test_rights_failure_remains_review_required_even_with_human_approval(tmp_pat
         [_creative(artifact_set["root_digest"]), _rights(artifact_set["root_digest"], "FAIL")],
     )
 
-    assert result.state == "REVIEW_REQUIRED"
-    assert result.creative_approved is True
-    assert result.rights_decision == "FAIL"
+    assert result.state == "PENDING_CONTRACT"
+    assert result.creative_approved is False
+    assert result.rights_decision is None
 
 
 def test_rejects_boolean_schema_version_instead_of_coercing_it_to_v1(tmp_path):
