@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from crypto_secrets import decrypt_db_secret
-from virtual_office.engine_resolver import OfficeEngineUnavailable, ResolvedOfficeEngine
+from virtual_office.engine_resolver import (OfficeEngineUnavailable, ResolvedOfficeEngine,
+                                            load_pinned_office_credential_in_cursor)
 
 _MAX_SECONDS = 45.0
 
@@ -55,23 +56,23 @@ def _allowed_zai_url(value: object) -> str:
 
 
 async def load_dispatch_target_in_cursor(cur, *, engine: ResolvedOfficeEngine) -> OfficeDispatchTarget:
-    """Read exactly one current credential after engine attestation.
-
-    A duplicate active credential is deliberately unavailable: choosing one by
-    incidental ordering would make a retry charge a different account.
-    """
+    """Load the credential pinned into the accepted engine snapshot only."""
     if engine.provider_id != "zhipu" or engine.transport != "http_openai_compat":
         raise OfficeBrokerUnavailable("office provider is not allowlisted")
     await cur.execute(
-        "SELECT p.base_url,c.encrypted_value FROM provider p JOIN credential c ON c.provider_id=p.id "
-        "WHERE p.id=%s AND p.status='active' AND p.auth_type='api_key' AND c.state='active' FOR UPDATE",
+        "SELECT base_url FROM provider WHERE id=%s AND status='active' AND auth_type='api_key' FOR UPDATE",
         (engine.provider_id,),
     )
-    rows = await cur.fetchall()
-    if len(rows) != 1:
+    provider = await cur.fetchone()
+    if provider is None:
         raise OfficeBrokerUnavailable("office credential is unavailable")
-    url = _allowed_zai_url(rows[0][0])
-    api_key = decrypt_db_secret(rows[0][1])
+    base_url = provider[0] if isinstance(provider, (tuple, list)) else provider.get("base_url")
+    url = _allowed_zai_url(base_url)
+    try:
+        encrypted_value = await load_pinned_office_credential_in_cursor(cur, engine=engine, for_update=True)
+    except OfficeEngineUnavailable as error:
+        raise OfficeBrokerUnavailable("office credential is unavailable") from error
+    api_key = decrypt_db_secret(encrypted_value)
     if not api_key or len(api_key) > 4096:
         raise OfficeBrokerUnavailable("office credential is unavailable")
     return OfficeDispatchTarget(engine=engine, api_key=api_key, url=url)

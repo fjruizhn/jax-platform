@@ -1,6 +1,8 @@
 """Durable execution limits and snapshots for the private-agent runtime."""
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
     from virtual_office import migrations
@@ -55,3 +57,22 @@ def test_engine_binding_v2_includes_the_exact_credential_identity() -> None:
         credential_fingerprint="c" * 64, engine_enabled=1, activation_epoch=1, version=1,
     )
     assert engine_binding_fingerprint(**common, credential_id=11) != engine_binding_fingerprint(**common, credential_id=12)
+
+
+def test_activation_locks_provider_then_credential_then_engine() -> None:
+    source = (Path(__file__).parents[1] / "virtual_office" / "engine_activation_cli.py").read_text(encoding="utf-8")
+
+    provider_lock = source.index("m.status='available' FOR UPDATE")
+    credential_lock = source.index("WHERE provider_id=%s AND state='active' FOR UPDATE")
+    engine_lock = source.index("FROM office_engine WHERE engine_key=%s FOR UPDATE")
+    assert provider_lock < credential_lock < engine_lock
+
+
+def test_resolver_exposes_a_pinned_credential_loader_not_a_provider_lookup() -> None:
+    source = (Path(__file__).parents[1] / "virtual_office" / "engine_resolver.py").read_text(encoding="utf-8")
+
+    for field in ("credential_id: int", "credential_fingerprint: str", "engine_binding_fingerprint: str",
+                  "provider_auth_type: str", "provider_api_key_transport: str"):
+        assert field in source
+    assert "async def load_pinned_office_credential_in_cursor" in source
+    assert "WHERE id=%s AND provider_id=%s AND state='active'" in source

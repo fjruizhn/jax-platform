@@ -11,8 +11,9 @@ def _engine_row(**overrides):
         "engine_key": "glm", "display_name_key": "office.engine.glm", "model_ref": 42,
         "transport": "http_openai_compat", "allowed_data_classifications": '["INTERNAL_CONFIDENTIAL"]',
         "version": 1, "engine_enabled": 1, "activation_epoch": 1, "provider_id": "zhipu",
-        "provider_status": "active", "provider_auth_type": "api_key", "model_id": "glm-5.3",
-        "model_status": "available", "active_credential_count": 1,
+        "provider_status": "active", "provider_auth_type": "api_key", "provider_api_key_transport": "bearer", "model_id": "glm-5.3",
+            "model_status": "available", "max_tokens_param": "max_tokens", "max_output_tokens": 2048,
+            "credential_id": 7, "credential_state": "active",
         "provider_fingerprint": "a" * 64, "model_fingerprint": "b" * 64,
         "credential_fingerprint": "c" * 64,
     }
@@ -21,7 +22,7 @@ def _engine_row(**overrides):
         engine_key=row["engine_key"], model_ref=row["model_ref"], transport=row["transport"],
         allowed_data_classifications=frozenset({"INTERNAL_CONFIDENTIAL"}),
         provider_fingerprint=row["provider_fingerprint"], model_fingerprint=row["model_fingerprint"],
-        credential_fingerprint=row["credential_fingerprint"], engine_enabled=row["engine_enabled"],
+            credential_id=row["credential_id"], credential_fingerprint=row["credential_fingerprint"], engine_enabled=row["engine_enabled"],
         activation_epoch=row["activation_epoch"], version=row["version"])
     return row
 
@@ -72,27 +73,40 @@ def test_agent_runtime_revision_fits_its_durable_column():
 
 
 class _Cursor:
-    def __init__(self, rows):
-        self.rows = rows
+    def __init__(self, row):
+        self.row = row
+        self.queries = []
 
-    async def execute(self, *_args):
+    async def execute(self, *args):
+        self.queries.append(args)
         return None
 
-    async def fetchall(self):
-        return self.rows
+    async def fetchone(self):
+        return self.row
 
 
 @pytest.mark.asyncio
-async def test_broker_rejects_zero_or_multiple_active_credentials(monkeypatch):
+async def test_broker_uses_only_the_credential_pinned_by_the_engine(monkeypatch):
     import virtual_office.agent_broker as broker
     from virtual_office.engine_resolver import resolve_office_engine_row
 
     monkeypatch.setattr(broker, "decrypt_db_secret", lambda _value: "key")
     monkeypatch.setenv("OFFICE_BROKER_ALLOWED_BASE_URLS", "https://api.z.ai/api/paas/v4")
     engine = resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL")
-    for rows in ([], [("https://api.z.ai/api/paas/v4", "one"), ("https://api.z.ai/api/paas/v4", "two")]):
-        with pytest.raises(broker.OfficeBrokerUnavailable):
-            await broker.load_dispatch_target_in_cursor(_Cursor(rows), engine=engine)
+    called = []
+
+    async def pinned(cur, *, engine, for_update):
+        called.append((cur, engine.credential_id, for_update))
+        return "ciphertext-for-pinned-credential"
+
+    monkeypatch.setattr(broker, "load_pinned_office_credential_in_cursor", pinned)
+    cursor = _Cursor(("https://api.z.ai/api/paas/v4",))
+    target = await broker.load_dispatch_target_in_cursor(cursor, engine=engine)
+    assert target.api_key == "key"
+    assert target.url == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert called == [(cursor, 7, True)]
+    assert "FROM provider WHERE id=%s" in cursor.queries[0][0]
+    assert "credential" not in cursor.queries[0][0]
 
 
 @pytest.mark.asyncio

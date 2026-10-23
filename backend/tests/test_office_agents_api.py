@@ -24,16 +24,17 @@ async def _project_admin_with_engine():
     await sql("INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'PROJECT_ADMIN','INTERNAL','ACTIVE',%s)", (project_id, user_id, user_id))
     engine_key = "glm-" + uuid.uuid4().hex
     model_ref = (await sql("SELECT id FROM model WHERE provider_id='zhipu' AND model_id='glm-5.3' LIMIT 1", (), True))[0][0]
-    await sql("INSERT INTO office_engine (engine_key,display_name_key,model_ref,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) VALUES (%s,'GLM',%s,'http_openai_compat',%s,%s,FALSE,0,1)", (engine_key, model_ref, json.dumps(["INTERNAL_CONFIDENTIAL"]), "0" * 64))
     rows = await sql(
         "SELECT p.id,p.base_url,p.auth_type,p.api_key_transport,p.status,p.is_local,m.id,m.provider_id,m.model_id,m.status,m.is_alias,m.context_window,m.supports_tool_use,m.supports_structured_output,m.max_tokens_param,m.max_output_tokens,m.input_modalities,c.id,c.provider_id,c.state,c.activated_at,c.revoked_at,SHA2(c.encrypted_value,256) FROM provider p JOIN model m ON m.provider_id=p.id JOIN credential c ON c.provider_id=p.id AND c.state='active' WHERE p.id='zhipu' AND m.id=%s",
         (model_ref,), True)
     assert len(rows) == 1
     row = rows[0]
+    credential_id = int(row[17])
+    await sql("INSERT INTO office_engine (engine_key,display_name_key,model_ref,credential_id,transport,allowed_data_classifications,binding_fingerprint,enabled,activation_epoch,version) VALUES (%s,'GLM',%s,%s,'http_openai_compat',%s,%s,FALSE,0,1)", (engine_key, model_ref, credential_id, json.dumps(["INTERNAL_CONFIDENTIAL"]), "0" * 64))
     provider_fp = await sql("SELECT SHA2(CAST(JSON_ARRAY('office-engine-provider-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[:6]), True)
     model_fp = await sql("SELECT SHA2(CAST(JSON_ARRAY('office-engine-model-v1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[6:17]), True)
     credential_fp = await sql("SELECT SHA2(CAST(JSON_ARRAY('office-engine-credential-v1',%s,%s,%s,%s,%s,%s) AS CHAR),256)", tuple(row[17:23]), True)
-    fingerprint = engine_binding_fingerprint(engine_key=engine_key, model_ref=int(model_ref), transport="http_openai_compat", allowed_data_classifications=frozenset({"INTERNAL_CONFIDENTIAL"}), provider_fingerprint=provider_fp[0][0], model_fingerprint=model_fp[0][0], credential_fingerprint=credential_fp[0][0], engine_enabled=1, activation_epoch=1, version=1)
+    fingerprint = engine_binding_fingerprint(engine_key=engine_key, model_ref=int(model_ref), transport="http_openai_compat", allowed_data_classifications=frozenset({"INTERNAL_CONFIDENTIAL"}), provider_fingerprint=provider_fp[0][0], model_fingerprint=model_fp[0][0], credential_id=credential_id, credential_fingerprint=credential_fp[0][0], engine_enabled=1, activation_epoch=1, version=1)
     await sql("UPDATE office_engine SET binding_fingerprint=%s,enabled=TRUE,activation_epoch=1 WHERE engine_key=%s", (fingerprint, engine_key))
     return user_id, project_id, engine_key
 
@@ -71,6 +72,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     other_user, _ = client.portal.call(crear_usuario)
     client.portal.call(sql, "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (other_user,))
     client.portal.call(sql, "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project, other_user))
+    client.portal.call(sql, "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)", (project, other_user, admin))
     cross_actor = client.post(f"/api/virtual-office/projects/{project}/agents/{agent_id}/runs", headers=_headers(other_user), json=body)
     assert cross_actor.status_code == 409
     assert cross_actor.json()["detail"] == "office_run_idempotency_conflict"
