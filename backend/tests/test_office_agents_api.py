@@ -59,7 +59,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     assert rejected.status_code == 422
     assert rejected.json()["detail"] == "office_agent_data_classification_invalid"
     created = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
-    assert created.status_code == 201
+    assert created.status_code == 201, created.text
     duplicate = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "office_agent_key_conflict"
@@ -140,7 +140,7 @@ def test_private_agent_mocked_provider_handles_parallel_runs_on_a_real_database(
     admin, project, engine_key = client.portal.call(_project_admin_with_engine)
     headers = _headers(admin)
     created = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "load", "display_name": "Load", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
-    assert created.status_code == 201
+    assert created.status_code == 201, created.text
     agent_id = created.json()["agent_id"]
 
     async def fake_dispatch(_target, *, instructions, user_input, **_kwargs):

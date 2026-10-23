@@ -97,7 +97,11 @@ async def activate(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("engine key, display name, provider and model are invalid")
     if args.provider_id != _OFFICE_PROVIDER_ID:
         raise ValueError("Office v1 requires the zhipu provider")
-    conn = await aiomysql.connect(**_settings())
+    # Keep the timeout visible at the socket-opening call site: the backend
+    # tripwire deliberately rejects an opaque ``**_settings()`` expansion.
+    settings = _settings()
+    connect_timeout = settings.pop("connect_timeout")
+    conn = await aiomysql.connect(**settings, connect_timeout=connect_timeout)
     try:
         async with conn.cursor() as cur:
             model_ref, credential_id, provider_fp, model_fp, credential_fp = await _catalogue_fingerprints(cur, args.provider_id, args.model_id)

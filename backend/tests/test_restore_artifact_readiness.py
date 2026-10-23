@@ -34,7 +34,7 @@ def _contract(artifact: Path) -> dict[str, dict[str, object]]:
             "WorkingDirectory": "/", "User": "jaxmigrate", "Group": "", "SupplementaryGroups": [],
             "Environment": [], "EnvironmentFiles": [], "LoadCredential": [["migrate.env", "/etc/jax/migrate.env"]], "UnsetEnvironment": [],
             "ExecStartEx": [["/usr/bin/python3", ["/usr/bin/python3", "-I", "-S", "/usr/local/libexec/jax-platform-pair-exec.py", "migrate", "${CREDENTIALS_DIRECTORY}/migrate.env"], [], 0, 0, 0, 0, 0, 0, 0]],
-            "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": False,
+            "ExecStartPreEx": [], "ExecStartPostEx": [], "ExecConditionEx": [], "Type": "oneshot", "RemainAfterExit": True,
             "Requires": ["docker.service"], "After": ["network-online.target", "docker.service"],
         },
     }
@@ -95,7 +95,7 @@ def test_restore_rejects_effective_contract_tampering(tmp_path: Path) -> None:
         "missing migration dependency": lambda c: c["jax-platform.service"].__setitem__("Requires", []),
         "missing docker dependency": lambda c: c["jax-platform-migrate.service"].__setitem__("After", []),
         "wrong type": lambda c: c["jax-platform-migrate.service"].__setitem__("Type", "simple"),
-        "remain after exit": lambda c: c["jax-platform-migrate.service"].__setitem__("RemainAfterExit", True),
+        "remain after exit": lambda c: c["jax-platform-migrate.service"].__setitem__("RemainAfterExit", False),
     }
     for name, mutate in cases.items():
         artifact = _artifact(tmp_path / name.replace(" ", "_"))

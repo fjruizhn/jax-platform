@@ -88,3 +88,14 @@ el worker de invitaciones conserva resultado `success`, sin invitaciones
 pendientes todavía. Decisión de publicación: Fernando Ruiz; ejecución y
 medición: Codex. La alternativa de usar checkouts mutables para el servicio
 se descartó en favor de releases inmutables auditables.
+
+La integración de fuente del selector encontró una contaminación entre pruebas:
+la prueba de sincronización del catálogo fingía una respuesta incompleta de
+Z.ai y dejaba `glm-5.3` en estado `degraded` en la base compartida de CI.
+La prueba ahora restaura las filas de ese proveedor al terminar, incluso si
+falla la comprobación. Una reproducción que ejecuta esa prueba seguida de
+la API de agentes pasó 3/3. Las fixtures de esquemas aislados también crean
+las tablas padre de las nuevas claves foráneas (`provider`, `model` y
+`credential`); el comando de activación expone el timeout en la llamada de
+conexión para que lo verifique el control automatizado. Estos cambios son de
+suite y CLI; el servicio publicado no se ha reiniciado por ellos.

@@ -381,7 +381,7 @@ def test_migration_rejects_each_missing_or_homonymous_mfa_foreign_key(client):
                     await cur.execute(f"ALTER TABLE office_mfa_security_event ADD CONSTRAINT {name} {definitions[name]}")
 
                 try:
-                    for table in ("jax_users", "office_mfa_challenge", "office_mfa_security_event", "office_authorization_event"):
+                    for table in ("jax_users", "provider", "credential", "model", "office_mfa_challenge", "office_mfa_security_event", "office_authorization_event"):
                         await cur.execute(f"CREATE TABLE `{shadow}`.`{table}` LIKE `{source}`.`{table}`")
                     for name, definition in definitions.items():
                         await cur.execute("DELETE FROM office_schema_revision WHERE component='virtual-office'")
