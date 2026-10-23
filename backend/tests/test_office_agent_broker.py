@@ -102,6 +102,21 @@ async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch
 
     captured = {}
 
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {}
+
+        async def aiter_bytes(self):
+            yield b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
     class Client:
         def __init__(self, **_kwargs):
             pass
@@ -112,17 +127,120 @@ async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch
         async def __aexit__(self, *_args):
             return None
 
-        async def post(self, url, **kwargs):
+        def stream(self, method, url, **kwargs):
+            assert method == "POST"
             captured["url"] = url
             captured.update(kwargs)
-            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+            return Stream()
 
     monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
     target = broker.OfficeDispatchTarget(
         resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
         "secret", "https://api.z.ai/api/paas/v4/chat/completions")
-    assert await broker.dispatch(target, instructions="system", user_input="hello") == "ok"
-    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    assert await broker.dispatch(
+        target, instructions="system", user_input="hello",
+        max_tokens_field="max_tokens", max_output_tokens=123, max_response_bytes=1024,
+    ) == "ok"
+    assert captured["headers"] == {"Authorization": "Bearer secret", "Content-Type": "application/json"}
     assert captured["json"] == {"model": "glm-5.3", "messages": [
         {"role": "system", "content": "system"}, {"role": "user", "content": "hello"},
-    ], "tools": []}
+    ], "tools": [], "max_tokens": 123}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_the_model_declared_token_field_and_streams_a_bounded_response(monkeypatch):
+    """The Office broker must not inherit a token parameter or buffer unbounded output."""
+    import virtual_office.agent_broker as broker
+    from virtual_office.engine_resolver import resolve_office_engine_row
+
+    captured = {}
+
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {}
+
+        async def aiter_bytes(self):
+            yield b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured.update(kwargs)
+            return Stream()
+
+    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    target = broker.OfficeDispatchTarget(
+        resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
+        "secret", "https://api.z.ai/api/paas/v4/chat/completions")
+    assert await broker.dispatch(
+        target, instructions="system", user_input="hello",
+        max_tokens_field="max_completion_tokens", max_output_tokens=123,
+        max_response_bytes=1024,
+    ) == "ok"
+    assert captured["method"] == "POST"
+    assert captured["headers"] == {"Authorization": "Bearer secret", "Content-Type": "application/json"}
+    assert captured["json"]["max_completion_tokens"] == 123
+    assert "max_tokens" not in captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_a_response_larger_than_the_office_limit(monkeypatch):
+    import virtual_office.agent_broker as broker
+    from virtual_office.engine_resolver import resolve_office_engine_row
+
+    class Response:
+        status_code = 200
+        is_redirect = False
+        headers = {}
+
+        async def aiter_bytes(self):
+            yield b"x" * 1025
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, *_args, **_kwargs):
+            return Stream()
+
+    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    target = broker.OfficeDispatchTarget(
+        resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"),
+        "secret", "https://api.z.ai/api/paas/v4/chat/completions")
+    with pytest.raises(broker.OfficeBrokerUnavailable):
+        await broker.dispatch(
+            target, instructions="system", user_input="hello",
+            max_tokens_field="max_tokens", max_output_tokens=123,
+            max_response_bytes=1024,
+        )
