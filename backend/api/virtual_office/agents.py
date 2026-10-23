@@ -118,7 +118,7 @@ async def create_agent(project_id: int, payload: AgentCreate, user: AuthUser = D
             await cur.execute("INSERT INTO office_agent_binding (agent_id,engine_key,binding_version,bound_by) VALUES (%s,%s,1,%s)",
                               (agent_id, payload.engine_key, actor))
         except Exception as error:
-            if getattr(error, "args", ()) and "Duplicate" in str(error.args[0]):
+            if getattr(error, "args", ()) and error.args[0] == 1062:
                 raise HTTPException(status_code=409, detail="office_agent_key_conflict") from error
             raise
         row = await _agent_row(cur, project_id, agent_id)
@@ -164,12 +164,12 @@ async def run_agent(project_id: int, agent_id: int, payload: AgentRunRequest,
         row = await _agent_row(cur, project_id, agent_id, lock=True)
         if row is None or row[5] != "ACTIVE":
             raise HTTPException(status_code=404, detail="office_agent_not_found")
-        await cur.execute("SELECT run_id,input_sha256,status,output_text,model_id FROM office_agent_run WHERE agent_id=%s AND idempotency_key=%s FOR UPDATE", (agent_id, payload.idempotency_key))
+        await cur.execute("SELECT run_id,requested_by,input_sha256,status,output_text,model_id FROM office_agent_run WHERE agent_id=%s AND idempotency_key=%s FOR UPDATE", (agent_id, payload.idempotency_key))
         prior = await cur.fetchone()
         if prior is not None:
-            if prior[1] != digest:
+            if int(prior[1]) != actor or prior[2] != digest:
                 raise HTTPException(status_code=409, detail="office_run_idempotency_conflict")
-            return {"run_id": str(prior[0]), "status": str(prior[2]), "output": prior[3], "model_id": str(prior[4])}
+            return {"run_id": str(prior[0]), "status": str(prior[3]), "output": prior[4], "model_id": str(prior[5])}
         try:
             engine = await resolve_office_engine_in_cursor(cur, engine_key=str(row[7]), data_classification=str(row[4]))
             target = await load_dispatch_target_in_cursor(cur, engine=engine)

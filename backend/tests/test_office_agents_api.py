@@ -56,6 +56,9 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     assert {"engine_key": engine_key, "display_name": "GLM", "model_id": "glm-5.3", "allowed_data_classifications": ["INTERNAL_CONFIDENTIAL"]} in engines.json()["items"]
     created = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
     assert created.status_code == 201
+    duplicate = client.post(f"/api/virtual-office/projects/{project}/agents", headers=headers, json={"agent_key": "writer", "display_name": "Writer", "engine_key": engine_key, "data_classification": "INTERNAL_CONFIDENTIAL", "instructions": "Responde breve."})
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "office_agent_key_conflict"
     agent_id = created.json()["agent_id"]
     body = {"input": "hola", "idempotency_key": "run-1"}
     first = client.post(f"/api/virtual-office/projects/{project}/agents/{agent_id}/runs", headers=headers, json=body)
@@ -63,6 +66,15 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     assert first.status_code == second.status_code == 202
     assert first.json()["status"] == second.json()["status"] == "SUCCEEDED"
     assert first.json()["run_id"] == second.json()["run_id"]
+    assert calls == [("Responde breve.", "hola")]
+
+    other_user, _ = client.portal.call(crear_usuario)
+    client.portal.call(sql, "INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (other_user,))
+    client.portal.call(sql, "INSERT INTO jax_project_membership (membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',NOW(6),'test',NOW(6))", (str(uuid.uuid4()), project, other_user))
+    cross_actor = client.post(f"/api/virtual-office/projects/{project}/agents/{agent_id}/runs", headers=_headers(other_user), json=body)
+    assert cross_actor.status_code == 409
+    assert cross_actor.json()["detail"] == "office_run_idempotency_conflict"
+    assert "output" not in cross_actor.json()
     assert calls == [("Responde breve.", "hola")]
 
     async def replay_while_dispatch_is_in_flight():
