@@ -99,3 +99,7 @@ las tablas padre de las nuevas claves foráneas (`provider`, `model` y
 `credential`); el comando de activación expone el timeout en la llamada de
 conexión para que lo verifique el control automatizado. Estos cambios son de
 suite y CLI; el servicio publicado no se ha reiniciado por ellos.
+La siguiente reproducción descartable detectó que un test de invitaciones
+prefería `/etc/jax/migrate.env` aunque apuntara a otra base; su conexión de
+prueba ahora usa ese archivo solo si host, puerto y nombre de base coinciden
+con el destino de la suite. El caso aislado pasó 1/1.

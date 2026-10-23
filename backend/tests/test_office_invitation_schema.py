@@ -31,9 +31,14 @@ _RECEIPT_GUARD_2E86051 = (
 
 
 async def _migration_admin_pool():
-    """Use the dedicated migrator when provisioned, never the web principal."""
+    """Use migrator credentials only for the same target as the test DB."""
     migrator = cargar("/etc/jax/migrate.env")
-    credentials = migrator or os.environ
+    target = os.environ
+    same_target = migrator and all(
+        migrator.get(key) == target.get(key)
+        for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME")
+    )
+    credentials = migrator if same_target else target
     return await aiomysql.create_pool(
         host=credentials["JAX_DB_HOST"], port=int(credentials["JAX_DB_PORT"]),
         user=credentials["JAX_DB_USER"], password=credentials["JAX_DB_PASSWORD"],
