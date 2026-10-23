@@ -46,7 +46,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     admin, project, engine_key = client.portal.call(_project_admin_with_engine)
     calls = []
 
-    async def fake_dispatch(_target, *, instructions, user_input):
+    async def fake_dispatch(_target, *, instructions, user_input, **_kwargs):
         calls.append((instructions, user_input))
         return "respuesta GLM"
 
@@ -86,7 +86,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_dispatch(_target, *, instructions, user_input):
+        async def slow_dispatch(_target, *, instructions, user_input, **_kwargs):
             calls.append((instructions, user_input))
             started.set()
             await release.wait()
@@ -132,7 +132,7 @@ def test_private_agent_mocked_provider_handles_parallel_runs_on_a_real_database(
     assert created.status_code == 201
     agent_id = created.json()["agent_id"]
 
-    async def fake_dispatch(_target, *, instructions, user_input):
+    async def fake_dispatch(_target, *, instructions, user_input, **_kwargs):
         await asyncio.sleep(0.001)
         return user_input
 
