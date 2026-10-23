@@ -115,6 +115,29 @@ def resolve_office_engine_row(row: dict[str, object] | None, *, data_classificat
 async def resolve_office_engine_in_cursor(cur, *, engine_key: str, data_classification: str,
                                           for_update: bool = False) -> ResolvedOfficeEngine:
     """Resolve the exact pinned credential; acceptance callers lock it too."""
+    if for_update:
+        # The acceptance path takes locks in the same order as credential
+        # rotation.  A JOIN ... FOR UPDATE leaves that order to the optimizer.
+        await cur.execute(
+            "SELECT e.model_ref,e.credential_id,m.provider_id FROM office_engine e "
+            "JOIN model m ON m.id=e.model_ref WHERE e.engine_key=%s", (engine_key,))
+        initial = await cur.fetchone()
+        if initial is None or len(initial) != 3:
+            raise OfficeEngineUnavailable("engine unavailable")
+        model_ref, credential_id, provider_id = initial
+        await cur.execute("SELECT id FROM provider WHERE id=%s FOR UPDATE", (provider_id,))
+        if await cur.fetchone() is None:
+            raise OfficeEngineUnavailable("engine unavailable")
+        await cur.execute("SELECT id FROM model WHERE id=%s AND provider_id=%s FOR UPDATE", (model_ref, provider_id))
+        if await cur.fetchone() is None:
+            raise OfficeEngineUnavailable("engine unavailable")
+        await cur.execute("SELECT id FROM credential WHERE id=%s AND provider_id=%s FOR UPDATE", (credential_id, provider_id))
+        if await cur.fetchone() is None:
+            raise OfficeEngineUnavailable("engine unavailable")
+        await cur.execute("SELECT model_ref,credential_id FROM office_engine WHERE engine_key=%s FOR UPDATE", (engine_key,))
+        locked = await cur.fetchone()
+        if locked is None or tuple(locked) != (model_ref, credential_id):
+            raise OfficeEngineUnavailable("engine binding changed during lock")
     await cur.execute(
         "SELECT e.engine_key,e.display_name_key,e.model_ref,e.transport,e.allowed_data_classifications,"
         "e.binding_fingerprint,e.version,e.enabled AS engine_enabled,e.activation_epoch,p.id AS provider_id,"
@@ -124,7 +147,7 @@ async def resolve_office_engine_in_cursor(cur, *, engine_key: str, data_classifi
         "SHA2(CAST(JSON_ARRAY('office-engine-model-v1',m.id,m.provider_id,m.model_id,m.status,m.is_alias,m.context_window,m.supports_tool_use,m.supports_structured_output,m.max_tokens_param,m.max_output_tokens,m.input_modalities) AS CHAR),256) AS model_fingerprint,"
         "SHA2(CAST(JSON_ARRAY('office-engine-credential-v1',c.id,c.provider_id,c.state,c.activated_at,c.revoked_at,SHA2(c.encrypted_value,256)) AS CHAR),256) AS credential_fingerprint "
         "FROM office_engine e JOIN model m ON m.id=e.model_ref JOIN provider p ON p.id=m.provider_id JOIN credential c ON c.id=e.credential_id AND c.provider_id=p.id WHERE e.engine_key=%s"
-        + (" FOR UPDATE" if for_update else ""), (engine_key,))
+        , (engine_key,))
     row = await cur.fetchone()
     if row is not None and not isinstance(row, dict):
         columns = ("engine_key", "display_name_key", "model_ref", "transport", "allowed_data_classifications", "binding_fingerprint", "version", "engine_enabled", "activation_epoch", "provider_id", "provider_status", "provider_auth_type", "provider_api_key_transport", "model_id", "model_status", "max_tokens_param", "max_output_tokens", "credential_id", "credential_state", "provider_fingerprint", "model_fingerprint", "credential_fingerprint")
