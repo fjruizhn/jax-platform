@@ -22,12 +22,49 @@ def test_runtime_config_is_a_seeded_singleton_with_bounded_values() -> None:
     assert "timeout_seconds TINYINT UNSIGNED NOT NULL DEFAULT 45" in ddl
     assert "stale_seconds TINYINT UNSIGNED NOT NULL DEFAULT 60" in ddl
     assert "INSERT INTO office_agent_runtime_config" in ddl
+    assert "max_output_tokens BETWEEN 1 AND 2048" in ddl
+    assert "window_seconds BETWEEN 60 AND 3600" in ddl
+    assert "actor_concurrency BETWEEN 1 AND 2" in ddl
+    assert "project_concurrency BETWEEN 1 AND 8" in ddl
 
 
 def test_runtime_config_is_migrator_owned() -> None:
     from db.runtime_privileges import _FORBIDDEN_TABLES
 
     assert "office_agent_runtime_config" in _FORBIDDEN_TABLES
+
+
+def test_runtime_config_accepts_tighter_valid_database_limits(client) -> None:
+    from tests.identidades import sql
+
+    columns = (
+        "max_output_tokens,max_input_bytes,max_instructions_bytes,max_response_bytes,"
+        "window_seconds,actor_runs_per_window,project_runs_per_window,actor_concurrency,"
+        "project_concurrency,timeout_seconds,stale_seconds"
+    )
+
+    async def exercise() -> None:
+        before = (await sql(f"SELECT {columns} FROM office_agent_runtime_config WHERE config_id=1", (), True))[0]
+        tighter = (1024, 16384, 16384, 524288, 1800, 15, 150, 1, 4, 30, 45)
+        try:
+            await sql(
+                "UPDATE office_agent_runtime_config SET max_output_tokens=%s,max_input_bytes=%s,"
+                "max_instructions_bytes=%s,max_response_bytes=%s,window_seconds=%s,actor_runs_per_window=%s,"
+                "project_runs_per_window=%s,actor_concurrency=%s,project_concurrency=%s,timeout_seconds=%s,"
+                "stale_seconds=%s WHERE config_id=1",
+                tighter,
+            )
+            assert (await sql(f"SELECT {columns} FROM office_agent_runtime_config WHERE config_id=1", (), True))[0] == tighter
+        finally:
+            await sql(
+                "UPDATE office_agent_runtime_config SET max_output_tokens=%s,max_input_bytes=%s,"
+                "max_instructions_bytes=%s,max_response_bytes=%s,window_seconds=%s,actor_runs_per_window=%s,"
+                "project_runs_per_window=%s,actor_concurrency=%s,project_concurrency=%s,timeout_seconds=%s,"
+                "stale_seconds=%s WHERE config_id=1",
+                before,
+            )
+
+    client.portal.call(exercise)
 
 
 def test_run_schema_pins_every_dispatch_snapshot_and_actor_idempotency() -> None:
