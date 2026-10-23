@@ -80,7 +80,7 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
     assert calls == [("Responde breve.", "hola"), ("Responde breve.", "hola")]
 
     async def replay_while_dispatch_is_in_flight():
-        from api.virtual_office.agents import AgentRunRequest, run_agent
+        from api.virtual_office.agents import AgentRunRequest, get_agent_run, run_agent
         from auth.models import AuthUser
 
         started = asyncio.Event()
@@ -93,15 +93,19 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
             return "respuesta GLM lenta"
 
         monkeypatch.setattr(agents_api, "dispatch", slow_dispatch)
+        await sql("UPDATE office_agent_runtime_config SET timeout_seconds=1,stale_seconds=1 WHERE config_id=1")
         user = AuthUser(user_id=str(admin), tenant_id="1", role="operator", account_class="INTERNAL")
         request = AgentRunRequest(input="carrera", idempotency_key="in-flight")
         first_run = asyncio.create_task(run_agent(project, agent_id, request, user))
         await started.wait()
         replay = await run_agent(project, agent_id, request, user)
+        await asyncio.sleep(1.05)
+        stale = await get_agent_run(project, agent_id, replay["run_id"], user)
         release.set()
         completed = await first_run
         assert replay["status"] == "DISPATCHING"
-        assert completed["status"] == "SUCCEEDED"
+        assert stale["status"] == "UNKNOWN"
+        assert completed["status"] == "UNKNOWN"
         assert replay["run_id"] == completed["run_id"]
 
     client.portal.call(replay_while_dispatch_is_in_flight)
