@@ -29,4 +29,4 @@ atómicamente `runtime.env` con `OFFICE_BROKER_ALLOWED_BASE_URLS`, (3) activar
 la release emparejada y ejecutar su migración, (4) ejecutar el launcher en
 modo `office-engine` para registrar el primer motor, y (5) publicar el
 frontend. La activación usa, por ejemplo,
-`office-engine /etc/jax/migrate.env --engine-key glm-office --display-name GLM --provider-id zhipu --model-id glm-5.3 --classifications INTERNAL --activate`.
+`office-engine /etc/jax/migrate.env --engine-key glm-office --display-name GLM --provider-id zhipu --model-id glm-5.3 --classifications INTERNAL_CONFIDENTIAL --activate`.

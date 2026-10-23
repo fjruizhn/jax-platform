@@ -28,6 +28,8 @@ def parse_classifications(value: str) -> frozenset[str]:
     result = frozenset(values)
     if len(result) != len(values):
         raise ValueError("classifications must be unique")
+    if "INTERNAL_CONFIDENTIAL" not in result:
+        raise ValueError("Office engine must allow INTERNAL_CONFIDENTIAL")
     return result
 
 

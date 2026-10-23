@@ -15,6 +15,13 @@ def test_activation_cli_requires_unique_uppercase_classifications() -> None:
         parse_classifications("INTERNAL_CONFIDENTIAL,INTERNAL_CONFIDENTIAL")
     with pytest.raises(ValueError):
         parse_classifications("internal")
+    with pytest.raises(ValueError, match="INTERNAL_CONFIDENTIAL"):
+        parse_classifications("INTERNAL")
+
+
+def test_documented_first_engine_activation_uses_office_classification() -> None:
+    recipe = (Path(__file__).parents[2] / "docs" / "historia" / "2026-10-22-selector-agentes-office.md").read_text(encoding="utf-8")
+    assert "--classifications INTERNAL_CONFIDENTIAL --activate" in recipe
 
 
 @pytest.mark.asyncio
