@@ -226,6 +226,12 @@ def test_runtime_lock_is_the_launcher_pair_lock() -> None:
 def test_runtime_package_contains_all_root_pair_helpers() -> None:
     assert {"helpers/adopt-pair-root.py", "helpers/bootstrap-pair-predecessor.py", "helpers/build-pair-jaxbuild.py", "helpers/pair-build-supervisor.py"}.issubset(rp._HELPERS)
 
+
+def test_runtime_package_seals_the_runtime_acl_provisioner_and_manifests() -> None:
+    assert rp._HELPERS["helpers/provision-db-runtime.sh"] == ("/usr/local/libexec/provision-db-runtime.sh", "0755")
+    assert rp._HELPERS["helpers/runtime-table-privileges-v1.txt"] == ("/usr/local/libexec/runtime-table-privileges-v1.txt", "0644")
+    assert rp._HELPERS["helpers/runtime-table-privileges-v2.txt"] == ("/usr/local/libexec/runtime-table-privileges-v2.txt", "0644")
+
 def test_root_helpers_install_with_declared_modes_and_rollback(tmp_path):
     bundle, digest = package(tmp_path, [])
     root = tmp_path / 'destination'

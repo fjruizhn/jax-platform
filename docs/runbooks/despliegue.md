@@ -151,8 +151,22 @@ El journal fsync ata el release, digest del manifiesto y digest de selección: s
 se restaura un `PRE_DDL` que coincida exactamente con la activación solicitada y
 la restauración ocurre ya con ambos servicios detenidos y el candado runtime
 exclusivo. Desde `DDL_STARTED` queda `RECOVERY_REQUIRED` y exige recuperación
-humana con backup probado. Sólo inicia web: su dependencia systemd
-ejecuta el migrador una vez. Una modificación, byte extra, enlace, permisos
+humana con backup probado. En un upgrade con tablas Office, la activación corre
+primero el migrador, recompone los privilegios exactos del usuario web sobre las
+tablas recién creadas y recién entonces arranca web. El host de MariaDB del
+principal viene como argumento medido, nunca se deduce de la dirección del DB:
+
+```bash
+sudo /usr/local/libexec/activate-platform-pair-release.sh \
+  --release /opt/jax-platform-pair/releases/<SHA-JXP-40>-<SHA-JAX-40> \
+  --expected-manifest-sha256 "$MANIFEST_SHA256" \
+  --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256" \
+  --measured-grantee-host "$JAX_DB_GRANTEE_HOST"
+```
+
+El paquete de runtime instala el provisionador y sus dos manifiestos junto con
+el activador. La activación no vuelve a disparar la migración que ya completó
+antes de abrir web. Una modificación, byte extra, enlace, permisos
 inseguros, manifiesto alterado o selección que salga de `releases/` detiene el
 arranque antes de importar Python. Antes de borrar el journal, la activación
 comprueba el estado efectivo del unit, el PID principal y que su entorno apunta
