@@ -11,7 +11,7 @@ def _engine_row(**overrides):
         "engine_key": "glm", "display_name_key": "office.engine.glm", "model_ref": 42,
         "transport": "http_openai_compat", "allowed_data_classifications": '["INTERNAL_CONFIDENTIAL"]',
         "version": 1, "engine_enabled": 1, "activation_epoch": 1, "provider_id": "zhipu",
-        "provider_status": "active", "provider_auth_type": "api_key", "provider_api_key_transport": "bearer", "model_id": "glm-5.3",
+        "provider_status": "active", "provider_auth_type": "api_key", "provider_api_key_transport": "header_bearer", "model_id": "glm-5.3",
             "model_status": "available", "max_tokens_param": "max_tokens", "max_output_tokens": 2048,
             "credential_id": 7, "credential_state": "active",
         "provider_fingerprint": "a" * 64, "model_fingerprint": "b" * 64,

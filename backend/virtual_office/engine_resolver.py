@@ -98,7 +98,7 @@ def resolve_office_engine_row(row: dict[str, object] | None, *, data_classificat
             or not isinstance(engine_key, str) or not engine_key or not isinstance(display_name_key, str) or not display_name_key
             or isinstance(model_ref, bool) or not isinstance(model_ref, int) or model_ref < 1
             or not isinstance(provider_id, str) or not provider_id or not isinstance(provider_auth_type, str) or provider_auth_type != "api_key"
-            or provider_api_key_transport != "bearer"
+            or provider_api_key_transport != "header_bearer"
             or not isinstance(model_id, str) or not model_id
             or not isinstance(max_tokens_param, str) or max_tokens_param not in _MAX_TOKEN_PARAMS
             or not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool) or max_output_tokens < 1

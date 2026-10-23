@@ -60,7 +60,7 @@ async def _catalogue_fingerprints(cur, provider_id: str, model_id: str) -> tuple
     provider = await cur.fetchone()
     if provider is None:
         raise ValueError("provider/model is unavailable")
-    if provider[3] != "bearer":
+    if provider[3] != "header_bearer":
         raise ValueError("provider api_key_transport is unavailable")
     await cur.execute("SELECT id,provider_id,model_id,status,is_alias,context_window,supports_tool_use,supports_structured_output,max_tokens_param,max_output_tokens,input_modalities FROM model WHERE provider_id=%s AND model_id=%s AND status='available' FOR UPDATE", (provider_id, model_id))
     model = await cur.fetchone()
