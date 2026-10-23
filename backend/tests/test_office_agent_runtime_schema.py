@@ -135,11 +135,57 @@ def test_runtime_schema_attestation_rejects_noop_config_trigger(client) -> None:
             "FOR EACH ROW SET NEW.config_version=NEW.config_version"
                 )
                 try:
-                    with pytest.raises(RuntimeError, match="config guard"):
+                    with pytest.raises(RuntimeError, match="runtime triggers"):
                         await migrations.assert_office_agent_runtime_metadata(cur)
                 finally:
                     await cur.execute("DROP TRIGGER guard_office_agent_runtime_config_update")
                     await cur.execute(migrations.OFFICE_AGENT_RUNTIME_DDL[-1])
+
+    client.portal.call(exercise)
+
+
+def test_runtime_schema_attestation_rejects_homonymous_column_default_drift(client) -> None:
+    from tests.identidades import sql
+    from virtual_office import migrations
+
+    async def exercise() -> None:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "ALTER TABLE office_agent_runtime_config "
+                    "MODIFY max_output_tokens SMALLINT UNSIGNED NOT NULL DEFAULT 1024"
+                )
+                try:
+                    with pytest.raises(RuntimeError, match="runtime columns"):
+                        await migrations.assert_office_agent_runtime_metadata(cur)
+                finally:
+                    await cur.execute(
+                        "ALTER TABLE office_agent_runtime_config "
+                        "MODIFY max_output_tokens SMALLINT UNSIGNED NOT NULL DEFAULT 2048"
+                    )
+
+    client.portal.call(exercise)
+
+
+def test_runtime_schema_attestation_rejects_an_extra_homonymous_trigger(client) -> None:
+    from virtual_office import migrations
+
+    async def exercise() -> None:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "CREATE TRIGGER unexpected_office_agent_insert BEFORE INSERT ON office_agent "
+                    "FOR EACH ROW SET NEW.display_name=NEW.display_name"
+                )
+                try:
+                    with pytest.raises(RuntimeError, match="runtime triggers"):
+                        await migrations.assert_office_agent_runtime_metadata(cur)
+                finally:
+                    await cur.execute("DROP TRIGGER unexpected_office_agent_insert")
 
     client.portal.call(exercise)
 
