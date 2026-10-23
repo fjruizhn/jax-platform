@@ -57,7 +57,8 @@ OFFICE_AGENT_RUNTIME_DDL = (
     "CONSTRAINT chk_office_agent_runtime_config_singleton CHECK (config_id=1),CONSTRAINT chk_office_agent_runtime_config_version CHECK (config_version>=1),"
     "CONSTRAINT chk_office_agent_runtime_config_bounds CHECK (max_output_tokens BETWEEN 1 AND 2048 AND max_input_bytes BETWEEN 1 AND 32768 AND max_instructions_bytes BETWEEN 1 AND 32768 AND max_response_bytes BETWEEN 1 AND 1048576 AND window_seconds BETWEEN 60 AND 3600 AND actor_runs_per_window BETWEEN 1 AND 30 AND project_runs_per_window BETWEEN 1 AND 300 AND actor_concurrency BETWEEN 1 AND 2 AND project_concurrency BETWEEN 1 AND 8 AND timeout_seconds BETWEEN 1 AND 45 AND stale_seconds BETWEEN 6 AND 60 AND stale_seconds>=timeout_seconds+5)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "INSERT INTO office_agent_runtime_config (config_id,config_version) VALUES (1,1) ON DUPLICATE KEY UPDATE config_id=config_id",
+    "INSERT IGNORE INTO office_agent_runtime_config (config_id,config_version) VALUES (1,1)",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_agent_runtime_config_update BEFORE UPDATE ON office_agent_runtime_config FOR EACH ROW BEGIN IF NEW.config_id<>1 OR NEW.config_version<>OLD.config_version+1 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office agent runtime config version must advance exactly once'; END IF; END",
 )
 
 OFFICE_AGENT_DDL = (
@@ -926,6 +927,59 @@ async def _assert_indexes(cur, *, table: str, expected: dict[str, tuple[tuple[st
     for name, (columns, unique) in expected.items():
         if not await _index_has_exact_shape(cur, table, name, columns, unique=unique):
             raise RuntimeError(f"Office {table} index {name} is invalid")
+
+
+_AGENT_RUNTIME_COLUMNS = {
+    "office_agent_runtime_config": ("config_id", "config_version", "max_output_tokens", "max_input_bytes", "max_instructions_bytes", "max_response_bytes", "window_seconds", "actor_runs_per_window", "project_runs_per_window", "actor_concurrency", "project_concurrency", "timeout_seconds", "stale_seconds", "updated_at"),
+    "office_engine": ("engine_key", "display_name_key", "model_ref", "credential_id", "transport", "allowed_data_classifications", "binding_fingerprint", "enabled", "activation_epoch", "version", "created_at", "updated_at"),
+    "office_agent": ("agent_id", "project_id", "agent_key", "display_name", "instructions", "data_classification", "status", "version", "created_by", "created_at", "updated_at"),
+    "office_agent_binding": ("binding_id", "agent_id", "engine_key", "binding_version", "active", "bound_by", "bound_at"),
+    "office_agent_run": ("run_id", "agent_id", "project_id", "requested_by", "authorization_event_id", "agent_version", "binding_id", "binding_version", "idempotency_key", "input_sha256", "instructions_sha256", "dispatch_snapshot_sha256", "config_version", "engine_key", "engine_version", "engine_binding_fingerprint", "model_ref", "model_id", "credential_id", "credential_fingerprint", "provider_id", "auth_type", "auth_transport", "status", "output_text", "accepted_at", "deadline_at", "fence", "completed_at"),
+}
+_AGENT_RUNTIME_INDEXES = {
+    "office_agent_runtime_config": {"PRIMARY": (("config_id",), True)},
+    "office_engine": {"PRIMARY": (("engine_key",), True)},
+    "office_agent": {"PRIMARY": (("agent_id",), True), "uq_office_agent_project_key": (("project_id", "agent_key"), True), "idx_office_agent_project": (("project_id", "status", "agent_id"), False)},
+    "office_agent_binding": {"PRIMARY": (("binding_id",), True), "uq_office_agent_binding_version": (("agent_id", "binding_version"), True), "idx_office_agent_binding_active": (("agent_id", "active", "binding_version"), False)},
+    "office_agent_run": {"PRIMARY": (("run_id",), True), "uq_office_agent_run_idempotency": (("requested_by", "agent_id", "idempotency_key"), True), "idx_office_agent_run_actor_window": (("requested_by", "accepted_at", "status", "deadline_at"), False), "idx_office_agent_run_project_window": (("project_id", "accepted_at", "status", "deadline_at"), False)},
+}
+_AGENT_RUNTIME_FKS = {
+    "office_engine": {"fk_office_engine_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_engine_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
+    "office_agent": {"fk_office_agent_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_created_by": (("created_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT")},
+    "office_agent_binding": {"fk_office_agent_binding_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_binding_by": (("bound_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT")},
+    "office_agent_run": {"fk_office_agent_run_agent": (("agent_id",), "office_agent", ("agent_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_project": (("project_id",), "projects", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_requested_by": (("requested_by",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_authorization": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_binding": (("binding_id",), "office_agent_binding", ("binding_id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_engine": (("engine_key",), "office_engine", ("engine_key",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_model": (("model_ref",), "model", ("id",), "RESTRICT", "RESTRICT"), "fk_office_agent_run_credential": (("credential_id",), "credential", ("id",), "RESTRICT", "RESTRICT")},
+}
+
+
+async def assert_office_agent_runtime_metadata(cur) -> None:
+    """Fail closed when a homonymous private-agent table lost its contract."""
+    for table, columns in _AGENT_RUNTIME_COLUMNS.items():
+        if not await _table_exists(cur, table):
+            raise RuntimeError(f"Office agent runtime table {table} is absent")
+        await cur.execute("SELECT COLUMN_NAME,COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION", (table,))
+        found_columns = tuple((str(name), str(column_type)) for name, column_type in await cur.fetchall())
+        if tuple(name for name, _type in found_columns) != columns or any(not column_type for _name, column_type in found_columns):
+            raise RuntimeError(f"Office agent runtime columns for {table} are invalid")
+        await _assert_indexes(cur, table=table, expected=_AGENT_RUNTIME_INDEXES[table])
+        await cur.execute("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(_AGENT_RUNTIME_INDEXES[table]):
+            raise RuntimeError(f"Office agent runtime indexes for {table} are invalid")
+        expected_fks = _AGENT_RUNTIME_FKS.get(table, {})
+        await _assert_foreign_keys(cur, table=table, expected=expected_fks)
+        await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
+        if {row[0] for row in await cur.fetchall()} != set(expected_fks):
+            raise RuntimeError(f"Office agent runtime foreign keys for {table} are invalid")
+    for name in ("chk_office_agent_runtime_config_singleton", "chk_office_agent_runtime_config_version", "chk_office_agent_runtime_config_bounds", "chk_office_agent_run_snapshot", "chk_office_agent_run_output"):
+        if await _check_clause(cur, name) is None:
+            raise RuntimeError(f"Office agent runtime check {name} is invalid")
+    await cur.execute("SELECT ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='guard_office_agent_runtime_config_update'")
+    config_guard = await cur.fetchone()
+    if config_guard is None or tuple(config_guard[:2]) != ("BEFORE", "UPDATE") or "config_version" not in str(config_guard[2]) or "SIGNAL SQLSTATE '45000'" not in str(config_guard[2]):
+        raise RuntimeError("Office agent runtime config guard is invalid")
+    await cur.execute("SELECT ACTION_TIMING,EVENT_MANIPULATION,ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='no_mutate_office_agent_run_snapshot'")
+    run_guard = await cur.fetchone()
+    if run_guard is None or tuple(run_guard[:2]) != ("BEFORE", "UPDATE") or "SIGNAL SQLSTATE '45000'" not in str(run_guard[2]) or "credential_id" not in str(run_guard[2]) or "dispatch_snapshot_sha256" not in str(run_guard[2]):
+        raise RuntimeError("Office agent runtime run guard is invalid")
 
 
 async def _assert_append_only_table_metadata(cur, *, table: str, triggers: dict[str, tuple[str, ...]],
@@ -2332,3 +2386,4 @@ async def apply_office_migrations(cursor) -> None:
     from virtual_office.module_release_ledger import apply_module_candidate_storage_migrations
     await apply_module_candidate_storage_migrations(cursor)
     await apply_module_publication_staging_migrations(cursor)
+    await assert_office_agent_runtime_metadata(cursor)

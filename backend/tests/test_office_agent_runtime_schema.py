@@ -48,11 +48,11 @@ def test_runtime_config_accepts_tighter_valid_database_limits(client) -> None:
     )
 
     async def exercise() -> None:
-        before = (await sql(f"SELECT {columns} FROM office_agent_runtime_config WHERE config_id=1", (), True))[0]
+        before = (await sql(f"SELECT config_version,{columns} FROM office_agent_runtime_config WHERE config_id=1", (), True))[0]
         tighter = (1024, 16384, 16384, 524288, 1800, 15, 150, 1, 4, 30, 45)
         try:
             await sql(
-                "UPDATE office_agent_runtime_config SET max_output_tokens=%s,max_input_bytes=%s,"
+                "UPDATE office_agent_runtime_config SET config_version=config_version+1,max_output_tokens=%s,max_input_bytes=%s,"
                 "max_instructions_bytes=%s,max_response_bytes=%s,window_seconds=%s,actor_runs_per_window=%s,"
                 "project_runs_per_window=%s,actor_concurrency=%s,project_concurrency=%s,timeout_seconds=%s,"
                 "stale_seconds=%s WHERE config_id=1",
@@ -61,11 +61,11 @@ def test_runtime_config_accepts_tighter_valid_database_limits(client) -> None:
             assert (await sql(f"SELECT {columns} FROM office_agent_runtime_config WHERE config_id=1", (), True))[0] == tighter
         finally:
             await sql(
-                "UPDATE office_agent_runtime_config SET max_output_tokens=%s,max_input_bytes=%s,"
+                "UPDATE office_agent_runtime_config SET config_version=config_version+1,max_output_tokens=%s,max_input_bytes=%s,"
                 "max_instructions_bytes=%s,max_response_bytes=%s,window_seconds=%s,actor_runs_per_window=%s,"
                 "project_runs_per_window=%s,actor_concurrency=%s,project_concurrency=%s,timeout_seconds=%s,"
                 "stale_seconds=%s WHERE config_id=1",
-                before,
+                before[1:],
             )
 
     client.portal.call(exercise)
@@ -77,8 +77,18 @@ def test_runtime_config_rejects_a_stale_window_shorter_than_timeout(client) -> N
     async def exercise() -> None:
         with pytest.raises(aiomysql.OperationalError):
             await sql(
-                "UPDATE office_agent_runtime_config SET timeout_seconds=45,stale_seconds=44 WHERE config_id=1"
+                "UPDATE office_agent_runtime_config SET config_version=config_version+1,timeout_seconds=45,stale_seconds=44 WHERE config_id=1"
             )
+
+    client.portal.call(exercise)
+
+
+def test_runtime_config_rejects_a_limit_change_without_a_version_advance(client) -> None:
+    from tests.identidades import sql
+
+    async def exercise() -> None:
+        with pytest.raises(aiomysql.OperationalError):
+            await sql("UPDATE office_agent_runtime_config SET max_output_tokens=1024 WHERE config_id=1")
 
     client.portal.call(exercise)
 
