@@ -258,3 +258,28 @@ async def test_dispatch_rejects_a_response_larger_than_the_office_limit(monkeypa
             max_tokens_field="max_tokens", max_output_tokens=123,
             max_response_bytes=1024, timeout_seconds=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_has_an_absolute_timeout_while_provider_trickles(monkeypatch):
+    import asyncio
+    import virtual_office.agent_broker as broker
+    from virtual_office.engine_resolver import resolve_office_engine_row
+    class Response:
+        status_code = 200; is_redirect = False; headers = {}
+        async def aiter_bytes(self):
+            while True:
+                await asyncio.sleep(0.02)
+                yield b" "
+    class Stream:
+        async def __aenter__(self): return Response()
+        async def __aexit__(self, *_args): return None
+    class Client:
+        def __init__(self, **_kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return None
+        def stream(self, *_args, **_kwargs): return Stream()
+    monkeypatch.setattr(broker.httpx, "AsyncClient", Client)
+    target = broker.OfficeDispatchTarget(resolve_office_engine_row(_engine_row(), data_classification="INTERNAL_CONFIDENTIAL"), "secret", "https://api.z.ai/api/paas/v4/chat/completions")
+    with pytest.raises(broker.OfficeBrokerUnavailable):
+        await broker.dispatch(target, instructions="system", user_input="hello", max_tokens_field="max_tokens", max_output_tokens=1, max_response_bytes=1000000, timeout_seconds=1)
