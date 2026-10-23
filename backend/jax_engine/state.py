@@ -86,6 +86,10 @@ _JACOBS_STATUS_MAP = {
     # Estado propio (no "failed"): son transiciones DECIDIDAS, no un fallo.
     "discarded":   "discarded",
     "hidden":      "hidden",
+    # Office v1 can reach a terminal state whose downstream delivery outcome
+    # is deliberately unknown.  Preserve that state rather than turning it
+    # into a generic failure or leaving its slot in active_pipelines.
+    "outcome_unknown": "outcome_unknown",
 }
 
 _STEP_STATUS_MAP = {
@@ -371,7 +375,7 @@ class JAXEngineState:
             # completed/failed/disputed -- terminal, libera el cupo del
             # tenant si el poller lo alcanza a ver en ese estado antes de
             # que remove_pipeline() ya lo hubiera sacado por otro camino.
-            if updated.status in ("completed", "failed", "disputed", "discarded", "hidden"):
+            if updated.status in ("completed", "failed", "disputed", "discarded", "hidden", "outcome_unknown"):
                 self.remove_pipeline(pid)
                 # cancel_pipeline() ya liberaba el slot del tenant; una
                 # pipeline que termina SOLA (no cancelada) nunca lo hacía,

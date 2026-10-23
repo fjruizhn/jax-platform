@@ -1,0 +1,350 @@
+{
+  "source": "canonical repository functions; disposable database only",
+  "counts": {
+    "jax_users": 1256,
+    "jax_project_scope": 1451,
+    "jax_project_membership": 1432,
+    "office_project_grant": 461,
+    "office_external_relation": 66,
+    "office_admin_delegation": 40,
+    "office_professional_grant": 19
+  },
+  "plans": [
+    {
+      "function": "fetch_actor",
+      "sql": "SELECT u.tenant_id,u.status,u.account_class,t.status,p.global_role,p.status FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "u",
+          "type": "const",
+          "possible_keys": "PRIMARY,idx_jax_users_tenant_role_status,idx_jax_users_tenant_email",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "t",
+          "type": "const",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "p",
+          "type": "const",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_project_scope",
+      "sql": "SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "jax_project_scope",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_jax_project_scope_project_tenant",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_internal_grant",
+      "sql": "SELECT g.grant_role,g.audience,g.status,m.status FROM office_project_grant g JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id WHERE g.project_id=%s AND g.user_id=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "g",
+          "type": "const",
+          "possible_keys": "uq_office_project_grant_subject,idx_office_project_grant_scope,fk_office_project_grant_user",
+          "key": "uq_office_project_grant_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "m",
+          "type": "const",
+          "possible_keys": "uq_jax_project_membership_subject,idx_jax_project_membership_lookup,fk_jax_project_membership_scope,fk_jax_project_membership_user",
+          "key": "uq_jax_project_membership_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_external_grant",
+      "sql": "SELECT g.grant_role,g.audience,g.status,r.status,r.recipient_group_id,rg.status FROM office_project_grant g JOIN office_external_relation r ON r.project_id=g.project_id AND r.user_id=g.user_id JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=r.project_id WHERE g.project_id=%s AND g.user_id=%s AND r.recipient_group_id=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "g",
+          "type": "const",
+          "possible_keys": "uq_office_project_grant_subject,idx_office_project_grant_scope,fk_office_project_grant_user",
+          "key": "uq_office_project_grant_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "r",
+          "type": "const",
+          "possible_keys": "uq_office_external_relation_subject,idx_office_external_relation_scope,fk_office_external_relation_user,fk_office_external_relation_group_project",
+          "key": "uq_office_external_relation_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "rg",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_office_recipient_group_project_kind,uq_office_recipient_group_id_project,idx_office_recipient_group_scope,fk_office_recipient_group_scope",
+          "key": "PRIMARY",
+          "key_len": "8",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_delegation",
+      "sql": "SELECT status FROM office_admin_delegation WHERE user_id=%s AND capability=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "office_admin_delegation",
+          "type": "const",
+          "possible_keys": "uq_office_admin_delegation,idx_office_admin_delegation_scope",
+          "key": "uq_office_admin_delegation",
+          "key_len": "166",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_professional_grant",
+      "sql": "SELECT status FROM office_professional_grant WHERE project_id=%s AND user_id=%s AND capability=%s",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "office_professional_grant",
+          "type": "const",
+          "possible_keys": "uq_office_professional_grant,idx_office_professional_grant_scope,fk_office_professional_grant_user",
+          "key": "uq_office_professional_grant",
+          "key_len": "266",
+          "ref": "const,const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_actor locked",
+      "sql": "SELECT u.tenant_id,u.status,u.account_class,t.status,p.global_role,p.status FROM jax_users u JOIN jax_tenants t ON t.tenant_id=u.tenant_id LEFT JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "u",
+          "type": "const",
+          "possible_keys": "PRIMARY,idx_jax_users_tenant_role_status,idx_jax_users_tenant_email",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "t",
+          "type": "const",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "p",
+          "type": "const",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_project_scope locked",
+      "sql": "SELECT tenant_id,status,authorization_namespace FROM jax_project_scope WHERE project_id=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "jax_project_scope",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_jax_project_scope_project_tenant",
+          "key": "PRIMARY",
+          "key_len": "4",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_internal_grant locked",
+      "sql": "SELECT g.grant_role,g.audience,g.status,m.status FROM office_project_grant g JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id WHERE g.project_id=%s AND g.user_id=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "g",
+          "type": "const",
+          "possible_keys": "uq_office_project_grant_subject,idx_office_project_grant_scope,fk_office_project_grant_user",
+          "key": "uq_office_project_grant_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "m",
+          "type": "const",
+          "possible_keys": "uq_jax_project_membership_subject,idx_jax_project_membership_lookup,fk_jax_project_membership_scope,fk_jax_project_membership_user",
+          "key": "uq_jax_project_membership_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_external_grant locked",
+      "sql": "SELECT g.grant_role,g.audience,g.status,r.status,r.recipient_group_id,rg.status FROM office_project_grant g JOIN office_external_relation r ON r.project_id=g.project_id AND r.user_id=g.user_id JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=r.project_id WHERE g.project_id=%s AND g.user_id=%s AND r.recipient_group_id=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "g",
+          "type": "const",
+          "possible_keys": "uq_office_project_grant_subject,idx_office_project_grant_scope,fk_office_project_grant_user",
+          "key": "uq_office_project_grant_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "r",
+          "type": "const",
+          "possible_keys": "uq_office_external_relation_subject,idx_office_external_relation_scope,fk_office_external_relation_user,fk_office_external_relation_group_project",
+          "key": "uq_office_external_relation_subject",
+          "key_len": "8",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        },
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "rg",
+          "type": "const",
+          "possible_keys": "PRIMARY,uq_office_recipient_group_project_kind,uq_office_recipient_group_id_project,idx_office_recipient_group_scope,fk_office_recipient_group_scope",
+          "key": "PRIMARY",
+          "key_len": "8",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_delegation locked",
+      "sql": "SELECT status FROM office_admin_delegation WHERE user_id=%s AND capability=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "office_admin_delegation",
+          "type": "const",
+          "possible_keys": "uq_office_admin_delegation,idx_office_admin_delegation_scope",
+          "key": "uq_office_admin_delegation",
+          "key_len": "166",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "function": "fetch_professional_grant locked",
+      "sql": "SELECT status FROM office_professional_grant WHERE project_id=%s AND user_id=%s AND capability=%s FOR UPDATE",
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "office_professional_grant",
+          "type": "const",
+          "possible_keys": "uq_office_professional_grant,idx_office_professional_grant_scope,fk_office_professional_grant_user",
+          "key": "uq_office_professional_grant",
+          "key_len": "266",
+          "ref": "const,const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    }
+  ]
+}

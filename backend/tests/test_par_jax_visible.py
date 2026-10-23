@@ -31,7 +31,17 @@ def _escribir(raiz, ruta, contenido):
 def _jax_falso(raiz, *, domain=DOMAIN, lifecycle=F2D_LIFECYCLE_API_VERSION,
                runtime_status=RUNTIME_STATUS_API_VERSION_ESPERADA,
                structured_projection="f2-c.structured-projection.1",
-               structured_bytes="f2-d.structured-bytes.1"):
+               structured_bytes="f2-d.structured-bytes.1",
+               office_namespace="office-namespace.2"):
+    _escribir(raiz, "jax/__init__.py", "")
+    _escribir(raiz, "jax/memory/__init__.py", "")
+    _escribir(raiz, "jax/memory/project_authority.py", (
+        f"OFFICE_NAMESPACE_CONTRACT_VERSION = {office_namespace!r}\n"
+        "class ProjectAuthorityAdmin: pass\n"
+        "class NamespaceMutationAuthorizer: pass\n"
+        "class NamespaceMembershipMutationAuthorizer: pass\n"
+        "class NamespaceMembershipOperation: pass\n"
+        "class NamespaceMembershipExecution: pass\n"))
     _escribir(raiz, "policy/__init__.py", "")
     _escribir(raiz, "policy/governance/__init__.py", "")
     _escribir(raiz, "policy/governance/governed_renderer.py", (
@@ -64,7 +74,8 @@ def _jax_falso(raiz, *, domain=DOMAIN, lifecycle=F2D_LIFECYCLE_API_VERSION,
 @pytest.fixture
 def jax_en(monkeypatch, tmp_path):
     """Apunta JAX_REPO_PATH a un jax falso y aisla ``policy.*`` del resto de la suite."""
-    previos = {n: m for n, m in sys.modules.items() if n == "policy" or n.startswith("policy.")}
+    previos = {n: m for n, m in sys.modules.items()
+               if n == "policy" or n.startswith("policy.") or n == "jax" or n.startswith("jax.")}
     for n in previos:
         del sys.modules[n]
     ruta_previa = list(sys.path)
@@ -72,12 +83,12 @@ def jax_en(monkeypatch, tmp_path):
     def apuntar(**versiones):
         raiz = _jax_falso(tmp_path / "jax", **versiones)
         monkeypatch.setenv("JAX_REPO_PATH", str(raiz))
-        for n in [n for n in sys.modules if n == "policy" or n.startswith("policy.")]:
+        for n in [n for n in sys.modules if n == "policy" or n.startswith("policy.") or n == "jax" or n.startswith("jax.")]:
             del sys.modules[n]
         return raiz
 
     yield apuntar
-    for n in [n for n in sys.modules if n == "policy" or n.startswith("policy.")]:
+    for n in [n for n in sys.modules if n == "policy" or n.startswith("policy.") or n == "jax" or n.startswith("jax.")]:
         del sys.modules[n]
     sys.modules.update(previos)
     sys.path[:] = ruta_previa
@@ -174,6 +185,16 @@ def test_verificar_par_sin_jax_repo_path_falla(monkeypatch):
     monkeypatch.delenv("JAX_REPO_PATH", raising=False)
     with pytest.raises(ParJaxIncompatible):
         verificar_par_jax()
+
+
+def test_office_namespace_marker_incorrecto_falla_antes_de_cargar_clientes(jax_en, monkeypatch):
+    """A stale .1 contract stops at the pure pair gate, before F2 clients."""
+    import par_jax
+
+    jax_en(office_namespace="office-namespace.1")
+    monkeypatch.setattr(par_jax, "_prueba_de_humo", lambda: pytest.fail("loaded F2 client"))
+    with pytest.raises(par_jax.ParJaxIncompatible, match="office-namespace.2"):
+        par_jax.verificar_par_jax()
 
 
 @pytest.fixture

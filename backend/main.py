@@ -2,9 +2,13 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from auth.office_barrier import OfficeSurfaceBarrierMiddleware
+from auth.office_barrier import require_classic_stream_user
 
 # El freno primero (2026-09-16, frente B): sin JAX_KILL_SWITCH_PATH la
 # plataforma no sabe dónde escribir ni dónde mirar el kill switch, y una Mesa
@@ -105,7 +109,7 @@ LIMITE_DE_PROFUNDIDAD_JSON = limite_json.limite_configurado()
 
 from db.connection import get_pool, close_pool
 from http_client import get_http_client, close_http_client
-from db.migrations import run_migrations
+from db.runtime_contract import assert_runtime_db_contract
 from db.seed import run_seed
 from db import indices_forzados
 from jax_engine.state import engine_state
@@ -128,6 +132,10 @@ from api.chat import router as chat_router, _raiz_del_carril, _url_de_ollama
 from api.audit import router as audit_router
 from api.proyectos import router as proyectos_router
 from api.proyectos_documentos import router as proyectos_documentos_router
+from api.virtual_office.projects import router as virtual_office_projects_router
+from api.virtual_office.people import router as virtual_office_people_router
+from api.virtual_office.grants import router as virtual_office_grants_router
+from api.virtual_office.session import router as virtual_office_session_router
 from api.image import router as image_router
 from api.upload import router as upload_router
 from api.motors import router as motors_router
@@ -198,9 +206,9 @@ async def lifespan(app: FastAPI):
     # para que el timeout de la primera extracción real no incluya spawn +
     # import de pypdf. Best-effort (ver adjuntos/pdf_pool.py::precalentar_pool).
     await pdf_pool.precalentar_pool()
-    await get_pool()
+    pool = await get_pool()
+    await assert_runtime_db_contract(pool)
     await get_http_client()
-    await run_migrations()
     # F2-D restart inspection is observational: PREPARED remains uncommitted,
     # COMMITTING remains ambiguous, and no response is replayed automatically.
     from webchat_f2d.repository import OutputOutboxRepository
@@ -262,6 +270,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="JAX Platform", version=leer_version(), lifespan=lifespan)
 
+
+def _errores_de_validacion_sin_entrada(errors: list[dict]) -> list[dict]:
+    """Expose field metadata only; Pydantic's ``input`` can carry a secret."""
+    return [
+        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        for error in errors
+    ]
+
+
+def _es_login_json_vacio(request: Request, exc: RequestValidationError) -> bool:
+    """Only the historical parsed ``{}`` login request may receive hints."""
+    media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    return media_type == "application/json" and type(exc.body) is dict and not exc.body
+
+
+@app.exception_handler(RequestValidationError)
+async def _mfa_validation_error(request: Request, _exc: RequestValidationError):
+    """MFA bearer/OTP/password validation must never echo a submitted secret."""
+    # A completely empty Classic login has no submitted credential to protect.
+    # It historically returned FastAPI's normal list-shaped 422, which older
+    # clients use to render missing-field hints.  Keep that contract narrowly:
+    # as soon as there is any supplied body value, including a partial
+    # credential, retain the opaque no-store response.
+    errors = _exc.errors()
+    if (request.url.path == "/api/auth/login"
+            and errors
+            and all(error.get("type") == "missing" for error in errors)
+            and _es_login_json_vacio(request, _exc)):
+        return JSONResponse(
+            status_code=422, content={"detail": _errores_de_validacion_sin_entrada(errors)},
+            headers={"Cache-Control": "no-store"},
+        )
+    if request.url.path.startswith("/api/auth/"):
+        return JSONResponse(
+            status_code=422, content={"detail": "mfa_invalid_request" if request.url.path.startswith("/api/auth/mfa/") else "auth_invalid_request"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(status_code=422, content={"detail": _errores_de_validacion_sin_entrada(errors)})
+
 # Frente C (2026-09-16): un ajuste de admin ilegible es un 503 con código, en
 # cualquier endpoint que lo lea -- nunca un default silencioso (ajustes.py).
 app.add_exception_handler(ajustes.AjusteIlegible, ajustes.respuesta_de_ajuste_ilegible)
@@ -282,6 +329,45 @@ app.add_middleware(
 # (adjuntos/limite_de_subidas.py). Se agrega ANTES que CORS a propósito: en
 # Starlette el último agregado es el de afuera, así que CORS envuelve al 429.
 app.add_middleware(limite_de_subidas.LimiteDeSubidas)
+# Added after upload limiting: Starlette makes the last middleware outermost.
+# CORS remains outermost below, while a valid restricted bearer is stopped
+# before limiter/body/kill/quota code runs.
+app.add_middleware(OfficeSurfaceBarrierMiddleware)
+
+
+class _OfficeNoStoreMiddleware:
+    """Office and MFA capabilities and failures must never be cacheable.
+
+    This outer boundary covers dependency, barrier, validation and route
+    errors alike.  Individual handlers also declare no-store where a caller
+    uses them outside HTTP, but the HTTP contract is one finite namespace.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or not (
+            scope["path"].startswith("/api/auth/")
+            or scope["path"].startswith("/api/virtual-office/")
+        )):
+            await self.app(scope, receive, send)
+            return
+
+        async def no_store(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", ()))
+                if not any(key.lower() == b"cache-control" for key, _ in headers):
+                    headers.append((b"cache-control", b"no-store"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, no_store)
+
+
+# Added after the Office barrier: the last registered middleware is outermost,
+# so even barrier/dependency/validation denials cannot leak a cacheable MFA
+# bearer response.
+app.add_middleware(_OfficeNoStoreMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -324,6 +410,10 @@ ROUTERS = (
     pipelines_ocultos_router,
     proyectos_router,
     proyectos_documentos_router,
+    virtual_office_projects_router,
+    virtual_office_people_router,
+    virtual_office_grants_router,
+    virtual_office_session_router,
 )
 for _router in ROUTERS:
     app.include_router(_router)
@@ -344,13 +434,24 @@ for _router in ROUTERS:
 
 
 async def _ws_connect_and_subscribe(
-    user_id: str, tenant_id: str, role: str, websocket: WebSocket
+    user_id: str, tenant_id: str, role: str, websocket: WebSocket, session=None
 ) -> str:
     async with lifecycle_lock:
         connection_id = await ws_hub.connect(user_id, websocket)
         engine_state.register_user(user_id, tenant_id, role)
 
         async def event_callback(event: JAXEvent):
+            if session is not None:
+                try:
+                    fresh = await reverificar_sesion(session)
+                    require_classic_stream_user(fresh)
+                except HTTPException:
+                    await _close_classic_user_channels(user_id)
+                    return
+                except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before any queued WebSocket event is disclosed
+                    logger.exception("Fallo al re-verificar la sesión del WebSocket")
+                    await _close_classic_user_channels(user_id)
+                    return
             await ws_hub.send_to_user(user_id, event)
 
         await event_bus.subscribe(tenant_id, user_id, event_callback)
@@ -417,6 +518,10 @@ async def websocket_endpoint(
         # arriba) cae en el `except Exception` -> 4001 CON log (code review
         # de esta ronda).
         sesion = await verificar_sesion(payload, "access")
+        # WebSocket bypasses HTTP middleware.  It is a classic event channel,
+        # so a valid Office-only identity must be stopped before auth_ok,
+        # hub registration, presence, or event subscription.
+        require_classic_stream_user(sesion)
 
     except WebSocketDisconnect:
         return
@@ -443,9 +548,7 @@ async def websocket_endpoint(
     tenant_id = sesion.tenant_id
     role = sesion.role  # de la base, no del token
 
-    await websocket.send_json({"type": "auth_ok"})
-
-    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket)
+    connection_id = await _ws_connect_and_subscribe(user_id, tenant_id, role, websocket, sesion)
 
     heartbeat_task = None
     try:
@@ -454,7 +557,8 @@ async def websocket_endpoint(
         # conexión. Ya registrada, se verifica de nuevo: cualquier corte
         # posterior la encuentra, y uno anterior se ve acá.
         try:
-            await reverificar_sesion(sesion)
+            fresh = await reverificar_sesion(sesion)
+            require_classic_stream_user(fresh)
         except HTTPException:
             await _cerrar_4001(websocket)
             return
@@ -463,7 +567,11 @@ async def websocket_endpoint(
             await _cerrar_4001(websocket)
             return
 
-        heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id))
+        # auth_ok is emitted only after the post-registration revalidation;
+        # otherwise a class change in the registration race could receive a
+        # successful handshake before the close frame.
+        await websocket.send_json({"type": "auth_ok"})
+        heartbeat_task = asyncio.create_task(_heartbeat(user_id, tenant_id, sesion))
         while True:
             data = await websocket.receive_json()
             if data.get("type") == "ping":
@@ -483,9 +591,30 @@ async def _cerrar_4001(websocket: WebSocket):
         pass
 
 
-async def _heartbeat(user_id: str, tenant_id: str):
+async def _close_classic_user_channels(user_id: str) -> None:
+    """Close every classic delivery channel after current authority fails."""
+    from api.events import close_user_streams
+
+    await ws_hub.close_user(user_id, code=4001)
+    await close_user_streams(user_id)
+
+
+_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def _heartbeat(user_id: str, tenant_id: str, session):
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            fresh = await reverificar_sesion(session)
+            require_classic_stream_user(fresh)
+        except HTTPException:
+            await _close_classic_user_channels(user_id)
+            return
+        except Exception:  # fail-soft: infrastructure failure while rechecking closes every classic channel before the next heartbeat can disclose liveness
+            logger.exception("Fallo al re-verificar la sesión antes del heartbeat WebSocket")
+            await _close_classic_user_channels(user_id)
+            return
         event = JAXEvent(
             event_type="heartbeat",
             tenant_id=tenant_id,

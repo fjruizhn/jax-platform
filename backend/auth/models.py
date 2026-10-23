@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 
 
 class LoginRequest(BaseModel):
@@ -18,6 +18,15 @@ class LoginResponse(BaseModel):
     role: str
     email: str
     must_change_password: bool = False
+    account_class: str = "INTERNAL"
+
+
+class MFALoginChallengeResponse(BaseModel):
+    """A password-success response which intentionally carries no session."""
+    mfa_required: Literal[True] = True
+    challenge_token: str
+    expires_at: str
+    token_type: Literal["mfa_challenge"] = "mfa_challenge"
 
 
 class RefreshResponse(BaseModel):
@@ -31,6 +40,7 @@ class MeResponse(BaseModel):
     role: str
     email: str
     must_change_password: bool = False
+    account_class: str = "INTERNAL"
 
 
 class AuthUser(BaseModel):
@@ -40,3 +50,11 @@ class AuthUser(BaseModel):
     email: Optional[str] = None
     token_version: int = 0
     must_change_password: bool = False
+    # Only verificar_sesion may mint a known class from jax_users. A direct
+    # construction is unclassified and cannot pass the classic stream guard.
+    account_class: Literal["INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"] | None = None
+    # These claims are advisory transport references only.  Office authority
+    # reloads the event and versions from the database before allowing work.
+    mfa_proof_event_id: int | None = None
+    mfa_version: int = 0
+    mfa_at: int | None = None

@@ -281,6 +281,7 @@ async def test_close_user_de_un_usuario_sin_conexiones_no_hace_nada():
 class _Usuario:
     def __init__(self, user_id):
         self.user_id, self.tenant_id = user_id, "1"
+        self.account_class = "INTERNAL"
 
 
 async def test_close_user_streams_termina_el_stream_sse_del_usuario_y_no_el_de_otro(monkeypatch):
@@ -427,13 +428,9 @@ def test_ws_registrado_despues_del_corte_se_cierra_con_4001(client, usuarios, mo
     monkeypatch.setattr(main, "_ws_connect_and_subscribe", corte_en_el_hueco)
     with client.websocket_connect(f"/ws/{o}") as sock:
         sock.send_json({"type": "auth", "token": token_para(o)})
-        assert sock.receive_json() == {"type": "auth_ok"}
-        sock.send_json({"type": "ping"})
         mensaje = sock.receive()
-        while mensaje["type"] == "websocket.send" and '"pong"' not in mensaje.get("text", ""):
-            mensaje = sock.receive()
         assert (mensaje["type"], mensaje.get("code")) == ("websocket.close", 4001), (
-            "la conexión sobrevivió al corte: respondió el ping")
+            "un corte en la carrera no puede recibir auth_ok")
 
 
 def test_sse_registrado_despues_del_corte_termina_el_stream(client, usuarios, monkeypatch):

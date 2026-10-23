@@ -54,6 +54,7 @@ pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.20.0
 PyMySQL==1.2.0
+pyotp==2.10.0
 pypdf==6.19.0
 pytest==9.1.1
 pytest-asyncio==1.4.0

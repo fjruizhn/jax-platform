@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useJaxStore, SESION_VACIA } from '../store/useJaxStore'
+import { useJaxStore } from '../store/useJaxStore'
 import { codigoDe } from './errores'
 
 // Código que manda el backend (auth/middleware.py, SESION_INVALIDA) cuando
@@ -17,7 +17,19 @@ const SESION_INVALIDA = 'sesion_invalida'
 // sin haber tenido nunca una sesión; una contraseña equivocada (/auth/login
 // -> 401) hacía lo mismo y sumaba una segunda caja roja encima del error de
 // credenciales. Estos tres nunca deben reintentar ni tocar el store acá.
-const ENDPOINTS_DE_AUTH_SIN_REINTENTO = ['/auth/login', '/auth/refresh', '/auth/logout']
+// Las capacidades públicas de MFA no son sesiones. Un 401 acá significa que
+// la capacidad fue consumida, venció o no corresponde: intentar refresh
+// restauraría una sesión vieja y podría reintentar contra una autoridad ajena.
+const ENDPOINTS_DE_AUTH_SIN_REINTENTO = [
+  '/auth/login', '/auth/refresh', '/auth/logout',
+  '/auth/mfa/login/verify', '/auth/mfa/recover',
+  '/auth/mfa/enrollment/start',
+  '/auth/mfa/enrollment/confirm', '/auth/mfa/step-up',
+  // Mutaciones sensibles: una respuesta 401/no disponible no permite saber
+  // si el servidor consumió OTP, contraseña o capacidad. Nunca se repiten.
+  '/auth/mfa/reenrollment/start', '/auth/mfa/recovery-codes/regenerate',
+  '/auth/mfa/disable', '/auth/mfa/step-up/verify',
+]
 
 // Minor 5 del review final de la etapa 4 (2026-09-15, Ruling U27): el cambio de
 // la propia contraseña sube token_version. Un 401 de un poll que salió con el
@@ -93,6 +105,7 @@ api.interceptors.response.use(
       if (saliendo || epocaVieja) return Promise.reject(err)
     }
     if (err.response?.status === 401 && !err.config?._retried && !esAuthSinReintento) {
+      const epochDelRefresh = err.config?._epoch ?? useJaxStore.getState()._sessionEpoch
       const tokenNuevo = await tokenTrasCambioDePassword(err.config)
       if (tokenNuevo) {
         err.config._retried = true
@@ -101,11 +114,16 @@ api.interceptors.response.use(
       }
       try {
         const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true })
+        // Mientras refresh esperaba, otra identidad pudo establecerse en la
+        // misma pestaña. Ni su token A ni un reintento con él pertenecen a B.
+        if (useJaxStore.getState()._sessionEpoch !== epochDelRefresh) return Promise.reject(err)
         useJaxStore.setState({ token: data.access_token })
         err.config._retried = true
         err.config.headers.Authorization = `Bearer ${data.access_token}`
         return axios(err.config)
       } catch (refreshErr) {
+        // Tampoco un refresh viejo puede borrar/avisar la sesión posterior.
+        if (useJaxStore.getState()._sessionEpoch !== epochDelRefresh) return Promise.reject(err)
         // Nunca se borra la sesión en silencio: se deja el motivo ANTES de
         // borrar token/user. 'sesion_invalida' sólo cuando el backend lo dijo
         // explícito -- en el 401 original o en el refresh fallido -- porque
@@ -122,7 +140,11 @@ api.interceptors.response.use(
               : refreshErr?.response?.status >= 500
                 ? 'error_del_servidor'
                 : 'sesion_expirada'
-        useJaxStore.setState({ ...SESION_VACIA, avisoSesion })
+        const cerrarSesion = useJaxStore.getState().cerrarSesionPorRefresh
+        // Compatibilidad con los consumidores aislados del store durante la
+        // migración; el store real siempre expone el reset atómico.
+        if (typeof cerrarSesion === 'function') cerrarSesion(avisoSesion)
+        else useJaxStore.setState({ token: null, user: null, proyectoActivo: null, avisoSesion, mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null })
       }
     }
     return Promise.reject(err)

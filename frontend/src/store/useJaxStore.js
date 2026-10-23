@@ -157,6 +157,39 @@ export const useJaxStore = create((set, get) => {
   // su trabajo y sólo escriben si sigue siendo el mismo al resolver.
   const bumpSessionEpoch = () => set((s) => ({ _sessionEpoch: s._sessionEpoch + 1 }))
   const isSameSession = (epoch) => get()._sessionEpoch === epoch && !!get().token
+  // Todo lo que se deriva de la cuenta actual se reemplaza junto con la
+  // identidad. No alcanza con borrar token/user: React no recarga la pestaña
+  // al entrar otra persona y, sin este reset, el historial o las pipelines de
+  // A quedan visibles a B hasta que una consulta posterior los reemplace.
+  const estadoDeCuentaVacia = (extra = {}) => {
+    _revocarObjectURLsDeAdjuntos(get().messages)
+    return {
+      ...SESION_VACIA,
+      facets: DEFAULT_FACETS,
+      activeFacet: 'jax_local',
+      activePipelines: {},
+      historial: { pipelines: [], hasMore: false, cargando: false, error: false },
+      messages: [],
+      toasts: [],
+      wsStatus: 'disconnected',
+      lasManos: false,
+      killSwitchActive: false,
+      generatingImage: false,
+      _pipelineCompletedShown: new Set(),
+      avisoSesion: null,
+      cambioDePasswordEnCurso: null,
+      mfaRecoveryCodes: null,
+      mfaRecoveryCodesOwnerId: null,
+      ...extra,
+    }
+  }
+  const establecerCuenta = (data, extra = {}, user = data) => set((s) => ({
+    ...estadoDeCuentaVacia(extra),
+    token: data.access_token,
+    user,
+    sessionRestoring: false,
+    _sessionEpoch: s._sessionEpoch + 1,
+  }))
 
   return {
   token: null,
@@ -197,28 +230,65 @@ export const useJaxStore = create((set, get) => {
   // POST), los botones de salir quedan ocupados, y api/client.js no convierte
   // en aviso un 401 que llegue mientras tanto.
   saliendo: null,
+  // Códigos recién emitidos sobreviven sólo al corte de la sesión que los
+  // produjo, hasta que la persona los reconoce. Nunca se persisten.
+  mfaRecoveryCodes: null,
+  mfaRecoveryCodesOwnerId: null,
 
   restoreSession: async () => {
+    const epoch = get()._sessionEpoch
     try {
       const { data: refreshData } = await api.post('/auth/refresh')
+      if (get()._sessionEpoch !== epoch) return
       const { data: user } = await api.get('/auth/me', {
         headers: { Authorization: `Bearer ${refreshData.access_token}` },
       })
-      set({ token: refreshData.access_token, user })
-      bumpSessionEpoch()
+      // Una restauración iniciada con A no puede instalar su cookie si B ya
+      // entró durante los dos awaits.
+      if (get()._sessionEpoch !== epoch) return
+      establecerCuenta({ access_token: refreshData.access_token }, {}, user)
     } catch {
-      set({ ...SESION_VACIA })
-      bumpSessionEpoch()
+      if (get()._sessionEpoch !== epoch) return
+      set((s) => ({ ...estadoDeCuentaVacia(), sessionRestoring: false, _sessionEpoch: s._sessionEpoch + 1 }))
     } finally {
-      set({ sessionRestoring: false })
+      if (get()._sessionEpoch === epoch) set({ sessionRestoring: false })
     }
   },
 
+  // Una respuesta de desafío MFA no establece sesión. La UI conserva esa
+  // capacidad opaca sólo en memoria del componente hasta verificar el OTP.
+  establecerSesion: (data) => {
+    if (!data?.access_token) return false
+    establecerCuenta(data)
+    return true
+  },
+  actualizarTokenMfa: (access_token) => {
+    if (typeof access_token === 'string' && get().token) set({ token: access_token })
+  },
+  mostrarCodigosMfa: (codes) => set({ mfaRecoveryCodes: Array.isArray(codes) ? codes : null, mfaRecoveryCodesOwnerId: get().user?.user_id ?? null }),
+  limpiarCodigosMfa: () => set({ mfaRecoveryCodes: null, mfaRecoveryCodesOwnerId: null }),
+
   login: async (email, password) => {
+    const epoch = get()._sessionEpoch
     const { data } = await api.post('/auth/login', { email, password })
-    set({ token: data.access_token, user: data })
-    bumpSessionEpoch()
+    // Una respuesta vieja no puede iniciar sesión después de logout, refresh
+    // o el ingreso de otra cuenta en la misma pestaña.
+    if (!data?.mfa_required && get()._sessionEpoch === epoch) get().establecerSesion(data)
     return data
+  },
+
+  // Acciones MFA que revocan el token ya hicieron el corte en el servidor.
+  // No llamar /logout aquí evita un segundo bump/resultado incierto.
+  limpiarSesionRevocada: () => {
+    // Los códigos pertenecen a este corte concreto y se conservan sólo para
+    // su acuse. Cualquier establecimiento/restauración posterior los borra.
+    const codes = get().mfaRecoveryCodes
+    const owner = get().mfaRecoveryCodesOwnerId
+    set((s) => ({ ...estadoDeCuentaVacia({ mfaRecoveryCodes: codes, mfaRecoveryCodesOwnerId: owner }), _sessionEpoch: s._sessionEpoch + 1 }))
+  },
+
+  cerrarSesionPorRefresh: (avisoSesion) => {
+    set((s) => ({ ...estadoDeCuentaVacia({ avisoSesion }), sessionRestoring: false, _sessionEpoch: s._sessionEpoch + 1 }))
   },
 
   // Login.jsx la llama tras un login exitoso -- separada de login() porque
@@ -247,18 +317,7 @@ export const useJaxStore = create((set, get) => {
       } catch {
         // sin sesión viva en el servidor o sin red: igual se sale localmente
       }
-      _revocarObjectURLsDeAdjuntos(get().messages)
-      set({
-        ...SESION_VACIA, messages: [], _pipelineCompletedShown: new Set(),
-        avisoSesion: null, saliendo: null,
-        // Bloqueante 1 (revisión final, 2026-09-18): faltaba. Sin esto, otro
-        // usuario que entra en la MISMA pestaña (no hay location.reload en el
-        // camino de login) y va a /historial veía nombres, estados, costos y
-        // causas del usuario anterior hasta que cargarHistorial() reemplazara
-        // la lista -- y si esa petición fallaba, quedaban ahí para siempre.
-        historial: { pipelines: [], hasMore: false, cargando: false, error: false },
-      })
-      bumpSessionEpoch()
+      set((s) => ({ ...estadoDeCuentaVacia({ saliendo: null }), _sessionEpoch: s._sessionEpoch + 1 }))
     })()
     set({ saliendo: promesa })
     return promesa

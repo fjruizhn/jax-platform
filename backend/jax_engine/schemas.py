@@ -33,7 +33,7 @@ FacetStatus = Literal["idle", "thinking", "error", "offline"]
 # no se disfrazan de "failed".
 PipelineStatus = Literal[
     "pending", "running", "waiting_gate", "completed", "failed", "disputed",
-    "discarded", "hidden",
+    "discarded", "hidden", "outcome_unknown",
 ]
 
 

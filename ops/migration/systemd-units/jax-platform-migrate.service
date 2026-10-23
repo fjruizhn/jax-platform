@@ -1,0 +1,14 @@
+[Unit]
+Description=JAX Platform schema migration (one-shot)
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+Before=jax-platform.service
+
+[Service]
+Type=oneshot
+# The oneshot receives only its minimal migration credential and runner paths.
+User=jaxmigrate
+WorkingDirectory=/srv/jax-prod/jax-platform/backend
+EnvironmentFile=/etc/jax/migrate.env
+ExecStart=/srv/jax-prod/jax-platform/backend/.venv/bin/python -m db.migrate

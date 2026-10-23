@@ -167,6 +167,42 @@ def test_existente_por_sha(e):
     assert _pool_call(e.client, repo.existente_por_sha, project_id=p, sha256="a" * 64) == {"id": d, "oculto": True}
 
 
+def test_office_namespace_rows_are_invisible_and_never_claimed_by_classic_repository(e):
+    """A legacy membership or queued row cannot lend the classic worker Office data."""
+    project = e.proyecto()
+    document = e.insertar(project, "c" * 64, "office.pdf")
+    e.client.portal.call(
+        sql,
+        "UPDATE jax_project_scope SET authorization_namespace='OFFICE_CONFIDENTIAL' WHERE project_id=%s",
+        (project,),
+    )
+    assert _pool_call(e.client, repo.listar, project_id=project, ocultos=False, antes_de=None, limite=50) == []
+    assert _pool_call(e.client, repo.estado_documento, project_id=project, documento_id=document) is None
+    assert _pool_call(e.client, repo.existente_por_sha, project_id=project, sha256="c" * 64) is None
+    queued = _pool_call(e.client, repo.tomar_en_cola, limite=1000)
+    assert document not in {row["id"] for row in queued}
+    assert _pool_call(e.client, repo.marcar_despachadas, ids=[document], job_id="classic-must-not-claim", owner=e.owner(project)) == []
+
+
+def test_office_rows_are_absent_to_classic_hide_restore_and_requeue(e):
+    project = e.proyecto()
+    visible = e.insertar(project, "9" * 64, "visible.pdf")
+    hidden = e.insertar(project, "a" * 64, "hidden.pdf")
+    assert _pool_call(e.client, repo.ocultar, project_id=project, documento_id=hidden, user_id=e.usuario)
+    e.client.portal.call(sql, "UPDATE project_documents SET estado='error', carpeta_procesado=NULL WHERE id IN (%s,%s)",
+                         (visible, hidden))
+    e.client.portal.call(sql, "UPDATE jax_project_scope SET authorization_namespace='OFFICE_CONFIDENTIAL' WHERE project_id=%s", (project,))
+    original_visible, original_hidden = e.fila(visible), e.fila(hidden)
+    assert _pool_call(e.client, repo.ocultar, project_id=project, documento_id=visible, user_id=e.usuario) is False
+    assert _pool_call(e.client, repo.restaurar, project_id=project, documento_id=hidden) is False
+    assert e.fila(visible) == original_visible and e.fila(hidden) == original_hidden
+    kwargs = dict(project_id=project, ruta_entrada="entrada/new.pdf", nombre_original="new.pdf",
+                  subido_por=e.usuario, roles_escritura=("OWNER", "CONTRIBUTOR", "REVIEWER"))
+    assert _pool_call(e.client, repo.reencolar_atascado, sha256="9" * 64, **kwargs) is None
+    assert _pool_call(e.client, repo.reencolar_atascado, sha256="a" * 64, **kwargs) is None
+    assert e.fila(visible) == original_visible and e.fila(hidden) == original_hidden
+
+
 def test_listar_excluye_ocultos_y_pagina(e):
     p = e.proyecto()
     ids = [e.insertar(p, f"{i:064x}", f"{i}.pdf") for i in range(3)]

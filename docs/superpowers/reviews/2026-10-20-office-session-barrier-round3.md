@@ -1,0 +1,5 @@
+# Office registration race · round3
+
+2026-10-20 · Codex · HISTORIA. Sol RECHAZADO7f8f490867a3214c718be5a1623e0480f3a314df found the same sibling invariant at the remaining post-registration recheck. This checkpoint changes both post-registration exception branches to the same all-channel closer. Root read the entire events.py: callback, post-registration, pre-yield authorization/infrastructure failures now use the global closer. Cancelled request before generator creation still unregisters itself and propagates cancellation.
+
+New realDB regression mutates canonical class DURING second SSE registration (first SSE already open, new callback registered), plus infrastructure failure variant. Both include an established WS sibling; both SSE generators terminate, WS closes4001, no event is disclosed, counters/queues/EventBus clean after final disconnect. Root reran the recorded broadmatrix:225passed133warnings4.61s on disposable33991. No Office routes, identities, services or production enabled. Exact-SHA independent scoped review remains required.

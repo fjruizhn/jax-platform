@@ -1,21 +1,22 @@
 import asyncio
 import html as html_lib
+import os
 import uuid
 import logging
 import math
 import secrets
-import os
 import time
-from datetime import timedelta
+from datetime import timedelta, timezone
 from tiempo import utc_ahora
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, Cookie, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 import ajustes
-from auth.models import AuthUser, LoginRequest, LoginResponse, MeResponse, RefreshResponse
-from auth.jwt import create_access_token, create_refresh_token, decode_token
-from auth.middleware import get_current_user_con_cambio_pendiente, verificar_sesion
+from auth.models import AuthUser, LoginRequest, LoginResponse, MFALoginChallengeResponse, MeResponse, RefreshResponse
+from auth.jwt import (create_access_token, create_refresh_token,
+                      create_refresh_token_preserving_window, decode_token)
+from auth.middleware import get_current_user, get_current_user_con_cambio_pendiente, verificar_sesion
 from auth import rate_limit
 from auth.password_rules import problema_de_password
 from db.connection import get_pool
@@ -25,6 +26,21 @@ import smtp_config
 import user_audit
 from auth.conexiones import _cortar_conexiones
 from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from virtual_office.mfa import (
+    MFAConfig, MFADenied, issue_login_challenge_after_password_in_cursor,
+    verify_and_consume_totp_in_cursor, issue_step_up_challenge_in_cursor,
+    start_first_enrollment_after_password_in_cursor, confirm_enrollment_in_cursor,
+    consume_recovery_code_in_cursor, start_recovery_enrollment_in_cursor,
+    start_reenrollment_after_password_in_cursor,
+    pending_enrollment_is_recovery_origin_in_cursor,
+    regenerate_recovery_codes_after_password_in_cursor, disable_mfa_after_password_in_cursor,
+    reset_mfa_by_office_root_in_cursor,
+    load_mfa_config_from_environment,
+    lock_office_identity_pair_in_cursor,
+)
+from virtual_office.authority import authorize_office_in_cursor
+from virtual_office.audit import record_authorization_event
+from virtual_office.capabilities import OfficeOperation
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +94,17 @@ def _cuenta_bloqueada(locked_until, ahora) -> HTTPException:
 
 
 def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, token_version: int,
-                   vida_segundos: int) -> str:
+                   vida_segundos: int, *, mfa_proof_event_id: int | None = None,
+                   mfa_version: int | None = None, mfa_at: int | None = None) -> str:
     """Emite access + refresh con la versión vigente; el refresh va en la
     cookie HttpOnly y vive lo que diga session_timeout_min (frente C). Lo
     usan el login y el cambio de contraseña propio. `vida_segundos` se lee
     ANTES de escribir nada: un ajuste ilegible no puede dejar la versión
     subida y la sesión sin tokens."""
-    refresh_token = create_refresh_token(user_id, tenant_id, role, token_version, vida_segundos=vida_segundos)
+    refresh_token = create_refresh_token(
+        user_id, tenant_id, role, token_version, vida_segundos=vida_segundos,
+        mfa_proof_event_id=mfa_proof_event_id, mfa_version=mfa_version, mfa_at=mfa_at,
+    )
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
@@ -92,10 +112,20 @@ def _emitir_tokens(response: Response, user_id: str, tenant_id: str, role: str, 
         max_age=vida_segundos,
         samesite="lax",
     )
-    return create_access_token(user_id, tenant_id, role, token_version)
+    return create_access_token(user_id, tenant_id, role, token_version,
+                               mfa_proof_event_id=mfa_proof_event_id,
+                               mfa_version=mfa_version, mfa_at=mfa_at)
 
 
-@router.post("/login", response_model=LoginResponse)
+_mfa_config = load_mfa_config_from_environment
+
+
+def _mfa_unavailable() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="office_mfa_unavailable",
+                         headers={"Cache-Control": "no-store"})
+
+
+@router.post("/login", response_model=LoginResponse | MFALoginChallengeResponse)
 async def login(req: LoginRequest, request: Request, response: Response):
     # Antes de la DB y del bcrypt: sin límite, cada intento (exista o no el
     # email) le cuesta ~155 ms de CPU al servidor. Ver auth/rate_limit.py.
@@ -107,7 +137,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT user_id, tenant_id, email, password_hash, role, status, "
-                "failed_attempts, locked_until, token_version, must_change_password "
+                "failed_attempts, locked_until, token_version, must_change_password, account_class "
                 "FROM jax_users WHERE email = %s",
                 (req.email,),
             )
@@ -120,7 +150,9 @@ async def login(req: LoginRequest, request: Request, response: Response):
         raise _credenciales_invalidas()
 
     (user_id, tenant_id, email, password_hash, role, user_status, failed_attempts, locked_until, token_version,
-     must_change_password) = row
+     must_change_password, account_class) = row
+    if account_class not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+        raise _credenciales_invalidas()
     now = utc_ahora()
     bloqueada = bool(locked_until and locked_until > now)
 
@@ -143,34 +175,56 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     )
         raise _credenciales_invalidas()
 
-    # Contraseña correcta: quien ya probó ser el dueño sí ve el estado.
-    if user_status != "active":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
-
-    if bloqueada:
-        raise _cuenta_bloqueada(locked_until, now)
-
-    # Sesión única (2026-09-15, Task 3b, Ruling F2): el login EXITOSO -- y
-    # sólo él; ningún camino de error de arriba escribe token_version -- sube
-    # la versión, así que toda sesión anterior de este usuario muere. Sube y
-    # RELEE en la misma transacción: la fila queda bloqueada hasta el commit,
-    # así que con dos logins simultáneos el segundo UPDATE espera, incrementa
-    # sobre el primero y cada uno emite la versión que él escribió (gana el
-    # último). Nunca "versión leída arriba + 1": esa lectura no bloquea, y dos
-    # logins emitirían la misma versión vieja -> ninguna sesión viva.
-    # `status = 'active'` en el WHERE: si en la ventana del bcrypt un admin lo
-    # desactivó o lo dio de baja, 0 filas -> la misma respuesta que un inactivo.
-    # Bloqueos: una sola fila de jax_users, por PK, sin nada tomado antes ni
-    # pedido después (el mismo argumento que Mi cuenta: sin ciclo con las
-    # escrituras de admin). READ COMMITTED (U33). bcrypt quedó arriba, fuera.
-    # Fix ronda 1 (2026-09-15, F1): `password_hash = %s` ata el bump al hash
-    # que verificó el bcrypt. Si en esa ventana confirmó un cambio de
-    # contraseña (fijar por admin, reset, Mi cuenta), la contraseña probada ya
-    # no es la vigente: 0 filas, sin tokens, sin cookie, sin corte -- si no, el
-    # bump se apilaba sobre la versión nueva y emitía tokens VÁLIDOS con la
-    # marca vieja. (Revocar sesiones y desbloquear no cambian el hash: un login
-    # que llega después de ellos sigue ganando, a propósito.)
+    # A factor changes the password-success contract: it creates only a
+    # short-lived opaque capability.  In particular no cookie or JWT is set
+    # before the TOTP verifier atomically produces its durable receipt.  The
+    # factor classification and ordinary Classic session cut deliberately
+    # share this one user/credential-locked transaction: confirmation cannot
+    # activate a factor between a no-factor decision and its token issuance.
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        await cur.execute(
+            "SELECT password_hash,status,token_version,mfa_version,locked_until,tenant_id,email,role,"
+            "must_change_password,account_class FROM jax_users WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        current = await cur.fetchone()
+        if current is None or current[0] != password_hash:
+            raise _credenciales_invalidas()
+        if current[1] != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
+        current_now = utc_ahora()
+        if current[4] is not None and current[4] > current_now:
+            raise _cuenta_bloqueada(current[4], current_now)
+        if current[9] not in {"INTERNAL", "OFFICE_INTERNAL", "EXTERNAL_CLIENT"}:
+            raise _credenciales_invalidas()
+        await cur.execute("SELECT state,pending_enrollment_id FROM office_mfa_credential WHERE user_id=%s FOR UPDATE", (user_id,))
+        credential = await cur.fetchone()
+        # Recovery is enrollment-only.  A first-enrollment PENDING (and a
+        # deliberately DISABLED factor) keeps the historic classic-login
+        # contract; a PENDING credential with current recovery lineage does
+        # not.
+        recovery_pending = credential is not None and credential[0] == "PENDING" and await pending_enrollment_is_recovery_origin_in_cursor(
+            cur, user=int(user_id), current_mfa_version=int(current[3]), pending_enrollment_id=credential[1],
+        )
+        if credential is not None and (credential[0] == "RECOVERY_REQUIRED" or recovery_pending):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="mfa_recovery_required")
+        if credential is not None and credential[0] == "ACTIVE":
+            config = _mfa_config()
+            if config is None:
+                raise _mfa_unavailable()
+            challenge = await issue_login_challenge_after_password_in_cursor(
+                cur, preauthenticated_user_id=int(user_id), config=config,
+            )
+            if isinstance(challenge, MFADenied):
+                raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=challenge.code)
+            response.headers["Cache-Control"] = "no-store"
+            return MFALoginChallengeResponse(
+                challenge_token=challenge.token,
+                expires_at=challenge.expires_at.isoformat(),
+            )
+        # Sesión única (2026-09-15, Task 3b, Ruling F2): the no-factor
+        # classification above and this increment are one atomic decision.
+        # Never mint from a stale pre-bcrypt read.
         await cur.execute(
             "UPDATE jax_users SET failed_attempts = 0, locked_until = NULL, last_login = NOW(), "
             "token_version = token_version + 1 "
@@ -186,6 +240,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise _credenciales_invalidas()
         await cur.execute("SELECT token_version FROM jax_users WHERE user_id = %s", (user_id,))
         (token_version,) = await cur.fetchone()
+        tenant_id, email, role, must_change_password, account_class = current[5:]
 
     # Ruling U9: después del commit, fail-soft. Cierra el WS/SSE de la sesión
     # vieja ya mismo (si no, seguirían abiertos hasta su próxima verificación).
@@ -199,7 +254,385 @@ async def login(req: LoginRequest, request: Request, response: Response):
         role=role,
         email=email,
         must_change_password=bool(must_change_password),
+        account_class=account_class,
     )
+
+
+class _MFARequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
+
+
+class MFALoginVerifyRequest(_MFARequest):
+    challenge_token: StrictStr = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+    otp: StrictStr = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+class MFAStepUpVerifyRequest(_MFARequest):
+    challenge_token: StrictStr = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+    otp: StrictStr = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+class MFAPasswordRequest(_MFARequest):
+    password: StrictStr = Field(min_length=1, max_length=1024)
+
+
+class MFAEnrollmentConfirmRequest(_MFARequest):
+    enrollment_token: StrictStr = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+    otp: StrictStr = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+class MFARecoveryRequest(_MFARequest):
+    recovery_code: StrictStr = Field(min_length=32, max_length=32, pattern=r"^[A-Za-z0-9_-]{32}$")
+
+
+class MFARecoveryEnrollmentRequest(_MFARequest):
+    recovery_token: StrictStr = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+
+
+class MFARootResetRequest(_MFARequest):
+    target_user_id: int = Field(gt=0, strict=True)
+
+
+async def _verify_current_password_in_cursor(cur, user_id: int, password: str) -> bool:
+    await cur.execute("SELECT password_hash,status FROM jax_users WHERE user_id=%s FOR UPDATE", (user_id,))
+    row = await cur.fetchone()
+    return bool(row and row[1] == "active" and await verify_password(password, row[0]))
+
+
+def _mfa_denial(denial: MFADenied) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=denial.code,
+                         headers={"Cache-Control": "no-store"})
+
+
+def _check_mfa_password_rate(request: Request, user: AuthUser) -> None:
+    """Use the canonical bounded login limiter before any MFA bcrypt check."""
+    rate_limit.check_login_rate(request, user.email or "")
+
+
+@router.post("/mfa/login/verify", response_model=LoginResponse)
+async def verify_mfa_login(req: MFALoginVerifyRequest, response: Response):
+    """Consume a password-bound LOGIN capability and only then mint a session."""
+    config = _mfa_config()
+    if config is None:
+        raise _mfa_unavailable()
+    vida = await vida_de_sesion_segundos()
+    denial: MFADenied | None = None
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        receipt = await verify_and_consume_totp_in_cursor(
+            cur, challenge_token=req.challenge_token, otp=req.otp,
+            server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(receipt, MFADenied):
+            # A denial commits its truthful attempt state; it never gets a
+            # cookie or a server-minted proof substitute.
+            denial = receipt
+        elif receipt.purpose != "LOGIN":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="challenge_purpose",
+                                headers={"Cache-Control": "no-store"})
+        else:
+            await cur.execute(
+                "SELECT tenant_id,email,role,must_change_password,account_class,status "
+                "FROM jax_users WHERE user_id=%s FOR UPDATE", (receipt.subject_user_id,),
+            )
+            user = await cur.fetchone()
+            if user is None or user[5] != "active":
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="sesion_invalida",
+                                    headers={"Cache-Control": "no-store"})
+    if denial is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=denial.code)
+    tenant_id, email, role, must_change_password, account_class, _ = user
+    # The JWT represents the exact UTC receipt instant.  Do not relabel the
+    # database DATETIME as local server time.
+    mfa_at = int(receipt.occurred_at.astimezone(timezone.utc).timestamp())
+    await _cortar_conexiones(receipt.subject_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    access = _emitir_tokens(
+        response, str(receipt.subject_user_id), str(tenant_id), role,
+        receipt.token_version, vida, mfa_proof_event_id=receipt.event_id,
+        mfa_version=receipt.mfa_version, mfa_at=mfa_at,
+    )
+    return LoginResponse(
+        access_token=access, user_id=receipt.subject_user_id, tenant_id=tenant_id,
+        role=role, email=email, must_change_password=bool(must_change_password),
+        account_class=account_class,
+    )
+
+
+@router.get("/mfa/status")
+async def mfa_status(response: Response, user: AuthUser = Depends(get_current_user)):
+    """Expose state only; no secret, capability, ciphertext or code escapes."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT state FROM office_mfa_credential WHERE user_id=%s", (int(user.user_id),))
+            row = await cur.fetchone()
+    response.headers["Cache-Control"] = "no-store"
+    return {"enabled": bool(row and row[0] == "ACTIVE"), "state": row[0] if row else "NONE"}
+
+
+@router.post("/mfa/enrollment/start")
+async def mfa_enrollment_start(req: MFAPasswordRequest, request: Request, response: Response, user: AuthUser = Depends(get_current_user)):
+    _check_mfa_password_rate(request, user)
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _verify_current_password_in_cursor(cur, int(user.user_id), req.password):
+            raise _credenciales_invalidas()
+        result = await start_first_enrollment_after_password_in_cursor(
+            cur, preauthenticated_user_id=int(user.user_id), config=config,
+        )
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
+    response.headers["Cache-Control"] = "no-store"
+    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
+            "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/enrollment/confirm")
+async def mfa_enrollment_confirm(req: MFAEnrollmentConfirmRequest, response: Response):
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    denial = None
+    subject_user_id = None
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        result = await confirm_enrollment_in_cursor(
+            cur, enrollment_capability_token=req.enrollment_token, otp=req.otp,
+            config=config, server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(result, MFADenied): denial = result
+        else:
+            await cur.execute("SELECT subject_user_id FROM office_mfa_security_event WHERE event_id=%s", (result.state_event_id,))
+            subject_user_id = int((await cur.fetchone())[0])
+    if denial is not None: raise _mfa_denial(denial)
+    await _cortar_conexiones(subject_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"recovery_codes": list(result.recovery_codes), "token_version": result.token_version,
+            "mfa_version": result.mfa_version}
+
+
+@router.post("/mfa/step-up")
+async def mfa_step_up(response: Response, user: AuthUser = Depends(get_current_user)):
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        result = await issue_step_up_challenge_in_cursor(cur, actor_user_id=int(user.user_id), config=config)
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
+    response.headers["Cache-Control"] = "no-store"
+    return {"challenge_token": result.token, "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/step-up/verify", response_model=RefreshResponse)
+async def verify_mfa_step_up(
+    req: MFAStepUpVerifyRequest,
+    response: Response,
+    user: AuthUser = Depends(get_current_user),
+    refresh_token: str = Cookie(None),
+):
+    """Replace transport MFA evidence after a same-subject STEP_UP proof.
+
+    STEP_UP is intentionally version-neutral.  The refresh is re-signed only
+    to carry the new durable proof and retains the exact iat/exp from the
+    already-valid refresh cookie, so it cannot refresh the session lifetime.
+    """
+    config = _mfa_config()
+    if config is None:
+        raise _mfa_unavailable()
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA,
+                            headers={"Cache-Control": "no-store"})
+    refresh_payload = decode_token(refresh_token)
+    refresh_user = await verificar_sesion(refresh_payload, "refresh")
+    if refresh_user.user_id != user.user_id or refresh_user.token_version != user.token_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="sesion_invalida",
+                            headers={"Cache-Control": "no-store"})
+    issued_at, expires_at = refresh_payload.get("iat"), refresh_payload.get("exp")
+    if (type(issued_at) is not int or type(expires_at) is not int
+            or issued_at < 0 or expires_at <= issued_at or expires_at <= int(time.time())):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA,
+                            headers={"Cache-Control": "no-store"})
+    if sesion_vencida(refresh_payload, await vida_de_sesion_segundos(), time.time()):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA,
+                            headers={"Cache-Control": "no-store"})
+
+    denial: MFADenied | None = None
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        # This non-authorizing lookup stops a stolen capability for another
+        # subject before the verifier can consume its one-time TOTP budget.
+        await cur.execute(
+            "SELECT user_id FROM office_mfa_challenge "
+            "WHERE token_hash=UNHEX(SHA2(%s,256)) FOR UPDATE", (req.challenge_token,),
+        )
+        challenge_owner = await cur.fetchone()
+        if challenge_owner is None or int(challenge_owner[0]) != int(user.user_id):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="challenge_invalid",
+                                headers={"Cache-Control": "no-store"})
+        receipt = await verify_and_consume_totp_in_cursor(
+            cur, challenge_token=req.challenge_token, otp=req.otp,
+            server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(receipt, MFADenied):
+            denial = receipt
+        elif (receipt.purpose != "STEP_UP" or receipt.subject_user_id != int(user.user_id)
+              or receipt.token_version != user.token_version):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="challenge_purpose",
+                                headers={"Cache-Control": "no-store"})
+    if denial is not None:
+        raise _mfa_denial(denial)
+    mfa_at = int(receipt.occurred_at.astimezone(timezone.utc).timestamp())
+    access = create_access_token(
+        user.user_id, user.tenant_id, user.role, user.token_version,
+        mfa_proof_event_id=receipt.event_id, mfa_version=receipt.mfa_version, mfa_at=mfa_at,
+    )
+    refreshed = create_refresh_token_preserving_window(
+        user.user_id, user.tenant_id, user.role, user.token_version,
+        issued_at=issued_at, expires_at=expires_at,
+        mfa_proof_event_id=receipt.event_id, mfa_version=receipt.mfa_version, mfa_at=mfa_at,
+    )
+    response.set_cookie(
+        key="refresh_token", value=refreshed, httponly=True,
+        max_age=max(0, expires_at - int(time.time())), samesite="lax",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return RefreshResponse(access_token=access)
+
+
+@router.post("/mfa/recover")
+async def mfa_recover(req: MFARecoveryRequest, response: Response):
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    denial = None
+    subject_user_id = None
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        result = await consume_recovery_code_in_cursor(
+            cur, recovery_code=req.recovery_code, config=config, server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(result, MFADenied): denial = result
+        else:
+            # The recovery bearer is the sole subject selector.  Re-derive
+            # its newly-created capability owner inside the same transaction;
+            # do not accept a user id from the request merely to cut sockets.
+            await cur.execute(
+                "SELECT user_id FROM office_mfa_challenge "
+                "WHERE token_hash=UNHEX(SHA2(%s,256)) FOR UPDATE", (result.token,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise RuntimeError("recovery capability missing after consume")
+            subject_user_id = int(row[0])
+    if denial is not None: raise _mfa_denial(denial)
+    await _cortar_conexiones(subject_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"recovery_token": result.token, "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/recovery/enrollment/start")
+async def mfa_recovery_enrollment_start(req: MFARecoveryEnrollmentRequest, response: Response):
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    denial = None
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        result = await start_recovery_enrollment_in_cursor(
+            cur, recovery_capability_token=req.recovery_token, config=config,
+        )
+        if isinstance(result, MFADenied): denial = result
+    if denial is not None: raise _mfa_denial(denial)
+    response.headers["Cache-Control"] = "no-store"
+    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
+            "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/reenrollment/start")
+async def mfa_reenrollment_start(req: MFAPasswordRequest, request: Request, response: Response,
+                                 user: AuthUser = Depends(get_current_user)):
+    """Start active-factor replacement without retiring the old factor."""
+    _check_mfa_password_rate(request, user)
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    if user.mfa_proof_event_id is None:
+        raise HTTPException(status_code=403, detail="office_mfa_required")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _verify_current_password_in_cursor(cur, int(user.user_id), req.password):
+            raise _credenciales_invalidas()
+        result = await start_reenrollment_after_password_in_cursor(
+            cur, actor_user_id=int(user.user_id), proof_event_id=user.mfa_proof_event_id,
+            config=config,
+        )
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
+    response.headers["Cache-Control"] = "no-store"
+    return {"enrollment_token": result.enrollment_id, "secret": result.secret,
+            "expires_at": result.expires_at.isoformat()}
+
+
+@router.post("/mfa/recovery-codes/regenerate")
+async def mfa_regenerate_codes(req: MFAPasswordRequest, request: Request, response: Response, user: AuthUser = Depends(get_current_user)):
+    _check_mfa_password_rate(request, user)
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    if user.mfa_proof_event_id is None: raise HTTPException(status_code=403, detail="office_mfa_required")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _verify_current_password_in_cursor(cur, int(user.user_id), req.password): raise _credenciales_invalidas()
+        result = await regenerate_recovery_codes_after_password_in_cursor(
+            cur, actor_user_id=int(user.user_id), proof_event_id=user.mfa_proof_event_id,
+            config=config, server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
+    await _cortar_conexiones(int(user.user_id))
+    response.headers["Cache-Control"] = "no-store"
+    return {"recovery_codes": list(result.recovery_codes), "event_id": result.event_id,
+            "token_version": result.token_version, "mfa_version": result.mfa_version}
+
+
+@router.post("/mfa/disable")
+async def mfa_disable(req: MFAPasswordRequest, request: Request, response: Response, user: AuthUser = Depends(get_current_user)):
+    _check_mfa_password_rate(request, user)
+    config = _mfa_config()
+    if config is None: raise _mfa_unavailable()
+    if user.mfa_proof_event_id is None: raise HTTPException(status_code=403, detail="office_mfa_required")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await _verify_current_password_in_cursor(cur, int(user.user_id), req.password): raise _credenciales_invalidas()
+        result = await disable_mfa_after_password_in_cursor(
+            cur, actor_user_id=int(user.user_id), proof_event_id=user.mfa_proof_event_id,
+            config=config, server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(result, MFADenied): raise _mfa_denial(result)
+    await _cortar_conexiones(int(user.user_id))
+    response.headers["Cache-Control"] = "no-store"
+    return {"event_id": result.event_id, "token_version": result.token_version, "mfa_version": result.mfa_version}
+
+
+@router.post("/mfa/root-reset")
+async def mfa_root_reset(req: MFARootResetRequest, response: Response, user: AuthUser = Depends(get_current_user)):
+    """Dedicated Office-root reset; body selects only the target."""
+    config = _mfa_config()
+    if config is None:
+        raise _mfa_unavailable()
+    if user.mfa_proof_event_id is None:
+        raise HTTPException(status_code=403, detail="office_mfa_required")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        if not await lock_office_identity_pair_in_cursor(
+                cur, int(user.user_id), req.target_user_id):
+            raise HTTPException(status_code=403, detail="mfa_reset_denied")
+        decision = await authorize_office_in_cursor(
+            cur, int(user.user_id), OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
+            require_recent_mfa=True, mfa_proof_event_id=user.mfa_proof_event_id,
+            mfa_config=config,
+        )
+        if not decision.allowed:
+            raise HTTPException(status_code=403, detail="office_identity_security_required")
+        authorization_event_id = await record_authorization_event(
+            cur, decision, correlation_id=str(uuid.uuid4()),
+        )
+        result = await reset_mfa_by_office_root_in_cursor(
+            cur, actor_user_id=int(user.user_id), target_user_id=req.target_user_id,
+            proof_event_id=user.mfa_proof_event_id,
+            authorization_event_id=authorization_event_id, config=config,
+            server_correlation_id=uuid.uuid4().bytes,
+        )
+        if isinstance(result, MFADenied):
+            raise HTTPException(status_code=403, detail=result.code)
+    await _cortar_conexiones(result.subject_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"event_id": result.event_id, "target_user_id": result.subject_user_id,
+            "token_version": result.token_version, "mfa_version": result.mfa_version}
 
 
 @router.post("/refresh", response_model=RefreshResponse)
@@ -221,7 +654,12 @@ async def refresh(refresh_token: str = Cookie(None)):
     # que se emitió -- acortar session_timeout_min alcanza a esta sesión.
     if sesion_vencida(payload, await vida_de_sesion_segundos(), time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESION_EXPIRADA)
-    access = create_access_token(user.user_id, user.tenant_id, user.role, user.token_version)
+    access = create_access_token(
+        user.user_id, user.tenant_id, user.role, user.token_version,
+        mfa_proof_event_id=user.mfa_proof_event_id,
+        mfa_version=user.mfa_version if user.mfa_proof_event_id is not None else None,
+        mfa_at=user.mfa_at if user.mfa_proof_event_id is not None else None,
+    )
     return RefreshResponse(access_token=access)
 
 
@@ -237,6 +675,7 @@ async def me(user: AuthUser = Depends(get_current_user_con_cambio_pendiente)):
         role=user.role,
         email=user.email,
         must_change_password=user.must_change_password,
+        account_class=user.account_class,
     )
 
 

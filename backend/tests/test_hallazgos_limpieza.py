@@ -110,6 +110,23 @@ def test_los_dos_tokens_salen_de_un_solo_constructor():
     assert _fuente("auth/jwt.py").count("jwt.encode(") == 1
 
 
+def test_el_refresh_represervado_usa_el_firmador_comun(monkeypatch):
+    """STEP_UP no puede abrir un segundo camino de firma de JWT."""
+    from auth import jwt as jwt_mod
+
+    vistos = []
+    monkeypatch.setattr(jwt_mod, "_firmar", lambda payload: vistos.append(payload) or "firmado")
+    assert jwt_mod.create_refresh_token_preserving_window(
+        "7", "1", "operator", 3, issued_at=100, expires_at=200,
+        mfa_proof_event_id=9, mfa_version=2, mfa_at=101,
+    ) == "firmado"
+    assert vistos == [{
+        "user_id": "7", "tenant_id": "1", "role": "operator", "tv": 3,
+        "iat": 100, "exp": 200, "type": "refresh", "mfa_proof_event_id": 9,
+        "mfa_version": 2, "mfa_at": 101,
+    }]
+
+
 # A-20: el endpoint acepta el socket antes de llamar al hub (main.py).
 async def test_el_hub_no_acepta_sockets_por_su_cuenta():
     from jax_engine.websocket_hub import WebSocketHub

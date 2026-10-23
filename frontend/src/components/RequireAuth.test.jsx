@@ -59,4 +59,16 @@ describe('RequireAuth', () => {
     render(arbol(<textarea aria-label="chat" data-foco-inicial />), { container: root })
     expect(screen.getByLabelText('chat')).not.toHaveFocus()
   })
+
+  it.each(['OFFICE_INTERNAL', 'EXTERNAL_CLIENT'])('no monta rutas Classic para %s', (account_class) => {
+    estado.user = { user_id: 5, account_class }
+    render(arbol())
+    expect(screen.queryByText('la app')).not.toBeInTheDocument()
+  })
+
+  it('permite la ruta de seguridad para cuentas Office', () => {
+    estado.user = { user_id: 5, account_class: 'OFFICE_INTERNAL' }
+    render(<I18nProvider><MemoryRouter><RequireAuth allowOfficeAccount><p>seguridad</p></RequireAuth></MemoryRouter></I18nProvider>)
+    expect(screen.getByText('seguridad')).toBeInTheDocument()
+  })
 })

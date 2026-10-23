@@ -53,6 +53,78 @@ describe('restoreSession', () => {
   })
 })
 
+describe('MFA session boundary', () => {
+  beforeEach(() => { useJaxStore.setState(INITIAL_STATE, true); vi.clearAllMocks() })
+  it('does not turn an MFA challenge into token or user state', async () => {
+    api.post.mockResolvedValue({ data: { mfa_required: true, challenge_token: 'opaque' } })
+    const result = await useJaxStore.getState().login('a@b.c', 'password')
+    expect(result.mfa_required).toBe(true)
+    expect(useJaxStore.getState().token).toBeNull()
+    expect(useJaxStore.getState().user).toBeNull()
+  })
+  it('ignores a late session result after a local revocation epoch', () => {
+    useJaxStore.getState().establecerSesion({ access_token: 'old', user_id: 1 })
+    useJaxStore.getState().limpiarSesionRevocada()
+    expect(useJaxStore.getState().token).toBeNull()
+    expect(useJaxStore.getState()._sessionEpoch).toBeGreaterThan(1)
+  })
+  it('step-up updates only access token and preserves the canonical user shape', () => {
+    useJaxStore.setState({ token: 'old', user: { user_id: 8, email: 'a@b.c', access_token: 'stale' } })
+    useJaxStore.getState().actualizarTokenMfa('new')
+    expect(useJaxStore.getState().token).toBe('new')
+    expect(useJaxStore.getState().user).toEqual({ user_id: 8, email: 'a@b.c', access_token: 'stale' })
+  })
+  it('keeps post-cut codes through the deliberate local cut', () => {
+    useJaxStore.setState({ token: 'a', user: { user_id: 1 } })
+    useJaxStore.getState().mostrarCodigosMfa(['code-a'])
+    useJaxStore.getState().limpiarSesionRevocada()
+    expect(useJaxStore.getState().mfaRecoveryCodes).toEqual(['code-a'])
+    expect(useJaxStore.getState().mfaRecoveryCodesOwnerId).toBe(1)
+  })
+  it('clears post-cut codes when refresh restores a different account', async () => {
+    useJaxStore.setState({ mfaRecoveryCodes: ['code-a'], mfaRecoveryCodesOwnerId: 1 })
+    api.post.mockResolvedValue({ data: { access_token: 'b' } })
+    api.get.mockResolvedValue({ data: { user_id: 2, email: 'b@b.c' } })
+    await useJaxStore.getState().restoreSession()
+    expect(useJaxStore.getState().user).toEqual({ user_id: 2, email: 'b@b.c' })
+    expect(useJaxStore.getState().mfaRecoveryCodes).toBeNull()
+    expect(useJaxStore.getState().mfaRecoveryCodesOwnerId).toBeNull()
+  })
+  it('clears post-cut codes when restore fails', async () => {
+    useJaxStore.setState({ mfaRecoveryCodes: ['code-a'], mfaRecoveryCodesOwnerId: 1 })
+    api.post.mockRejectedValue(new Error('401'))
+    await useJaxStore.getState().restoreSession()
+    expect(useJaxStore.getState().mfaRecoveryCodes).toBeNull()
+  })
+  it('atomically drops A account state and object URLs when B establishes a session', () => {
+    vi.stubGlobal('URL', { ...URL, revokeObjectURL: vi.fn() })
+    useJaxStore.setState({
+      token: 'a', user: { user_id: 1 }, proyectoActivo: { id: 1, nombre: 'A' },
+      messages: [{ attachment: { type: 'image', base64: 'blob:a' } }],
+      activePipelines: { a: { status: 'running' } }, historial: { pipelines: [{ id: 'a' }], hasMore: true, cargando: false, error: false },
+    })
+    useJaxStore.getState().establecerSesion({ access_token: 'b', user_id: 2 })
+    const state = useJaxStore.getState()
+    expect(state.user.user_id).toBe(2)
+    expect(state.proyectoActivo).toBeNull()
+    expect(state.messages).toEqual([])
+    expect(state.activePipelines).toEqual({})
+    expect(state.historial.pipelines).toEqual([])
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:a')
+  })
+  it('does not let a late A restore replace a newer MFA B session', async () => {
+    let resolveRefresh
+    api.post.mockReturnValue(new Promise((resolve) => { resolveRefresh = resolve }))
+    const restoring = useJaxStore.getState().restoreSession()
+    useJaxStore.getState().establecerSesion({ access_token: 'b', user_id: 2, account_class: 'OFFICE_INTERNAL' })
+    resolveRefresh({ data: { access_token: 'a' } })
+    await restoring
+    expect(useJaxStore.getState().token).toBe('b')
+    expect(useJaxStore.getState().user.user_id).toBe(2)
+    expect(api.get).not.toHaveBeenCalled()
+  })
+})
+
 // Mi cuenta (2026-09-12, admin usuarios etapa 4): cambiar la propia
 // contraseña reemplaza `token` con el access nuevo que manda el backend --
 // las otras sesiones quedan cerradas por su propio token_version.

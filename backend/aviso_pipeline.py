@@ -180,6 +180,8 @@ def _asunto(status: str) -> str:
     # explícito es que el correo diga que hay una objeción sin resolver.
     if status == "disputed":
         return "Tu pipeline tiene una objeción sin resolver — Axioma"
+    if status == "outcome_unknown":
+        return "No pudimos confirmar el resultado de tu pipeline — Axioma"
     if status == "failed":
         return "Tu pipeline falló — Axioma"
     return "Tu pipeline terminó — Axioma"
@@ -203,6 +205,8 @@ def _enviar_aviso(settings: smtp_config.SmtpSettings, to_email: str, pid: str, s
     # error cualquiera.
     if status == "disputed":
         estado_legible = "terminó con una objeción del árbitro sin resolver — necesita tu decisión"
+    elif status == "outcome_unknown":
+        estado_legible = "terminó, pero no pudimos confirmar el resultado — necesita tu decisión"
     elif status == "failed":
         estado_legible = "falló"
     else:
