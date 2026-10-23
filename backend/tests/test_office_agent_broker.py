@@ -153,7 +153,7 @@ async def test_dispatch_sends_an_explicit_json_content_type_and_body(monkeypatch
         "secret", "https://api.z.ai/api/paas/v4/chat/completions")
     assert await broker.dispatch(
         target, instructions="system", user_input="hello",
-        max_tokens_field="max_tokens", max_output_tokens=123, max_response_bytes=1024,
+        max_tokens_field="max_tokens", max_output_tokens=123, max_response_bytes=1024, timeout_seconds=1,
     ) == "ok"
     assert captured["headers"] == {"Authorization": "Bearer secret", "Content-Type": "application/json"}
     assert captured["json"] == {"model": "glm-5.3", "messages": [
@@ -207,7 +207,7 @@ async def test_dispatch_uses_the_model_declared_token_field_and_streams_a_bounde
     assert await broker.dispatch(
         target, instructions="system", user_input="hello",
         max_tokens_field="max_completion_tokens", max_output_tokens=123,
-        max_response_bytes=1024,
+        max_response_bytes=1024, timeout_seconds=1,
     ) == "ok"
     assert captured["method"] == "POST"
     assert captured["headers"] == {"Authorization": "Bearer secret", "Content-Type": "application/json"}
@@ -256,5 +256,5 @@ async def test_dispatch_rejects_a_response_larger_than_the_office_limit(monkeypa
         await broker.dispatch(
             target, instructions="system", user_input="hello",
             max_tokens_field="max_tokens", max_output_tokens=123,
-            max_response_bytes=1024,
+            max_response_bytes=1024, timeout_seconds=1,
         )

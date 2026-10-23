@@ -80,7 +80,7 @@ async def load_dispatch_target_in_cursor(cur, *, engine: ResolvedOfficeEngine) -
 
 async def dispatch(target: OfficeDispatchTarget, *, instructions: str, user_input: str,
                    max_tokens_field: str, max_output_tokens: int,
-                   max_response_bytes: int) -> str:
+                   max_response_bytes: int, timeout_seconds: int) -> str:
     """Call the approved GLM endpoint once, without redirects or tools.
 
     Any timeout, protocol failure, non-2xx response or malformed answer is an
@@ -97,32 +97,35 @@ async def dispatch(target: OfficeDispatchTarget, *, instructions: str, user_inpu
     if (not isinstance(max_response_bytes, int) or isinstance(max_response_bytes, bool)
             or max_response_bytes < 1):
         raise OfficeBrokerUnavailable("office response limit is unavailable")
+    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds < 1:
+        raise OfficeBrokerUnavailable("office timeout is unavailable")
     payload = {"model": target.engine.model_id, "messages": [
         {"role": "system", "content": instructions}, {"role": "user", "content": user_input},
     ], "tools": [], max_tokens_field: max_output_tokens}
     try:
         timeout = httpx.Timeout(_MAX_SECONDS, connect=min(_MAX_SECONDS, 10.0))
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            async with client.stream(
+        async with asyncio.timeout(timeout_seconds):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                async with client.stream(
                 "POST", target.url,
                 headers={"Authorization": f"Bearer {target.api_key}", "Content-Type": "application/json"},
                 json=payload,
-            ) as response:
-                if response.is_redirect or response.status_code < 200 or response.status_code >= 300:
-                    raise OfficeBrokerUnavailable("office provider response is unavailable")
-                content_length = response.headers.get("content-length")
-                if content_length is not None and (not content_length.isdecimal() or int(content_length) > max_response_bytes):
-                    raise OfficeBrokerUnavailable("office provider response is unavailable")
-                encoded = bytearray()
-                async for chunk in response.aiter_bytes():
-                    encoded.extend(chunk)
-                    if len(encoded) > max_response_bytes:
+                ) as response:
+                    if response.is_redirect or response.status_code < 200 or response.status_code >= 300:
                         raise OfficeBrokerUnavailable("office provider response is unavailable")
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None and (not content_length.isdecimal() or int(content_length) > max_response_bytes):
+                        raise OfficeBrokerUnavailable("office provider response is unavailable")
+                    encoded = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        encoded.extend(chunk)
+                        if len(encoded) > max_response_bytes:
+                            raise OfficeBrokerUnavailable("office provider response is unavailable")
         decoded = json.loads(encoded.decode("utf-8"))
         content = decoded["choices"][0]["message"]["content"]
         if not isinstance(content, str) or not content:
             raise OfficeBrokerUnavailable("office provider response is malformed")
         return content
-    except (httpx.HTTPError, asyncio.TimeoutError, KeyError, IndexError, TypeError, ValueError,
+    except (httpx.HTTPError, TimeoutError, asyncio.TimeoutError, KeyError, IndexError, TypeError, ValueError,
             UnicodeDecodeError) as error:
         raise OfficeBrokerUnavailable("office dispatch outcome is unknown") from error
