@@ -7,6 +7,7 @@ import { officeProjectsApi, officeSessionApi } from '../api/virtualOffice'
 import OfficeInvitationManager from '../components/office/OfficeInvitationManager'
 import OfficeProjectCreator from '../components/office/OfficeProjectCreator'
 import OfficeProjectMembershipManager from '../components/office/OfficeProjectMembershipManager'
+import OfficeAgentPanel from '../components/office/OfficeAgentPanel'
 
 const PAGE_SIZE = 25
 const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
@@ -133,6 +134,7 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
           {detailError && <p role="alert" className="text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
           {!detail.loading && !detail.failed && <>
             <p className="text-sm text-texto-suave whitespace-pre-wrap break-words">{detail.description || t.virtualOffice.projects.noDescription}</p>
+            <OfficeAgentPanel projectId={detail.id} canManage={detail.capabilities?.manage_agents === true} onForbidden={() => revalidateDetail(detail.id)} />
             {detail.capabilities?.manage_invitations === true && <OfficeInvitationManager projectId={detail.id} onForbidden={() => revalidateDetail(detail.id)} />}
             {detail.capabilities?.manage_invitations === true && <OfficeProjectMembershipManager projectId={detail.id} canBrowsePeople={session?.capabilities?.administer_office === true} canAssignProjectAdmin={session.identity?.global_role === 'OFFICE_SUPERUSER'} onForbidden={() => revalidateDetail(detail.id)} />}
           </>}

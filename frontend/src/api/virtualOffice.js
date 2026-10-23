@@ -39,6 +39,17 @@ export const officeMembersApi = {
   revoke: (projectId, userId, expectedVersion, idempotencyKey) => api.delete(`/virtual-office/projects/${projectId}/members/${userId}`, { params: { expected_version: expectedVersion }, headers: { 'Idempotency-Key': idempotencyKey } }),
 }
 
+// Los agentes viven dentro de un proyecto de Oficina. El navegador escoge
+// únicamente claves del catálogo que el servidor entrega; nunca transportes,
+// URLs ni credenciales de proveedores.
+export const officeAgentsApi = {
+  list: (projectId) => api.get(`/virtual-office/projects/${projectId}/agents`),
+  engines: (projectId) => api.get(`/virtual-office/projects/${projectId}/engines`),
+  create: (projectId, payload) => api.post(`/virtual-office/projects/${projectId}/agents`, payload),
+  bind: (projectId, agentId, payload) => api.patch(`/virtual-office/projects/${projectId}/agents/${agentId}/binding`, payload),
+  run: (projectId, agentId, payload) => api.post(`/virtual-office/projects/${projectId}/agents/${agentId}/runs`, payload),
+}
+
 // El token de aceptación sólo llega aquí desde el fragmento del navegador y
 // viaja en el cuerpo del POST. Nunca se concatena a una ruta o query string.
 export const officeInvitationsApi = {

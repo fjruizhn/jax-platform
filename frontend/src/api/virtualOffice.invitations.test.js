@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() } }))
 
 import api from './client'
-import { officeInvitationsApi, officeMembersApi } from './virtualOffice'
+import { officeAgentsApi, officeInvitationsApi, officeMembersApi } from './virtualOffice'
 
 describe('office invitation client', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -35,5 +35,18 @@ describe('office invitation client', () => {
   it('posts a new-account bearer only in the JSON body and explicitly suppresses session auth', async () => {
     await officeInvitationsApi.accept({ token: 'opaque-bearer', password: 'new-password' }, { accessToken: null })
     expect(api.post).toHaveBeenCalledWith('/virtual-office/invitations/accept', { token: 'opaque-bearer', password: 'new-password' }, { headers: {}, _officeInvitationNoAuth: true })
+  })
+
+  it('keeps the private-agent contract on Office routes and supplies an idempotency key only for a run', async () => {
+    await officeAgentsApi.list(12)
+    await officeAgentsApi.engines(12)
+    await officeAgentsApi.create(12, { agent_key: 'resumen', display_name: 'Resumen', engine_key: 'glm', data_classification: 'INTERNAL', instructions: 'Resumí.' })
+    await officeAgentsApi.bind(12, 44, { engine_key: 'local', expected_version: 3 })
+    await officeAgentsApi.run(12, 44, { input: 'Texto de trabajo', idempotency_key: 'run-1' })
+    expect(api.get).toHaveBeenNthCalledWith(1, '/virtual-office/projects/12/agents')
+    expect(api.get).toHaveBeenNthCalledWith(2, '/virtual-office/projects/12/engines')
+    expect(api.post).toHaveBeenNthCalledWith(1, '/virtual-office/projects/12/agents', { agent_key: 'resumen', display_name: 'Resumen', engine_key: 'glm', data_classification: 'INTERNAL', instructions: 'Resumí.' })
+    expect(api.patch).toHaveBeenCalledWith('/virtual-office/projects/12/agents/44/binding', { engine_key: 'local', expected_version: 3 })
+    expect(api.post).toHaveBeenNthCalledWith(2, '/virtual-office/projects/12/agents/44/runs', { input: 'Texto de trabajo', idempotency_key: 'run-1' })
   })
 })
