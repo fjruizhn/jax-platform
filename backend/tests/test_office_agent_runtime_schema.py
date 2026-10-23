@@ -232,7 +232,7 @@ def test_runtime_quota_queries_use_their_four_real_indexes(client) -> None:
             "idempotency_key,input_sha256,instructions_sha256,dispatch_snapshot_sha256,config_version,engine_key,engine_version,engine_binding_fingerprint,"
             "model_ref,model_id,credential_id,credential_fingerprint,provider_id,auth_type,auth_transport,status,accepted_at,deadline_at,fence,completed_at) "
             "VALUES (UUID(),%s,%s,%s,%s,1,%s,1,%s,%s,%s,%s,1,%s,1,%s,%s,'glm-5.3',%s,%s,'zhipu','api_key','bearer',%s,"
-            "UTC_TIMESTAMP(6)-INTERVAL %s SECOND,UTC_TIMESTAMP(6)+INTERVAL %s SECOND,1,%s)"
+            "UTC_TIMESTAMP(6)-INTERVAL %s SECOND,UTC_TIMESTAMP(6)+INTERVAL %s SECOND,1,IF(%s='UNKNOWN',UTC_TIMESTAMP(6),NULL))"
         )
         common = (agent_id, project_id, actor, event_id, binding_id)
         for number in range(80):
@@ -241,14 +241,14 @@ def test_runtime_quota_queries_use_their_four_real_indexes(client) -> None:
                 insert_run,
                 (*common, f"quota-old-{number}", b"a" * 32, b"b" * 32, b"c" * 32, engine_key, "0" * 64,
                  model_ref, credential_id, "0" * 64, "DISPATCHING" if dispatching else "UNKNOWN",
-                 7200, 30 if dispatching else 0, None),
+                 7200, 30 if dispatching else 0, "DISPATCHING" if dispatching else "UNKNOWN"),
             )
         for number in range(8):
             await sql(
                 insert_run,
                 (*common, f"quota-live-{number}", b"d" * 32, b"e" * 32, b"f" * 32, engine_key, "0" * 64,
                  model_ref, credential_id, "0" * 64, "DISPATCHING" if number < 2 else "UNKNOWN",
-                 60, 30 if number < 2 else 0, None),
+                 60, 30 if number < 2 else 0, "DISPATCHING" if number < 2 else "UNKNOWN"),
             )
         queries = (
             ("idx_office_agent_run_actor_window", "SELECT COUNT(*) FROM office_agent_run WHERE requested_by=%s AND accepted_at>=UTC_TIMESTAMP(6)-INTERVAL 3600 SECOND", (actor,)),
@@ -342,28 +342,30 @@ def test_agent_selector_indexes_are_part_of_the_attested_schema() -> None:
 
 
 def test_agent_binding_allows_only_one_active_binding_per_agent(client) -> None:
-    from tests.identidades import sql
+    from db.connection import get_pool
     from virtual_office import migrations
 
     assert "active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED" in "\n".join(migrations.OFFICE_AGENT_DDL)
     assert "uq_office_agent_binding_active_agent" in migrations._AGENT_RUNTIME_INDEXES["office_agent_binding"]
 
     async def exercise() -> None:
-        await sql(
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
             "CREATE TEMPORARY TABLE office_agent_binding_uniqueness_probe ("
             "agent_id BIGINT UNSIGNED NOT NULL,active BOOLEAN NOT NULL,"
             "active_agent_id BIGINT UNSIGNED GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED,"
             "UNIQUE KEY uq_active_agent (active_agent_id))"
-        )
-        await sql("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,FALSE),(7,FALSE),(7,TRUE)")
-        with pytest.raises((aiomysql.IntegrityError, aiomysql.OperationalError)):
-            await sql("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,TRUE)")
+            )
+            await cur.execute("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,FALSE),(7,FALSE),(7,TRUE)")
+            with pytest.raises((aiomysql.IntegrityError, aiomysql.OperationalError)):
+                await cur.execute("INSERT INTO office_agent_binding_uniqueness_probe (agent_id,active) VALUES (7,TRUE)")
 
     client.portal.call(exercise)
 
 
 def test_agent_run_output_states_have_exact_terminal_shape(client) -> None:
-    from tests.identidades import sql
+    from db.connection import get_pool
     from virtual_office import migrations
 
     expected = migrations._AGENT_RUNTIME_CHECK_CLAUSES["chk_office_agent_run_output"]
@@ -371,21 +373,23 @@ def test_agent_run_output_states_have_exact_terminal_shape(client) -> None:
     assert "'UNKNOWN' and `output_text` is null and `completed_at` is not null" in expected
 
     async def exercise() -> None:
-        await sql(
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
             "CREATE TEMPORARY TABLE office_agent_run_output_probe ("
             "status ENUM('DISPATCHING','SUCCEEDED','UNKNOWN') NOT NULL,output_text MEDIUMTEXT NULL,completed_at DATETIME(6) NULL,"
             "CONSTRAINT chk_output CHECK ((status='SUCCEEDED' AND output_text IS NOT NULL AND completed_at IS NOT NULL) OR "
             "(status='DISPATCHING' AND output_text IS NULL AND completed_at IS NULL) OR "
             "(status='UNKNOWN' AND output_text IS NULL AND completed_at IS NOT NULL)))"
-        )
-        await sql(
+            )
+            await cur.execute(
             "INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES "
             "('SUCCEEDED','ok',UTC_TIMESTAMP(6)),('DISPATCHING',NULL,NULL),('UNKNOWN',NULL,UTC_TIMESTAMP(6))"
-        )
-        with pytest.raises(aiomysql.OperationalError):
-            await sql("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('DISPATCHING',NULL,UTC_TIMESTAMP(6))")
-        with pytest.raises(aiomysql.OperationalError):
-            await sql("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('UNKNOWN',NULL,NULL)")
+            )
+            with pytest.raises(aiomysql.OperationalError):
+                await cur.execute("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('DISPATCHING',NULL,UTC_TIMESTAMP(6))")
+            with pytest.raises(aiomysql.OperationalError):
+                await cur.execute("INSERT INTO office_agent_run_output_probe (status,output_text,completed_at) VALUES ('UNKNOWN',NULL,NULL)")
 
     client.portal.call(exercise)
 
@@ -407,7 +411,7 @@ def test_activation_locks_provider_then_credential_then_engine() -> None:
 
     provider_lock = source.index("auth_type='api_key' FOR UPDATE")
     model_lock = source.index("model_id=%s AND status='available' FOR UPDATE")
-    credential_lock = source.index("WHERE provider_id=%s AND state='active' FOR UPDATE")
+    credential_lock = source.index("WHERE provider_id=%s AND state='active' ORDER BY activated_at DESC,id DESC FOR UPDATE")
     engine_lock = source.index("FROM office_engine WHERE engine_key=%s FOR UPDATE")
     assert provider_lock < model_lock < credential_lock < engine_lock
 
