@@ -170,6 +170,30 @@ def test_runtime_schema_attestation_rejects_homonymous_column_default_drift(clie
     client.portal.call(exercise)
 
 
+def test_runtime_schema_attestation_rejects_active_binding_generation_drift(client) -> None:
+    from virtual_office import migrations
+
+    async def exercise() -> None:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "ALTER TABLE office_agent_binding MODIFY active_agent_id BIGINT UNSIGNED "
+                    "GENERATED ALWAYS AS (IF(NOT active,agent_id,NULL)) STORED"
+                )
+                try:
+                    with pytest.raises(RuntimeError, match="active binding generation"):
+                        await migrations.assert_office_agent_runtime_metadata(cur)
+                finally:
+                    await cur.execute(
+                        "ALTER TABLE office_agent_binding MODIFY active_agent_id BIGINT UNSIGNED "
+                        "GENERATED ALWAYS AS (IF(active,agent_id,NULL)) STORED"
+                    )
+
+    client.portal.call(exercise)
+
+
 def test_runtime_schema_attestation_rejects_an_extra_homonymous_trigger(client) -> None:
     from virtual_office import migrations
 

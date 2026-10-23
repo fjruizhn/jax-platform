@@ -1131,6 +1131,12 @@ async def assert_office_agent_runtime_metadata(cur) -> None:
         await cur.execute("SELECT DISTINCT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=%s AND REFERENCED_TABLE_NAME IS NOT NULL", (table,))
         if {row[0] for row in await cur.fetchall()} != set(expected_fks):
             raise RuntimeError(f"Office agent runtime foreign keys for {table} are invalid")
+    await cur.execute(
+        "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_agent_binding' AND COLUMN_NAME='active_agent_id'"
+    )
+    if await cur.fetchone() != ("if(`active`,`agent_id`,NULL)",):
+        raise RuntimeError("Office agent active binding generation is invalid")
     expected_checks = _agent_runtime_check_clauses()
     await cur.execute("SELECT tc.CONSTRAINT_NAME,cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME IN ('office_engine','office_agent','office_agent_binding','office_agent_run','office_agent_runtime_config') AND tc.CONSTRAINT_TYPE='CHECK'")
     found_checks = {str(name): str(clause) for name, clause in await cur.fetchall()}
