@@ -102,11 +102,13 @@ def test_project_admin_creates_and_runs_an_internal_agent_once(client, monkeypat
         await started.wait()
         replay = await run_agent(project, agent_id, request, user)
         await asyncio.sleep(1.05)
+        expired_replay = await run_agent(project, agent_id, request, user)
         stale = await get_agent_run(project, agent_id, replay["run_id"], user)
         release.set()
         completed = await first_run
         assert replay["status"] == "DISPATCHING"
         assert stale["status"] == "UNKNOWN"
+        assert expired_replay["status"] == "UNKNOWN"
         assert completed["status"] == "UNKNOWN"
         assert replay["run_id"] == completed["run_id"]
 

@@ -166,11 +166,15 @@ async def run_agent(project_id: int, agent_id: int, payload: AgentRunRequest,
         row = await _agent_row(cur, project_id, agent_id, lock=True)
         if row is None or row[5] != "ACTIVE":
             raise HTTPException(status_code=404, detail="office_agent_not_found")
-        await cur.execute("SELECT run_id,input_sha256,status,output_text,model_id FROM office_agent_run WHERE requested_by=%s AND agent_id=%s AND idempotency_key=%s FOR UPDATE", (actor, agent_id, payload.idempotency_key))
+        await cur.execute("SELECT run_id,input_sha256,status,output_text,model_id,deadline_at FROM office_agent_run WHERE requested_by=%s AND agent_id=%s AND idempotency_key=%s FOR UPDATE", (actor, agent_id, payload.idempotency_key))
         prior = await cur.fetchone()
         if prior is not None:
             if prior[1] != digest:
                 raise HTTPException(status_code=409, detail="office_run_idempotency_conflict")
+            if str(prior[2]) == "DISPATCHING":
+                await cur.execute("UPDATE office_agent_run SET status='UNKNOWN',completed_at=UTC_TIMESTAMP(6) WHERE run_id=%s AND requested_by=%s AND status='DISPATCHING' AND deadline_at<=UTC_TIMESTAMP(6)", (prior[0], actor))
+                if cur.rowcount == 1:
+                    return {"run_id": str(prior[0]), "status": "UNKNOWN", "output": None, "model_id": str(prior[4])}
             return {"run_id": str(prior[0]), "status": str(prior[2]), "output": prior[3], "model_id": str(prior[4])}
         await cur.execute("SELECT config_version,max_output_tokens,max_input_bytes,max_instructions_bytes,max_response_bytes,window_seconds,actor_runs_per_window,project_runs_per_window,actor_concurrency,project_concurrency,timeout_seconds,stale_seconds FROM office_agent_runtime_config WHERE config_id=1 FOR UPDATE")
         config = await cur.fetchone()
