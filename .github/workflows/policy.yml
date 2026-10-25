@@ -1152,8 +1152,11 @@ jobs:
             // sobre el árbol unido de #229: 1513/0/1513, 121 archivos.
             // 1518 -> 1525 (selector y reintentos Office, 2026-10-22):
             // medido en CI sobre este SHA: 1525 passed, 0 fallidos, 122 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1525) {
-              console.error("PISO ROTO: se esperaban 1525 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1525 -> 1534 (login de la oficina en la raíz, OP 358 pieza 1, 2026-10-25):
+            // +3 instalacionOficina.test.js y +6 OfficeRoot.route.test.jsx. Medido en el
+            // runner de GitHub 40191784840: 1534 passed, 0 fallidos, 124 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1534) {
+              console.error("PISO ROTO: se esperaban 1534 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
