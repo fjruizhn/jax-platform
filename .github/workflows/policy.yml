@@ -46,15 +46,22 @@ name: policy
 
 on:
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
     branches: ["**"]
     types: [opened, synchronize, reopened, edited]
 
-# Portado de jax (ronda de pago de deuda 2026-08-25): `branches: [master]`
-# dejaba a CUALQUIER PR de una cadena apilada (rama cuya base NO es master)
-# sin CI -- descubierto en vivo con PR jax#27 (0 runs hasta retargetear a
-# master a mano). `branches: ["**"]` cubre cualquier base, no solo master.
+# Historia del trigger (deuda pagada 2026-08-25 y corregida hoy): la ronda
+# jax puso `branches: ["**"]` en push y pull_request porque `branches:
+# [master]` dejaba a CUALQUIER PR de una cadena apilada (rama cuya base NO
+# es master) sin CI -- descubierto en vivo con PR jax#27 (0 runs hasta
+# retargetear a master a mano). Esa cobertura de cadenas apiladas la sigue
+# dando pull_request con `["**"]`: GitHub dispara pull_request sobre la base
+# del PR, no sobre master, así que cualquier base dispara corrida. El push
+# vuelve a `[master]`, literal, porque el gate de integración de
+# claude-skills (verify-integration) exige filtros literales verificables
+# para demostrar CI de la rama por defecto; `**` no es literal y bloquea
+# el merge (descubierto con OP 358 pieza 1, PR #243).
 # `types` agrega `edited` porque GitHub NO dispara pull_request con los tipos
 # default (opened/synchronize/reopened) cuando se retarget-ea un PR existente
 # -- sin esto, el propio retarget que resuelve el problema de arriba tampoco
