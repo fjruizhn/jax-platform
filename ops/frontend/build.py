@@ -12,8 +12,38 @@ import subprocess
 import tempfile
 
 
-def run(*argv, cwd=None, stdout=None):
-    return subprocess.run(argv, cwd=cwd, stdout=stdout, check=True, text=stdout is None)
+def run(*argv, cwd=None, stdout=None, env=None):
+    return subprocess.run(argv, cwd=cwd, stdout=stdout, check=True, text=stdout is None, env=env)
+
+
+HOSTNAME = re.compile(r"(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))*")
+
+
+def normalize_office_hosts(values):
+    """OP 358 pieza 1: office hosts enter the build only through
+    --office-hosts — validated, lowercased, de-duplicated. The frontend
+    compares them exactly against window.location.hostname (see
+    frontend/src/lib/instalacionOficina.js)."""
+    hosts = []
+    for value in values:
+        for host in value.split(","):
+            host = host.strip().lower()
+            if not host:
+                continue
+            if not HOSTNAME.fullmatch(host):
+                raise ValueError(f"invalid office host: {host!r}")
+            if host not in hosts:
+                hosts.append(host)
+    return tuple(hosts)
+
+
+def build_env(office_hosts):
+    env = {**os.environ}
+    if office_hosts:
+        env["VITE_OFFICE_HOSTS"] = ",".join(office_hosts)
+    else:
+        env.pop("VITE_OFFICE_HOSTS", None)
+    return env
 
 
 def digest(path):
@@ -24,10 +54,11 @@ def digest(path):
     return value.hexdigest()
 
 
-def build(repo, releases, revision):
+def build(repo, releases, revision, office_hosts=()):
     injected = sorted(name for name in os.environ if name.startswith("VITE_"))
     if injected:
         raise ValueError(f"undeclared Vite build variables: {', '.join(injected)}")
+    office_hosts = tuple(office_hosts)
     git = ["git", "-C", str(repo), "-c", f"safe.directory={repo}"]
     sha = subprocess.check_output(
         [*git, "rev-parse", "--verify", f"{revision}^{{commit}}"],
@@ -49,7 +80,7 @@ def build(repo, releases, revision):
         frontend = workspace / "frontend"
         lock_digest = digest(frontend / "package-lock.json")
         run("npm", "ci", "--include=dev", cwd=frontend)
-        run("npm", "run", "build", cwd=frontend)
+        run("npm", "run", "build", cwd=frontend, env=build_env(office_hosts))
         dist = frontend / "dist"
         if not (dist / "index.html").is_file():
             raise RuntimeError("build produced no index.html")
@@ -63,6 +94,9 @@ def build(repo, releases, revision):
             "package_lock_sha256": lock_digest,
             "node": subprocess.check_output(["node", "--version"], text=True).strip(),
             "npm": subprocess.check_output(["npm", "--version"], text=True).strip(),
+            # OP 358 pieza 1: dists of both installations share a source SHA;
+            # office_hosts is what tells an office dist from an Axioma one.
+            "office_hosts": list(office_hosts),
             "files": files,
         }
         staging = Path(tempfile.mkdtemp(prefix=f".{sha}-", dir=releases))
@@ -84,5 +118,16 @@ if __name__ == "__main__":
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--releases", type=Path, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument(
+        "--office-hosts",
+        action="append",
+        default=[],
+        metavar="HOST[,HOST...]",
+        help="build this dist as the Oficina Virtual installation for these "
+             "exact hosts (repeatable, comma-separated); the frontend then "
+             "serves its login and office at the root and hides the Axioma "
+             "console routes (OP 358 pieza 1)",
+    )
     args = parser.parse_args()
-    print(build(args.repo.resolve(), args.releases.resolve(), args.revision))
+    office_hosts = normalize_office_hosts(args.office_hosts)
+    print(build(args.repo.resolve(), args.releases.resolve(), args.revision, office_hosts=office_hosts))

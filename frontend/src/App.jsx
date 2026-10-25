@@ -1,7 +1,8 @@
 import { cloneElement, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
+import { esInstalacionDeOficina } from './lib/instalacionOficina'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Historial from './pages/Historial'
@@ -21,6 +22,18 @@ function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)
   if (!user || user.role !== 'superadmin') return <Navigate to="/" replace />
   return children
+}
+
+// OP 358 pieza 1 — guardia de instalación: en el dominio de la Oficina Virtual
+// este build se sirve como la oficina y ella es su única cara; la raíz y las
+// rutas de la Mesa de Axioma (dashboard, historial, proyectos, administración)
+// redirigen a /virtual-office, y de ahí el flujo de siempre: login si no hay
+// sesión, /account/security si la oficina la deniega. En la instalación de
+// Axioma es transparente. Qué hosts son de la oficina lo declara el build
+// (VITE_OFFICE_HOSTS, ver lib/instalacionOficina.js) — nunca hardcodeado.
+function SoloAxioma() {
+  if (esInstalacionDeOficina()) return <Navigate to="/virtual-office" replace />
+  return <Outlet />
 }
 
 function respuestaOfficeValida(data, userId) {
@@ -86,6 +99,7 @@ function RequireOfficeSession({ children }) {
 }
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)
+  const instalacionOficina = esInstalacionDeOficina()
 
   useEffect(() => {
     restoreSession()
@@ -114,70 +128,75 @@ export default function App() {
             </RequireAuth>
           }
         />
-        <Route
-          path="/"
-          element={
-            <RequireAuth>
-              <Dashboard />
-            </RequireAuth>
-          }
-        />
-        {/* Task 9 (2026-09-18): ruta propia, hermana de "/" -- Dashboard es
-            un layout fijo de 3 paneles sin sub-rutas (a diferencia de Admin,
-            que sí las tiene), así que anidar acá habría pedido reestructurar
-            Dashboard.jsx sólo para esta pantalla. Cualquier usuario logueado
-            entra, no sólo superadmin. */}
-        {/* Ronda de arreglo 1 (2026-09-18): /historial/:pipelineId es una
-            ruta de verdad -- los avisos de fin de pipeline (correo y
-            Telegram, jax-platform/backend/aviso_pipeline.py:175 y
-            jax/jacobs/aviso.py:80) arman el enlace como
-            {origen}/historial/{pipeline_id} y esperan que ABRA ese pipeline,
-            no que caiga en la lista sin decir cuál era. Misma pantalla
-            (Historial.jsx lee :pipelineId con useParams) para las dos rutas:
-            sin id, sólo la lista; con id, la lista + el detalle abierto. */}
-        <Route
-          path="/historial"
-          element={
-            <RequireAuth>
-              <Historial />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/historial/:pipelineId"
-          element={
-            <RequireAuth>
-              <Historial />
-            </RequireAuth>
-          }
-        />
-        {/* E1, T7: proyectos. /proyectos/:id monta ProyectoDetalle (T8). */}
-        <Route
-          path="/proyectos"
-          element={
-            <RequireAuth>
-              <Proyectos />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/proyectos/:id"
-          element={
-            <RequireAuth>
-              <ProyectoDetalle />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/admin/*"
-          element={
-            <RequireAuth>
-              <RequireSuperadmin>
-                <Admin />
-              </RequireSuperadmin>
-            </RequireAuth>
-          }
-        />
+        {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
+            redirige TODO este bloque a /virtual-office; en la de Axioma lo
+            sirve tal cual estaba. */}
+        <Route element={<SoloAxioma />}>
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <Dashboard />
+              </RequireAuth>
+            }
+          />
+          {/* Task 9 (2026-09-18): ruta propia, hermana de "/" -- Dashboard es
+              un layout fijo de 3 paneles sin sub-rutas (a diferencia de Admin,
+              que sí las tiene), así que anidar acá habría pedido reestructurar
+              Dashboard.jsx sólo para esta pantalla. Cualquier usuario logueado
+              entra, no sólo superadmin. */}
+          {/* Ronda de arreglo 1 (2026-09-18): /historial/:pipelineId es
+              ruta de verdad -- los avisos de fin de pipeline (correo y
+              Telegram, jax-platform/backend/aviso_pipeline.py:175 y
+              jax/jacobs/aviso.py:80) arman el enlace como
+              {origen}/historial/{pipeline_id} y esperan que ABRA ese pipeline,
+              no que caiga en la lista sin decir cuál era. Misma pantalla
+              (Historial.jsx lee :pipelineId con useParams) para las dos rutas:
+              sin id, sólo la lista; con id, la lista + el detalle abierto. */}
+          <Route
+            path="/historial"
+            element={
+              <RequireAuth>
+                <Historial />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/historial/:pipelineId"
+            element={
+              <RequireAuth>
+                <Historial />
+              </RequireAuth>
+            }
+          />
+          {/* E1, T7: proyectos. /proyectos/:id monta ProyectoDetalle (T8). */}
+          <Route
+            path="/proyectos"
+            element={
+              <RequireAuth>
+                <Proyectos />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/proyectos/:id"
+            element={
+              <RequireAuth>
+                <ProyectoDetalle />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/*"
+            element={
+              <RequireAuth>
+                <RequireSuperadmin>
+                  <Admin />
+                </RequireSuperadmin>
+              </RequireAuth>
+            }
+          />
+        </Route>
         {/* Corrección (2026-09-20): Memoria vivía acá, hermana de /admin/*,
             SIN el caparazón de administración (AdminSidebar) -- de ahí las
             dos quejas de Fernando: "Volver a Axioma" mandaba al inicio (la
@@ -193,7 +212,7 @@ export default function App() {
             en /memoria y puede haber un enlace guardado -- que no muera con
             un 404 mudo. */}
         <Route path="/memoria" element={<Navigate to="/admin/memoria" replace />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to={instalacionOficina ? '/virtual-office' : '/'} replace />} />
       </Routes>
     </BrowserRouter>
   )

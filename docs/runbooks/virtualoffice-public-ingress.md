@@ -30,7 +30,14 @@ su respuesta cerrada sin capturar los demás dominios existentes.
 ## Preparar sin publicar
 
 1. Construir el frontend desde el SHA ya auditado con el mecanismo de releases
-   inmutables de `docs/runbooks/frontend-estatico-p100.md`. Copiar el `dist`
+   inmutables de `docs/runbooks/frontend-estatico-p100.md`, **con
+   `--office-hosts virtualoffice.axioma-ia.io`**: sin ese flag el dist es el de
+   la instalación de Axioma (raíz = Mesa de Axioma); con él, el mismo árbol se
+   construye como instalación de la oficina — la raíz recibe el login de la
+   oficina y las rutas de la Mesa redirigen a `/virtual-office` (OP 358 pieza 1).
+   El manifiesto registra `office_hosts`; el veredicto de auditoría debe citar
+   el SHA-256 del manifiesto **de la oficina** para atar el dist correcto.
+   Copiar el `dist`
    y su `manifest.json` resultante a una carpeta de release nueva, propiedad
    de `root`. El directorio de release se llama exactamente como
    `manifest.json.source_sha`; no se genera ni reescribe un manifiesto en el
@@ -89,7 +96,8 @@ rm -- "$installer_tmp" "$validator_tmp" "$activator_tmp" "$rollback_tmp" "$locke
 SHA=SHA_COMPLETO_AUDITADO
 MANIFEST_SHA256=SHA256_DEL_MANIFEST_DESDE_EL_VEREDICTO
 BUILD_ROOT=$(mktemp -d)
-python3 ops/frontend/build.py --repo /RUTA/AL/REPO --releases "$BUILD_ROOT" --revision "$SHA"
+python3 ops/frontend/build.py --repo /RUTA/AL/REPO --releases "$BUILD_ROOT" --revision "$SHA" \
+  --office-hosts virtualoffice.axioma-ia.io
 sudo "$INSTALLER" \
   --built-release "$BUILD_ROOT/$SHA" \
   --site-root /opt/jax-office/virtualoffice.axioma-ia.io \

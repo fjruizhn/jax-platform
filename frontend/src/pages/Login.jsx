@@ -10,6 +10,7 @@ import PasswordInput from '../components/PasswordInput'
 import AlertaError from '../components/AlertaError'
 import HalEye from '../components/HalEye/HalEye'
 import { TAMANO_BOTON_ACCION, TAMANO_MINIMO_TOQUE } from '../tema/botones'
+import { esInstalacionDeOficina } from '../lib/instalacionOficina'
 
 const INPUT = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-2 text-sm text-texto focus:outline-none focus:border-foco'
 const LABEL = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider'
@@ -67,6 +68,11 @@ export default function Login() {
     const invitationFlow = location.state?.officeInvitationFlow
     if (invitationFlow === 'recovery') return navigate('/virtual-office')
     if (invitationFlow === 'accept') return navigate('/office/invitation')
+    // OP 358 pieza 1: en la instalación de la Oficina Virtual el dominio ES
+    // la oficina — todo login termina en ella; no hay Mesa de Axioma a la
+    // cuál volver. Los flujos de invitación (arriba) mandan más que el modo
+    // de instalación.
+    if (esInstalacionDeOficina()) return navigate('/virtual-office')
     return navigate(location.state?.from?.pathname === '/virtual-office' ? '/virtual-office' : (restringida(data) ? '/account/security' : '/'))
   }
   async function submitLogin(e) {
