@@ -8,7 +8,9 @@
 
 ## Preparar el release tras integrar el PR
 
-Ejecutar como operador en Hall9000. Estos comandos usan el checkout productivo **ya actualizado al commit aprobado**; el SHA se obtiene en vivo. `npm` y `node` deben estar en `PATH` del operador. `build.py` extrae exactamente el árbol Git de ese SHA y ejecuta `npm ci --include=dev && npm run build` fuera del checkout. Rechaza variables `VITE_*` externas no declaradas; los `.env` versionados, si existen, quedan cubiertos por el SHA de fuente. El manifiesto guarda SHA de fuente, SHA-256 del lockfile, versiones Node/npm y SHA-256 de cada archivo. No reescribe un release existente.
+Ejecutar como operador en Hall9000. Estos comandos usan el checkout productivo **ya actualizado al commit aprobado**; el SHA se obtiene en vivo. `npm` y `node` deben estar en `PATH` del operador. `build.py` extrae exactamente el árbol Git de ese SHA y ejecuta `npm ci --include=dev && npm run build` fuera del checkout. Rechaza variables `VITE_*` externas no declaradas; los `.env` versionados, si existen, quedan cubiertos el SHA de fuente. El manifiesto guarda SHA de fuente, SHA-256 del lockfile, versiones Node/npm y SHA-256 de cada archivo. No reescribe un release existente.
+
+La única entrada de build declarada además del SHA es `--office-hosts` (OP 358 pieza 1): construye el mismo árbol como instalación de la Oficina Virtual para esos hosts exactos, inyecta `VITE_OFFICE_HOSTS` sólo al subprocess de vite y lo registra en el manifiesto (`office_hosts`) para distinguir dos dist del mismo SHA de fuente. Sin el flag, el dist es el de Axioma y no lleva hosts de oficina. El release de la oficina se construye y publica con `docs/runbooks/virtualoffice-public-ingress.md`, no con este archivo.
 
 ```bash
 ROOT=/srv/jax-prod/jax-platform
