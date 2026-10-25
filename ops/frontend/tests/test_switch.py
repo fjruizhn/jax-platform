@@ -69,6 +69,25 @@ class ReleaseValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "VITE_CHAT_PDF_POLL_INITIAL_MS"):
                 build.build(Path("."), Path("/tmp/unused-p100-release"), "HEAD")
 
+    def test_office_hosts_flag_normalizes_and_validates(self):
+        # OP 358 pieza 1: hosts enter lowercased, de-duplicated, comma-tolerant.
+        self.assertEqual(
+            build.normalize_office_hosts(["VirtualOffice.Example.IO", "a.example,b.example", "a.example"]),
+            ("virtualoffice.example.io", "a.example", "b.example"),
+        )
+        for invalid in ("bad host", "-lead.example", "example..com", "example.test/x"):
+            with self.assertRaisesRegex(ValueError, "invalid office host"):
+                build.normalize_office_hosts([invalid])
+
+    def test_office_hosts_inject_only_the_declared_variable(self):
+        # An ambient VITE_OFFICE_HOSTS never reaches the build: without the
+        # flag the child env drops it, and build() rejects ambient VITE_*.
+        with patch.dict(os.environ, {"VITE_OFFICE_HOSTS": "ambient.example"}):
+            env = build.build_env(())
+            self.assertNotIn("VITE_OFFICE_HOSTS", env)
+        env = build.build_env(("office.example", "a.example"))
+        self.assertEqual(env["VITE_OFFICE_HOSTS"], "office.example,a.example")
+
     def test_manifest_detects_mutated_index(self):
         with tempfile.TemporaryDirectory() as temp:
             release = Path(temp) / ("a" * 40)
