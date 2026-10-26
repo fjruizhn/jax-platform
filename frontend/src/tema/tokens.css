@@ -2,7 +2,12 @@
    ÚNICA fuente de verdad de los valores: Tailwind y el test de contraste los
    leen de acá. Canales RGB separados por espacio para que Tailwind aplique
    opacidad: rgb(var(--fondo) / <alpha-value>).
-   Oscuro = :root (el tema de hoy y el DEFAULT_CONFIG). Claro = data-tema. */
+   Oscuro = :root (el tema de hoy y el DEFAULT_CONFIG). Claro = data-tema.
+   Instalación de la Oficina Virtual (OP 358): los bloques data-instalacion
+   remapean los mismos tokens a la paleta cálida de los studios (pilot
+   corporativo-virtual). La Oficina es oscura por defecto como Axioma;
+   data-tema="claro" sigue mandando dentro de cada instalación. sombra es el
+   color base de la sombra dura neo-brutalista (sólo la usa la Oficina). */
 :root {
   color-scheme: dark;
   --fondo: 15 23 42;
@@ -11,6 +16,7 @@
   --hundido: 15 23 42;
   --borde: 51 65 85;
   --borde-control: 99 115 138;
+  --sombra: 15 23 42;
   --barra-pista: 30 41 59;
   --barra-pulgar: 51 65 85;
   --texto-fuerte: 241 245 249;
@@ -63,6 +69,7 @@
   --hundido: 255 255 255;
   --borde: 203 213 225;
   --borde-control: 127 143 165;
+  --sombra: 51 65 85;
   --barra-pista: 226 232 240;
   --barra-pulgar: 148 163 184;
   --texto-fuerte: 2 6 23;
@@ -102,6 +109,119 @@
   --faceta-hipatia: 4 120 87;
   --faceta-thot: 180 83 9;
   --faceta-kimi: 14 116 144;
+  --faceta-ada: 109 40 217;
+  --faceta-jacobs: 15 23 42;
+  --faceta-imagen: 109 40 217;
+}
+
+/* Instalación de la Oficina, tema oscuro: cielo/papel/tinta del pilot
+   (corporativo-virtual). acento es coral quemado porque lleva texto blanco
+   encima; el coral vivo de los studios vive en acento-texto. Validado por el
+   test de contraste con los mismos 91 pares que Axioma. */
+:root[data-instalacion="oficina"] {
+  color-scheme: dark;
+  --fondo: 22 43 53;
+  --superficie: 29 56 65;
+  --superficie-2: 42 84 91;
+  --hundido: 16 37 46;
+  --borde: 54 84 91;
+  --borde-control: 111 151 160;
+  --sombra: 0 0 0;
+  --barra-pista: 29 56 65;
+  --barra-pulgar: 54 84 91;
+  --texto-fuerte: 255 253 246;
+  --texto: 233 243 239;
+  --texto-suave: 164 194 195;
+  --texto-tenue: 138 165 167;
+  --sobre-color: 255 253 246;
+  --acento: 184 84 47;
+  --acento-hover: 160 72 38;
+  --acento-texto: 242 177 153;
+  --acento-fondo: 64 43 37;
+  --accion: 17 107 114;
+  --accion-hover: 13 90 96;
+  --info: 156 198 227;
+  --info-fondo: 26 46 61;
+  --foco: 244 179 148;
+  --peligro: 243 160 160;
+  --peligro-fondo: 62 37 42;
+  --peligro-borde: 180 85 47;
+  --peligro-solido: 194 64 42;
+  --peligro-solido-hover: 163 51 32;
+  --exito: 143 217 172;
+  --exito-fondo: 25 49 47;
+  --exito-borde: 63 122 92;
+  --aviso: 224 189 119;
+  --aviso-fondo: 58 48 34;
+  --aviso-borde: 154 122 46;
+  --obsoleto: 235 166 119;
+  --oro: 212 176 115;
+  --oro-claro: 232 211 168;
+  --oro-oscuro: 138 109 47;
+  --burbuja-usuario: 58 74 82;
+  --modo-ejecutor: 15 118 110;
+  --faceta-jax-local: 124 184 242;
+  --faceta-jekyll: 165 170 250;
+  --faceta-hyde: 245 158 107;
+  --faceta-hipatia: 95 214 171;
+  --faceta-thot: 240 185 85;
+  --faceta-kimi: 95 208 232;
+  --faceta-ada: 184 161 245;
+  --faceta-jacobs: 255 255 255;
+  --faceta-imagen: 184 161 245;
+}
+
+/* Instalación de la Oficina, tema claro: cielo, papel y panel del pilot.
+   texto-suave/tenue son el muted del pilot oscurecido un paso: el original
+   (#54717a) queda en 4,39 sobre el cielo y AA pide 4,5. */
+:root[data-instalacion="oficina"][data-tema="claro"] {
+  color-scheme: light;
+  --fondo: 220 238 242;
+  --superficie: 255 253 246;
+  --superficie-2: 248 246 238;
+  --hundido: 248 246 238;
+  --borde: 191 209 203;
+  --borde-control: 95 125 132;
+  --sombra: 54 83 97;
+  --barra-pista: 191 209 203;
+  --barra-pulgar: 84 113 122;
+  --texto-fuerte: 18 38 46;
+  --texto: 23 50 66;
+  --texto-suave: 71 98 107;
+  --texto-tenue: 81 107 117;
+  --sobre-color: 255 253 246;
+  --acento: 193 78 38;
+  --acento-hover: 168 63 29;
+  --acento-texto: 176 71 34;
+  --acento-fondo: 251 233 224;
+  --accion: 17 107 114;
+  --accion-hover: 12 84 90;
+  --info: 43 108 158;
+  --info-fondo: 227 238 247;
+  --foco: 193 78 38;
+  --peligro: 179 54 27;
+  --peligro-fondo: 253 234 234;
+  --peligro-borde: 240 180 168;
+  --peligro-solido: 192 57 43;
+  --peligro-solido-hover: 160 47 34;
+  --exito: 23 105 74;
+  --exito-fondo: 229 245 236;
+  --exito-borde: 159 216 189;
+  --aviso: 138 94 10;
+  --aviso-fondo: 251 243 221;
+  --aviso-borde: 232 207 142;
+  --obsoleto: 163 84 29;
+  --oro: 122 96 39;
+  --oro-claro: 110 86 33;
+  --oro-oscuro: 95 74 28;
+  --burbuja-usuario: 241 227 194;
+  --modo-ejecutor: 15 118 110;
+  --faceta-jax-local: 29 78 216;
+  --faceta-jekyll: 67 56 202;
+  --faceta-hyde: 178 58 10;
+  --faceta-hipatia: 4 120 87;
+  --faceta-thot: 163 74 8;
+  --faceta-kimi: 11 106 131;
   --faceta-ada: 109 40 217;
   --faceta-jacobs: 15 23 42;
   --faceta-imagen: 109 40 217;

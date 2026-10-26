@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import {
-  CLAVE_ELECCION, CLAVE_PREDETERMINADO, esTema, temaInicial, aplicarTema,
+  CLAVE_ELECCION, CLAVE_PREDETERMINADO, esTema, temaInicial, aplicarTema, aplicarInstalacion,
 } from '../tema/aplicarTema'
 import { leer, escribir } from './almacenamiento'
 
@@ -52,3 +52,13 @@ export const useTema = create((set, get) => ({
     set({ predeterminado: valor, theme: valor })
   },
 }))
+
+// Instalación de la oficina (OP 358 pieza 2): el script en línea de
+// index.html ya pintó data-instalacion="oficina" antes del primer render con
+// el mismo CSV (%VITE_OFFICE_HOSTS%, ver lib/instalacionOficina.js);
+// re-aplicarla al importar el store es idempotente y cubre un arranque donde
+// ese script no haya corrido. En la Mesa de Axioma el CSV no casa con su host
+// y esto no hace nada.
+if (typeof document !== 'undefined') {
+  aplicarInstalacion(window.location.hostname, import.meta.env.VITE_OFFICE_HOSTS ?? '')
+}

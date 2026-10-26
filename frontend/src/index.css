@@ -13,6 +13,46 @@ body {
   padding: 0;
 }
 
+/* OP 358 pieza 2 — piel de la Oficina Virtual: Avenir (el idioma tipográfico
+   de los studios) en lugar de Inter, sólo cuando el host es de oficina.
+   data-instalacion la pinta el script en línea de index.html antes del
+   primer render. */
+:root[data-instalacion='oficina'] body {
+  font-family: 'Avenir Next', Avenir, 'Segoe UI', sans-serif;
+}
+
+/* OP 358 pieza 2 — mismo idioma que los studios: panel de borde marcado,
+   radio generoso y sombra dura desplazada (sin difuminar); la marca es un
+   bloque rotado con borde y sombra del color de tinta. Sólo se usan dentro
+   de la instalación de oficina. El alfa de la sombra vive por tema: los
+   estudios usan sombra algo más liviana en claro que en oscuro. */
+@layer components {
+  .tarjeta-oficina {
+    background-color: rgb(var(--superficie));
+    border: 2px solid rgb(var(--borde));
+    border-radius: 17px;
+    box-shadow: 7px 7px 0 rgb(var(--sombra) / 0.27);
+    padding: 1.5rem;
+  }
+
+  :root[data-tema='claro'] .tarjeta-oficina {
+    box-shadow: 7px 7px 0 rgb(var(--sombra) / 0.19);
+  }
+
+  .marca-oficina {
+    width: 54px;
+    height: 54px;
+    background-color: rgb(var(--acento));
+    color: rgb(var(--sobre-color));
+    border: 3px solid rgb(var(--texto-fuerte));
+    box-shadow: 5px 5px 0 rgb(var(--texto-fuerte));
+    display: grid;
+    place-items: center;
+    font-size: 29px;
+    transform: rotate(-4deg);
+  }
+}
+
 /* Ronda de arreglo 2 (2026-09-18): esta regla vivía acá, en `body`, GLOBAL --
    correcta para la Mesa y para Admin (los dos layouts fijos de un viewport,
    con su propio scroll interno) pero hacía IMPOSIBLE leer el Historial, que

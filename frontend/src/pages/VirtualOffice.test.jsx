@@ -247,6 +247,22 @@ describe('Virtual Office', () => {
     expect(screen.getByRole('dialog', { name: 'Acceso de Oficina virtual' })).toBeInTheDocument()
   })
 
+  // OP 358 pieza 2: esta página es standalone también en la instalación de
+  // Axioma — el botón de salida le hace falta en las dos. Fuera de la
+  // instalación de oficina no hay piel de estudio: tarjetas de siempre, sin marca.
+  it('offers the store logout and stays in the classic Axioma cards outside the office install', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
+    const logout = vi.fn()
+    useJaxStore.setState({ logout })
+    show()
+    const salir = await screen.findByRole('button', { name: 'Salir' })
+    expect(salir).toBeEnabled()
+    expect(screen.queryByRole('img', { name: 'Oficina virtual' })).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.tarjeta-oficina')).toHaveLength(0)
+    fireEvent.click(salir)
+    expect(logout).toHaveBeenCalledTimes(1)
+  })
+
   it('mounts invitation controls only for the boolean capability computed by the detail endpoint', async () => {
     projects.list.mockResolvedValue({ data: { projects: [{ id: 24, name: 'Administrable', description: '', tenant_id: 4 }], next_after_id: null } })
     projects.detail.mockResolvedValue({ data: { id: 24, name: 'Administrable', description: '', tenant_id: 4, scope_version: 7, audience: 'INTERNAL', capabilities: { manage_invitations: true } } })

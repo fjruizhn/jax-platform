@@ -41,14 +41,16 @@ function fallas(tema) {
 }
 
 describe('tokens de color', () => {
-  it('tokens.css tiene los dos temas con 48 tokens cada uno', () => {
-    expect(Object.keys(temas.oscuro)).toHaveLength(48)
-    expect(Object.keys(temas.claro)).toHaveLength(48)
+  it('tokens.css tiene los cuatro temas con 49 tokens cada uno', () => {
+    for (const tema of Object.keys(temas)) {
+      expect(Object.keys(temas[tema])).toHaveLength(49)
+    }
   })
 
-  it('todo token de tokens.js tiene valor en los dos temas, y todo valor tiene nombre', () => {
-    const faltan = TOKENS.flatMap((n) => ['oscuro', 'claro'].filter((t) => !temas[t][n]).map((t) => `${n} (${t})`))
-    const nombres = new Set([...Object.keys(temas.oscuro), ...Object.keys(temas.claro)])
+  it('todo token de tokens.js tiene valor en los cuatro temas, y todo valor tiene nombre', () => {
+    const nombresDeTemas = Object.keys(temas)
+    const faltan = TOKENS.flatMap((n) => nombresDeTemas.filter((t) => !temas[t][n]).map((t) => `${n} (${t})`))
+    const nombres = new Set(nombresDeTemas.flatMap((t) => Object.keys(temas[t])))
     const sinNombre = [...nombres].filter((n) => !TOKENS.includes(n))
     expect(faltan).toEqual([])
     expect(sinNombre).toEqual([])
@@ -61,13 +63,11 @@ describe('tokens de color', () => {
     expect(r).toBeLessThan(AA_TEXTO)
   })
 
-  it('los 91 pares alcanzan su mínimo en oscuro', () => {
+  it('los 91 pares alcanzan su mínimo en los cuatro temas', () => {
     expect(PARES).toHaveLength(91)
-    expect(fallas('oscuro')).toEqual([])
-  })
-
-  it('los 91 pares alcanzan su mínimo en claro', () => {
-    expect(fallas('claro')).toEqual([])
+    for (const tema of Object.keys(temas)) {
+      expect(fallas(tema)).toEqual([])
+    }
   })
 
   // Task 16b (Ruling 28): "deprecado" necesita su propio token, distinto de

@@ -8,6 +8,8 @@ import OfficeInvitationManager from '../components/office/OfficeInvitationManage
 import OfficeProjectCreator from '../components/office/OfficeProjectCreator'
 import OfficeProjectMembershipManager from '../components/office/OfficeProjectMembershipManager'
 import OfficeAgentPanel from '../components/office/OfficeAgentPanel'
+import MarcaOficina from '../components/office/MarcaOficina'
+import { esInstalacionDeOficina } from '../lib/instalacionOficina'
 
 const PAGE_SIZE = 25
 const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
@@ -17,6 +19,15 @@ const validDetail = (data) => validProject(data) && Number.isInteger(data.scope_
 export default function VirtualOffice({ officeSession, onOfficeDenied }) {
   const { t } = useI18n()
   const user = useJaxStore((s) => s.user)
+  const logout = useJaxStore((s) => s.logout)
+  // Logout en vuelo: el botón queda ocupado (un doble clic no envía dos),
+  // mismo criterio que BarraUsuario.
+  const saliendo = useJaxStore((s) => !!s.saliendo)
+  // OP 358 pieza 2: en la instalación de la oficina esta página viste la piel
+  // de los studios (tarjeta-oficina + MarcaOficina); en la de Axioma queda
+  // con las tarjetas de siempre, sin marca.
+  const oficina = esInstalacionDeOficina()
+  const tarjeta = oficina ? 'tarjeta-oficina' : 'rounded-xl border border-borde bg-superficie p-5'
   const [showAccess, setShowAccess] = useState(false)
   const [projects, setProjects] = useState(null)
   const [nextAfterId, setNextAfterId] = useState(null)
@@ -102,9 +113,30 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
   return (
     <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
       <section className="mx-auto max-w-3xl space-y-5">
-        <header className="rounded-xl border border-borde bg-superficie p-5">
-          <p className="text-xs font-semibold uppercase tracking-widest text-acento-texto">{t.virtualOffice.kicker}</p>
-          <h1 className="mt-1 text-2xl font-bold">{t.virtualOffice.title}</h1>
+        <header className={tarjeta}>
+          {/* El logout vive acá y no en una barra compartida porque esta
+              página es standalone en las dos instalaciones: sin él, una vez
+              dentro no hay salida (BarraUsuario no se monta en esta ruta). */}
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              {oficina && <MarcaOficina etiqueta={t.virtualOffice.title} />}
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-widest text-acento-texto">{t.virtualOffice.kicker}</p>
+                <h1 className="mt-1 text-2xl font-bold">{t.virtualOffice.title}</h1>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => logout()}
+              disabled={saliendo}
+              aria-busy={saliendo}
+              aria-label={t.logout}
+              title={t.logout}
+              className={`${TAMANO_BOTON_44} rounded border border-borde text-texto hover:bg-hundido hover:text-peligro disabled:opacity-60`}
+            >
+              {t.logout}
+            </button>
+          </div>
           <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.intro}</p>
           <dl className="mt-4 text-sm">
             <div><dt className="text-texto-tenue">{t.virtualOffice.account}</dt><dd className="break-all">{user?.email || t.virtualOffice.accountUnavailable}</dd></div>
@@ -112,7 +144,7 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
           <button type="button" onClick={() => setShowAccess(true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido`}>{t.virtualOffice.accessInfo}</button>
         </header>
 
-        <section className="rounded-xl border border-borde bg-superficie p-5">
+        <section className={tarjeta}>
           <h2 className="text-base font-semibold">{t.virtualOffice.projects.title}</h2>
           {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} actorUserId={session.identity?.user_id} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
           {projects === null && !error && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}

@@ -23,12 +23,22 @@ function variables(bloque) {
   return salida
 }
 
-// tokens.css -> { oscuro, claro }. Oscuro es `:root { }` y claro
-// `:root[data-tema="claro"] { }`. Si falta un bloque, tira: un tema a medias
-// no puede pasar en verde.
+// tokens.css -> { oscuro, claro, oficinaOscuro, oficinaClaro }. Oscuro es
+// `:root { }` y claro `:root[data-tema="claro"] { }`; los de la instalación
+// de la Oficina agregan data-instalacion="oficina" (OP 358). Si falta un
+// bloque, tira: un tema a medias no puede pasar en verde.
 export function parsearTokens(css) {
-  const oscuro = css.match(/:root\s*\{([^}]*)\}/)
-  const claro = css.match(/:root\[data-tema="claro"\]\s*\{([^}]*)\}/)
-  if (!oscuro || !claro) throw new Error('tokens.css sin el bloque :root o sin :root[data-tema="claro"]')
-  return { oscuro: variables(oscuro[1]), claro: variables(claro[1]) }
+  const bloques = [
+    ['oscuro', /:root\s*\{([^}]*)\}/],
+    ['claro', /:root\[data-tema="claro"\]\s*\{([^}]*)\}/],
+    ['oficinaOscuro', /:root\[data-instalacion="oficina"\]\s*\{([^}]*)\}/],
+    ['oficinaClaro', /:root\[data-instalacion="oficina"\]\[data-tema="claro"\]\s*\{([^}]*)\}/],
+  ]
+  const temas = {}
+  for (const [nombre, patron] of bloques) {
+    const bloque = css.match(patron)
+    if (!bloque) throw new Error(`tokens.css sin el bloque del tema ${nombre}`)
+    temas[nombre] = variables(bloque[1])
+  }
+  return temas
 }

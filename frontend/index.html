@@ -2,9 +2,10 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <!-- Tema antes del primer pintado (spec 2026-09-14-tema-tokens §5.2).
-         Copia mínima de src/tema/aplicarTema.js (temaInicial + aplicarTema);
-         si cambia uno, cambia el otro: src/tema/scriptTema.test.js los compara. -->
+    <!-- Tema e instalación antes del primer pintado (spec 2026-09-14-tema-tokens
+         §5.2). Copia mínima de src/tema/aplicarTema.js (temaInicial + aplicarTema +
+         esHostDeOficina + aplicarInstalacion); si cambia uno, cambia el otro:
+         src/tema/scriptTema.test.js los compara. -->
     <script id="tema-inicial">
       (function () {
         var tema = 'dark'
@@ -20,6 +21,25 @@
         }
         if (tema === 'light') {
           document.documentElement.setAttribute('data-tema', 'claro')
+        }
+        try {
+          // Instalación de la oficina (OP 358 pieza 2): mismo CSV de hosts
+          // que lib/instalacionOficina.js (VITE_OFFICE_HOSTS, reemplazado al
+          // construir; sin definir queda el literal y nunca casa con un host
+          // real). Pinta data-instalacion="oficina" antes del primer render
+          // para que los tokens de la oficina entren ya con el skin.
+          var csv = '%VITE_OFFICE_HOSTS%'
+          var host = (typeof location !== 'undefined' && location && location.hostname) || ''
+          host = host.trim().toLowerCase()
+          var entradas = csv.split(',')
+          for (var i = 0; i < entradas.length; i++) {
+            if (host !== '' && entradas[i].trim().toLowerCase() === host) {
+              document.documentElement.setAttribute('data-instalacion', 'oficina')
+              break
+            }
+          }
+        } catch (err) {
+          // fail-soft: sin instalación antes de perder el primer pintado.
         }
       })()
     </script>

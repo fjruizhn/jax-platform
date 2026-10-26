@@ -46,6 +46,18 @@ describe('Raíz = login de la oficina (instalación de la Oficina Virtual)', () 
     await waitFor(() => expect(window.location.pathname).toBe('/login'))
   })
 
+  // OP 358 pieza 2: en esta instalación el login viste la piel de los
+  // studios — la marca de la oficina (MarcaOficina) en lugar del ojo de HAL,
+  // y el intro de la oficina como tagline.
+  it('el login de la oficina viste la marca de la oficina, no el ojo de HAL', async () => {
+    sinSesion()
+    window.history.pushState({}, '', '/login')
+    render(<I18nProvider><App /></I18nProvider>)
+    expect(await screen.findByRole('img', { name: 'Oficina virtual' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Ojo HAL/)).not.toBeInTheDocument()
+    expect(screen.getByText('Espacio protegido para proyectos, personas y permisos de Oficina.')).toBeInTheDocument()
+  })
+
   it('la raíz con sesión de oficina entra directo a la oficina, no a la Mesa de Axioma', async () => {
     conSesionDeOficina()
     session.mockResolvedValue(allowed())
@@ -79,7 +91,7 @@ describe('Raíz = login de la oficina (instalación de la Oficina Virtual)', () 
     render(<I18nProvider><App /></I18nProvider>)
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'client@example.test' } })
     fireEvent.change(screen.getByLabelText('Contraseña'), { target: { value: 'password-de-prueba' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Entrar a Axioma' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Entrar a Oficina virtual' }))
     expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/virtual-office')
   })
@@ -104,5 +116,9 @@ describe('Instalación de Axioma (sin hosts de oficina): comportamiento intacto'
     window.history.pushState({}, '', '/no-existe')
     render(<I18nProvider><App /></I18nProvider>)
     await waitFor(() => expect(window.location.pathname).toBe('/login'))
+    // Pieza 2: sin instalación de oficina no hay piel de estudio — el ojo de
+    // HAL sigue siendo la cara del login de la Mesa.
+    expect(await screen.findByLabelText(/Ojo HAL/)).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Axioma' })).not.toBeInTheDocument()
   })
 })

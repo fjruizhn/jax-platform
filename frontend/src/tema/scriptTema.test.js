@@ -1,12 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { temaInicial, aplicarTema } from './aplicarTema.js'
+import { temaInicial, aplicarTema, aplicarInstalacion } from './aplicarTema.js'
 
 // El script en línea de index.html es la copia mínima de temaInicial +
-// aplicarTema (spec §5.3): corre antes del primer pintado y no puede importar
-// módulos. Este test lo extrae y lo corre con un DOM y un localStorage falsos,
-// y exige que deje el MISMO DOM que el módulo, en cada combinación.
+// aplicarTema (spec §5.3) y de la detección de instalación de oficina
+// (OP 358 pieza 2): corre antes del primer pintado y no puede importar
+// módulos. Este test lo extrae y lo corre con un DOM, un localStorage y un
+// location falsos, y exige que deje el MISMO DOM que el módulo, en cada
+// combinación.
 const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
 const script = html.match(/<script id="tema-inicial">([\s\S]*?)<\/script>/)?.[1]
 
@@ -43,6 +45,21 @@ const CASOS = [
   ['elección inválida cae al predeterminado', { jax_theme: 'violeta', jax_theme_default: 'light' }, 'light'],
 ]
 
+// Instalación de la oficina (OP 358 pieza 2): el script decide
+// data-instalacion="oficina" leyendo el CSV %VITE_OFFICE_HOSTS% (Vite lo
+// reemplaza al construir; en el build de la Mesa queda el literal, que no
+// casa con ningún host real). Aquí se sustituye el CSV a mano y se compara
+// contra aplicarInstalacion del módulo, igual que con el tema. `location` se
+// pasa como parámetro de new Function para controlar el hostname sin DOM.
+const CASOS_OFICINA = [
+  ['host de oficina en el CSV', 'virtualoffice.axioma-ia.io', 'virtualoffice.axioma-ia.io', 'oficina'],
+  ['host ajeno al CSV', 'virtualoffice.axioma-ia.io', 'app.axioma-ia.io', undefined],
+  ['CSV con espacios y mayúsculas', ' VirtualOffice.Axioma-IA.io , otro.ejemplo.com ', 'virtualoffice.axioma-ia.io', 'oficina'],
+  ['CSV vacío', '', 'virtualoffice.axioma-ia.io', undefined],
+  ['CSV sin reemplazar (build de la Mesa)', '%VITE_OFFICE_HOSTS%', 'virtualoffice.axioma-ia.io', undefined],
+  ['hostname vacío', 'virtualoffice.axioma-ia.io', '', undefined],
+]
+
 describe('script de tema en index.html', () => {
   // M-2 (revisión final, 2026-09-14): el chequeo original sólo buscaba
   // `<script type="module"` DENTRO de <head>, pero el módulo vive en <body>
@@ -74,24 +91,43 @@ describe('script de tema en index.html', () => {
 
   it.each(CASOS)('%s: el script y aplicarTema dejan el mismo DOM', (_, valores, esperado) => {
     const deScript = raizFalsa()
-    new Function('localStorage', 'document', script)(almacen(valores), { documentElement: deScript })
+    new Function('localStorage', 'document', 'location', script)(almacen(valores), { documentElement: deScript })
     const deModulo = raizFalsa()
     aplicarTema(temaInicial(almacen(valores)), deModulo)
+    // Sin location (tercer argumento ausente) el script no marca instalación;
+    // el módulo con hostname desconocido tampoco.
+    aplicarInstalacion(undefined, undefined, deModulo)
     expect(foto(deScript)).toEqual(foto(deModulo))
     // Que los dos coincidan no alcanza: tienen que coincidir en lo correcto.
     expect(deModulo.attrs['data-tema']).toBe(esperado === 'light' ? 'claro' : undefined)
   })
 
+  it.each(CASOS_OFICINA)('instalación %s: el script y el módulo dejan el mismo DOM', (_, csv, host, esperado) => {
+    const scriptConCsv = script.replaceAll('%VITE_OFFICE_HOSTS%', csv)
+    const deScript = raizFalsa()
+    new Function('localStorage', 'document', 'location', scriptConCsv)(
+      almacen({}), { documentElement: deScript }, { hostname: host },
+    )
+    const deModulo = raizFalsa()
+    aplicarTema(temaInicial(almacen({})), deModulo)
+    aplicarInstalacion(host, csv, deModulo)
+    expect(foto(deScript)).toEqual(foto(deModulo))
+    // Ídem: coincidir no alcanza, tienen que acertar.
+    expect(deModulo.attrs['data-instalacion']).toBe(esperado)
+  })
+
   it('con localStorage bloqueado, el script y aplicarTema caen los dos a oscuro sin lanzar', () => {
     const deScript = raizFalsa()
     expect(() => {
-      new Function('localStorage', 'document', script)(almacenQueLanza(), { documentElement: deScript })
+      new Function('localStorage', 'document', 'location', script)(almacenQueLanza(), { documentElement: deScript })
     }).not.toThrow()
     const deModulo = raizFalsa()
     expect(() => {
       aplicarTema(temaInicial(almacenQueLanza()), deModulo)
+      aplicarInstalacion(undefined, undefined, deModulo)
     }).not.toThrow()
     expect(foto(deScript)).toEqual(foto(deModulo))
     expect(deModulo.attrs['data-tema']).toBeUndefined()
+    expect(deModulo.attrs['data-instalacion']).toBeUndefined()
   })
 })
