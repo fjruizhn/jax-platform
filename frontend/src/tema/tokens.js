@@ -4,7 +4,7 @@
 // que pinta un color que viene de datos (colorToken).
 
 export const TOKENS = [
-  'fondo', 'superficie', 'superficie-2', 'hundido', 'borde', 'borde-control',
+  'fondo', 'superficie', 'superficie-2', 'hundido', 'borde', 'borde-control', 'sombra',
   'barra-pista', 'barra-pulgar',
   'texto-fuerte', 'texto', 'texto-suave', 'texto-tenue', 'sobre-color',
   'acento', 'acento-hover', 'acento-texto', 'acento-fondo',

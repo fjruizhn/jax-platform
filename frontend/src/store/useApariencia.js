@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { CLAVE_IDIOMA_PREDETERMINADO, esIdioma } from '../i18n/idioma'
+import { esInstalacionDeOficina } from '../lib/instalacionOficina'
 import { leer, escribir } from './almacenamiento'
 
 // Nombre del sistema e idioma predeterminado (frente C, 2026-09-16), desde
@@ -41,5 +42,9 @@ export const useApariencia = create((set) => ({
 // visita, sin red), la marca de i18n: es lo que se mostraba hasta el frente C.
 export function useNombreDelSistema(t) {
   const nombre = useApariencia((s) => s.systemName)
+  // OP 358 pieza 2: en la instalación de la Oficina Virtual la marca es la
+  // de la oficina (virtualOffice.title) — el system_name del servidor es el
+  // de la Mesa de Axioma y no asoma en este dominio.
+  if (esInstalacionDeOficina()) return t.virtualOffice.title
   return nombre ?? t.brandName
 }
