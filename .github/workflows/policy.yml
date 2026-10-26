@@ -1171,7 +1171,7 @@ jobs:
             // Axioma sin hub). Medido local sobre 8ef4aefe: 1545 passed, 0 fallidos,
             // 126 archivos.
             if (r.numFailedTests !== 0 || r.numPassedTests !== 1545) {
-              console.error("PISO ROTO: se esperaban 1542 tests de vitest CORRIDOS y 0 fallidos.");
+              console.error("PISO ROTO: se esperaban 1545 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
