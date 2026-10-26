@@ -8,6 +8,7 @@ import OfficeInvitationManager from '../components/office/OfficeInvitationManage
 import OfficeProjectCreator from '../components/office/OfficeProjectCreator'
 import OfficeProjectMembershipManager from '../components/office/OfficeProjectMembershipManager'
 import OfficeAgentPanel from '../components/office/OfficeAgentPanel'
+import HubOficina from '../components/office/HubOficina'
 import MarcaOficina from '../components/office/MarcaOficina'
 import { esInstalacionDeOficina } from '../lib/instalacionOficina'
 
@@ -143,6 +144,11 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
           </dl>
           <button type="button" onClick={() => setShowAccess(true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido`}>{t.virtualOffice.accessInfo}</button>
         </header>
+
+        {/* OP 358 pieza 3: el hub de salas es la oficina central de la
+            instalación de oficina; en la instalación de Axioma esta página
+            sigue siendo sólo proyectos. */}
+        {oficina && <HubOficina />}
 
         <section className={tarjeta}>
           <h2 className="text-base font-semibold">{t.virtualOffice.projects.title}</h2>

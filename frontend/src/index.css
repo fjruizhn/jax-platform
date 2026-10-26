@@ -51,6 +51,85 @@ body {
     font-size: 29px;
     transform: rotate(-4deg);
   }
+
+  /* OP 358 pieza 3 — hub 2D: la tarjeta de cada sala sigue el idioma de la
+     oficina (borde marcado, radio menor que la tarjeta contenedora y sombra
+     dura). Sólo tokens: los colores viven en tokens.css y el par
+     accion/sobre-color del estado activa ya está validado en PARES. */
+  .sala-boton {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    text-align: left;
+    background-color: rgb(var(--superficie));
+    border: 2px solid rgb(var(--borde));
+    border-radius: 13px;
+    overflow: hidden;
+    box-shadow: 4px 4px 0 rgb(var(--sombra) / 0.27);
+  }
+
+  .sala-boton:hover {
+    background-color: rgb(var(--hundido));
+  }
+
+  :root[data-tema='claro'] .sala-boton {
+    box-shadow: 4px 4px 0 rgb(var(--sombra) / 0.19);
+  }
+
+  .sala-boton:focus-visible {
+    outline: 2px solid rgb(var(--foco));
+    outline-offset: 2px;
+  }
+
+  .sala-visu {
+    position: relative;
+    aspect-ratio: 880 / 562;
+    background-color: rgb(var(--hundido));
+    display: grid;
+    place-items: center;
+  }
+
+  .sala-foto {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .sala-glifo {
+    font-size: 44px;
+    line-height: 1;
+    color: rgb(var(--acento-texto));
+  }
+
+  .sala-estado {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid rgb(var(--borde));
+    background-color: rgb(var(--fondo) / 0.92);
+    color: rgb(var(--texto));
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .sala-estado[data-estado='activa'] {
+    background-color: rgb(var(--accion));
+    color: rgb(var(--sobre-color));
+    border-color: transparent;
+  }
+
+  .sala-pie {
+    padding: 0.65rem 0.8rem 0.8rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: rgb(var(--texto));
+  }
 }
 
 /* Ronda de arreglo 2 (2026-09-18): esta regla vivía acá, en `body`, GLOBAL --
