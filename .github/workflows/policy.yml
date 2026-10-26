@@ -1166,8 +1166,12 @@ jobs:
             // +8 en VirtualOffice.test.jsx, VirtualOffice.piel.test.jsx, contraste.test.js
             // y OfficeRoot.route.test.jsx. Medido en el runner de GitHub 40266607556:
             // 1542 passed, 0 fallidos, 125 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1542) {
-              console.error("PISO ROTO: se esperaban 1542 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1542 -> 1545 (hub 2D de la oficina, OP 358 pieza 3, 2026-10-26):
+            // +2 HubOficina.test.jsx y +1 VirtualOffice.piel.test.jsx (instalación
+            // Axioma sin hub). Medido local sobre 8ef4aefe: 1545 passed, 0 fallidos,
+            // 126 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1545) {
+              console.error("PISO ROTO: se esperaban 1545 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

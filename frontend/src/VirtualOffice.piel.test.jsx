@@ -42,11 +42,25 @@ describe('Página de la oficina con piel de estudio', () => {
     expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(screen.getByRole('img', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(screen.getByText('client@example.test')).toBeInTheDocument()
-    // Las dos secciones (encabezado y proyectos) visten la tarjeta del estudio.
-    expect(document.querySelectorAll('.tarjeta-oficina')).toHaveLength(2)
+    // Las tres secciones (encabezado, hub de salas y proyectos) visten la
+    // tarjeta del estudio (OP 358 pieza 3 sumó el hub).
+    expect(document.querySelectorAll('.tarjeta-oficina')).toHaveLength(3)
+    expect(screen.getByRole('heading', { name: 'Salas de la oficina' })).toBeInTheDocument()
     const salir = screen.getByRole('button', { name: 'Salir' })
     expect(salir).toBeEnabled()
     fireEvent.click(salir)
     expect(logout).toHaveBeenCalledTimes(1)
+  })
+
+  it('fuera de la instalación de oficina no viste la piel ni muestra el hub de salas', async () => {
+    instalacionOficina.mockReturnValue(false)
+    session.mockResolvedValue({ data: {
+      identity: { user_id: 8, tenant_id: 4, account_class: 'INTERNAL', global_role: 'COLLABORATOR' },
+      mfa: { verified: true, recent: true }, capabilities: { create_project: false, administer_office: false, administer_identity_security: false },
+    } })
+    render(<I18nProvider><App /></I18nProvider>)
+    expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Salas de la oficina' })).not.toBeInTheDocument()
+    expect(document.querySelector('.tarjeta-oficina')).toBeNull()
   })
 })

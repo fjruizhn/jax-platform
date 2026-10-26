@@ -1785,6 +1785,20 @@ export default {
     projects: { title: 'Proyectos', loading: 'Cargando proyectos…', empty: 'No hay proyectos disponibles.', error: 'No se pudieron cargar los proyectos.', more: 'Cargar más', detailTitle: 'Detalle del proyecto', noDescription: 'Sin descripción.' },
     creator: { open: 'Crear proyecto', title: 'Crear proyecto', intro: 'Iniciá el primer proyecto de Oficina para tu organización actual.', name: 'Nombre del proyecto', description: 'Descripción (opcional)', create: 'Crear proyecto', creating: 'Creando proyecto…', error: 'No se pudo crear el proyecto.', conflict: 'Esta solicitud de proyecto debe actualizarse antes de reintentarlo.' },
     agents: { title: 'Agentes privados', privateNotice: 'Estos agentes trabajan solo dentro de este proyecto.', loading: 'Cargando agentes…', empty: 'Todavía no hay agentes privados en este proyecto.', createOpen: 'Crear agente privado', createTitle: 'Crear agente privado', createIntro: 'Configurá un agente para el trabajo interno de este proyecto.', key: 'Clave del agente', name: 'Nombre del agente', engine: 'Motor', engineFor: (name) => `Motor de ${name}`, instructions: 'Instrucciones', create: 'Crear agente', creating: 'Creando agente…', messageFor: (name) => `Mensaje para ${name}`, run: 'Ejecutar agente', running: 'Ejecutando…', output: 'Respuesta', unknown: 'No se pudo confirmar el resultado. Revisá antes de volver a enviar el mensaje.', dispatching: 'El agente sigue procesando este mensaje. No lo envíes de nuevo.', loadError: 'No se pudieron cargar los agentes.', createError: 'No se pudo crear el agente.', bindError: 'No se pudo cambiar el motor del agente.', runError: 'No se pudo ejecutar el agente.' },
+    hub: {
+      title: 'Salas de la oficina',
+      intro: 'Cada sala concentra una vertical del despacho. Elegí la que necesitás.',
+      estados: { activa: 'Disponible', proximamente: 'Próximamente', futura: 'Planeada' },
+      salas: {
+        junta: { nombre: 'Junta Directiva', descripcion: 'La sala de sesiones del consejo, en la oficina central.' },
+        agencia: { nombre: 'Agencia · Susan Kare Studio', descripcion: 'La agencia creativa del ecosistema, con su oficina 3D de trabajo.', alt: 'Vista de la oficina 3D del estudio' },
+        bufete: { nombre: 'Bufete Jurídico', descripcion: 'Asesoría legal y contratos, con la práctica hondureña del despacho.' },
+        arquitectura: { nombre: 'Despacho de Arquitectura e Ingeniería', descripcion: 'Arquitectura e ingeniería para proyectos de obra.' },
+        contable: { nombre: 'Despacho Contable', descripcion: 'Contabilidad, nómina y cumplimiento fiscal.' },
+        banca: { nombre: 'Banca de Inversión y Finanzas', descripcion: 'Análisis de crédito y modelos financieros.' },
+        biblioteca: { nombre: 'Biblioteca', descripcion: 'La memoria compartida de la oficina, todavía en proyecto.' },
+      },
+    },
     members: { open: 'Agregar persona existente', manage: 'Gestionar personas del proyecto', title: 'Agregar una persona existente', intro: 'Elegí una persona de Oficina existente para agregarla a este proyecto.', invitationOnly: 'Para agregar personas, usá Gestionar invitaciones.', person: 'Persona', choose: 'Elegí una persona', role: 'Papel en el proyecto', roleFor: (person) => `Papel de ${person}`, roles: { COLLABORATOR: 'Colaborador', PROJECT_ADMIN: 'Administrador del proyecto' }, collaboratorOnly: 'La persona se agregará como colaboradora.', grant: 'Agregar persona', granting: 'Agregando persona…', currentTitle: 'Personas del proyecto', loading: 'Cargando personas…', empty: 'No hay personas en este proyecto.', more: 'Cargar más personas', userId: (userId) => `Usuario #${userId}`, audiences: { INTERNAL: 'Equipo interno', CLIENT_PUBLISHED: 'Cliente publicado' }, states: { ACTIVE: 'Activa', REVOKED: 'Revocada' }, revoke: 'Revocar acceso', restore: 'Restaurar acceso', error: 'No se pudo agregar la persona a este proyecto.', forbidden: 'Tu acceso cambió y ya no podés administrar personas en este proyecto.', conflict: 'La persona cambió antes de completar la operación. Actualizá e intentá de nuevo.' },
   },
   officeInvitation: {

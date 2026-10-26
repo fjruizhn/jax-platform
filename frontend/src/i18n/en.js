@@ -1689,6 +1689,20 @@ export default {
     projects: { title: 'Projects', loading: 'Loading projects…', empty: 'No projects are available.', error: 'Projects could not be loaded.', more: 'Load more', detailTitle: 'Project detail', noDescription: 'No description.' },
     creator: { open: 'Create project', title: 'Create project', intro: 'Start your first Office project for your current organization.', name: 'Project name', description: 'Description (optional)', create: 'Create project', creating: 'Creating project…', error: 'The project could not be created.', conflict: 'This project request needs to be refreshed before trying again.' },
     agents: { title: 'Private agents', privateNotice: 'These agents work only inside this project.', loading: 'Loading agents…', empty: 'There are no private agents in this project yet.', createOpen: 'Create private agent', createTitle: 'Create private agent', createIntro: 'Set up an agent for this project’s internal work.', key: 'Agent key', name: 'Agent name', engine: 'Engine', engineFor: (name) => `${name}'s engine`, instructions: 'Instructions', create: 'Create agent', creating: 'Creating agent…', messageFor: (name) => `Message for ${name}`, run: 'Run agent', running: 'Running…', output: 'Response', unknown: 'We could not confirm the result. Review before sending the message again.', dispatching: 'The agent is still processing this message. Do not send it again.', loadError: 'Agents could not be loaded.', createError: 'The agent could not be created.', bindError: 'The agent engine could not be changed.', runError: 'The agent could not be run.' },
+    hub: {
+      title: 'Office rooms',
+      intro: 'Each room gathers one vertical of the firm. Pick the one you need.',
+      estados: { activa: 'Available', proximamente: 'Coming soon', futura: 'Planned' },
+      salas: {
+        junta: { nombre: 'Board of Directors', descripcion: 'The board’s session room, in the central office.' },
+        agencia: { nombre: 'Agency · Susan Kare Studio', descripcion: 'The ecosystem’s creative agency, with its working 3D office.', alt: 'View of the studio’s 3D office' },
+        bufete: { nombre: 'Law Firm', descripcion: 'Legal counsel and contracts, with the firm’s Honduran practice.' },
+        arquitectura: { nombre: 'Architecture & Engineering Firm', descripcion: 'Architecture and engineering for construction projects.' },
+        contable: { nombre: 'Accounting Firm', descripcion: 'Accounting, payroll, and tax compliance.' },
+        banca: { nombre: 'Investment Banking & Finance', descripcion: 'Credit analysis and financial models.' },
+        biblioteca: { nombre: 'Library', descripcion: 'The office’s shared memory, still in the works.' },
+      },
+    },
     members: { open: 'Add existing person', manage: 'Manage project people', title: 'Add an existing person', intro: 'Choose an existing Office person to add to this project.', invitationOnly: 'Use Manage invitations to add people.', person: 'Person', choose: 'Choose a person', role: 'Project role', roleFor: (person) => `${person}'s role`, roles: { COLLABORATOR: 'Collaborator', PROJECT_ADMIN: 'Project administrator' }, collaboratorOnly: 'The person will be added as a collaborator.', grant: 'Add person', granting: 'Adding person…', currentTitle: 'Project people', loading: 'Loading people…', empty: 'There are no people in this project.', more: 'Load more people', userId: (userId) => `User #${userId}`, audiences: { INTERNAL: 'Internal team', CLIENT_PUBLISHED: 'Published client' }, states: { ACTIVE: 'Active', REVOKED: 'Revoked' }, revoke: 'Revoke access', restore: 'Restore access', error: 'The person could not be added to this project.', forbidden: 'Your access changed and you can no longer manage people in this project.', conflict: 'The person changed before the operation completed. Refresh and try again.' },
   },
   officeInvitation: {
