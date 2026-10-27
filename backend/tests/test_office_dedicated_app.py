@@ -1,5 +1,8 @@
 """The dedicated Office listener has no classic JAX HTTP surface."""
 import asyncio
+import os
+import subprocess
+import sys
 
 from fastapi.testclient import TestClient
 import pytest
@@ -24,6 +27,14 @@ def test_office_process_exposes_only_bounded_browser_routes():
     smtp = browser.get("/api/admin/smtp")
     assert smtp.status_code == 401
     assert smtp.headers["cache-control"] == "no-store"
+
+
+def test_office_import_does_not_require_the_classic_jax_repository():
+    environment = dict(os.environ, JAX_JWT_SECRET="fixture-office-secret", JAX_ENVIRONMENT="test")
+    environment.pop("JAX_REPO_BASE", None)
+    result = subprocess.run([sys.executable, "-c", "import office_main"],
+                            env=environment, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 def test_office_process_rejects_missing_dedicated_database_marker(monkeypatch):

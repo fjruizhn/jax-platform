@@ -11,6 +11,7 @@ services:
       - /etc/timezone:/etc/timezone:ro
     environment:
       MARIADB_ROOT_PASSWORD_FILE: /run/secrets/office_mariadb_root_password
+      MARIADB_DATABASE: axioma_office
       MARIADB_AUTO_UPGRADE: "1"
       TZ: America/Tegucigalpa
     secrets:

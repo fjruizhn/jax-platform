@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -51,6 +52,29 @@ async def _projects_table() -> None:
                 raise RuntimeError("Office projects schema is incompatible")
 
 
+async def _paired_memory_compat_tables(jax_root: Path) -> None:
+    """Install the paired JAX baseline tables omitted by its migrator.
+
+    Runtime DML grants and JAX's current memory modules still name these
+    tables. Read their exact DDL from the sealed, paired JAX source so Office
+    never borrows a table or a connection from JAX production.
+    """
+    source = (jax_root / "jax_memory_schema.sql").read_text(encoding="utf-8")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table in ("conversations", "messages", "facts"):
+                pattern = rf"(?ms)^CREATE TABLE `{table}` \(.*?^\) ENGINE=InnoDB[^;]*;"
+                matches = re.findall(pattern, source)
+                if len(matches) != 1:
+                    raise RuntimeError(f"paired JAX baseline for {table} is absent or ambiguous")
+                await cur.execute(
+                    "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
+                    "AND TABLE_NAME=%s", (table,))
+                if await cur.fetchone() is None:
+                    await cur.execute(matches[0])
+
+
 async def migrate() -> None:
     require_dedicated_db()
     jax_root = Path(os.environ["JAX_REPO_PATH"]).resolve(strict=True)
@@ -62,6 +86,7 @@ async def migrate() -> None:
         from jacobs import store
         await store.init_tables()
         await run_migrations()
+        await _paired_memory_compat_tables(jax_root)
     finally:
         await close_pool()
 
