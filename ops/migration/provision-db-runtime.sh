@@ -43,6 +43,11 @@ done
 
 die() { printf 'provision-db-runtime: %s\n' "$*" >&2; exit 1; }
 note() { printf 'provision-db-runtime: %s\n' "$*"; }
+if [[ $ENV_FILE == /etc/axioma-office/* ]]; then
+  [[ -f $ENV_FILE && ! -L $ENV_FILE &&
+     $(stat -c '%U:%G:%a' "$ENV_FILE") == root:root:600 ]] ||
+    die "Office deployment environment is absent or unsafe"
+fi
 [[ -r "$ENV_FILE" ]] || die "environment file is not readable"
 
 declare -A CFG=()

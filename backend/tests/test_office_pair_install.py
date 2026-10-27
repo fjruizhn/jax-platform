@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -24,6 +25,32 @@ def test_office_units_and_launcher_do_not_follow_the_global_jax_selector():
         unit = (base / "systemd" / name).read_text(encoding="utf-8")
         assert "/usr/local/libexec/axioma-office-pair-exec.py" in unit
         assert "/usr/local/libexec/jax-platform-pair-exec.py" not in unit
+
+
+def test_first_install_keeps_selector_traversable_without_exposing_credentials(tmp_path):
+    base = SCRIPT.parent
+    installer = (base / "install-office-base-runtime.sh").read_text(encoding="utf-8")
+    readiness = (base / "office-base-artifact-readiness.sh").read_text(encoding="utf-8")
+    assert "install -d -o root -g root -m 0711 /etc/axioma-office\n" in installer
+    assert "install -d -o root -g root -m 0700 /etc/axioma-office/mariadb" in installer
+    assert "$(stat -c '%a' /etc/axioma-office) == 711" in readiness
+    assert "$(stat -c '%a' \"$path\") == 700" in readiness
+    assert "stat -c '%U:%G:%a' /etc/axioma-office/deployment.env" in readiness
+    assert readiness.index("if [[ $phase == migration || $phase == services ]]; then") < readiness.index(
+        "stat -c '%U:%G:%a' /etc/axioma-office/deployment.env")
+
+    # Execute the real pre-read guard against a disposable stand-in for the
+    # production path. A world-readable secret must fail before parsing it.
+    provision = (SCRIPT.parents[2] / "ops/migration/provision-db-runtime.sh").read_text(encoding="utf-8")
+    env_file = tmp_path / "deployment.env"
+    env_file.write_text("OFFICE_DEDICATED_DB=1\n", encoding="utf-8")
+    env_file.chmod(0o644)
+    script = tmp_path / "provision-db-runtime.sh"
+    script.write_text(provision.replace("/etc/axioma-office/", str(tmp_path) + "/"), encoding="utf-8")
+    failed = subprocess.run(["bash", str(script), "--plan", "--env", str(env_file)],
+                            capture_output=True, text=True, check=False)
+    assert failed.returncode != 0
+    assert "Office deployment environment is absent or unsafe" in failed.stderr
 
 
 def test_first_install_runbook_adopts_without_jax_activation_and_imports_owner_before_start():

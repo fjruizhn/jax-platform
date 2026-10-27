@@ -52,7 +52,11 @@ if [[ $phase == database ]]; then
   if [[ $(docker inspect --format='{{.State.Running}}' axioma-office-mariadb 2>/dev/null || true) == true ]]; then
     echo 'stop the dedicated MariaDB container before replacing its files' >&2; exit 1
   fi
-  install -d -o root -g root -m 0700 /etc/axioma-office /etc/axioma-office/mariadb
+  # The unprivileged Office launcher reads the root-owned 0644 pair selector
+  # in this directory.  Credentials remain individual 0600 files; the DB
+  # configuration and data directories stay private.
+  install -d -o root -g root -m 0711 /etc/axioma-office
+  install -d -o root -g root -m 0700 /etc/axioma-office/mariadb
   install -d -o root -g root -m 0700 /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets
   for path in /etc/axioma-office /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
     [[ $(stat -c '%U:%G' "$path") == root:root ]] || { echo 'Office storage owner is unsafe' >&2; exit 1; }
