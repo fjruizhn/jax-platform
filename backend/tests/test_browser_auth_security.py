@@ -152,6 +152,14 @@ def test_production_requires_separate_operational_host_allowlist(monkeypatch):
         load_browser_security_config()
 
 
+def test_dedicated_office_internal_owner_resets_at_office_origin(monkeypatch):
+    from auth.browser_security import password_reset_origin
+
+    _production_environment(monkeypatch, f"{OFFICE_HOST}={OFFICE_ORIGIN}")
+    monkeypatch.setenv("FRONTEND_ORIGIN", OFFICE_ORIGIN)
+    assert password_reset_origin("INTERNAL") == OFFICE_ORIGIN
+
+
 @pytest.mark.parametrize("environment", (None, "typo"))
 def test_public_security_config_requires_explicit_production_mode(monkeypatch, environment):
     from auth.browser_security import BrowserSecurityConfigError, load_browser_security_config

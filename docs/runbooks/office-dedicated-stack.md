@@ -50,10 +50,48 @@ restauración en otra instancia antes de cambiar el ingreso público.
 ## 3. Principales, migración y propietario
 
 Preparar `/etc/axioma-office/deployment.env` como `root:root 0600` con el
-esquema `axioma_office`, host `127.0.0.1`, puerto `3310`, `OFFICE_DEDICATED_DB=1`,
-`OFFICE_DB_SERVER_ID=ID_UNICO`, `OFFICE_DB_HOSTNAME=axioma-office-db`,
-`OFFICE_MFA_POLICY=optional`, origen público HTTPS, secretos nuevos de Oficina
-y nombres de principales DB distintos de JAX. El provisionador existente
+esquema `axioma_office` y los valores verificados para esta instalación:
+
+```dotenv
+JAX_DB_HOST=127.0.0.1
+JAX_DB_PORT=3310
+JAX_DB_NAME=axioma_office
+JAX_DB_GRANTEE_HOST=HOST_MEDIDO_DEL_PUENTE_DOCKER
+JAX_RUNTIME_DB_USER=officewebdb
+JAX_MIGRATE_DB_USER=officemigratedb
+OFFICE_DEDICATED_DB=1
+OFFICE_DB_SERVER_ID=ID_UNICO
+OFFICE_DB_HOSTNAME=axioma-office-db
+OFFICE_MFA_POLICY=optional
+OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS=120
+OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS=3
+OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS=300
+OFFICE_MFA_RECENCY_SECONDS=300
+OFFICE_MFA_RECOVERY_CODE_COUNT=10
+OFFICE_BACKEND_BIND=172.16.20.5
+OFFICE_BACKEND_PORT=8081
+OFFICE_BROKER_ALLOWED_BASE_URLS=https://api.z.ai/api/paas/v4
+JAX_ENVIRONMENT=production
+JAX_PUBLIC_HOST_ORIGIN_BINDINGS=virtualoffice.axioma-ia.io=https://virtualoffice.axioma-ia.io
+JAX_OPERATIONAL_TRUSTED_HOSTS=127.0.0.1,localhost,172.16.20.5
+JAX_TRUSTED_PROXIES=172.16.20.11
+JAX_REFRESH_COOKIE_SECURE=true
+FRONTEND_ORIGIN=https://virtualoffice.axioma-ia.io
+JAX_JWT_SECRET=SECRETO_NUEVO_EXCLUSIVO_DE_OFICINA
+FERNET_KEY=CLAVE_FERNET_NUEVA_EXCLUSIVA_DE_OFICINA
+```
+
+Sustituir los marcadores por el host grantee medido, el `server_id` único y
+secretos aleatorios nuevos. Generar `FERNET_KEY` con
+`python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`
+y `JAX_JWT_SECRET` con `openssl rand -hex 48`; no registrar sus valores en
+el repositorio ni imprimir el archivo final. `FRONTEND_ORIGIN` apunta a la
+Oficina porque la cuenta inicial conserva `account_class=INTERNAL` y sus
+enlaces de restablecimiento usan ese origen. La configuración de navegador
+solo declara el host público de Oficina; confirmar las IP privadas contra la
+topología vigente antes de escribir el archivo.
+
+El provisionador existente
 `ops/migration/provision-db-runtime.sh`, instalado desde el release aprobado,
 recibe `--env /etc/axioma-office/deployment.env`,
 `--state-root /etc/axioma-office`, `--admin-transport
@@ -61,6 +99,21 @@ recibe `--env /etc/axioma-office/deployment.env`,
 desde la conexión al contenedor. Pasar `--skip-os-identities`: los usuarios OS
 los instala el helper de Oficina, y este provisionador compartido no debe
 crear ni modificar `jaxweb`/`jaxmigrate`.
+En la **primera instalación**, incluir también las siete claves siguientes en ese
+`deployment.env`; `runtime.env` todavía no existe y no puede ser su fuente.
+Los límites son configuración operativa y pueden cambiarse juntos en una
+reprovisión posterior, sin tocar código:
+
+```dotenv
+OFFICE_INVITATION_LIFETIME_SECONDS=86400
+OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS=120
+OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT=50
+OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT=25
+OFFICE_INVITATION_DELIVERY_BATCH_LIMIT=10
+OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.axioma-ia.io
+OFFICE_PUBLIC_ORIGIN=https://virtualoffice.axioma-ia.io
+```
+
 El provisionador deriva las claves permitidas de
 `/usr/local/libexec/axioma-office-pair-exec.py` cuando
 `OFFICE_DEDICATED_DB=1`; no consulta el launcher de JAX para emitir
@@ -149,7 +202,9 @@ sudo "$PYTHON" -I -B "$PAIR/ops/virtualoffice/import-smtp.py" \
   --source-env /etc/jax/runtime.env \
   --office-env /etc/axioma-office/runtime.env \
   --owner-email "$OWNER_EMAIL"
-sudo systemctl start axioma-office-backend.service
+sudo systemctl enable --now axioma-office-backend.service
+sudo systemctl is-enabled --quiet axioma-office-backend.service
+sudo systemctl is-active --quiet axioma-office-backend.service
 sudo systemctl status axioma-office-database.service axioma-office-migrate.service axioma-office-backend.service
 ```
 

@@ -195,6 +195,19 @@ if [ "$MIGRATOR_ONLY" = 0 ]; then
     for key in OFFICE_DEDICATED_DB OFFICE_DB_SERVER_ID OFFICE_DB_HOSTNAME OFFICE_MFA_POLICY; do
       [[ -n ${RUNTIME_ALLOWED[$key]+yes} ]] || die "installed runtime credential launcher lacks required key: $key"
     done
+    for key in OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS OFFICE_MFA_RECENCY_SECONDS OFFICE_MFA_RECOVERY_CODE_COUNT; do
+      need "$key"
+      [[ -n ${RUNTIME_ALLOWED[$key]+yes} ]] || die "installed runtime credential launcher lacks required key: $key"
+      office_mfa_value=${CFG[$key]}
+      [[ $office_mfa_value =~ ^[1-9][0-9]*$ && ${#office_mfa_value} -le 4 ]] || die "invalid Office MFA setting: $key"
+      case "$key" in
+        OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS|OFFICE_MFA_RECENCY_SECONDS) office_mfa_max=900 ;;
+        OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS) office_mfa_max=5 ;;
+        OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS) office_mfa_max=3600 ;;
+        OFFICE_MFA_RECOVERY_CODE_COUNT) office_mfa_max=64 ;;
+      esac
+      (( office_mfa_value <= office_mfa_max )) || die "invalid Office MFA setting: $key"
+    done
   fi
   [[ -n ${RUNTIME_ALLOWED[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} ]] || die "installed runtime credential launcher lacks required key: OFFICE_BROKER_ALLOWED_BASE_URLS"
   [[ -n ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} && ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]} == https://api.z.ai/api/paas/v4 ]] || die "Office broker allowlist must be the approved HTTPS Z.ai base URL"

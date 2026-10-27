@@ -32,7 +32,31 @@ def test_first_install_runbook_adopts_without_jax_activation_and_imports_owner_b
     assert "sudo /usr/local/libexec/bootstrap-pair-predecessor.py" not in runbook
     assert "sudo /usr/local/libexec/activate-platform-pair-release.sh" not in runbook
     assert runbook.index('"$PAIR/ops/virtualoffice/import-owner.py"') < runbook.index(
-        'sudo systemctl start axioma-office-backend.service')
+        'sudo systemctl enable --now axioma-office-backend.service')
+    assert "sudo systemctl is-enabled --quiet axioma-office-backend.service" in runbook
+
+
+def test_first_install_runbook_supplies_invitation_configuration_before_runtime_provisioning():
+    runbook = (SCRIPT.parents[2] / "docs/runbooks/office-dedicated-stack.md").read_text(encoding="utf-8")
+    first_runtime_plan = runbook.index('sudo "$PROVISION" --plan --skip-os-identities')
+    for key in (
+        "JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME", "JAX_DB_GRANTEE_HOST",
+        "JAX_RUNTIME_DB_USER", "JAX_MIGRATE_DB_USER", "OFFICE_DEDICATED_DB",
+        "OFFICE_DB_SERVER_ID", "OFFICE_DB_HOSTNAME", "OFFICE_MFA_POLICY",
+        "OFFICE_MFA_CHALLENGE_LIFETIME_SECONDS", "OFFICE_MFA_CHALLENGE_MAX_ATTEMPTS",
+        "OFFICE_MFA_ENROLLMENT_LIFETIME_SECONDS", "OFFICE_MFA_RECENCY_SECONDS",
+        "OFFICE_MFA_RECOVERY_CODE_COUNT",
+        "OFFICE_BACKEND_BIND", "OFFICE_BACKEND_PORT", "OFFICE_BROKER_ALLOWED_BASE_URLS",
+        "JAX_ENVIRONMENT", "JAX_PUBLIC_HOST_ORIGIN_BINDINGS",
+        "JAX_OPERATIONAL_TRUSTED_HOSTS", "JAX_TRUSTED_PROXIES",
+        "JAX_REFRESH_COOKIE_SECURE", "JAX_JWT_SECRET", "FERNET_KEY",
+        "OFFICE_INVITATION_LIFETIME_SECONDS", "OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS",
+        "OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT", "OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT",
+        "OFFICE_INVITATION_DELIVERY_BATCH_LIMIT", "OFFICE_INVITATION_PUBLIC_BASE_URL",
+        "OFFICE_PUBLIC_ORIGIN",
+    ):
+        assert f"{key}=" in runbook[:first_runtime_plan]
+    assert "FRONTEND_ORIGIN=https://virtualoffice.axioma-ia.io" in runbook[:first_runtime_plan]
 
 
 def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tmp_path, monkeypatch):
