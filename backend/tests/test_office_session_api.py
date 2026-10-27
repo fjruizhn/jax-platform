@@ -82,6 +82,8 @@ def test_office_session_derives_root_capabilities_from_db_and_current_mfa(client
         "mfa": {"verified": True, "recent": True},
         "capabilities": {
             "create_project": True,
+            "browse_people": True,
+            "invite_people": True,
             "administer_office": True,
             "administer_identity_security": True,
         },
@@ -141,6 +143,8 @@ def test_office_session_allows_root_project_creation_without_mfa(client, monkeyp
     assert response.json()["mfa"] == {"verified": False, "recent": False}
     assert response.json()["capabilities"] == {
         "create_project": True,
+        "browse_people": True,
+        "invite_people": True,
         "administer_office": False,
         "administer_identity_security": False,
     }
@@ -160,7 +164,8 @@ def test_office_session_keeps_project_admin_and_external_client_out_of_global_ca
     client_entry = client.get("/api/virtual-office/session", headers=_headers(external, external_tv, external_mv, None))
     assert admin.status_code == client_entry.status_code == 200
     assert admin.json()["capabilities"] == {
-        "create_project": False, "administer_office": False, "administer_identity_security": False,
+        "create_project": False, "browse_people": False, "invite_people": False,
+        "administer_office": False, "administer_identity_security": False,
     }
     assert client_entry.json()["identity"]["account_class"] == "EXTERNAL_CLIENT"
     assert client_entry.json()["mfa"] == {"verified": False, "recent": False}
@@ -182,6 +187,8 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     assert expired_response.json()["mfa"] == {"verified": True, "recent": False}
     assert expired_response.json()["capabilities"] == {
         "create_project": True,
+        "browse_people": True,
+        "invite_people": True,
         "administer_office": False,
         "administer_identity_security": False,
     }
@@ -194,7 +201,8 @@ def test_office_session_fails_closed_for_expired_revoked_and_unknown_mfa_referen
     assert unknown_response.status_code == 200
     assert unknown_response.json()["mfa"] == {"verified": False, "recent": False}
     assert unknown_response.json()["capabilities"] == {
-        "create_project": True, "administer_office": False, "administer_identity_security": False,
+        "create_project": True, "browse_people": True, "invite_people": True,
+        "administer_office": False, "administer_identity_security": False,
     }
 
 
@@ -227,6 +235,8 @@ def test_office_session_keeps_entry_available_when_mfa_configuration_is_absent(c
     assert without_mfa_config.json()["mfa"] == {"verified": False, "recent": False}
     assert without_mfa_config.json()["capabilities"] == {
         "create_project": True,
+        "browse_people": True,
+        "invite_people": True,
         "administer_office": False,
         "administer_identity_security": False,
     }

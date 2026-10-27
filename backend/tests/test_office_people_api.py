@@ -49,6 +49,90 @@ def _headers(user_id: int, token_version: int, mfa_version: int, proof: int, *, 
     )}
 
 
+def _headers_without_mfa(user_id: int, token_version: int, *, tenant_id: int = 1):
+    return {"Authorization": "Bearer " + create_access_token(
+        str(user_id), str(tenant_id), "operator", token_version,
+    )}
+
+
+def test_office_directory_lists_human_profiles_without_mfa_but_keeps_mutations_protected(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, _mv, _proof = client.portal.call(_root_with_proof)
+
+    async def scenario():
+        peer, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (peer,))
+        peer_tv = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (peer,), True))[0][0]
+        return peer, int(peer_tv)
+
+    peer, peer_tv = client.portal.call(scenario)
+    root_headers = _headers_without_mfa(root, tv)
+    listed = client.get("/api/virtual-office/people", headers=root_headers)
+    assert listed.status_code == 200
+    assert {root, peer}.issubset({item["user_id"] for item in listed.json()["people"]})
+    assert listed.headers["cache-control"] == "no-store"
+    assert listed.headers["vary"] == "Authorization"
+    assert client.get("/api/virtual-office/people", headers=_headers_without_mfa(peer, peer_tv)).status_code == 403
+    projects = client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers)
+    assert projects.status_code == 200
+    assert projects.json() == {"user_id": peer, "projects": [], "next_after_project_id": None}
+    assert projects.headers["cache-control"] == "no-store"
+    assert client.get(f"/api/virtual-office/people/{peer}/projects", headers=_headers_without_mfa(peer, peer_tv)).status_code == 403
+
+    async def add_project():
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("office-person-" + uuid.uuid4().hex,),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope "
+            "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (project_id,),
+        )
+        await sql(
+            "INSERT INTO jax_project_membership "
+            "(membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (str(uuid.uuid4()), project_id, peer),
+        )
+        await sql(
+            "INSERT INTO office_project_grant "
+            "(project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (project_id, peer, root),
+        )
+        return project_id
+
+    project_id = client.portal.call(add_project)
+    visible = client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers)
+    assert visible.status_code == 200
+    assert [item["project_id"] for item in visible.json()["projects"]] == [project_id]
+
+    async def delegated_admin():
+        admin, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (admin,))
+        await sql(
+            "INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) "
+            "VALUES (1,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (admin, root),
+        )
+        version = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (admin,), True))[0][0]
+        return admin, int(version)
+
+    admin, admin_tv = client.portal.call(delegated_admin)
+    assignable = client.get(f"/api/virtual-office/people/assignable-projects?after_project_id={project_id - 1}",
+                            headers=_headers_without_mfa(admin, admin_tv))
+    assert assignable.status_code == 200
+    assert project_id in [item["id"] for item in assignable.json()["projects"]]
+    assert assignable.headers["cache-control"] == "no-store"
+    client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (project_id, peer))
+    assert client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers).json()["projects"] == []
+    assert client.put(
+        f"/api/virtual-office/people/{peer}/global-role",
+        json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=root_headers,
+    ).status_code == 403
+
+
 def test_people_directory_is_delegated_tenant_metadata_not_content(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)

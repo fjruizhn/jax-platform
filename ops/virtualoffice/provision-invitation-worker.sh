@@ -16,6 +16,8 @@ WORKER_OS_USER=jaxinvite
 MEASURED_GRANTEE_HOST=
 ATTESTOR=
 ATTESTOR_SHA256=
+ACCOUNT_ATTESTOR=
+ACCOUNT_ATTESTOR_SHA256=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV_FILE=${2:?}; shift ;;
@@ -27,6 +29,8 @@ while [[ $# -gt 0 ]]; do
     --measured-grantee-host) MEASURED_GRANTEE_HOST=${2:?}; shift ;;
     --attestor) ATTESTOR=${2:?}; shift ;;
     --attestor-sha256) ATTESTOR_SHA256=${2:?}; shift ;;
+    --account-attestor) ACCOUNT_ATTESTOR=${2:?}; shift ;;
+    --account-attestor-sha256) ACCOUNT_ATTESTOR_SHA256=${2:?}; shift ;;
     -h|--help) printf '%s\n' 'usage: provision-invitation-worker.sh --measured-grantee-host HOST [--attestor FILE --attestor-sha256 SHA256] [--env FILE] [--state-root DIR] [--admin-transport FILE] [--skip-os-identities] [--worker-db-user USER] [--worker-os-user USER]'; exit 0 ;;
     *) printf '%s\n' "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -68,6 +72,8 @@ schema_columns=$(printf "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE T
 [[ "$schema_columns" == 14 ]] || { printf '%s\n' 'Office invitation schema columns are missing' >&2; exit 1; }
 routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1');\n" "$(quote "$db")" | admin_sql)
 [[ "$routine_count" == 0 || "$routine_count" == 3 ]] || { printf '%s\n' 'invitation delivery routine component is incomplete' >&2; exit 1; }
+account_routine_count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%s AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_account_invitation_claim_next_v1','office_account_invitation_expire_due_v1','office_account_invitation_settle_delivery_v1','office_account_invitation_settle_stale_v1');\n" "$(quote "$db")" | admin_sql)
+[[ "$account_routine_count" == 0 || "$account_routine_count" == 4 ]] || { printf '%s\n' 'account invitation delivery routine component is incomplete' >&2; exit 1; }
 show_grants() { printf "SHOW GRANTS FOR %s;\n" "$1" | admin_sql | sed -E "s/ IDENTIFIED BY (PASSWORD )?'[^']*'//g" | tr '\140' '\047'; }
 same_grants() { [[ $(printf '%s\n' "$1" | sort) == $(printf '%s\n' "$2" | sort) ]]; }
 owner_principal="'jaxoffice_invitation_owner'@'localhost'"
@@ -79,6 +85,10 @@ expected_owner_pre_routine=${expected_owner_pre_routine//\\n/$'\n'}
 expected_worker_pre_routine=${expected_worker_pre_routine//\\n/$'\n'}
 expected_worker_full="$expected_worker_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'"
 expected_owner_full="$expected_owner_pre_routine"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_claim_next_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_expire_due_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'"
+if [[ "$account_routine_count" == 4 ]]; then
+  expected_worker_full+=$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_claim_next_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_expire_due_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_settle_delivery_v1' TO '$WORKER_DB_USER'@'$host'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_settle_stale_v1' TO '$WORKER_DB_USER'@'$host'"
+  expected_owner_full+=$'\n'"GRANT SELECT, UPDATE ('version', 'status') ON '$db'.'office_account_invitation' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT SELECT, UPDATE ('result_code', 'state', 'finished_at', 'attempt_id', 'claimed_at', 'attempt_count', 'payload_ciphertext', 'message_id') ON '$db'.'office_account_invitation_outbox' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_claim_next_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_expire_due_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT EXECUTE ON PROCEDURE '$db'.'office_account_invitation_settle_stale_v1' TO 'jaxoffice_invitation_owner'@'localhost'"
+fi
 assert_existing_grants() { local principal=$1 actual; shift; actual=$(show_grants "$principal"); for expected in "$@"; do same_grants "$actual" "$expected" && return; done; printf 'existing invitation principal grants are not an approved state: %s\n%s\n' "$principal" "$actual" >&2; exit 1; }
 worker_hosts=$(printf "SELECT Host FROM mysql.user WHERE User=%s ORDER BY Host;\n" "$(quote "$WORKER_DB_USER")" | admin_sql)
 if [[ -n "$worker_hosts" ]]; then
@@ -120,6 +130,15 @@ if [[ "$routine_count" == 3 ]]; then
   # operation.  This rerun must never be the step that makes an unknown body
   # executable; install-invitation-delivery-routines.sh owns that transition.
   JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ATTESTOR" --structural --db "$db" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$host"
+fi
+if [[ "$account_routine_count" == 4 ]]; then
+  [[ -f $ACCOUNT_ATTESTOR && ! -L $ACCOUNT_ATTESTOR && -x $ACCOUNT_ATTESTOR && $(stat -c '%U:%G:%a' "$ACCOUNT_ATTESTOR") == root:root:750 ]] || {
+    printf '%s\n' 'completed account delivery component requires a trusted attestor' >&2; exit 1;
+  }
+  [[ $ACCOUNT_ATTESTOR_SHA256 =~ ^[0-9a-f]{64}$ && $(sha256sum "$ACCOUNT_ATTESTOR" | awk '{print $1}') == "$ACCOUNT_ATTESTOR_SHA256" ]] || {
+    printf '%s\n' 'account delivery attestor identity does not match its pinned digest' >&2; exit 1;
+  }
+  JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ACCOUNT_ATTESTOR" --db "$db" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$host"
 fi
 if [[ "$PREPARE_OS" == 1 ]]; then
   validate_system_account() {
@@ -198,4 +217,7 @@ if [[ "$routine_count" == 3 ]]; then
   # A post-routine rerun is read-only in the database.  Full attestation also
   # checks role inheritance and the final closed grant sets before success.
   JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ATTESTOR" --db "$db" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$host"
+fi
+if [[ "$account_routine_count" == 4 ]]; then
+  JAX_INVITATION_WORKER_DB_USER=$WORKER_DB_USER "$ACCOUNT_ATTESTOR" --db "$db" --admin-transport "$ADMIN_TRANSPORT" --worker-host "$host"
 fi

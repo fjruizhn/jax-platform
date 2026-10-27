@@ -90,6 +90,24 @@ def test_unicode_bearer_is_rejected_before_limiter_preflight_or_bcrypt(monkeypat
     assert rejected.value.detail == "office_invitation_invalid"
 
 
+def test_anonymous_rate_limit_runs_before_either_bearer_database_lookup(monkeypatch):
+    calls = []
+    def denied(*_args):
+        calls.append("limit")
+        raise HTTPException(status_code=429, detail="rate_limited")
+    async def lookup_must_not_run(_token: str):
+        calls.append("database")
+        raise AssertionError("database lookup before rate limit")
+    monkeypatch.setattr(invitation_api.rate_limit, "check_invitation_accept_rate", denied)
+    monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", lookup_must_not_run)
+    monkeypatch.setattr(invitation_api, "account_invitation_bearer_preflight", lookup_must_not_run)
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(accept_invitation(InvitationAcceptRequest(token="A" * 43, password=None),
+                                      _anonymous_request(), None))
+    assert rejected.value.status_code == 429
+    assert calls == ["limit"]
+
+
 def _anonymous_request() -> Request:
     return Request({"type": "http", "method": "POST", "path": "/api/virtual-office/invitations/accept",
                     "headers": [], "client": ("127.0.0.1", 54321)})

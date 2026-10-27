@@ -30,6 +30,14 @@ export const officeProjectsApi = {
 
 export const officePeopleApi = {
   list: ({ limit, after_user_id, tenant_id } = {}) => api.get('/virtual-office/people', { params: { limit, after_user_id, tenant_id } }),
+  projects: (userId, { limit = 50, after_project_id = 0 } = {}) => api.get(`/virtual-office/people/${userId}/projects`, { params: { limit, after_project_id } }),
+  assignableProjects: ({ limit, after_project_id }) => api.get('/virtual-office/people/assignable-projects', { params: { limit, after_project_id } }),
+}
+
+export const officeAccountInvitationsApi = {
+  list: ({ limit = 25, after_id = null } = {}) => api.get('/virtual-office/account-invitations', { params: { limit, after_id } }),
+  issue: (email, idempotencyKey) => api.post('/virtual-office/account-invitations', { email }, { headers: { 'Idempotency-Key': idempotencyKey } }),
+  revoke: (id, version, idempotencyKey) => api.delete(`/virtual-office/account-invitations/${id}`, { params: { expected_version: version }, headers: { 'Idempotency-Key': idempotencyKey } }),
 }
 
 export const officeMembersApi = {

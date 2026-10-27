@@ -26,6 +26,10 @@ from virtual_office.invitations import (
     InvitationError, accept_invitation_in_cursor, invitation_bearer_preflight, issue_invitation_in_cursor,
     list_active_invitations_in_cursor, revoke_invitation_in_cursor,
 )
+from virtual_office.account_invitations import (
+    AccountInvitationError, accept_account_invitation_in_cursor,
+    account_invitation_bearer_preflight,
+)
 # Retained for compatible import surfaces while invitation issuance uses the
 # normal authenticated project-admin session instead of an MFA prerequisite.
 from virtual_office.mfa import load_mfa_config_from_environment
@@ -55,7 +59,7 @@ def _actor_id(user: AuthUser) -> int:
     return actor
 
 
-def _raise(error: InvitationError) -> None:
+def _raise(error: InvitationError | AccountInvitationError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.code) from error
 
 
@@ -201,12 +205,18 @@ async def accept_invitation(payload: InvitationAcceptRequest,
     _require_ascii_invitation_bearer(payload.token)
     password_hash: str | None = None
     if user is None:
-        # Bound CPU before the untrusted password reaches bcrypt.  The bearer
-        # itself is opaque and is only represented by a domain-separated
-        # digest in the limiter, never returned or retained as a raw key.
+        # Bound unauthenticated database lookups as well as bcrypt.  The
+        # limiter receives a digest, never the bearer itself.
         rate_limit.check_invitation_accept_rate(request, _invitation_rate_key(payload.token))
-        if not await invitation_bearer_preflight(payload.token):
-            raise HTTPException(status_code=403, detail="office_invitation_invalid")
+    project_bearer = await invitation_bearer_preflight(payload.token)
+    account_bearer = await account_invitation_bearer_preflight(payload.token)
+    # A valid bearer belongs to exactly one lifecycle.  Treat a collision as
+    # an integrity outage rather than guessing which authority it grants.
+    if project_bearer and account_bearer:
+        raise HTTPException(status_code=503, detail="office_invitation_integrity")
+    if not project_bearer and not account_bearer:
+        raise HTTPException(status_code=403, detail="office_invitation_invalid")
+    if user is None:
         if payload.password is None:
             raise HTTPException(status_code=422, detail="office_invitation_password_required")
         problem = problema_de_password(payload.password)
@@ -223,12 +233,18 @@ async def accept_invitation(payload: InvitationAcceptRequest,
     )
     try:
         async with transaccion(AISLAMIENTO_ADMIN) as cur:
-            replayed = await accept_invitation_in_cursor(
-                cur, accepting_user_id=None if user is None else _actor_id(user),
-                accepting_email=None if user is None else user.email,
-                new_password_hash=password_hash, bearer_token=payload.token,
-            )
-    except InvitationError as error:
+            if account_bearer:
+                replayed = await accept_account_invitation_in_cursor(
+                    cur, accepting_user_id=None if user is None else _actor_id(user),
+                    accepting_email=None if user is None else user.email,
+                    new_password_hash=password_hash, bearer_token=payload.token)
+            else:
+                replayed = await accept_invitation_in_cursor(
+                    cur, accepting_user_id=None if user is None else _actor_id(user),
+                    accepting_email=None if user is None else user.email,
+                    new_password_hash=password_hash, bearer_token=payload.token,
+                )
+    except (InvitationError, AccountInvitationError) as error:
         _raise(error)
     except ProjectAuthorityRetryable as error:
         # JAX reserves this class for transient MariaDB contention.  Its

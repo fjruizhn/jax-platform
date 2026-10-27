@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
@@ -52,6 +52,15 @@ async def _current_admin(cur, *, actor_user_id: int, proof_event_id: int | None)
         cur, actor_user_id, OfficeOperation.ADMINISTER_OFFICE,
         require_recent_mfa=True, mfa_proof_event_id=proof_event_id,
         mfa_config=load_mfa_config_from_environment(),
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="office_people_access_denied")
+    return decision
+
+
+async def _directory_reader(cur, *, actor_user_id: int):
+    decision = await authorize_office_in_cursor(
+        cur, actor_user_id, OfficeOperation.VIEW_OFFICE_DIRECTORY,
     )
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_people_access_denied")
@@ -199,6 +208,7 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
 
 @router.get("")
 async def list_people(
+    response: Response,
     tenant_id: int | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=100),
     after_user_id: int | None = Query(default=None, gt=0),
@@ -207,8 +217,7 @@ async def list_people(
     """Return directory metadata, never credentials, tokens, or audit detail."""
     actor_user_id = _actor_id(user)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        decision = await _current_admin(cur, actor_user_id=actor_user_id,
-                                        proof_event_id=user.mfa_proof_event_id)
+        decision = await _directory_reader(cur, actor_user_id=actor_user_id)
         # A delegated general admin remains tenant scoped.  Root can cross
         # Office tenants, but only has access to active canonical profiles.
         if decision.global_role != "OFFICE_SUPERUSER":
@@ -240,7 +249,80 @@ async def list_people(
          "status": row[5], "version": int(row[6])}
         for row in rows[:limit]
     ]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
     return {"people": output, "next_after_user_id": output[-1]["user_id"] if len(rows) > limit else None}
+
+
+@router.get("/assignable-projects")
+async def list_assignable_projects(response: Response,
+                                   limit: int = Query(default=50, ge=1, le=100),
+                                   after_project_id: int = Query(default=0, ge=0),
+                                   user: AuthUser = Depends(get_current_user)):
+    """Return names of tenant projects a delegated administrator can staff."""
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await _directory_reader(cur, actor_user_id=_actor_id(user))
+        if decision.global_role == "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_people_access_denied")
+        await cur.execute(
+            "SELECT s.project_id,p.name FROM jax_project_scope s "
+            "FORCE INDEX (idx_jax_project_scope_tenant_status) "
+            "JOIN projects p ON p.id=s.project_id "
+            "WHERE s.tenant_id=%s AND s.status='ACTIVE' "
+            "AND s.authorization_namespace='OFFICE_CONFIDENTIAL' "
+            "AND s.project_id>%s ORDER BY s.project_id LIMIT %s",
+            (decision.tenant_id, after_project_id, limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
+    return {"projects": [{"id": int(row[0]), "name": row[1], "tenant_id": decision.tenant_id} for row in page],
+            "next_after_id": int(page[-1][0]) if len(rows) > limit else None}
+
+
+@router.get("/{target_user_id}/projects")
+async def list_person_projects(target_user_id: int, response: Response,
+                               limit: int = Query(default=50, ge=1, le=100),
+                               after_project_id: int = Query(default=0, ge=0),
+                               user: AuthUser = Depends(get_current_user)):
+    """Show one Office person's project grants without exposing other tenants."""
+    if target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_person_not_found")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await _directory_reader(cur, actor_user_id=_actor_id(user))
+        await cur.execute(
+            "SELECT u.tenant_id,u.account_class FROM jax_users u "
+            "JOIN office_account_profile a ON a.user_id=u.user_id "
+            "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+            "WHERE u.user_id=%s AND u.status='active' AND a.status='ACTIVE' AND t.status='active'",
+            (target_user_id,),
+        )
+        target = await cur.fetchone()
+        if target is None or (decision.global_role != "OFFICE_SUPERUSER"
+                              and int(target[0]) != decision.tenant_id):
+            raise HTTPException(status_code=404, detail="office_person_not_found")
+        audience = "CLIENT_PUBLISHED" if target[1] == "EXTERNAL_CLIENT" else "INTERNAL"
+        await cur.execute(
+            "SELECT g.project_id,p.name,g.grant_role,g.version "
+            "FROM office_project_grant g FORCE INDEX (idx_office_project_grant_list) "
+            "JOIN jax_project_scope s ON s.project_id=g.project_id "
+            "JOIN projects p ON p.id=g.project_id "
+            "JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id "
+            "WHERE g.user_id=%s AND g.status='ACTIVE' AND g.audience=%s "
+            "AND g.project_id>%s AND s.tenant_id=%s "
+            "AND s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
+            "AND m.status='ACTIVE' ORDER BY g.project_id LIMIT %s",
+            (target_user_id, audience, after_project_id, int(target[0]), limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
+    return {"user_id": target_user_id, "projects": [
+        {"project_id": int(row[0]), "name": row[1], "grant_role": row[2],
+         "version": int(row[3]), "audience": audience}
+        for row in page], "next_after_project_id": int(page[-1][0]) if len(rows) > limit else None}
 
 
 @router.put("/{target_user_id}/global-role")

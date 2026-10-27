@@ -377,6 +377,89 @@ OFFICE_INVITATION_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_invitation_mutation_receipt BEFORE DELETE ON office_invitation_mutation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_invitation_mutation_receipt append-only'",
 )
 
+# Account invitations deliberately have no project_id, recipient group, grant or
+# membership columns.  A human Office account is an identity lifecycle separate
+# from any assignment to a project.
+OFFICE_ACCOUNT_INVITATION_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_account_invitation ("
+    "invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+    "token_hash BINARY(32) NOT NULL UNIQUE,email_normalized VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "tenant_id INT NOT NULL,issued_by_user_id INT NOT NULL,status VARCHAR(16) NOT NULL DEFAULT 'ISSUED',version BIGINT NOT NULL DEFAULT 1,"
+    "expires_at DATETIME(6) NOT NULL,accepted_user_id INT NULL,accepted_at DATETIME(6) NULL,revoked_by_user_id INT NULL,revoked_at DATETIME(6) NULL,"
+    "authorization_event_id BIGINT UNSIGNED NOT NULL,pending_email VARCHAR(320) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (CASE WHEN status='ISSUED' THEN email_normalized ELSE NULL END) STORED,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_account_invitation_pending (tenant_id,pending_email),"
+    "KEY idx_office_account_invitation_live (tenant_id,status,expires_at,invitation_id),"
+    "KEY idx_office_account_invitation_history (tenant_id,created_at,invitation_id),"
+    "CONSTRAINT fk_office_account_invitation_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id),"
+    "CONSTRAINT fk_office_account_invitation_issuer FOREIGN KEY (issued_by_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_account_invitation_accepted FOREIGN KEY (accepted_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_account_invitation_revoker FOREIGN KEY (revoked_by_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_account_invitation_authorization FOREIGN KEY (authorization_event_id) REFERENCES office_authorization_event(event_id),"
+    "CONSTRAINT chk_office_account_invitation_shape CHECK (email_normalized<>'' AND version>=1 AND expires_at>created_at AND "
+    "((status='ISSUED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL) OR "
+    "(status='ACCEPTED' AND accepted_user_id IS NOT NULL AND accepted_at IS NOT NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL) OR "
+    "(status='REVOKED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NOT NULL AND revoked_at IS NOT NULL) OR "
+    "(status='EXPIRED' AND accepted_user_id IS NULL AND accepted_at IS NULL AND revoked_by_user_id IS NULL AND revoked_at IS NULL)))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_account_invitation_receipt ("
+    "idempotency_key CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,request_digest BINARY(32) NOT NULL,"
+    "actor_user_id INT NOT NULL,tenant_id INT NOT NULL,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+    "operation VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,expected_version BIGINT NOT NULL,response_version BIGINT NOT NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+    "UNIQUE KEY uq_office_account_invitation_receipt_invitation (invitation_id,operation),"
+    "CONSTRAINT fk_office_account_invitation_receipt_actor FOREIGN KEY (actor_user_id) REFERENCES jax_users(user_id),"
+    "CONSTRAINT fk_office_account_invitation_receipt_tenant FOREIGN KEY (tenant_id) REFERENCES jax_tenants(tenant_id),"
+    "CONSTRAINT fk_office_account_invitation_receipt_invitation FOREIGN KEY (invitation_id) REFERENCES office_account_invitation(invitation_id),"
+    "CONSTRAINT chk_office_account_invitation_receipt_shape CHECK (operation IN ('ISSUE','REVOKE') AND expected_version>=0 AND response_version>=1)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS office_account_invitation_outbox ("
+    "outbox_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,invitation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,"
+    "state VARCHAR(16) NOT NULL DEFAULT 'QUEUED',attempt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,attempt_count INT NOT NULL DEFAULT 0,"
+    "payload_ciphertext MEDIUMBLOB NULL,message_id VARCHAR(255) NULL,result_code VARCHAR(64) NULL,claimed_at DATETIME(6) NULL,finished_at DATETIME(6) NULL,created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),"
+    "KEY idx_office_account_invitation_outbox_queue (state,created_at,outbox_id),"
+    "CONSTRAINT fk_office_account_invitation_outbox_invitation FOREIGN KEY (invitation_id) REFERENCES office_account_invitation(invitation_id),"
+    "CONSTRAINT chk_office_account_invitation_outbox_shape CHECK ((state='QUEUED' AND attempt_id IS NULL AND attempt_count=0 AND payload_ciphertext IS NOT NULL AND finished_at IS NULL) OR (state='CLAIMED' AND attempt_id IS NOT NULL AND attempt_count=1 AND payload_ciphertext IS NOT NULL AND claimed_at IS NOT NULL AND finished_at IS NULL) OR (state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND attempt_id IS NOT NULL AND attempt_count=1 AND payload_ciphertext IS NULL AND finished_at IS NOT NULL))"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_account_invitation_receipt BEFORE UPDATE ON office_account_invitation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_account_invitation_receipt append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_account_invitation_receipt BEFORE DELETE ON office_account_invitation_receipt FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_account_invitation_receipt append-only'",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_account_invitation_insert BEFORE INSERT ON office_account_invitation FOR EACH ROW BEGIN IF NEW.status<>'ISSUED' OR NEW.version<>1 OR NEW.accepted_user_id IS NOT NULL OR NEW.revoked_by_user_id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM office_authorization_event a WHERE a.event_id=NEW.authorization_event_id AND a.event_kind='AUTHORIZATION' AND a.actor_user_id=NEW.issued_by_user_id AND a.tenant_id=NEW.tenant_id AND a.operation='INVITE_OFFICE_PERSON' AND a.result='ALLOWED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation issuance denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_account_invitation_update BEFORE UPDATE ON office_account_invitation FOR EACH ROW BEGIN IF NEW.invitation_id<>OLD.invitation_id OR NEW.token_hash<>OLD.token_hash OR BINARY NEW.email_normalized<>BINARY OLD.email_normalized OR NEW.tenant_id<>OLD.tenant_id OR NEW.issued_by_user_id<>OLD.issued_by_user_id OR NEW.authorization_event_id<>OLD.authorization_event_id OR NEW.expires_at<>OLD.expires_at OR NEW.created_at<>OLD.created_at OR NEW.version<>OLD.version+1 OR OLD.status<>'ISSUED' OR NEW.status NOT IN ('ACCEPTED','REVOKED','EXPIRED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation transition denied'; END IF; IF NEW.status='ACCEPTED' AND (NEW.accepted_user_id IS NULL OR NEW.accepted_at IS NULL OR NOT EXISTS (SELECT 1 FROM jax_users u JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=NEW.accepted_user_id AND u.tenant_id=OLD.tenant_id AND BINARY u.email=BINARY OLD.email_normalized AND u.status='active' AND p.status='ACTIVE')) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation acceptance denied'; END IF; IF NEW.status='REVOKED' AND NEW.revoked_by_user_id IS NULL THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation revocation denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_account_invitation_outbox_insert BEFORE INSERT ON office_account_invitation_outbox FOR EACH ROW BEGIN IF NEW.state<>'QUEUED' OR NEW.attempt_id IS NOT NULL OR NEW.attempt_count<>0 OR NEW.payload_ciphertext IS NULL OR NEW.finished_at IS NOT NULL OR NOT EXISTS (SELECT 1 FROM office_account_invitation i WHERE i.invitation_id=NEW.invitation_id AND i.status='ISSUED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation outbox issuance denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_account_invitation_outbox_update BEFORE UPDATE ON office_account_invitation_outbox FOR EACH ROW BEGIN IF NEW.outbox_id<>OLD.outbox_id OR NEW.invitation_id<>OLD.invitation_id OR NEW.created_at<>OLD.created_at OR (OLD.state='QUEUED' AND NEW.state NOT IN ('CLAIMED','CANCELLED')) OR (OLD.state='CLAIMED' AND NEW.state NOT IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED')) OR OLD.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') OR (NEW.state='CLAIMED' AND (NEW.attempt_count<>1 OR NEW.attempt_id IS NULL OR NEW.payload_ciphertext IS NULL)) OR (NEW.state IN ('SMTP_ACCEPTED','UNKNOWN','CANCELLED') AND (NEW.payload_ciphertext IS NOT NULL OR NEW.finished_at IS NULL)) THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office account invitation outbox transition denied'; END IF; END",
+)
+
+
+async def assert_account_invitation_runtime_metadata(cursor) -> None:
+    """Fail migration closed if the global-account lifecycle is only partial."""
+    await cursor.execute(
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN ('office_account_invitation','office_account_invitation_receipt','office_account_invitation_outbox')")
+    if {row[0] for row in await cursor.fetchall()} != {
+        "office_account_invitation", "office_account_invitation_receipt", "office_account_invitation_outbox"}:
+        raise RuntimeError("Office account invitation schema is incomplete")
+    await cursor.execute(
+        "SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='office_account_invitation' AND INDEX_NAME IN ('PRIMARY','token_hash','uq_office_account_invitation_pending','idx_office_account_invitation_live','idx_office_account_invitation_history')")
+    if {row[0] for row in await cursor.fetchall()} != {
+        "PRIMARY", "token_hash", "uq_office_account_invitation_pending", "idx_office_account_invitation_live", "idx_office_account_invitation_history"}:
+        raise RuntimeError("Office account invitation indexes are incomplete")
+    for table, index, columns in (
+        ("office_account_invitation", "idx_office_account_invitation_live", ("tenant_id", "status", "expires_at", "invitation_id")),
+        ("office_account_invitation", "idx_office_account_invitation_history", ("tenant_id", "created_at", "invitation_id")),
+        ("office_account_invitation_outbox", "idx_office_account_invitation_outbox_queue", ("state", "created_at", "outbox_id")),
+    ):
+        if not await _index_has_exact_shape(cursor, table, index, columns):
+            raise RuntimeError("Office account invitation index drift")
+    await cursor.execute(
+        "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+        "AND TRIGGER_NAME IN ('no_update_office_account_invitation_receipt','no_delete_office_account_invitation_receipt',"
+        "'guard_office_account_invitation_insert','guard_office_account_invitation_update',"
+        "'guard_office_account_invitation_outbox_insert','guard_office_account_invitation_outbox_update')")
+    if {row[0] for row in await cursor.fetchall()} != {
+        "no_update_office_account_invitation_receipt", "no_delete_office_account_invitation_receipt",
+        "guard_office_account_invitation_insert", "guard_office_account_invitation_update",
+        "guard_office_account_invitation_outbox_insert", "guard_office_account_invitation_outbox_update"}:
+        raise RuntimeError("Office account invitation trigger drift")
+
 
 def _replace_invitation_guard(statement_prefix: str, *edits: tuple[str, str]) -> None:
     """Apply a narrowly attested lifecycle amendment to one DDL guard."""
@@ -2493,6 +2576,9 @@ async def apply_office_migrations(cursor) -> None:
     await _upgrade_invitation_mutation_receipt_guard(cursor)
     for statement in OFFICE_INVITATION_DDL:
         await cursor.execute(statement)
+    for statement in OFFICE_ACCOUNT_INVITATION_DDL:
+        await cursor.execute(statement)
+    await assert_account_invitation_runtime_metadata(cursor)
     await assert_invitation_runtime_metadata(cursor)
     await _upgrade_credential_shape(cursor)
     ledger = {name: _check_digest(await _check_clause(cursor, name)) for name in _MFA_V5_CHECK_SQL}

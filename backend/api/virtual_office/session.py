@@ -125,17 +125,23 @@ async def office_session(user: AuthUser = Depends(get_current_user)):
             )
             capabilities = {
                 "create_project": False,
+                "browse_people": False,
+                "invite_people": False,
                 "administer_office": False,
                 "administer_identity_security": False,
             }
             if account_class != "EXTERNAL_CLIENT":
                 operations = {
                     "create_project": OfficeOperation.CREATE_OFFICE_PROJECT,
+                    "browse_people": OfficeOperation.VIEW_OFFICE_DIRECTORY,
+                    "invite_people": OfficeOperation.INVITE_OFFICE_PERSON,
                     "administer_office": OfficeOperation.ADMINISTER_OFFICE,
                     "administer_identity_security": OfficeOperation.ADMINISTER_OFFICE_IDENTITY_SECURITY,
                 }
                 for name, operation in operations.items():
-                    if operation is OfficeOperation.CREATE_OFFICE_PROJECT:
+                    if operation in {OfficeOperation.CREATE_OFFICE_PROJECT,
+                                     OfficeOperation.VIEW_OFFICE_DIRECTORY,
+                                     OfficeOperation.INVITE_OFFICE_PERSON}:
                         decision = await authorize_office_in_cursor(cur, actor_user_id, operation)
                     else:
                         decision = await authorize_office_in_cursor(
