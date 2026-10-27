@@ -12,6 +12,17 @@ import { I18nProvider } from '../i18n/index.jsx'
 function show() { return render(<I18nProvider><MemoryRouter><AccountSecurity /></MemoryRouter></I18nProvider>) }
 beforeEach(() => { vi.clearAllMocks(); api.status.mockResolvedValue({ data: { enabled: true, state: 'ACTIVE' } }); useJaxStore.setState({ token: 'a', user: { user_id: 1, email: 'a@b.c' }, _sessionEpoch: 1, mfaRecoveryCodes: null }) })
 describe('Account security MFA', () => {
+  it('shows the QR only while a valid enrollment is open', async () => {
+    api.status.mockResolvedValue({ data: { enabled: false, state: 'DISABLED' } })
+    api.enrollmentStart.mockResolvedValue({ data: { enrollment_token: 'e', secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP' } })
+    show()
+    fireEvent.click(await screen.findByRole('switch', { name: 'Verificación en dos pasos' }))
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'p' } })
+    fireEvent.click(screen.getByText('Confirmar'))
+    expect(await screen.findByRole('img', { name: 'Escaneá este código QR con tu aplicación autenticadora.' })).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('img', { name: 'Escaneá este código QR con tu aplicación autenticadora.' })).not.toBeInTheDocument()
+  })
   it('does not apply a late step-up token after account B replaces account A', async () => {
     let resolve; api.stepUp.mockResolvedValue({ data: { challenge_token: 'c' } }); api.stepUpVerify.mockReturnValue(new Promise((r) => { resolve = r }))
     show(); await screen.findByText('Generar códigos nuevos'); fireEvent.click(screen.getByText('Generar códigos nuevos'))

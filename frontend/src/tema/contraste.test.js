@@ -41,9 +41,9 @@ function fallas(tema) {
 }
 
 describe('tokens de color', () => {
-  it('tokens.css tiene los cuatro temas con 49 tokens cada uno', () => {
+  it('tokens.css tiene los cuatro temas con 51 tokens cada uno', () => {
     for (const tema of Object.keys(temas)) {
-      expect(Object.keys(temas[tema])).toHaveLength(49)
+      expect(Object.keys(temas[tema])).toHaveLength(51)
     }
   })
 
@@ -63,8 +63,8 @@ describe('tokens de color', () => {
     expect(r).toBeLessThan(AA_TEXTO)
   })
 
-  it('los 91 pares alcanzan su mínimo en los cuatro temas', () => {
-    expect(PARES).toHaveLength(91)
+  it('los 92 pares alcanzan su mínimo en los cuatro temas', () => {
+    expect(PARES).toHaveLength(92)
     for (const tema of Object.keys(temas)) {
       expect(fallas(tema)).toEqual([])
     }

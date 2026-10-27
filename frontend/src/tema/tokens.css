@@ -59,6 +59,9 @@
   --faceta-ada: 167 139 250;
   --faceta-jacobs: 255 255 255;
   --faceta-imagen: 167 139 250;
+  /* Un QR necesita módulos oscuros sobre papel claro en ambos temas. */
+  --qr-paper: 255 255 255;
+  --qr-ink: 0 0 0;
 }
 
 :root[data-tema="claro"] {
@@ -112,6 +115,8 @@
   --faceta-ada: 109 40 217;
   --faceta-jacobs: 15 23 42;
   --faceta-imagen: 109 40 217;
+  --qr-paper: 255 255 255;
+  --qr-ink: 0 0 0;
 }
 
 /* Instalación de la Oficina, tema oscuro: cielo/papel/tinta del pilot
@@ -169,6 +174,8 @@
   --faceta-ada: 184 161 245;
   --faceta-jacobs: 255 255 255;
   --faceta-imagen: 184 161 245;
+  --qr-paper: 255 255 255;
+  --qr-ink: 0 0 0;
 }
 
 /* Instalación de la Oficina, tema claro: cielo, papel y panel del pilot.
@@ -225,4 +232,6 @@
   --faceta-ada: 109 40 217;
   --faceta-jacobs: 15 23 42;
   --faceta-imagen: 109 40 217;
+  --qr-paper: 255 255 255;
+  --qr-ink: 0 0 0;
 }

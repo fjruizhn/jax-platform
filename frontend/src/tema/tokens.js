@@ -17,6 +17,7 @@ export const TOKENS = [
   'burbuja-usuario', 'modo-ejecutor',
   'faceta-jax-local', 'faceta-jekyll', 'faceta-hyde', 'faceta-hipatia',
   'faceta-thot', 'faceta-kimi', 'faceta-ada', 'faceta-jacobs', 'faceta-imagen',
+  'qr-paper', 'qr-ink',
 ]
 
 // WCAG 2.x AA: 4,5 texto normal; 3 componentes de UI (1.4.11).
@@ -45,6 +46,7 @@ export const PARES = [
   ['texto', 'burbuja-usuario', AA_TEXTO],
   ['texto-suave', 'burbuja-usuario', AA_TEXTO],
   ['fondo', 'texto-fuerte', AA_TEXTO],
+  ['qr-ink', 'qr-paper', AA_TEXTO],
   ...FONDOS_BASE.flatMap((f) => [['borde-control', f, AA_UI], ['foco', f, AA_UI]]),
 ]
 

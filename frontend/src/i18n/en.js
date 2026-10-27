@@ -1726,7 +1726,7 @@ export default {
     title: 'Two-step verification', otpLabel: 'Authentication code', verify: 'Verify', verifying: 'Verifying…',
     challengeIntro: 'Enter the six-digit code from your authenticator app.', recoveryLink: 'Use a recovery code', back: 'Back to sign in',
     recoveryTitle: 'Recover your authenticator', recoveryIntro: 'Enter a one-time recovery code.', recoveryLabel: 'Recovery code', continue: 'Continue',
-    setupTitle: 'Set up your authenticator', setupIntro: 'Add this key manually to your authenticator app, then enter its code.', secretLabel: 'Setup key',
+    setupTitle: 'Set up your authenticator', setupIntro: 'Scan the QR code with your authenticator app or add the key manually. Then enter its six-digit code.', qrLabel: 'Scan this QR code with your authenticator app.', secretLabel: 'Setup key',
     codesTitle: 'Save your recovery codes', codesIntro: 'Each code works once. Save them somewhere safe; they will not be shown again.', acknowledge: 'I understand, return to sign in',
     invalidOtp: 'Enter exactly six digits.', invalidRecovery: 'Enter a valid recovery code.', failed: 'Verification could not be completed. Check the code and try again.', expired: 'This verification expired. Sign in again.', unavailable: 'Two-step verification is unavailable right now.',
     account: 'Account security', accountIntro: 'Manage two-step verification for this account.', toggleLabel: 'Two-step verification', enabled: 'Two-step verification is active.', disabled: 'Two-step verification is not set up.', setup: 'Set up authenticator', replace: 'Replace authenticator', regenerate: 'Generate new codes', disable: 'Turn off verification',
