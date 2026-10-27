@@ -20,6 +20,7 @@ vi.mock('./api/virtualOffice', () => ({
   mfaApi: { status: vi.fn(() => new Promise(() => {})) },
   officeSessionApi: { read: session, bootstrap },
   officeProjectsApi: projects,
+  officeVerticalesApi: { list: vi.fn(async () => ({ data: { verticales: [] } })) },
 }))
 
 import App from './App.jsx'

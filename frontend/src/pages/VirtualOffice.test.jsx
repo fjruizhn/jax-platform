@@ -9,7 +9,8 @@ const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: v
 const people = vi.hoisted(() => ({ list: vi.fn() }))
 const members = vi.hoisted(() => ({ list: vi.fn(), grant: vi.fn(), changeRole: vi.fn(), revoke: vi.fn() }))
 const agents = vi.hoisted(() => ({ list: vi.fn(), engines: vi.fn(), create: vi.fn(), bind: vi.fn(), run: vi.fn() }))
-vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations, officePeopleApi: people, officeMembersApi: members, officeAgentsApi: agents, officeSessionApi: { read: vi.fn() } }))
+const verticales = vi.hoisted(() => ({ list: vi.fn() }))
+vi.mock('../api/virtualOffice', () => ({ officeProjectsApi: projects, officeInvitationsApi: invitations, officePeopleApi: people, officeMembersApi: members, officeAgentsApi: agents, officeVerticalesApi: verticales, officeSessionApi: { read: vi.fn() } }))
 import VirtualOffice from './VirtualOffice'
 
 function show() {
@@ -23,6 +24,7 @@ beforeEach(() => {
   members.list.mockResolvedValue({ data: { project_id: 25, members: [], next_cursor: null } })
   agents.list.mockResolvedValue({ data: { items: [] } })
   agents.engines.mockResolvedValue({ data: { items: [] } })
+  verticales.list.mockResolvedValue({ data: { verticales: [] } })
   useJaxStore.setState({ token: 'office-token', user: {
     user_id: 7, email: 'persona@example.test', account_class: 'OFFICE_INTERNAL',
   } })

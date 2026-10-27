@@ -20,6 +20,7 @@ from virtual_office.namespace_adapter import (
     OfficeNamespaceAuthorizationDenied,
     OfficeNamespaceAuthorizer,
 )
+from virtual_office.verticales import vertical_activa, vertical_registrada
 
 router = APIRouter(prefix="/api/virtual-office/projects")
 
@@ -27,6 +28,7 @@ class ProjectCreate(BaseModel):
     tenant_id: int = Field(gt=0)
     name: str = Field(min_length=1, max_length=255, pattern=r".*\S.*")
     description: str | None = Field(default=None, max_length=2000)
+    vertical: str | None = Field(default=None, pattern=r"^[a-z0-9_-]{1,32}$")
 
 
 class ProjectMetadataUpdate(BaseModel):
@@ -57,7 +59,8 @@ class _PhaseBRetryable(RuntimeError):
 
 
 async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
-                                   project_id: int, idempotency_key: str) -> None:
+                                   project_id: int, idempotency_key: str,
+                                   vertical: str | None = None) -> None:
     """Finish the Office-owned phase after JAX committed the canonical project.
 
     This intentionally has its own transaction.  A failed companion phase
@@ -201,6 +204,24 @@ async def _initialize_client_group(*, actor_user_id: int, target_tenant_id: int,
                 # A revoked group is a durable security state.  A replay is
                 # never permission to silently restore it.
                 raise HTTPException(status_code=409, detail="office_client_group_revoked")
+            if vertical is not None:
+                # Same Phase-B transaction as the grant and client group: the
+                # companion commits with them or is repaired by the same
+                # authorized key replay.  A divergent existing row is a torn
+                # or incompatible companion, never silently rewritten.
+                await cur.execute(
+                    "SELECT vertical FROM office_project_vertical "
+                    "WHERE project_id=%s FOR UPDATE", (project_id,),
+                )
+                vertical_row = await cur.fetchone()
+                if vertical_row is None:
+                    await cur.execute(
+                        "INSERT INTO office_project_vertical "
+                        "(project_id,vertical,created_by) VALUES (%s,%s,%s)",
+                        (project_id, vertical, actor_user_id),
+                    )
+                elif vertical_row[0] != vertical:
+                    raise _PhaseBRetryable("office project vertical drift")
     except HTTPException:
         raise
     except OfficeNamespaceAuthorizationDenied:
@@ -233,6 +254,7 @@ async def _active_profile_in_cursor(cur, actor_user_id: int):
 async def list_projects(
     limit: int = Query(default=50, ge=1, le=100),
     after_id: int | None = Query(default=None, gt=0),
+    vertical: str | None = Query(default=None, max_length=32, pattern=r"^[a-z0-9_-]{1,32}$"),
     user: AuthUser = Depends(get_current_user),
 ):
     """List only scopes approved by the same Office resolver used elsewhere.
@@ -253,6 +275,10 @@ async def list_projects(
         profile = await _active_profile_in_cursor(cur, actor_user_id)
         if profile is None:
             raise HTTPException(status_code=403, detail="office_access_denied")
+        if vertical is not None and not vertical_registrada(vertical):
+            # The room catalogue is server-owned; an unknown id is a client
+            # bug, not an empty page.
+            raise HTTPException(status_code=422, detail="office_vertical_invalid")
         # The candidate filter may treat a row as MFA-eligible only when the
         # resolver can apply the same verified-proof contract.  A durable
         # proof without its runtime configuration must fail closed here,
@@ -265,8 +291,14 @@ async def list_projects(
                 ),
                 MFADenied,
             )
-        predicate = " AND p.id>%s" if after_id is not None else ""
-        cursor_params: tuple[object, ...] = () if after_id is None else (after_id,)
+        predicate = ""
+        predicate_params: tuple[object, ...] = ()
+        if after_id is not None:
+            predicate += " AND p.id>%s"
+            predicate_params += (after_id,)
+        if vertical is not None:
+            predicate += " AND v.vertical=%s"
+            predicate_params += (vertical,)
         if profile["global_role"] == "GENERAL_ADMIN":
             # General administration remains MFA-bound.  An Office root can
             # bootstrap and manage its Office projects after normal sign-in.
@@ -274,17 +306,19 @@ async def list_projects(
                 return {"projects": [], "next_after_id": None}
         if profile["global_role"] == "OFFICE_SUPERUSER":
             query = (
-                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM projects p "
+                "SELECT p.id,p.name,p.description,s.tenant_id,NULL,v.vertical FROM projects p "
                 "JOIN jax_project_scope s ON s.project_id=p.id "
+                "LEFT JOIN office_project_vertical v ON v.project_id=p.id "
                 "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE'"
             )
-            params = cursor_params + (limit + 1,)
+            params = predicate_params + (limit + 1,)
         elif profile["account_class"] in {"INTERNAL", "OFFICE_INTERNAL"}:
             query = (
-                "SELECT p.id,p.name,p.description,s.tenant_id,NULL FROM office_project_grant g "
+                "SELECT p.id,p.name,p.description,s.tenant_id,NULL,v.vertical FROM office_project_grant g "
                 "STRAIGHT_JOIN projects p ON p.id=g.project_id "
                 "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
                 "STRAIGHT_JOIN jax_project_membership m ON m.project_id=p.id AND m.user_id=%s "
+                "LEFT JOIN office_project_vertical v ON v.project_id=p.id "
                 "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
                 "AND g.user_id=%s AND s.tenant_id=%s AND g.status='ACTIVE' AND g.audience='INTERNAL' "
                 "AND g.grant_role IN ('COLLABORATOR','PROJECT_ADMIN') AND m.status='ACTIVE'"
@@ -295,14 +329,15 @@ async def list_projects(
                     "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
                     "AND pg.status='ACTIVE')"
                 )
-            params = (actor_user_id, actor_user_id, profile["tenant_id"], *( () if proof_valid else (actor_user_id,) ), *cursor_params, limit + 1)
+            params = (actor_user_id, actor_user_id, profile["tenant_id"], *( () if proof_valid else (actor_user_id,) ), *predicate_params, limit + 1)
         else:
             query = (
-                "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id FROM office_external_relation r FORCE INDEX (idx_office_external_relation_list) "
+                "SELECT p.id,p.name,p.description,s.tenant_id,r.recipient_group_id,v.vertical FROM office_external_relation r FORCE INDEX (idx_office_external_relation_list) "
                 "STRAIGHT_JOIN projects p ON p.id=r.project_id "
                 "STRAIGHT_JOIN jax_project_scope s ON s.project_id=p.id "
                 "STRAIGHT_JOIN office_project_grant g ON g.project_id=p.id AND g.user_id=%s "
                 "STRAIGHT_JOIN office_recipient_group rg ON rg.recipient_group_id=r.recipient_group_id AND rg.project_id=p.id "
+                "LEFT JOIN office_project_vertical v ON v.project_id=p.id "
                 "WHERE s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
                 "AND g.status='ACTIVE' AND g.audience='CLIENT_PUBLISHED' AND g.grant_role='COLLABORATOR' "
                 "AND r.user_id=%s AND r.status='ACTIVE' AND rg.status='ACTIVE'"
@@ -313,11 +348,11 @@ async def list_projects(
                     "WHERE pg.project_id=p.id AND pg.user_id=%s AND pg.capability='PROFESSIONAL_ACTION' "
                     "AND pg.status='ACTIVE')"
                 )
-            params = (actor_user_id, actor_user_id, *( () if proof_valid else (actor_user_id,) ), *cursor_params, limit + 1)
+            params = (actor_user_id, actor_user_id, *( () if proof_valid else (actor_user_id,) ), *predicate_params, limit + 1)
         await cur.execute(query + predicate + " ORDER BY p.id LIMIT %s", params)
         candidates = await cur.fetchall()
         visible = []
-        for project_id, name, description, tenant_id, recipient_group_id in candidates:
+        for project_id, name, description, tenant_id, recipient_group_id, project_vertical in candidates:
             project_id = int(project_id)
             decision = await authorize_office_in_cursor(
                 cur, actor_user_id, OfficeOperation.VIEW_PROJECT, project_id,
@@ -333,6 +368,7 @@ async def list_projects(
                 "id": project_id, "name": name,
                 "description": None if decision.audience == "CLIENT_PUBLISHED" else description,
                 "tenant_id": int(tenant_id),
+                "vertical": None if project_vertical is None else str(project_vertical),
             })
         # For non-roots the candidate predicates are exactly the resolver's
         # active-view prerequisites (the resolver remains the authoritative
@@ -363,8 +399,9 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         cur, actor_user_id=actor_user_id, project_id=project_id,
     )
     await cur.execute(
-        "SELECT p.id,p.name,p.description,s.tenant_id,s.version FROM projects p "
-        "JOIN jax_project_scope s ON s.project_id=p.id WHERE p.id=%s",
+        "SELECT p.id,p.name,p.description,s.tenant_id,s.version,v.vertical FROM projects p "
+        "JOIN jax_project_scope s ON s.project_id=p.id "
+        "LEFT JOIN office_project_vertical v ON v.project_id=p.id WHERE p.id=%s",
         (project_id,),
     )
     row = await cur.fetchone()
@@ -401,6 +438,7 @@ async def _project_detail_in_cursor(cur, *, actor_user_id: int, project_id: int,
         "id": int(row[0]), "name": row[1],
         "description": None if decision.audience == "CLIENT_PUBLISHED" else row[2],
         "tenant_id": int(row[3]), "scope_version": int(row[4]),
+        "vertical": None if row[5] is None else str(row[5]),
         "audience": decision.audience or "INTERNAL",
         "capabilities": {"manage_invitations": manage_invitations},
     }
@@ -486,6 +524,10 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
         ProjectNamespace,
         ScopeDenied,
     )
+    if payload.vertical is not None and not vertical_activa(payload.vertical):
+        # Only an active room accepts projects; the registry state is a
+        # server decision, not a client choice.
+        raise HTTPException(status_code=422, detail="office_project_vertical_invalid")
     try:
         result = await ProjectAuthorityAdmin(MariaDBB9Store(await get_pool())).create_namespaced_project(
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
@@ -510,6 +552,7 @@ async def create_project(payload: ProjectCreate, idempotency_key: str = Header(a
         await _initialize_client_group(
             actor_user_id=int(user.user_id), target_tenant_id=payload.tenant_id,
             project_id=result.project_id, idempotency_key=idempotency_key,
+            vertical=payload.vertical,
         )
     except _PhaseBRetryable as error:
         raise HTTPException(status_code=503, detail="office_project_initialization_retryable") from error
