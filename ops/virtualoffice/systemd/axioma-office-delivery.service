@@ -3,6 +3,7 @@ Description=Virtual Office invitation email delivery
 After=network-online.target axioma-office-migrate.service
 Requires=axioma-office-migrate.service
 Wants=network-online.target
+OnFailure=aviso-fallo@%n.service
 
 [Service]
 Type=oneshot

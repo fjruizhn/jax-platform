@@ -19,7 +19,13 @@ grep -Fqx 'User=officeinvite' /etc/systemd/system/axioma-office-delivery.service
 grep -Fqx 'Group=officeinvite' /etc/systemd/system/axioma-office-delivery.service
 grep -Fqx 'EnvironmentFile=/etc/axioma-office/invitation-worker.env' /etc/systemd/system/axioma-office-delivery.service
 grep -Fqx 'Unit=axioma-office-delivery.service' /etc/systemd/system/axioma-office-delivery.timer
+grep -Fqx 'OnFailure=aviso-fallo@%n.service' /etc/systemd/system/axioma-office-delivery.service
 [[ $(id -nG officeinvite) == officeinvite ]]
+worker_entry=$(getent passwd officeinvite)
+IFS=: read -r worker_name _ worker_uid worker_gid _ worker_home worker_shell <<< "$worker_entry"
+[[ $worker_name == officeinvite && $worker_uid =~ ^[0-9]+$ && $worker_uid -gt 0 && $worker_uid -lt 1000 &&
+   $worker_gid == "$(getent group officeinvite | cut -d: -f3)" &&
+   $worker_home == /nonexistent && $worker_shell == /usr/sbin/nologin ]]
 [[ -f /etc/axioma-office/invitation-worker.env && ! -L /etc/axioma-office/invitation-worker.env &&
    $(stat -c '%U:%G:%a' /etc/axioma-office/invitation-worker.env) == root:root:600 ]]
 [[ -f /opt/axioma-office-dedicated-delivery/release-manifest.json ]]
@@ -32,4 +38,5 @@ if [[ $effective == --effective ]]; then
   systemctl show axioma-office-delivery.service -p Group | grep -Fqx Group=officeinvite
   systemctl show axioma-office-delivery.service -p EnvironmentFiles | grep -Fq /etc/axioma-office/invitation-worker.env
   systemctl show axioma-office-delivery.service -p ExecStart | grep -Fq virtual_office.invitation_delivery_worker
+  systemctl show axioma-office-delivery.service -p OnFailure | grep -Fq 'aviso-fallo@'
 fi

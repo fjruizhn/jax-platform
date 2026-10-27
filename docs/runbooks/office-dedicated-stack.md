@@ -58,17 +58,42 @@ y nombres de principales DB distintos de JAX. El provisionador existente
 recibe `--env /etc/axioma-office/deployment.env`,
 `--state-root /etc/axioma-office`, `--admin-transport
 /usr/local/libexec/axioma-office-mariadb-admin` y el grantee host **medido**
-desde la conexión al contenedor. Primero ejecutarlo con `--migrator-only`,
+desde la conexión al contenedor. Pasar `--skip-os-identities`: los usuarios OS
+los instala el helper de Oficina, y este provisionador compartido no debe
+crear ni modificar `jaxweb`/`jaxmigrate`. Primero ejecutarlo con `--migrator-only`,
 instalar el par de release del mismo `SHA` y la unidad migradora, y ejecutar
 la migración. Después provisionar el principal web con el manifest de ese
 `SHA`. Ambos environments resultantes son `root:root 0600` y contienen
-únicamente los secretos de Oficina. El instalador verifica cada fase:
+únicamente los secretos de Oficina. La activación del par JAX/JXP del mismo
+SHA se realiza con el procedimiento de [despliegue del par](despliegue.md),
+incluida su selección firmada/atestada; el gate siguiente rechaza otra
+revisión activa. Medir el host grantee del puente Docker y ejecutar ambos
+pasos del provisionador instalado desde `SHA`:
 
 ```bash
+MEASURED_HOST=$(sudo docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' axioma-office-mariadb)
+test -n "$MEASURED_HOST"
+test "$(sudo awk -F= '$1=="JAX_DB_GRANTEE_HOST" {print $2}' /etc/axioma-office/deployment.env)" = "$MEASURED_HOST"
+PROVISION=/usr/local/libexec/axioma-office-db-runtime/provision-db-runtime.sh
+sudo "$PROVISION" --plan --migrator-only --skip-os-identities \
+  --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
+  --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
+  --measured-grantee-host "$MEASURED_HOST"
+sudo "$PROVISION" --migrator-only --skip-os-identities \
+  --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
+  --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
+  --measured-grantee-host "$MEASURED_HOST"
 sudo /usr/local/libexec/axioma-office-base-install \
   --source "$SOURCE" --revision "$SHA" --phase migration
 sudo systemctl start axioma-office-migrate.service
-# Ahora repetir provision-db-runtime.sh sin --migrator-only para crear runtime.env.
+sudo "$PROVISION" --plan --skip-os-identities \
+  --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
+  --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
+  --measured-grantee-host "$MEASURED_HOST"
+sudo "$PROVISION" --skip-os-identities \
+  --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
+  --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
+  --measured-grantee-host "$MEASURED_HOST"
 sudo /usr/local/libexec/axioma-office-base-install \
   --source "$SOURCE" --revision "$SHA" --phase services
 sudo /usr/local/libexec/axioma-office-base-artifact-readiness "$SOURCE" "$SHA" --phase services

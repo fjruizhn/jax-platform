@@ -26,6 +26,9 @@ done
 stage=$(mktemp -d /var/tmp/axioma-office-base.XXXXXXXX)
 trap 'rm -rf "$stage"' EXIT
 GIT_NO_REPLACE_OBJECTS=1 git -C "$source_repo" archive --format=tar "$revision" \
+  ops/migration/provision-db-runtime.sh \
+  ops/migration/runtime-table-privileges-v1.txt \
+  ops/migration/runtime-table-privileges-v2.txt \
   ops/virtualoffice/mariadb/docker-compose.yml \
   ops/virtualoffice/office-dedicated-mariadb-admin-transport.sh \
   ops/virtualoffice/provision-office-os-users.sh \
@@ -42,6 +45,9 @@ if [[ $phase == database ]]; then
   done
   if systemctl is-active --quiet axioma-office-database.service; then
     echo 'stop the dedicated database unit before replacing its files' >&2; exit 1
+  fi
+  if [[ $(docker inspect --format='{{.State.Running}}' axioma-office-mariadb 2>/dev/null || true) == true ]]; then
+    echo 'stop the dedicated MariaDB container before replacing its files' >&2; exit 1
   fi
   install -d -o root -g root -m 0700 /etc/axioma-office /etc/axioma-office/mariadb
   install -d -o root -g root -m 0700 /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets
@@ -69,6 +75,10 @@ if [[ $phase == database ]]; then
   fi
   install -o root -g root -m 0644 "$base/mariadb/docker-compose.yml" /etc/axioma-office/mariadb/compose.yml
   install -o root -g root -m 0750 "$base/office-dedicated-mariadb-admin-transport.sh" /usr/local/libexec/axioma-office-mariadb-admin
+  install -d -o root -g root -m 0755 /usr/local/libexec/axioma-office-db-runtime
+  install -o root -g root -m 0750 "$stage/ops/migration/provision-db-runtime.sh" /usr/local/libexec/axioma-office-db-runtime/provision-db-runtime.sh
+  install -o root -g root -m 0644 "$stage/ops/migration/runtime-table-privileges-v1.txt" /usr/local/libexec/axioma-office-db-runtime/runtime-table-privileges-v1.txt
+  install -o root -g root -m 0644 "$stage/ops/migration/runtime-table-privileges-v2.txt" /usr/local/libexec/axioma-office-db-runtime/runtime-table-privileges-v2.txt
   install -o root -g root -m 0644 "$base/systemd/axioma-office-database.service" /etc/systemd/system/axioma-office-database.service
 else
   env_names=(migrate)

@@ -158,7 +158,7 @@ if [[ "$PREPARE_OS" == 1 ]]; then
     getent passwd "$account" >/dev/null || useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin "$account"
     IFS=: read -r _ _ account_uid account_gid _ account_home account_shell < <(getent passwd "$account")
     account_group=$(getent group "$account_gid" | cut -d: -f1)
-    [[ $account_uid =~ ^[0-9]+$ && $account_uid -lt 1000 && $account_home == /nonexistent && $account_shell == /usr/sbin/nologin && $account_group == "$account" ]] || {
+    [[ $account_uid =~ ^[0-9]+$ && $account_uid -gt 0 && $account_uid -lt 1000 && $account_home == /nonexistent && $account_shell == /usr/sbin/nologin && $account_group == "$account" ]] || {
       printf '%s\n' 'worker OS account is not a dedicated system identity' >&2; exit 1;
     }
     [[ $(id -nG "$account") == "$account" ]] || { printf '%s\n' 'worker OS account has supplementary groups' >&2; exit 1; }

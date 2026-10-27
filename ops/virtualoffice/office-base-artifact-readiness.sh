@@ -15,19 +15,62 @@ check_file() {
 }
 check_file ops/virtualoffice/mariadb/docker-compose.yml /etc/axioma-office/mariadb/compose.yml root:root:644
 check_file ops/virtualoffice/office-dedicated-mariadb-admin-transport.sh /usr/local/libexec/axioma-office-mariadb-admin root:root:750
+check_file ops/migration/provision-db-runtime.sh /usr/local/libexec/axioma-office-db-runtime/provision-db-runtime.sh root:root:750
+check_file ops/migration/runtime-table-privileges-v1.txt /usr/local/libexec/axioma-office-db-runtime/runtime-table-privileges-v1.txt root:root:644
+check_file ops/migration/runtime-table-privileges-v2.txt /usr/local/libexec/axioma-office-db-runtime/runtime-table-privileges-v2.txt root:root:644
 check_file ops/virtualoffice/systemd/axioma-office-database.service /etc/systemd/system/axioma-office-database.service root:root:644
 check_file ops/virtualoffice/office-base-artifact-readiness.sh /usr/local/libexec/axioma-office-base-artifact-readiness root:root:750
+systemctl show axioma-office-database.service -p WorkingDirectory | grep -Fqx WorkingDirectory=/etc/axioma-office/mariadb
+systemctl show axioma-office-database.service -p EnvironmentFiles | grep -Fq /etc/axioma-office/mariadb/compose.env
+systemctl show axioma-office-database.service -p ExecStart | grep -Fq '/etc/axioma-office/mariadb/compose.yml up -d --wait'
+systemctl show axioma-office-database.service -p ExecStop | grep -Fq '/etc/axioma-office/mariadb/compose.yml stop'
+systemctl show axioma-office-database.service -p DropInPaths | grep -Fqx DropInPaths=
 [[ -f /etc/axioma-office/mariadb/compose.env && ! -L /etc/axioma-office/mariadb/compose.env &&
    $(stat -c '%U:%G:%a' /etc/axioma-office/mariadb/compose.env) == root:root:600 ]]
 [[ -f /var/lib/axioma-office-mariadb/secrets/root_password.txt &&
    ! -L /var/lib/axioma-office-mariadb/secrets/root_password.txt &&
    $(stat -c '%U:%G:%a' /var/lib/axioma-office-mariadb/secrets/root_password.txt) == root:root:600 ]]
 if [[ $phase == migration || $phase == services ]]; then
+  check_file ops/migration/jax-platform-pair-exec.py /usr/local/libexec/jax-platform-pair-exec.py root:root:644
+  check_file ops/migration/pair_artifact_readiness.py /usr/local/libexec/pair_artifact_readiness.py root:root:644
+  python3 -I -S - "$revision" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+import importlib.util
+
+expected = sys.argv[1]
+root = Path('/opt/jax-platform-pair')
+selection = Path('/etc/jax/platform-pair-selection.json')
+node = selection.lstat()
+if not stat.S_ISREG(node.st_mode) or node.st_uid != 0 or node.st_gid != 0 or stat.S_IMODE(node.st_mode) != 0o644:
+    raise SystemExit('Office pair selection is unsafe')
+data = json.loads(selection.read_text(encoding='utf-8'))
+if set(data) != {'release', 'jax_platform_revision', 'jax_revision', 'manifest_sha256'} or data['jax_platform_revision'] != expected:
+    raise SystemExit('Office pair selection names a different platform SHA')
+release = Path(data['release']).resolve(strict=True)
+if release.parent != (root / 'releases').resolve(strict=True) or (root / 'current').resolve(strict=True) != release:
+    raise SystemExit('Office pair release is not active')
+manifest = release / 'pair-manifest.json'
+if hashlib.sha256(manifest.read_bytes()).hexdigest() != data['manifest_sha256']:
+    raise SystemExit('Office pair manifest digest differs')
+spec = importlib.util.spec_from_file_location('pair_readiness', '/usr/local/libexec/pair_artifact_readiness.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.verify(release, expected_jxp=expected, expected_jax=data['jax_revision'])
+PY
   check_file ops/virtualoffice/provision-office-os-users.sh /usr/local/libexec/axioma-office-provision-os-users root:root:750
   check_file ops/virtualoffice/systemd/axioma-office-migrate.service /etc/systemd/system/axioma-office-migrate.service root:root:644
+  systemctl show axioma-office-migrate.service -p User | grep -Fqx User=officemigrate
+  systemctl show axioma-office-migrate.service -p Group | grep -Fqx Group=officemigrate
+  systemctl show axioma-office-migrate.service -p DropInPaths | grep -Fqx DropInPaths=
+  systemctl show axioma-office-migrate.service -p ExecStart | grep -Fq 'office-migrate'
   env_names=(migrate)
   if [[ $phase == services ]]; then
     check_file ops/virtualoffice/systemd/axioma-office-backend.service /etc/systemd/system/axioma-office-backend.service root:root:644
+    systemctl show axioma-office-backend.service -p User | grep -Fqx User=officeweb
+    systemctl show axioma-office-backend.service -p Group | grep -Fqx Group=officeweb
+    systemctl show axioma-office-backend.service -p DropInPaths | grep -Fqx DropInPaths=
+    systemctl show axioma-office-backend.service -p ExecStart | grep -Fq 'office-web'
     env_names+=(runtime)
   fi
   for name in "${env_names[@]}"; do
