@@ -185,8 +185,8 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
         profile = await cur.fetchone()
         if profile is None:
             raise HTTPException(status_code=404, detail="office_person_not_found")
-        if profile[0] == "OFFICE_SUPERUSER":
-            raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
+        # Another active root (the locked actor) can revoke this root. Self
+        # revocation remains forbidden so the final administrator survives.
         if int(profile[2]) != expected_version:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
         if profile[1] == "REVOKED":
@@ -227,9 +227,11 @@ async def list_people(
         else:
             target_tenant_id = tenant_id
         sql = (
-            "SELECT u.user_id,u.tenant_id,u.email,u.account_class,p.global_role,p.status,p.version "
+            "SELECT u.user_id,u.tenant_id,u.email,u.account_class,p.global_role,p.status,p.version,d.status,d.version "
             "FROM office_account_profile p JOIN jax_users u ON u.user_id=p.user_id "
             "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+            "LEFT JOIN office_admin_delegation d ON d.tenant_id=u.tenant_id AND d.user_id=u.user_id "
+            "AND d.capability='ADMINISTER_OFFICE' "
             "WHERE u.status='active' AND t.status='active' AND p.status='ACTIVE'"
         )
         params: list[object] = []
@@ -246,7 +248,8 @@ async def list_people(
     output = [
         {"user_id": int(row[0]), "tenant_id": int(row[1]), "email": row[2],
          "account_class": row[3], "global_role": row[4],
-         "status": row[5], "version": int(row[6])}
+         "status": row[5], "version": int(row[6]),
+         "delegation_status": row[7], "delegation_version": int(row[8]) if row[8] is not None else 0}
         for row in rows[:limit]
     ]
     response.headers["Cache-Control"] = "no-store"
@@ -304,15 +307,16 @@ async def list_person_projects(target_user_id: int, response: Response,
             raise HTTPException(status_code=404, detail="office_person_not_found")
         audience = "CLIENT_PUBLISHED" if target[1] == "EXTERNAL_CLIENT" else "INTERNAL"
         await cur.execute(
-            "SELECT g.project_id,p.name,g.grant_role,g.version "
-            "FROM office_project_grant g FORCE INDEX (idx_office_project_grant_list) "
+            "SELECT g.project_id,p.name,g.grant_role,g.version,g.status "
+            "FROM office_project_grant g FORCE INDEX (idx_office_project_grant_person_all) "
             "JOIN jax_project_scope s ON s.project_id=g.project_id "
             "JOIN projects p ON p.id=g.project_id "
-            "JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id "
-            "WHERE g.user_id=%s AND g.status='ACTIVE' AND g.audience=%s "
+            "LEFT JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id "
+            "WHERE g.user_id=%s AND g.status IN ('ACTIVE','REVOKED') AND g.audience=%s "
             "AND g.project_id>%s AND s.tenant_id=%s "
             "AND s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
-            "AND m.status='ACTIVE' ORDER BY g.project_id LIMIT %s",
+            "AND (g.status='REVOKED' OR m.status='ACTIVE') "
+            "ORDER BY g.project_id LIMIT %s",
             (target_user_id, audience, after_project_id, int(target[0]), limit + 1),
         )
         rows = await cur.fetchall()
@@ -321,7 +325,7 @@ async def list_person_projects(target_user_id: int, response: Response,
     response.headers["Vary"] = "Authorization"
     return {"user_id": target_user_id, "projects": [
         {"project_id": int(row[0]), "name": row[1], "grant_role": row[2],
-         "version": int(row[3]), "audience": audience}
+         "version": int(row[3]), "status": row[4], "audience": audience}
         for row in page], "next_after_project_id": int(page[-1][0]) if len(rows) > limit else None}
 
 
@@ -359,11 +363,11 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
             raise HTTPException(status_code=409, detail="office_external_role_incompatible")
         if int(target[6]) != payload.expected_version:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
-        # Removing an Office root is the separate recovery/continuity
-        # ceremony, not an ordinary profile edit.  In particular, two roots
-        # must never be able to concurrently demote each other and leave no
-        # authority capable of performing the recovery contract.
-        if target[4] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER":
+        # Only a different active root may demote another root. The actor's
+        # profile is held by the current authorization transaction, while
+        # the target profile is locked here; opposing demotions serialize.
+        if (target[4] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER"
+                and target_user_id == actor_user_id):
             raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
         # Reread current authority after the target profile lock.  A revoked
         # root can never use a decision taken before this write point.

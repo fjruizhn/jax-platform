@@ -1,7 +1,7 @@
 [Unit]
 Description=Virtual Office schema migration
-Requires=docker.service
-After=network-online.target docker.service
+Requires=axioma-office-database.service
+After=network-online.target axioma-office-database.service
 Wants=network-online.target
 Before=axioma-office-backend.service
 

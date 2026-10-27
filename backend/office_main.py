@@ -7,8 +7,9 @@ background workers, and their startup side effects are never registered here.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -18,7 +19,11 @@ from db.connection import close_pool, get_pool
 from db.runtime_contract import assert_runtime_db_contract
 from http_client import close_http_client, get_http_client
 import limite_json
-from virtual_office.db_identity import require_dedicated_db
+from auth.middleware import get_current_user, require_superadmin
+from auth.models import AuthUser
+from virtual_office.authority import authorize_office
+from virtual_office.capabilities import OfficeOperation
+from virtual_office.db_identity import require_dedicated_db, assert_dedicated_server
 
 from api.auth import router as auth_router
 from api.apariencia import router as appearance_router
@@ -88,7 +93,10 @@ class OfficeRouteBoundary:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     require_dedicated_db()
+    if os.getenv("OFFICE_MFA_POLICY") != "optional":
+        raise RuntimeError("Office MFA policy configuration is required")
     pool = await get_pool()
+    await assert_dedicated_server(pool)
     await assert_runtime_db_contract(pool)
     await get_http_client()
     try:
@@ -100,6 +108,18 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Virtual Office", docs_url=None, redoc_url=None, openapi_url=None,
               lifespan=lifespan)
+
+
+async def require_office_superuser(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    decision = await authorize_office(None, int(user.user_id), OfficeOperation.ADMINISTER_OFFICE)
+    if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
+        raise HTTPException(status_code=403, detail="office_admin_access_denied")
+    return user
+
+
+# The copied SMTP controller keeps its classic JAX dependency in the classic
+# process; only this Office app resolves it through the Office profile.
+app.dependency_overrides[require_superadmin] = require_office_superuser
 
 
 @app.exception_handler(RequestValidationError)

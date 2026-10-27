@@ -50,6 +50,12 @@ async def connect(values: dict[str, str]):
     )
 
 
+async def server_identity(connection):
+    async with connection.cursor() as cur:
+        await cur.execute("SELECT @@server_id,@@hostname,DATABASE()")
+        return await cur.fetchone()
+
+
 async def import_smtp(source: dict[str, str], office: dict[str, str], owner_email: str) -> None:
     source_id = tuple(source[key] for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME"))
     target_id = tuple(office[key] for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME"))
@@ -61,7 +67,16 @@ async def import_smtp(source: dict[str, str], office: dict[str, str], owner_emai
     office_fernet = Fernet(office["FERNET_KEY"].encode("ascii"))
     keys = smtp_config.CLAVES + smtp_config.CLAVES_OPCIONALES
     source_db = await connect(source)
+    office_db = None
     try:
+        office_db = await connect(office)
+        source_identity = await server_identity(source_db)
+        office_identity = await server_identity(office_db)
+        if (source_identity[:2] == office_identity[:2]
+                or str(office_identity[0]) != office.get("OFFICE_DB_SERVER_ID")
+                or office_identity[1] != office.get("OFFICE_DB_HOSTNAME")
+                or office_identity[2] != office["JAX_DB_NAME"]):
+            raise RuntimeError("SMTP source and Office target must use distinct physical servers")
         async with source_db.cursor() as cur:
             await cur.execute(
                 "SELECT config_key,config_value FROM axioma_config WHERE config_key IN ("
@@ -69,6 +84,8 @@ async def import_smtp(source: dict[str, str], office: dict[str, str], owner_emai
             rows = dict(await cur.fetchall())
     finally:
         source_db.close()
+        if office_db is not None:
+            office_db.close()
     if not set(smtp_config.CLAVES).issubset(rows) or not rows["smtp.host"]:
         raise RuntimeError("source SMTP is not configured")
     try:
@@ -111,7 +128,8 @@ async def import_smtp(source: dict[str, str], office: dict[str, str], owner_emai
         await office_db.rollback()
         raise
     finally:
-        office_db.close()
+        if office_db is not None:
+            office_db.close()
 
 
 def main() -> None:

@@ -14,6 +14,17 @@ for key in "${required[@]}"; do [[ -n ${!key:-} ]] || { printf '%s\n' "invitatio
 [[ -z ${JAX_MIGRATE_DB_USER:-} && -z ${JAX_RUNTIME_DB_USER:-} ]] || {
   printf '%s\n' 'invitation worker env must not expose migration or web principal names' >&2; exit 1;
 }
+if [[ $env_file == /etc/axioma-office/invitation-worker.env ]]; then
+  [[ ${OFFICE_DEDICATED_DB:-} == 1 && -n ${OFFICE_DB_SERVER_ID:-} && -n ${OFFICE_DB_HOSTNAME:-} ]] || {
+    printf '%s\n' 'dedicated Office worker identity is missing' >&2; exit 1;
+  }
+  actual_identity=$(MYSQL_PWD="$JAX_DB_PASSWORD" mariadb -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u "$JAX_DB_USER" --batch --skip-column-names "$JAX_DB_NAME" -e 'SELECT @@server_id,@@hostname,DATABASE()' 2>/dev/null) || {
+    printf '%s\n' 'Office worker MariaDB identity query failed' >&2; exit 1;
+  }
+  [[ $actual_identity == "$OFFICE_DB_SERVER_ID"$'\t'"$OFFICE_DB_HOSTNAME"$'\t'"$JAX_DB_NAME" ]] || {
+    printf '%s\n' 'Office worker connected to the wrong MariaDB' >&2; exit 1;
+  }
+fi
 # The shared timer is only ready when both disjoint durable queues have their
 # fenced delivery authority.  The check itself is SELECT-only under jaxinvite.
 routine_count=$(MYSQL_PWD="$JAX_DB_PASSWORD" mariadb -h "$JAX_DB_HOST" -P "$JAX_DB_PORT" -u "$JAX_DB_USER" --batch --skip-column-names "$JAX_DB_NAME" -e "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME IN ('office_invitation_claim_next_v1','office_invitation_expire_due_v1','office_invitation_settle_delivery_v1','office_account_invitation_claim_next_v1','office_account_invitation_expire_due_v1','office_account_invitation_settle_delivery_v1','office_account_invitation_settle_stale_v1')" 2>/dev/null) || {

@@ -131,6 +131,14 @@ def test_office_directory_lists_human_profiles_without_mfa_but_keeps_mutations_p
         f"/api/virtual-office/people/{peer}/global-role",
         json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=root_headers,
     ).status_code == 403
+    monkeypatch.setenv("OFFICE_DEDICATED_DB", "1")
+    monkeypatch.setenv("OFFICE_MFA_POLICY", "optional")
+    optional = client.put(
+        f"/api/virtual-office/people/{peer}/global-role",
+        json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=root_headers,
+    )
+    assert optional.status_code == 200
+    assert optional.json()["global_role"] == "GENERAL_ADMIN"
 
 
 def test_people_directory_is_delegated_tenant_metadata_not_content(client, monkeypatch):
@@ -146,7 +154,7 @@ def test_people_directory_is_delegated_tenant_metadata_not_content(client, monke
     response = client.get(f"/api/virtual-office/people?after_user_id={peer - 1}", headers=_headers(root, tv, mv, proof))
     assert response.status_code == 200
     row = next(item for item in response.json()["people"] if item["user_id"] == peer)
-    assert set(row) == {"user_id", "tenant_id", "email", "account_class", "global_role", "status", "version"}
+    assert set(row) == {"user_id", "tenant_id", "email", "account_class", "global_role", "status", "version", "delegation_status", "delegation_version"}
     assert "password" not in response.text.lower()
 
 

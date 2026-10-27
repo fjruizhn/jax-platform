@@ -172,6 +172,10 @@ for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_GRANTEE_HOST JAX_RUNTIME_D
 [[ ${CFG[JAX_DB_PORT]} =~ ^[0-9]{1,5}$ ]] || die "invalid database port"
 if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
   [[ ${CFG[JAX_DB_NAME]} != jax_memory && ${CFG[JAX_DB_PORT]} != 3308 ]] || die "Office must use its own MariaDB target"
+  for key in OFFICE_DB_SERVER_ID OFFICE_DB_HOSTNAME OFFICE_MFA_POLICY; do need "$key"; done
+  [[ ${CFG[OFFICE_MFA_POLICY]} == optional ]] || die "Office MFA policy must match the product decision"
+  [[ ${CFG[OFFICE_DB_SERVER_ID]} =~ ^[1-9][0-9]*$ ]] || die "invalid Office MariaDB server id"
+  [[ ${CFG[OFFICE_DB_HOSTNAME]} =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die "invalid Office MariaDB hostname"
 fi
 
 RUNTIME_USER=${CFG[JAX_RUNTIME_DB_USER]}
@@ -183,6 +187,11 @@ DB=${CFG[JAX_DB_NAME]}
 [[ ${CFG[JAX_DB_USER]:-} != "$RUNTIME_USER" && ${CFG[JAX_DB_USER]:-} != "$MIGRATE_USER" ]] || die "legacy principal must remain distinct"
 if [ "$MIGRATOR_ONLY" = 0 ]; then
   load_runtime_allowlist
+  if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+    for key in OFFICE_DEDICATED_DB OFFICE_DB_SERVER_ID OFFICE_DB_HOSTNAME OFFICE_MFA_POLICY; do
+      [[ -n ${RUNTIME_ALLOWED[$key]+yes} ]] || die "installed runtime credential launcher lacks required key: $key"
+    done
+  fi
   [[ -n ${RUNTIME_ALLOWED[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} ]] || die "installed runtime credential launcher lacks required key: OFFICE_BROKER_ALLOWED_BASE_URLS"
   [[ -n ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]+yes} && ${CFG[OFFICE_BROKER_ALLOWED_BASE_URLS]} == https://api.z.ai/api/paas/v4 ]] || die "Office broker allowlist must be the approved HTTPS Z.ai base URL"
   office_keys_in_deployment=0
@@ -261,6 +270,12 @@ if [ "$MODE" = plan ]; then
 fi
 
 [ "$(id -u)" = 0 ] || die "apply must run as root"
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 && -z $ADMIN_TRANSPORT ]]; then
+  die "Office provisioning requires its dedicated MariaDB admin transport"
+fi
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 && $PREPARE_OS == 1 ]]; then
+  die "Office service identities must be prepared separately; pass --skip-os-identities"
+fi
 if [ -z "$ADMIN_TRANSPORT" ]; then
   command -v docker >/dev/null || die "docker is required for the canonical MariaDB admin transport"
   docker inspect "$ADMIN_CONTAINER" >/dev/null 2>&1 || die "MariaDB admin container is unavailable"
@@ -276,6 +291,10 @@ admin_sql() {
       'MYSQL_PWD="$(cat "$1")" exec mariadb -uroot --batch --skip-column-names' sh "$ADMIN_SECRET_FILE"
   fi
 }
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  server_identity=$(printf 'SELECT @@server_id,@@hostname;\n' | admin_sql) || die "could not inspect Office MariaDB server"
+  [[ $server_identity == "${CFG[OFFICE_DB_SERVER_ID]}"$'\t'"${CFG[OFFICE_DB_HOSTNAME]}" ]] || die "admin transport is not connected to the dedicated Office MariaDB"
+fi
 sql_quote() { local q=$1; q=${q//\'/\'\'}; printf "'%s'" "$q"; }
 principal_exists() {
   local user=$1 result
@@ -618,7 +637,12 @@ migrate_content+="JAX_DB_PORT=${CFG[JAX_DB_PORT]}"$'\n'
 migrate_content+="JAX_DB_NAME=$DB"$'\n'
 migrate_content+="JAX_DB_USER=$MIGRATE_USER"$'\n'
 migrate_content+="JAX_DB_PASSWORD=$migrate_password"$'\n'
-if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then migrate_content+="OFFICE_DEDICATED_DB=1"$'\n'; fi
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  migrate_content+="OFFICE_DEDICATED_DB=1"$'\n'
+  migrate_content+="OFFICE_DB_SERVER_ID=${CFG[OFFICE_DB_SERVER_ID]}"$'\n'
+  migrate_content+="OFFICE_DB_HOSTNAME=${CFG[OFFICE_DB_HOSTNAME]}"$'\n'
+  migrate_content+="OFFICE_MFA_POLICY=${CFG[OFFICE_MFA_POLICY]}"$'\n'
+fi
 for key in JAX_REPO_PATH JAX_EJECUTOR_INVENTARIO; do [[ -v "CFG[$key]" ]] && migrate_content+="$key=${CFG[$key]}"$'\n'; done
 migrate_content+="JAX_MIGRATE_DB_READINESS_ATTEMPTS=${CFG[JAX_MIGRATE_DB_READINESS_ATTEMPTS]:-12}"$'\n'
 migrate_content+="JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=${CFG[JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS]:-10}"$'\n'

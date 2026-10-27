@@ -26,6 +26,11 @@ function RequireSuperadmin({ children }) {
   return children
 }
 
+function RequireOfficeRoot({ children, officeSession }) {
+  return officeSession?.identity?.global_role === 'OFFICE_SUPERUSER'
+    ? children : <Navigate to="/virtual-office" replace />
+}
+
 // OP 358 pieza 1 — guardia de instalación: en el dominio de la Oficina Virtual
 // este build se sirve como la oficina y ella es su única cara; la raíz y las
 // rutas de la Mesa de Axioma (dashboard, historial, proyectos, administración)
@@ -140,7 +145,7 @@ export default function App() {
         />
         <Route
           path="/virtual-office/admin/correo"
-          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireSuperadmin><AdminSmtp /></RequireSuperadmin></RequireOfficeSession></RequireAuth>}
+          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot><AdminSmtp /></RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
         />
         {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
             redirige TODO este bloque a /virtual-office; en la de Axioma lo

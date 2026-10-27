@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
 
 from db.connection import get_pool
 
@@ -119,6 +120,11 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
     requirement.  It cannot turn a role-derived requirement off.
     """
     if not decision.allowed:
+        return decision
+    # This process has a separate Office database and optional account MFA.
+    # Enrolled users still verify MFA at login; unenrolled users can work.
+    if (os.getenv("OFFICE_DEDICATED_DB") == "1"
+            and os.getenv("OFFICE_MFA_POLICY") == "optional"):
         return decision
     privileged_view = (
         decision.operation == OfficeOperation.VIEW_PROJECT.value

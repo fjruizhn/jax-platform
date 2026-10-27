@@ -2,7 +2,13 @@ services:
   office-mariadb:
     image: mariadb:12.3.3
     container_name: axioma-office-mariadb
+    hostname: axioma-office-db
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     ports:
       - "127.0.0.1:3310:3306"
     volumes:
@@ -23,6 +29,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_uca1400_ai_ci
       - --transaction-isolation=REPEATABLE-READ
+      - --server-id=${OFFICE_DB_SERVER_ID:?set unique Office MariaDB server id}
 
 networks:
   office-db-net:

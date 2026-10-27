@@ -7,7 +7,7 @@ import { I18nProvider } from '../i18n/index.jsx'
 const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), create: vi.fn() }))
 const invitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
 const members = vi.hoisted(() => ({ list: vi.fn(), grant: vi.fn(), changeRole: vi.fn(), revoke: vi.fn() }))
-const people = vi.hoisted(() => ({ list: vi.fn(), projects: vi.fn(), assignableProjects: vi.fn() }))
+const people = vi.hoisted(() => ({ list: vi.fn(), projects: vi.fn(), assignableProjects: vi.fn(), updateRole: vi.fn(), grantDelegation: vi.fn(), revokeDelegation: vi.fn() }))
 const accountInvitations = vi.hoisted(() => ({ list: vi.fn(), issue: vi.fn(), revoke: vi.fn() }))
 vi.mock('../api/virtualOffice', () => ({
   officeProjectsApi: projects, officeInvitationsApi: invitations,
@@ -70,12 +70,25 @@ describe('Office user administration', () => {
 
   it('shows a human account and lets the administrator assign its project', async () => {
     members.grant.mockResolvedValue({ data: { version: 1 } })
+    people.list.mockResolvedValue({ data: { people: [
+      { user_id: 1, tenant_id: 1, email: 'fernando@example.test', account_class: 'INTERNAL', global_role: 'OFFICE_SUPERUSER', status: 'ACTIVE', version: 1 },
+      { user_id: 2, tenant_id: 1, email: 'colega@example.test', account_class: 'OFFICE_INTERNAL', global_role: 'COLLABORATOR', status: 'ACTIVE', version: 1, delegation_status: null, delegation_version: 0 },
+    ], next_after_user_id: null } })
     show('OFFICE_SUPERUSER')
     fireEvent.click(await screen.findByRole('button', { name: /fernando@example.test/ }))
     expect(await screen.findByText('Todavía no participa en ningún proyecto.')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Agregar a proyecto'), { target: { value: '25' } })
     fireEvent.click(screen.getByRole('button', { name: 'Agregar' }))
     await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 1, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
+    people.projects.mockResolvedValue({ data: { user_id: 2, projects: [], next_after_project_id: null } })
+    people.updateRole.mockResolvedValue({ data: { user_id: 2, global_role: 'GENERAL_ADMIN', version: 2 } })
+    people.grantDelegation.mockResolvedValue({ data: { user_id: 2, version: 1 } })
+    fireEvent.click(screen.getByRole('button', { name: /colega@example.test/ }))
+    fireEvent.change(await screen.findByLabelText('Rol en la Oficina'), { target: { value: 'GENERAL_ADMIN' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar rol' }))
+    await waitFor(() => expect(people.updateRole).toHaveBeenCalledWith(2, 'GENERAL_ADMIN', 1))
+    fireEvent.click(await screen.findByRole('button', { name: 'Permitir administrar usuarios' }))
+    await waitFor(() => expect(people.grantDelegation).toHaveBeenCalledWith(2, 0))
   })
 
   it('does not offer another tenant’s project for a person', async () => {
@@ -120,7 +133,7 @@ describe('Office user administration', () => {
   })
 
   it('removes a person from a project only after confirmation', async () => {
-    people.projects.mockResolvedValueOnce({ data: { user_id: 1, projects: [{ project_id: 25, name: 'Estudio Kéré', grant_role: 'COLLABORATOR', version: 3 }], next_after_project_id: null } })
+    people.projects.mockResolvedValueOnce({ data: { user_id: 1, projects: [{ project_id: 25, name: 'Estudio Kéré', grant_role: 'COLLABORATOR', status: 'ACTIVE', version: 3 }], next_after_project_id: null } })
       .mockResolvedValue({ data: { user_id: 1, projects: [], next_after_project_id: null } })
     members.revoke.mockResolvedValue({ data: { version: 4 } })
     show('OFFICE_SUPERUSER')

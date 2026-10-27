@@ -41,6 +41,9 @@ export default function OfficeUsers({ officeSession, onOfficeDenied }) {
   const [personProjects, setPersonProjects] = useState(null)
   const [personProjectsNext, setPersonProjectsNext] = useState(null)
   const [personError, setPersonError] = useState(false)
+  const [roleDraft, setRoleDraft] = useState('COLLABORATOR')
+  const [roleBusy, setRoleBusy] = useState(false)
+  const [roleError, setRoleError] = useState(false)
   const [email, setEmail] = useState('')
   const [inviteBusy, setInviteBusy] = useState(false)
   const [inviteNotice, setInviteNotice] = useState(null)
@@ -107,7 +110,40 @@ export default function OfficeUsers({ officeSession, onOfficeDenied }) {
 
   function selectPerson(target) {
     setPerson(target); setAssignProject(''); setAssignError(false)
+    setRoleDraft(target.global_role); setRoleError(false)
     loadPersonProjects(target)
+  }
+
+  async function updatePersonRole(event) {
+    event.preventDefault()
+    if (!person || roleBusy || roleDraft === person.global_role) return
+    setRoleBusy(true); setRoleError(false)
+    try {
+      const { data } = await officePeopleApi.updateRole(person.user_id, roleDraft, person.version)
+      const next = { ...person, global_role: data.global_role, version: data.version }
+      setPerson(next)
+      setPeople((current) => current?.map((entry) => entry.user_id === next.user_id ? next : entry))
+    } catch (err) {
+      if (err?.response?.status === 403) onOfficeDenied?.()
+      setRoleError(true)
+    } finally { setRoleBusy(false) }
+  }
+
+  async function updatePersonDelegation() {
+    if (!person || roleBusy) return
+    setRoleBusy(true); setRoleError(false)
+    try {
+      const active = person.delegation_status === 'ACTIVE'
+      const { data } = active
+        ? await officePeopleApi.revokeDelegation(person.user_id, person.delegation_version)
+        : await officePeopleApi.grantDelegation(person.user_id, person.delegation_version)
+      const next = { ...person, delegation_status: active ? 'REVOKED' : 'ACTIVE', delegation_version: data.version }
+      setPerson(next)
+      setPeople((current) => current?.map((entry) => entry.user_id === next.user_id ? next : entry))
+    } catch (err) {
+      if (err?.response?.status === 403) onOfficeDenied?.()
+      setRoleError(true)
+    } finally { setRoleBusy(false) }
   }
 
   async function invitePerson(event) {
@@ -161,7 +197,8 @@ export default function OfficeUsers({ officeSession, onOfficeDenied }) {
     event.preventDefault()
     const projectId = Number(assignProject)
     if (!person || !Number.isInteger(projectId) || assignBusy) return
-    const payload = { grant_role: assignRole, audience: 'INTERNAL', expected_version: 0 }
+    const prior = personProjects?.find((entry) => entry.project_id === projectId)
+    const payload = { grant_role: assignRole, audience: 'INTERNAL', expected_version: prior?.status === 'REVOKED' ? prior.version : 0 }
     const signature = JSON.stringify({ userId: person.user_id, projectId, payload })
     if (assignmentIntent.current?.signature !== signature) assignmentIntent.current = { signature, key: crypto.randomUUID() }
     setAssignBusy(true); setAssignError(false)
@@ -266,15 +303,25 @@ export default function OfficeUsers({ officeSession, onOfficeDenied }) {
         {person && <div className="mt-5 border-t border-borde pt-4">
           <h3 className="break-all font-semibold">{person.email}</h3>
           <p className="mt-1 text-sm text-texto-suave">{t.virtualOffice.userAdmin.roles[person.global_role]}</p>
+          {isRoot && person.user_id !== officeSession.identity.user_id && <form onSubmit={updatePersonRole} className="mt-3 flex flex-wrap items-end gap-2">
+            <label className="text-sm">{t.virtualOffice.userAdmin.globalRole}<select className={`${INPUT} mt-1 block`} value={roleDraft} onChange={(event) => setRoleDraft(event.target.value)} disabled={roleBusy}>
+              <option value="COLLABORATOR">{t.virtualOffice.userAdmin.roles.COLLABORATOR}</option>
+              <option value="GENERAL_ADMIN">{t.virtualOffice.userAdmin.roles.GENERAL_ADMIN}</option>
+              <option value="OFFICE_SUPERUSER">{t.virtualOffice.userAdmin.roles.OFFICE_SUPERUSER}</option>
+            </select></label>
+            <button type="submit" className={BUTTON} disabled={roleBusy || roleDraft === person.global_role}>{t.virtualOffice.userAdmin.saveRole}</button>
+          </form>}
+          {isRoot && person.global_role === 'GENERAL_ADMIN' && <button type="button" className={`${BUTTON} mt-3`} disabled={roleBusy} onClick={updatePersonDelegation}>{person.delegation_status === 'ACTIVE' ? t.virtualOffice.userAdmin.disableAdmin : t.virtualOffice.userAdmin.enableAdmin}</button>}
+          {roleError && <p role="alert" className="mt-2 text-sm text-peligro">{t.virtualOffice.userAdmin.roleError}</p>}
           {person.user_id === officeSession.identity.user_id && <Link to="/account/security" className="mt-2 inline-flex min-h-11 items-center text-acento-texto underline">{t.virtualOffice.userAdmin.myMfa}</Link>}
           <h4 className="mt-4 font-medium">{t.virtualOffice.userAdmin.participates}</h4>
           {personProjects === null && !personError && <p role="status" className="mt-2 text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {personError && <p role="alert" className="mt-2 text-sm text-peligro">{t.virtualOffice.userAdmin.projectsError}</p>}
-          {personProjects?.length === 0 && <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.userAdmin.noProjects}</p>}
-          {personProjects?.length > 0 && <ul className="mt-2 divide-y divide-borde">{personProjects.map((entry) => <li key={entry.project_id} className="flex flex-wrap items-center justify-between gap-2 py-2"><span>{entry.name}</span><span className="flex items-center gap-2 text-sm text-texto-suave">{t.virtualOffice.members.roles[entry.grant_role]}<button type="button" className={BUTTON} onClick={() => { setRemoveError(false); setRemoveProject(entry) }}>{t.virtualOffice.userAdmin.remove}</button></span></li>)}</ul>}
+          {personProjects?.every((entry) => entry.status === 'REVOKED') && <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.userAdmin.noProjects}</p>}
+          {personProjects?.some((entry) => entry.status === 'ACTIVE') && <ul className="mt-2 divide-y divide-borde">{personProjects.filter((entry) => entry.status === 'ACTIVE').map((entry) => <li key={entry.project_id} className="flex flex-wrap items-center justify-between gap-2 py-2"><span>{entry.name}</span><span className="flex items-center gap-2 text-sm text-texto-suave">{t.virtualOffice.members.roles[entry.grant_role]}<button type="button" className={BUTTON} onClick={() => { setRemoveError(false); setRemoveProject(entry) }}>{t.virtualOffice.userAdmin.remove}</button></span></li>)}</ul>}
           {personProjectsNext !== null && <button type="button" className={`${BUTTON} mt-2`} onClick={() => loadPersonProjects(person, personProjectsNext, true)}>{t.virtualOffice.projects.more}</button>}
-          {person.account_class !== 'EXTERNAL_CLIENT' && projects?.some((project) => project.tenant_id === person.tenant_id && !personProjects?.some((entry) => entry.project_id === project.id)) && <form onSubmit={assignPerson} className="mt-4 flex flex-wrap items-end gap-2">
-            <label className="text-sm">{t.virtualOffice.userAdmin.assignProject}<select required className={`${INPUT} mt-1 block`} value={assignProject} onChange={(event) => setAssignProject(event.target.value)}><option value="">{t.virtualOffice.members.choose}</option>{projects.filter((project) => project.tenant_id === person.tenant_id && !personProjects?.some((entry) => entry.project_id === project.id)).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+          {person.account_class !== 'EXTERNAL_CLIENT' && projects?.some((project) => project.tenant_id === person.tenant_id && !personProjects?.some((entry) => entry.project_id === project.id && entry.status === 'ACTIVE')) && <form onSubmit={assignPerson} className="mt-4 flex flex-wrap items-end gap-2">
+            <label className="text-sm">{t.virtualOffice.userAdmin.assignProject}<select required className={`${INPUT} mt-1 block`} value={assignProject} onChange={(event) => setAssignProject(event.target.value)}><option value="">{t.virtualOffice.members.choose}</option>{projects.filter((project) => project.tenant_id === person.tenant_id && !personProjects?.some((entry) => entry.project_id === project.id && entry.status === 'ACTIVE')).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
             {isRoot && <label className="text-sm">{t.virtualOffice.members.role}<select className={`${INPUT} mt-1 block`} value={assignRole} onChange={(event) => setAssignRole(event.target.value)}><option value="COLLABORATOR">{t.virtualOffice.members.roles.COLLABORATOR}</option><option value="PROJECT_ADMIN">{t.virtualOffice.members.roles.PROJECT_ADMIN}</option></select></label>}
             <button type="submit" disabled={assignBusy || !assignProject} className={BUTTON}>{t.virtualOffice.userAdmin.assign}</button>
           </form>}

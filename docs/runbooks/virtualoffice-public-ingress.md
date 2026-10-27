@@ -14,6 +14,7 @@ solamente para este host (`max-age=31536000`, sin `includeSubDomains`), y
 reenvía sólo:
 
 - las rutas de autenticación enumeradas en el archivo;
+- las rutas exactas de administración SMTP de la Oficina;
 - `GET /api/apariencia`, la configuración pública y de sólo lectura que carga
   el shell antes de autenticar;
 - `/api/virtual-office` y sus hijos.

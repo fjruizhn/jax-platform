@@ -32,6 +32,9 @@ export const officePeopleApi = {
   list: ({ limit, after_user_id, tenant_id } = {}) => api.get('/virtual-office/people', { params: { limit, after_user_id, tenant_id } }),
   projects: (userId, { limit = 50, after_project_id = 0 } = {}) => api.get(`/virtual-office/people/${userId}/projects`, { params: { limit, after_project_id } }),
   assignableProjects: ({ limit, after_project_id }) => api.get('/virtual-office/people/assignable-projects', { params: { limit, after_project_id } }),
+  updateRole: (userId, global_role, expected_version) => api.put(`/virtual-office/people/${userId}/global-role`, { global_role, expected_version }),
+  grantDelegation: (userId, expected_version) => api.put(`/virtual-office/people/${userId}/delegation`, { expected_version }),
+  revokeDelegation: (userId, expected_version) => api.delete(`/virtual-office/people/${userId}/delegation`, { params: { expected_version } }),
 }
 
 export const officeAccountInvitationsApi = {

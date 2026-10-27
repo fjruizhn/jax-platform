@@ -1,0 +1,15 @@
+[Unit]
+Description=Virtual Office dedicated MariaDB
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/axioma-office/mariadb
+EnvironmentFile=/etc/axioma-office/mariadb/compose.env
+ExecStart=/usr/bin/docker compose -f /etc/axioma-office/mariadb/compose.yml up -d --wait
+ExecStartPost=/usr/bin/docker inspect --format={{.State.Health.Status}} axioma-office-mariadb
+
+[Install]
+WantedBy=multi-user.target

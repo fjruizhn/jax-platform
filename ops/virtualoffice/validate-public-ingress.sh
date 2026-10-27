@@ -102,6 +102,9 @@ check_proxy_allowlist() {
   local expected actual
   expected=$(cat <<'ROUTES' | LC_ALL=C sort
 location = /api/apariencia {
+location = /api/admin/smtp { proxy_pass http://virtualoffice_api; }
+location = /api/admin/smtp/test { proxy_pass http://virtualoffice_api; }
+location = /api/admin/smtp/test-connection { proxy_pass http://virtualoffice_api; }
 location = /api/auth/forgot-password { proxy_pass http://virtualoffice_api; }
 location = /api/auth/login { proxy_pass http://virtualoffice_api; }
 location = /api/auth/logout { proxy_pass http://virtualoffice_api; }
@@ -130,7 +133,7 @@ ROUTES
  active && /^    }/ { active=0 }
  ' "$config" | LC_ALL=C sort -u)
   [[ $actual == "$expected" ]] || die 'proxy locations differ from the closed allowlist'
-  [[ $(grep -Ec 'proxy_pass[[:space:]]+' "$config") -eq 21 ]] || die 'unexpected proxy_pass count'
+  [[ $(grep -Ec 'proxy_pass[[:space:]]+' "$config") -eq 24 ]] || die 'unexpected proxy_pass count'
 }
 
 case $cmd in

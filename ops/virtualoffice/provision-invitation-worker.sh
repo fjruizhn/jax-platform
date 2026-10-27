@@ -60,11 +60,23 @@ done < "$ENV_FILE"
 for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME FERNET_KEY JAX_ENVIRONMENT OFFICE_PUBLIC_ORIGIN OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL; do
   [[ -n ${cfg[$key]:-} ]] || { printf '%s\n' "missing $key" >&2; exit 1; }
 done
+if [[ ${cfg[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  [[ -n $ADMIN_TRANSPORT ]] || { printf '%s\n' 'Office worker requires the dedicated admin transport' >&2; exit 1; }
+  for key in OFFICE_DB_SERVER_ID OFFICE_DB_HOSTNAME; do
+    [[ -n ${cfg[$key]:-} ]] || { printf '%s\n' "missing $key" >&2; exit 1; }
+  done
+fi
 host=$MEASURED_GRANTEE_HOST; db=${cfg[JAX_DB_NAME]}
 [[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { printf '%s\n' 'unsafe database name' >&2; exit 1; }
 admin_sql() {
   if [[ -n "$ADMIN_TRANSPORT" ]]; then "$ADMIN_TRANSPORT"; else docker exec -i mariadb-12-3-jax sh -ec 'MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)" exec mariadb -uroot --batch --skip-column-names'; fi
 }
+if [[ ${cfg[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  server_identity=$(printf 'SELECT @@server_id,@@hostname;\n' | admin_sql) || { printf '%s\n' 'Office worker cannot inspect MariaDB' >&2; exit 1; }
+  [[ $server_identity == "${cfg[OFFICE_DB_SERVER_ID]}"$'\t'"${cfg[OFFICE_DB_HOSTNAME]}" ]] || {
+    printf '%s\n' 'Office worker admin transport points to a different MariaDB' >&2; exit 1;
+  }
+fi
 quote() { local q=$1; q=${q//\'/\'\'}; printf "'%s'" "$q"; }
 schema_tables=$(printf "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_NAME IN ('office_invitation','office_invitation_issuance','office_invitation_event','office_invitation_outbox');\n" "$(quote "$db")" | admin_sql)
 [[ "$schema_tables" == 4 ]] || { printf '%s\n' 'Office invitation schema tables are missing' >&2; exit 1; }
@@ -210,6 +222,9 @@ unlink "$client_tmp"
 [[ "$current" == "$WORKER_DB_USER@$host" ]] || { printf '%s\n' 'worker principal resolved to an unexpected host' >&2; exit 1; }
 env_tmp=$(mktemp "$STATE_ROOT/invitation-worker.env.XXXXXX")
 for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME FERNET_KEY JAX_ENVIRONMENT OFFICE_PUBLIC_ORIGIN OFFICE_INVITATION_LIFETIME_SECONDS OFFICE_INVITATION_CLAIM_TIMEOUT_SECONDS OFFICE_INVITATION_STALE_CLAIM_BATCH_LIMIT OFFICE_INVITATION_EXPIRY_SWEEP_BATCH_LIMIT OFFICE_INVITATION_DELIVERY_BATCH_LIMIT OFFICE_INVITATION_PUBLIC_BASE_URL; do printf '%s=%s\n' "$key" "${cfg[$key]}" >> "$env_tmp"; done
+if [[ ${cfg[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  for key in OFFICE_DEDICATED_DB OFFICE_DB_SERVER_ID OFFICE_DB_HOSTNAME; do printf '%s=%s\n' "$key" "${cfg[$key]}" >> "$env_tmp"; done
+fi
 printf 'JAX_DB_USER=%s\nJAX_DB_PASSWORD=%s\n' "$WORKER_DB_USER" "$password" >> "$env_tmp"
 chown root:root "$env_tmp"; chmod 600 "$env_tmp"; mv -f "$env_tmp" "$STATE_ROOT/invitation-worker.env"
 printf '%s\n' 'invitation worker principal and env provisioned; install audited units, daemon-reload, then enable timer separately'

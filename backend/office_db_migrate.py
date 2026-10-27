@@ -9,7 +9,7 @@ from pathlib import Path
 
 from db.connection import close_pool, get_pool
 from db.migrations import run_migrations
-from virtual_office.db_identity import require_dedicated_db
+from virtual_office.db_identity import require_dedicated_db, assert_dedicated_server
 
 
 # Office keeps the projects table shape that its proven project authority
@@ -82,6 +82,7 @@ async def migrate() -> None:
         raise RuntimeError("paired JAX project authority source is absent")
     sys.path.insert(0, str(jax_root))
     try:
+        await assert_dedicated_server(await get_pool())
         await _projects_table()
         from jacobs import store
         await store.init_tables()

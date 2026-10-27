@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from office_main import app, lifespan
-from virtual_office.db_identity import require_dedicated_db
+from virtual_office.db_identity import require_dedicated_db, assert_dedicated_server
 
 
 def test_office_process_exposes_only_bounded_browser_routes():
@@ -57,3 +57,31 @@ def test_office_process_rejects_the_measured_jax_production_target(monkeypatch):
         monkeypatch.setenv(key, value)
     with pytest.raises(RuntimeError, match="JAX production"):
         require_dedicated_db()
+
+
+def test_office_server_identity_rejects_an_alias_to_another_mariadb(monkeypatch):
+    for key, value in {
+        "OFFICE_DEDICATED_DB": "1", "OFFICE_DB_SERVER_ID": "61027",
+        "OFFICE_DB_HOSTNAME": "office-db", "JAX_DB_HOST": "office-alias",
+        "JAX_DB_PORT": "3310", "JAX_DB_NAME": "axioma_office",
+        "JAX_DB_USER": "officeweb", "JAX_DB_PASSWORD": "fixture-only",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    class Cursor:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        async def execute(self, query):
+            assert query == "SELECT @@server_id,@@hostname,DATABASE()"
+        async def fetchone(self): return (1, "jax-db", "axioma_office")
+
+    class Connection:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def cursor(self): return Cursor()
+
+    class Pool:
+        def acquire(self): return Connection()
+
+    with pytest.raises(RuntimeError, match="not the dedicated Office server"):
+        asyncio.run(assert_dedicated_server(Pool()))

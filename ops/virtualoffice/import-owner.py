@@ -45,6 +45,20 @@ async def _connect(config: dict[str, str]):
     )
 
 
+async def _assert_distinct_servers(source_db, office_db, target: dict[str, str]) -> None:
+    async def identity(connection):
+        async with connection.cursor() as cur:
+            await cur.execute("SELECT @@server_id,@@hostname,DATABASE()")
+            return await cur.fetchone()
+    source_identity = await identity(source_db)
+    office_identity = await identity(office_db)
+    if (source_identity[:2] == office_identity[:2]
+            or str(office_identity[0]) != target.get("OFFICE_DB_SERVER_ID")
+            or office_identity[1] != target.get("OFFICE_DB_HOSTNAME")
+            or office_identity[2] != target["JAX_DB_NAME"]):
+        raise RuntimeError("source and Office must be distinct physical MariaDB servers")
+
+
 async def import_owner(source: dict[str, str], target: dict[str, str], email: str) -> int:
     source_id = tuple(source[key] for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME"))
     target_id = tuple(target[key] for key in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_NAME"))
@@ -52,7 +66,10 @@ async def import_owner(source: dict[str, str], target: dict[str, str], email: st
             or target_id[2] == "jax_memory" or target.get("OFFICE_DEDICATED_DB") != "1"):
         raise RuntimeError("source and Office database identities are invalid")
     source_db = await _connect(source)
+    office_db = None
     try:
+        office_db = await _connect(target)
+        await _assert_distinct_servers(source_db, office_db, target)
         async with source_db.cursor() as cur:
             await cur.execute(
                 "SELECT t.name,t.plan,t.status,u.email,u.password_hash,u.role,u.status,"
@@ -66,10 +83,6 @@ async def import_owner(source: dict[str, str], target: dict[str, str], email: st
         if (tenant_status != "active" or role != "superadmin" or status != "active"
                 or account_class != "INTERNAL" or bool(must_change) or not password_hash):
             raise RuntimeError("source owner is not an active self-controlled superadmin")
-    finally:
-        source_db.close()
-    office_db = await _connect(target)
-    try:
         async with office_db.cursor() as cur:
             for table in ("jax_tenants", "jax_users", "office_account_profile", "office_bootstrap_state"):
                 await cur.execute(f"SELECT 1 FROM {table} LIMIT 1")
@@ -87,10 +100,13 @@ async def import_owner(source: dict[str, str], target: dict[str, str], email: st
         await office_db.commit()
         return int(owner_id)
     except BaseException:
-        await office_db.rollback()
+        if office_db is not None:
+            await office_db.rollback()
         raise
     finally:
-        office_db.close()
+        source_db.close()
+        if office_db is not None:
+            office_db.close()
 
 
 def main() -> None:
