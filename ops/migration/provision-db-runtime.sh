@@ -56,7 +56,11 @@ load_runtime_allowlist() {
   # create a credential the installed launcher rejects.  The override exists
   # solely for the root-owned disposable fixture, which deliberately has no
   # installed runtime package.
-  pair_exec=/usr/local/libexec/jax-platform-pair-exec.py
+  if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+    pair_exec=/usr/local/libexec/axioma-office-pair-exec.py
+  else
+    pair_exec=/usr/local/libexec/jax-platform-pair-exec.py
+  fi
   if [[ -n ${JAX_PAIR_EXEC_FIXTURE:-} ]]; then
     [[ -n $ADMIN_TRANSPORT ]] || die "pair-exec fixture override requires test transport"
     pair_exec=$JAX_PAIR_EXEC_FIXTURE

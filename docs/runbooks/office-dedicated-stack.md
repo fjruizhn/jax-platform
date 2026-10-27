@@ -60,7 +60,11 @@ recibe `--env /etc/axioma-office/deployment.env`,
 /usr/local/libexec/axioma-office-mariadb-admin` y el grantee host **medido**
 desde la conexión al contenedor. Pasar `--skip-os-identities`: los usuarios OS
 los instala el helper de Oficina, y este provisionador compartido no debe
-crear ni modificar `jaxweb`/`jaxmigrate`. Primero ejecutarlo con `--migrator-only`,
+crear ni modificar `jaxweb`/`jaxmigrate`.
+El provisionador deriva las claves permitidas de
+`/usr/local/libexec/axioma-office-pair-exec.py` cuando
+`OFFICE_DEDICATED_DB=1`; no consulta el launcher de JAX para emitir
+`runtime.env` de Oficina. Primero ejecutarlo con `--migrator-only`,
 instalar el par de release del mismo `SHA` y la unidad migradora, y ejecutar
 la migración. Después provisionar el principal web con el manifest de ese
 `SHA`. Ambos environments resultantes son `root:root 0600` y contienen
