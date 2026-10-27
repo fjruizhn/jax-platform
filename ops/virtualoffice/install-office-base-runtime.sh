@@ -55,7 +55,7 @@ if [[ $phase == database ]]; then
   # The unprivileged Office launcher reads the root-owned 0644 pair selector
   # in this directory.  Credentials remain individual 0600 files; the DB
   # configuration and data directories stay private.
-  install -d -o root -g root -m 0755 /etc/axioma-office
+  install -d -o root -g root -m 0711 /etc/axioma-office
   install -d -o root -g root -m 0700 /etc/axioma-office/mariadb
   install -d -o root -g root -m 0700 /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets
   for path in /etc/axioma-office /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do

@@ -8,7 +8,9 @@ phase=$4
 for path in /etc/axioma-office /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
   [[ -d $path && ! -L $path && $(stat -c '%U:%G' "$path") == root:root ]]
 done
-[[ $(stat -c '%a' /etc/axioma-office) == 755 ]]
+[[ $(stat -c '%a' /etc/axioma-office) == 711 ]]
+[[ -f /etc/axioma-office/deployment.env && ! -L /etc/axioma-office/deployment.env &&
+   $(stat -c '%U:%G:%a' /etc/axioma-office/deployment.env) == root:root:600 ]]
 for path in /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
   [[ $(stat -c '%a' "$path") == 700 ]]
 done
