@@ -38,6 +38,9 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("office_external_relation", "idx_office_external_relation_list"),
         ("office_mfa_security_event", "idx_office_mfa_security_event_proof"),
         ("office_invitation", "idx_office_invitation_status_expiry"),
+        ("jax_project_scope", "idx_jax_project_scope_tenant_status"),
+        ("office_project_grant", "idx_office_project_grant_list"),
+        ("office_account_invitation", "idx_office_account_invitation_history"),
     }, forzados
     for (tabla, _indice), donde in forzados.items():
         origen = (
@@ -45,6 +48,8 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
             else "api/virtual_office/projects.py:" if tabla == "office_external_relation"
             else "virtual_office/mfa.py:" if tabla == "office_mfa_security_event"
             else "virtual_office/invitations.py:" if tabla == "office_invitation"
+            else "api/virtual_office/people.py:" if tabla in {"jax_project_scope", "office_project_grant"}
+            else "virtual_office/account_invitations.py:" if tabla == "office_account_invitation"
             else "api/pipelines.py:"
         )
         assert all(d.startswith(origen) for d in donde), donde

@@ -4,7 +4,8 @@
 set -euo pipefail
 DB= ADMIN_TRANSPORT= WORKER_DB_USER=jaxinvite WORKER_HOST= SQL_FILE= ATTESTOR=
 while [[ $# -gt 0 ]]; do case "$1" in --db) DB=${2:?}; shift;; --admin-transport) ADMIN_TRANSPORT=${2:?}; shift;; --worker-db-user) WORKER_DB_USER=${2:?}; shift;; --worker-host) WORKER_HOST=${2:?}; shift;; --sql-file) SQL_FILE=${2:?}; shift;; --attestor) ATTESTOR=${2:?}; shift;; *) exit 2;; esac; shift; done
-[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && -x $ADMIN_TRANSPORT && $WORKER_DB_USER =~ ^[a-z][a-z0-9_]{0,31}$ && $WORKER_HOST =~ ^[A-Za-z0-9.:-]{1,255}$ && -f $SQL_FILE && ! -L $SQL_FILE && $(stat -c '%U:%G:%a' "$SQL_FILE") == root:root:644 && $(sha256sum "$SQL_FILE" | awk '{print $1}') == 7cc9d8a4f654f4d2cee9a0257a71021e90063d63847d25af7cf8a2cd6f7b7dc8 && -x $ATTESTOR ]] || exit 2
+[[ $DB =~ ^[A-Za-z0-9_]{1,64}$ && -x $ADMIN_TRANSPORT && $WORKER_DB_USER =~ ^[a-z][a-z0-9_]{0,31}$ && $WORKER_HOST =~ ^[A-Za-z0-9.:-]{1,255}$ && -f $SQL_FILE && ! -L $SQL_FILE && $(stat -c '%U:%G:%a' "$SQL_FILE") == root:root:644 && $(sha256sum "$SQL_FILE" | awk '{print $1}') == 7cc9d8a4f654f4d2cee9a0257a71021e90063d63847d25af7cf8a2cd6f7b7dc8 ]] || exit 2
+[[ -f $ATTESTOR && ! -L $ATTESTOR && -x $ATTESTOR && $(stat -c '%U:%G:%a' "$ATTESTOR") == root:root:750 && $(sha256sum "$ATTESTOR" | awk '{print $1}') == 81ee016f02e12677f437180b66fb865f6627b28817d5126febf26eb4c0ac13ff ]] || { echo 'unsafe account routine attestor' >&2; exit 2; }
 owner="'jaxoffice_invitation_owner'@'localhost'"; worker="'$WORKER_DB_USER'@'$WORKER_HOST'"
 count=$(printf "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' AND ROUTINE_TYPE='PROCEDURE' AND ROUTINE_NAME IN ('office_account_invitation_claim_next_v1','office_account_invitation_expire_due_v1','office_account_invitation_settle_delivery_v1','office_account_invitation_settle_stale_v1');\n" "$DB" | "$ADMIN_TRANSPORT")
 [[ $count == 0 || $count == 4 ]] || { echo 'partial account invitation delivery component denied' >&2; exit 1; }

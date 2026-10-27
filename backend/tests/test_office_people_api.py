@@ -67,7 +67,7 @@ def test_office_directory_lists_human_profiles_without_mfa_but_keeps_mutations_p
 
     peer, peer_tv = client.portal.call(scenario)
     root_headers = _headers_without_mfa(root, tv)
-    listed = client.get("/api/virtual-office/people", headers=root_headers)
+    listed = client.get(f"/api/virtual-office/people?after_user_id={min(root, peer) - 1}", headers=root_headers)
     assert listed.status_code == 200
     assert {root, peer}.issubset({item["user_id"] for item in listed.json()["people"]})
     assert listed.headers["cache-control"] == "no-store"

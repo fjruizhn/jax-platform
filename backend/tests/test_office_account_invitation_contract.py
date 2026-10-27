@@ -18,6 +18,15 @@ def test_account_invitation_schema_has_its_own_outbox_and_no_project_grant_colum
     assert "no_delete_office_account_invitation_receipt" in ddl
 
 
+def test_account_invitation_web_principal_has_only_lifecycle_dml():
+    from db.runtime_privileges import runtime_table_privilege_map
+
+    grants = runtime_table_privilege_map()
+    assert grants["office_account_invitation"] == frozenset({"INSERT", "UPDATE"})
+    assert grants["office_account_invitation_outbox"] == frozenset({"INSERT", "UPDATE"})
+    assert grants["office_account_invitation_receipt"] == frozenset({"INSERT"})
+
+
 @pytest.mark.parametrize("email", [" invalid@example.test", "invalido", "josé@example.test"])
 def test_account_invitation_rejects_noncanonical_email(email):
     with pytest.raises(AccountInvitationError) as error:

@@ -235,7 +235,7 @@ async def revoke_account_invitation_in_cursor(cur, *, actor_user_id: int, invita
         raise AccountInvitationError("office_account_invitation_invalid", status_code=422) from error
     await _lock_actor_tenant(cur, actor_user_id)
     decision = await authorize_office_in_cursor(cur, actor_user_id, OfficeOperation.INVITE_OFFICE_PERSON)
-    _event_id = await record_authorization_event(cur, decision)
+    revocation_event_id = await record_authorization_event(cur, decision)
     if not decision.allowed:
         raise AccountInvitationError("office_account_invitation_issuer_denied", status_code=403)
     await cur.execute("SELECT tenant_id,status,version FROM office_account_invitation WHERE invitation_id=%s FOR UPDATE", (invitation_id,))
@@ -253,7 +253,7 @@ async def revoke_account_invitation_in_cursor(cur, *, actor_user_id: int, invita
         raise AccountInvitationError("office_account_invitation_idempotency_required", status_code=409)
     if row[1] != "ISSUED" or int(row[2]) != expected_version:
         raise AccountInvitationError("office_account_invitation_version_conflict", status_code=409)
-    await cur.execute("UPDATE office_account_invitation SET status='REVOKED',version=version+1,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s AND version=%s", (actor_user_id, invitation_id, expected_version))
+    await cur.execute("UPDATE office_account_invitation SET status='REVOKED',version=version+1,revoked_by_user_id=%s,revoked_at=UTC_TIMESTAMP(6),revocation_authorization_event_id=%s WHERE invitation_id=%s AND version=%s", (actor_user_id, revocation_event_id, invitation_id, expected_version))
     await cur.execute("UPDATE office_account_invitation_outbox SET state='CANCELLED',attempt_id=COALESCE(attempt_id,%s),attempt_count=1,payload_ciphertext=NULL,finished_at=UTC_TIMESTAMP(6) WHERE invitation_id=%s AND state='QUEUED'", (str(uuid.uuid4()), invitation_id))
     await cur.execute("INSERT INTO office_account_invitation_receipt (idempotency_key,request_digest,actor_user_id,tenant_id,invitation_id,operation,expected_version,response_version) VALUES (%s,%s,%s,%s,%s,'REVOKE',%s,%s)", (key, digest, actor_user_id, decision.tenant_id, invitation_id, expected_version, expected_version + 1))
     return expected_version + 1, False

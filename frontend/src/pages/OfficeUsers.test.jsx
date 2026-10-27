@@ -78,6 +78,15 @@ describe('Office user administration', () => {
     await waitFor(() => expect(members.grant).toHaveBeenCalledWith(25, 1, { grant_role: 'COLLABORATOR', audience: 'INTERNAL', expected_version: 0 }, expect.any(String)))
   })
 
+  it('does not offer another tenant’s project for a person', async () => {
+    projects.list.mockResolvedValue({ data: { projects: [{ id: 25, name: 'Estudio Kéré', tenant_id: 1 }, { id: 26, name: 'Otro tenant', tenant_id: 2 }], next_after_id: null } })
+    show('OFFICE_SUPERUSER')
+    fireEvent.click(await screen.findByRole('button', { name: /fernando@example.test/ }))
+    const select = await screen.findByLabelText('Agregar a proyecto')
+    expect(select).toHaveTextContent('Estudio Kéré')
+    expect(select).not.toHaveTextContent('Otro tenant')
+  })
+
   it('invites a person before assigning any project', async () => {
     projects.list.mockResolvedValue({ data: { projects: [], next_after_id: null } })
     show('OFFICE_SUPERUSER')

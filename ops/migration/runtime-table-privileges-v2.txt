@@ -38,6 +38,9 @@ model INSERT,UPDATE
 model_binding_proposal INSERT,UPDATE
 model_catalog_audit INSERT
 motor INSERT,UPDATE
+office_account_invitation INSERT,UPDATE
+office_account_invitation_outbox INSERT,UPDATE
+office_account_invitation_receipt INSERT
 office_account_profile INSERT,UPDATE
 office_admin_delegation INSERT,UPDATE
 office_agent INSERT,UPDATE
