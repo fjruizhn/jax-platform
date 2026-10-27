@@ -19,11 +19,12 @@ function validIntent(value, signature) {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.key)
 }
 
-export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated, onForbidden }) {
+export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated, onForbidden, verticales = [], verticalInicial = null }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [vertical, setVertical] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const intent = useRef(null)
@@ -52,7 +53,7 @@ export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated,
   function close() {
     if (busy) return
     intent.current = null
-    setOpen(false); setName(''); setDescription(''); setError(null)
+    setOpen(false); setName(''); setDescription(''); setVertical(null); setError(null)
   }
 
   async function create(event) {
@@ -60,6 +61,7 @@ export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated,
     const trimmedName = name.trim()
     if (busy || !trimmedName || !Number.isInteger(tenantId) || tenantId < 1) return
     const payload = { tenant_id: tenantId, name: trimmedName, description: description.trim() || null }
+    if (vertical) payload.vertical = vertical
     const signature = JSON.stringify(payload)
     if (intent.current?.signature !== signature) {
       intent.current = persistedIntent(signature) || { signature, key: crypto.randomUUID() }
@@ -72,7 +74,7 @@ export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated,
       clearIntent(intent.current)
       intent.current = null
       await onCreated?.(data.id)
-      setOpen(false); setName(''); setDescription(''); setError(null)
+      setOpen(false); setName(''); setDescription(''); setVertical(null); setError(null)
     } catch (err) {
       if (err?.response?.status === 403) { await onForbidden?.(); close(); return }
       setError(err?.response?.status === 409 ? t.virtualOffice.creator.conflict : t.virtualOffice.creator.error)
@@ -80,12 +82,20 @@ export default function OfficeProjectCreator({ tenantId, actorUserId, onCreated,
   }
 
   return <>
-    <button type="button" onClick={() => setOpen(true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded bg-accion px-3 text-sobre-color`}>{t.virtualOffice.creator.open}</button>
+    <button type="button" onClick={() => { setVertical(verticales.some((v) => v.id === verticalInicial) ? verticalInicial : null); setOpen(true) }} className={`${TAMANO_BOTON_ACCION} mt-4 rounded bg-accion px-3 text-sobre-color`}>{t.virtualOffice.creator.open}</button>
     {open && <Dialogo idTitulo="office-project-create" titulo={t.virtualOffice.creator.title} onCerrar={close}>
       <form onSubmit={create} className="space-y-3">
         <p className="text-sm text-texto-suave">{t.virtualOffice.creator.intro}</p>
         <label className="block text-sm text-texto-suave" htmlFor="office-project-name">{t.virtualOffice.creator.name}<input id="office-project-name" required maxLength={255} disabled={busy} value={name} onChange={(event) => { setName(event.target.value); setError(null) }} className={`${INPUT} mt-1`} /></label>
         <label className="block text-sm text-texto-suave" htmlFor="office-project-description">{t.virtualOffice.creator.description}<textarea id="office-project-description" maxLength={2000} disabled={busy} value={description} onChange={(event) => { setDescription(event.target.value); setError(null) }} className={`${INPUT} mt-1 min-h-24`} /></label>
+        {verticales.length > 0 && (
+          <label className="block text-sm text-texto-suave" htmlFor="office-project-vertical">{t.virtualOffice.creator.vertical}
+            <select id="office-project-vertical" disabled={busy} value={vertical || ''} onChange={(event) => { setVertical(event.target.value || null); setError(null) }} className={`${INPUT} mt-1`}>
+              <option value="">{t.virtualOffice.creator.verticalNone}</option>
+              {verticales.map((v) => <option key={v.id} value={v.id}>{t.virtualOffice.hub.salas[v.id]?.nombre || v.id}</option>)}
+            </select>
+          </label>
+        )}
         {error && <p role="alert" className="text-sm text-peligro">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2"><button type="button" disabled={busy} onClick={close} className={BUTTON}>{t.virtualOffice.cancel}</button><button disabled={busy} className={`${TAMANO_BOTON_ACCION} rounded bg-accion px-3 text-sobre-color disabled:opacity-60`}>{busy ? t.virtualOffice.creator.creating : t.virtualOffice.creator.create}</button></div>
       </form>

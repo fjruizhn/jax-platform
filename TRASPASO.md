@@ -1,5 +1,7 @@
 # Traspaso · Virtual Office
 
+2026-10-27 · Codex · Se incorporó master con la pieza 4 de verticales de GLM a la rama del directorio humano Office. El conflicto de esquema conserva el índice de consultas por persona y agrega `office_project_vertical`; el piso frontend se re-midió sobre el árbol unido: 1566/1566 en 129 archivos. Las 101 pruebas Python focales pasan. La cuenta inicial mantiene el hash de contraseña actual y el cambio posterior ocurre dentro de Oficina. Pendiente: CI y auditoría del SHA fusionado, instalación y verificación pública. Fuente: merge local, Vitest y pytest; decisión de contraseña: Fernando; integración: Codex.
+
 2026-10-27 · Codex · La cuenta inicial conserva el hash de contraseña de Axioma por copia única hacia MariaDB Office; después `Mi cuenta` cambia solo la contraseña de Office. PR #249 incorporó la base separada y el correo propio. Sol rechazó el SHA previo `f4197cbf` por rutas SMTP públicas ausentes, cuenta/worker/BD de instalación incompletos, MFA impuesto, roles no editables y reingreso roto. Esta ronda comprueba el servidor MariaDB antes de migrar/importar/arrancar, prepara unidades y cuentas Office, permite SMTP en ingress y rol/delegación y reingreso desde UI. Suite local frontend 1558/1558, build verde; Python sin DB 13 passed/37 skipped en módulos de Office. Se ensayó contra MariaDB desechable que un alias de la misma instancia se rechaza al importar; producción intacta. Siguiente: nuevo veredicto Sol exacto, CI, instalación y prueba de correo recibido. Ver `docs/oficina-usuarios-2026-10-27.md`.
 
 2026-10-27 · Codex · Administración de usuarios Office en PR #246: nueva ruta `/virtual-office/admin/usuarios` en la apariencia existente, para crear proyectos Office y administrar invitaciones y miembros por proyecto con las APIs Office vigentes. La cuenta de Fernando aún entra con `jax_users`; el ingress no expone `/api/admin/*`, y producción tenía un perfil Office superusuario, cero proyectos Office y cero invitaciones al comprobar. Commit inicial `75a86bc0` auditado por Sol: APROBADO; 1550/1550 pruebas locales. CI de ese SHA también ejecutó 1550/1550, pero el job falló por el piso exacto anterior 1545; este PR ajusta `policy.yml` a 1550. Como el workflow es archivo reservado, Fernando integra el PR o abre su ventana; después faltan build oficial Office, carga medida y despliegue del release estático en atem-ai. Ver `docs/oficina-usuarios-2026-10-27.md`.
@@ -329,3 +331,35 @@ principal migrador activó el motor correctamente.
 2026-10-27 · Codex · Sol rechazó exacto `7a09cfbb` por runbook no ejecutable y gate de release insuficiente: no había comandos reales de provisionador y podía arrancar otro SHA. En árbol siguiente se instaló provisionador+dos manifiestos en ruta Office propia desde el SHA, se documentaron los dos comandos `--migrator-only` y runtime con `--skip-os-identities`, y se ataron launcher/selección/release par a SHA. MariaDB ahora tiene ExecStop y el instalador detecta contenedor activo; correo OnFailure e identidad worker rechaza UID 0. La atestación nueva pasó en MariaDB 12.3.3 desechable y rechazó un CHECK eliminado; contenedor retirado. Pendiente CI/auditoría exacta, restauración/carga y despliegue. Fuente: dictamen Sol, diff y fixture; ejecución: Codex.
 
 2026-10-27 · Codex · Sol rechazó `5a1ea6f5` porque gate JAX compartido no fijaba código tras futuras activaciones JAX y CI `no-fail-open-except` quedó rojo. En árbol actual Oficina usa copia/launcher/selector propios del par: unit web/migrador no consulta `/opt/jax-platform-pair/current`; instalador inicial copia un release verificado, crea selección Office y rechaza una revisión diferente. Prueba ejecutable del instalador: primer par, idempotencia y rechazo de upgrade. Se eliminó `except Exception` sin raise del guard SMTP y se endureció gate delivery contra drop-ins/ausencia de aviso. Pendiente commit, CI y auditoría exacta; producción intacta. Fuente: dictamen Sol y pruebas locales; ejecución: Codex.
+
+2026-10-27 · GLM (Ada) · Pieza 4 de OP 358 (enganche de verticales) en rama
+`pieza-4-verticales` sobre `48dbbd6b`: registro de verticales en código
+(`backend/virtual_office/verticales.py`, solo agencia activa), tabla compañera
+`office_project_vertical` (migración runtime `office-v13c` + privilegio
+INSERT), endpoint `GET /api/virtual-office/verticales` (403 al extraño),
+filtro `?vertical=` en el listado (422 para desconocidas, vacía honesta para
+proximamente), vertical opcional al crear dentro de la transacción
+idempotente (la firma incluye la vertical), externos conservan vertical con
+descripción anulada. Frontend: hub alimentado por el registro del servidor
+(solo salas presentes en registro+VISUAL+i18n; backend adelantado no rompe el
+hub), filtro de proyectos con «Quitar filtro», selector de sala en el
+creador. Cierra MINOR 2 como decisión medida (doc
+`docs/pieza-4-verticales-2026-10-27.md`). Vitest 1553/1553 local, piso
+1545 → 1553 en `policy.yml`; suite backend nueva (7 pruebas) valida en CI
+`backend-tests-con-db` (guard fail-closed prohíbe 3306/3308 locales, docker
+denegado en hall9000). Reparto con Codex: GLM entrega rama+auditoría+PR+merge
++build certificado; Codex toma verificación de producción, QA E2E y deploy
+con su runbook bajo la palabra de Fernando.
+
+2026-10-27 · GLM (Ada) · Merge 94f54638 toma el revert #248: master quitó
+el #246 (administración de usuarios) por CI roja post-merge — flake TOTP
+en test_office_identity_guard, revert auditado como PR #248. Esa
+administración NO vuelve a entrar por esta rama; el enganche de verticales
+queda intacto y el piso se re-midió sobre el árbol con el revert: 1553
+passed, 0 fallidos, 128 archivos (1545 de pieza 3 + 8 de pieza 4). La
+suite de verticales quedó en 9 pruebas tras las dos fijaciones de fase B
+exigidas por auditoría (fff6f88e). Nota de Codex
+(cambio-direccion-oficina-admin-2026-10-27.md): Oficina y Axioma son
+productos separados — pieza 4 es compatible porque el registro de
+verticales vive en el módulo propio de la Oficina y se sirve por
+`/api/virtual-office/*`, sin tocar pantallas ni SMTP de Axioma.

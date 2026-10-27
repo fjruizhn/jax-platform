@@ -18,6 +18,7 @@ vi.mock('./api/virtualOffice', () => ({
   mfaApi: { status: vi.fn(() => new Promise(() => {})) },
   officeSessionApi: { read: session },
   officeProjectsApi: { list: vi.fn(() => new Promise(() => {})) },
+  officeVerticalesApi: { list: vi.fn(async () => ({ data: { verticales: [{ id: 'agencia', estado: 'activa' }] } })) },
 }))
 
 import App from './App.jsx'
@@ -43,9 +44,10 @@ describe('Página de la oficina con piel de estudio', () => {
     expect(screen.getByRole('img', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(screen.getByText('client@example.test')).toBeInTheDocument()
     // Las tres secciones (encabezado, hub de salas y proyectos) visten la
-    // tarjeta del estudio (OP 358 pieza 3 sumó el hub).
+    // tarjeta del estudio (OP 358 pieza 3 sumó el hub; pieza 4 lo volvió
+    // asíncrono porque las salas ahora llegan del registro del servidor).
+    expect(await screen.findByRole('heading', { name: 'Salas de la oficina' })).toBeInTheDocument()
     expect(document.querySelectorAll('.tarjeta-oficina')).toHaveLength(3)
-    expect(screen.getByRole('heading', { name: 'Salas de la oficina' })).toBeInTheDocument()
     const salir = screen.getByRole('button', { name: 'Salir' })
     expect(salir).toBeEnabled()
     fireEvent.click(salir)

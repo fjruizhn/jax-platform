@@ -4,7 +4,7 @@ import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import Dialogo from '../components/Dialogo'
 import { TAMANO_BOTON_ACCION, TAMANO_BOTON_44 } from '../tema/botones'
-import { officeProjectsApi, officeSessionApi } from '../api/virtualOffice'
+import { officeProjectsApi, officeSessionApi, officeVerticalesApi } from '../api/virtualOffice'
 import OfficeInvitationManager from '../components/office/OfficeInvitationManager'
 import OfficeProjectCreator from '../components/office/OfficeProjectCreator'
 import OfficeProjectMembershipManager from '../components/office/OfficeProjectMembershipManager'
@@ -14,7 +14,7 @@ import MarcaOficina from '../components/office/MarcaOficina'
 import { esInstalacionDeOficina } from '../lib/instalacionOficina'
 
 const PAGE_SIZE = 25
-const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id)
+const validProject = (project) => project && Number.isInteger(project.id) && typeof project.name === 'string' && (typeof project.description === 'string' || project.description === null) && Number.isInteger(project.tenant_id) && (project.vertical === undefined || project.vertical === null || typeof project.vertical === 'string')
 const validList = (data) => data && Array.isArray(data.projects) && data.projects.every(validProject) && (data.next_after_id === null || Number.isInteger(data.next_after_id))
 const validDetail = (data) => validProject(data) && Number.isInteger(data.scope_version) && typeof data.audience === 'string'
 
@@ -38,11 +38,16 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
   const [detailError, setDetailError] = useState(false)
   const [pageLoading, setPageLoading] = useState(false)
   const [session, setSession] = useState(officeSession || null)
+  const [verticales, setVerticales] = useState(null)
+  const [verticalesError, setVerticalesError] = useState(false)
+  const [filtroVertical, setFiltroVertical] = useState(null)
   const listGeneration = useRef(0)
   const detailGeneration = useRef(0)
   const listLoading = useRef(false)
+  const filtroRef = useRef(null)
+  const proyectosRef = useRef(null)
 
-  const loadProjects = async (afterId = null, append = false) => {
+  const loadProjects = async (afterId = null, append = false, vertical = filtroRef.current) => {
     if (listLoading.current) return
     listLoading.current = true
     const request = ++listGeneration.current
@@ -50,7 +55,9 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
     setError(false)
     if (!append) setProjects(null)
     try {
-      const { data } = await officeProjectsApi.list({ limit: PAGE_SIZE, after_id: afterId })
+      const params = { limit: PAGE_SIZE, after_id: afterId }
+      if (vertical) params.vertical = vertical
+      const { data } = await officeProjectsApi.list(params)
       if (request !== listGeneration.current) return
       if (!validList(data)) throw new Error('invalid office projects response')
       setProjects((current) => append ? [...(current || []), ...data.projects] : data.projects)
@@ -65,15 +72,38 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
     }
   }
 
+  // El catálogo de salas lo anuncia el servidor en ambas instalaciones: en la
+  // de oficina pinta el hub y en la de Axioma sólo alimenta el selector del
+  // creador; una identidad revocada (403) se trata igual que en proyectos.
   useEffect(() => {
-    loadProjects()
     // RequireOfficeSession validates entry. This independent, short-lived
     // capability read only controls which controls are displayed.
     if (!officeSession) officeSessionApi.read().then(({ data }) => {
       if (data && data.identity?.user_id === user?.user_id && data.capabilities) setSession(data)
     }).catch((err) => { if (err?.response?.status === 403) onOfficeDenied?.() })
+    officeVerticalesApi.list().then(({ data }) => {
+      if (Array.isArray(data?.verticales) && data.verticales.every((v) => v && typeof v.id === 'string' && typeof v.estado === 'string')) setVerticales(data.verticales)
+      else setVerticalesError(true)
+    }).catch((err) => { if (err?.response?.status === 403) onOfficeDenied?.(); else setVerticalesError(true) })
     return () => { listGeneration.current += 1; detailGeneration.current += 1; listLoading.current = false }
   }, [])
+
+  // La carga de proyectos vive en su propio efecto: cambia el filtro de sala
+  // y la lista se recarga desde cero con esa vertical.  El salto de
+  // generación descarta respuestas tardías de un filtro anterior, y el
+  // forzado de listLoading desbloquea una recarga que llegó a mitad de un
+  // pedido previo.
+  useEffect(() => {
+    listGeneration.current += 1
+    listLoading.current = false
+    loadProjects(null, false, filtroVertical)
+  }, [filtroVertical])
+
+  function abrirVertical(id) {
+    filtroRef.current = id
+    setFiltroVertical(id)
+    proyectosRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }
 
   async function openDetail(projectId) {
     const request = ++detailGeneration.current
@@ -148,17 +178,25 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
           {['INTERNAL', 'OFFICE_INTERNAL'].includes(session?.identity?.account_class) && <Link to="/virtual-office/admin/usuarios" className={`${TAMANO_BOTON_ACCION} ml-2 mt-4 inline-flex items-center rounded border border-borde px-3 text-texto hover:bg-hundido`}>{t.virtualOffice.userAdmin.open}</Link>}
         </header>
 
-        {/* OP 358 pieza 3: el hub de salas es la oficina central de la
-            instalación de oficina; en la instalación de Axioma esta página
-            sigue siendo sólo proyectos. */}
-        {oficina && <HubOficina />}
+        {/* OP 358 pieza 4: el hub renderiza el registro del servidor; una
+            sala activa filtra la lista de proyectos de su vertical, las demás
+            siguen informativas. En la instalación de Axioma no hay hub. */}
+        {oficina && (verticalesError
+          ? <div role="alert" className="tarjeta-oficina"><p className="text-sm text-peligro">{t.virtualOffice.hub.error}</p></div>
+          : verticales && <HubOficina verticales={verticales} onAbrirVertical={abrirVertical} />)}
 
-        <section className={tarjeta}>
+        <section ref={proyectosRef} className={tarjeta}>
           <h2 className="text-base font-semibold">{t.virtualOffice.projects.title}</h2>
-          {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} actorUserId={session.identity?.user_id} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
+          {filtroVertical && (
+            <p className="mt-2 text-sm text-texto-suave">
+              {t.virtualOffice.projects.filterLabel} <strong className="font-semibold text-texto">{t.virtualOffice.hub.salas[filtroVertical]?.nombre || filtroVertical}</strong>
+              <button type="button" onClick={() => abrirVertical(null)} className={`${TAMANO_BOTON_ACCION} ml-2 rounded border border-borde text-texto hover:bg-hundido`}>{t.virtualOffice.projects.clearFilter}</button>
+            </p>
+          )}
+          {session?.capabilities?.create_project === true && <OfficeProjectCreator tenantId={session.identity?.tenant_id} actorUserId={session.identity?.user_id} verticales={(verticales || []).filter((v) => v.estado === 'activa')} verticalInicial={filtroVertical} onForbidden={onOfficeDenied} onCreated={async (projectId) => { await loadProjects(); await openDetail(projectId) }} />}
           {projects === null && !error && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.loading}</p>}
           {error && <p role="alert" className="mt-3 text-sm text-peligro">{t.virtualOffice.projects.error}</p>}
-          {projects?.length === 0 && <p role="status" className="mt-3 text-sm text-texto-suave">{t.virtualOffice.projects.empty}</p>}
+          {projects?.length === 0 && <p role="status" className="mt-3 text-sm text-texto-suave">{filtroVertical ? t.virtualOffice.projects.emptyFiltered : t.virtualOffice.projects.empty}</p>}
           {projects?.length > 0 && <ul className="mt-3 divide-y divide-borde border-y border-borde">
             {projects.map((project) => <li key={project.id}><button type="button" onClick={() => openDetail(project.id)} className="w-full break-words py-3 text-left text-sm text-texto hover:bg-hundido focus:outline-none focus-visible:ring-2 focus-visible:ring-foco">{project.name}</button></li>)}
           </ul>}

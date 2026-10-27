@@ -23,9 +23,15 @@ export const officeSessionApi = {
 }
 
 export const officeProjectsApi = {
-  list: ({ limit, after_id }) => api.get('/virtual-office/projects', { params: { limit, after_id } }),
+  list: ({ limit, after_id, vertical } = {}) => api.get('/virtual-office/projects', { params: { limit, after_id, vertical: vertical || undefined } }),
   detail: (projectId) => api.get(`/virtual-office/projects/${projectId}`),
   create: (payload, idempotencyKey) => api.post('/virtual-office/projects', payload, { headers: { 'Idempotency-Key': idempotencyKey } }),
+}
+
+// El registro de salas (ids, estados, orden) lo anuncia el servidor: el
+// navegador nunca decide cuáles existen ni cuáles están abiertas.
+export const officeVerticalesApi = {
+  list: () => api.get('/virtual-office/verticales'),
 }
 
 export const officePeopleApi = {

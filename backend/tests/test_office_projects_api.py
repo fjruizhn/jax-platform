@@ -149,7 +149,8 @@ def test_project_list_cursor_advances_over_a_bounded_stable_scope_scan(client, m
     first_id, second_id = client.portal.call(scenario)
     headers = _proof_headers(root, tv, mv, proof, str(uuid.uuid4()))
     first = client.get(f"/api/virtual-office/projects?after_id={first_id - 1}&limit=1", headers=headers).json()
-    assert first["projects"] == [{"id": first_id, "name": first["projects"][0]["name"], "description": None, "tenant_id": 1}]
+    # Pieza 4 (OP 358) added `vertical` to every list row (null = general).
+    assert first["projects"] == [{"id": first_id, "name": first["projects"][0]["name"], "description": None, "tenant_id": 1, "vertical": None}]
     assert first["next_after_id"] == first_id
     second = client.get(f"/api/virtual-office/projects?after_id={first['next_after_id']}&limit=1", headers=headers).json()
     assert second["projects"][0]["id"] == second_id

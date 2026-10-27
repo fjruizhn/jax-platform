@@ -1170,14 +1170,23 @@ jobs:
             // +2 HubOficina.test.jsx y +1 VirtualOffice.piel.test.jsx (instalación
             // Axioma sin hub). Medido local sobre 8ef4aefe: 1545 passed, 0 fallidos,
             // 126 archivos.
-            // 1545 -> 1550 (administración de usuarios Office, 2026-10-27):
-            // +4 OfficeUsers.test.jsx y +1 VirtualOffice.route.test.jsx.
-            // Medido en el runner de GitHub, PR #246: 1550 passed, 0 fallidos,
-            // 127 archivos (la corrida falló solo por este piso anterior).
-            // 1550 -> 1558 (directorio humano, invitaciones y MFA opcional, 2026-10-27):
-            // medido localmente: 1558 passed, 0 fallidos, 127 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1558) {
-              console.error("PISO ROTO: se esperaban 1558 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1550 -> 1545 (revert de la administración de usuarios, #248,
+            // 2026-10-27): el merge #246 se revirtió por CI roja post-merge
+            // (flake TOTP en test_office_identity_guard); el piso vuelve al
+            // valor de pieza 3.
+            // 1545 -> 1553 (enganche de verticales, OP 358 pieza 4,
+            // 2026-10-27): HubOficina.test.jsx reescrito sobre el registro
+            // del servidor (+1), +4 OfficeProjectCreator.test.jsx (sala en
+            // el creador) y +3 VirtualOffice.oficina.test.jsx (filtro por
+            // sala en la instalación de oficina). Número compartido
+            // re-medido por el último en llegar sobre el árbol fusionado
+            // con master (revert #248): 1553 passed, 0 fallidos, 128
+            // archivos.
+            // 1553 -> 1566 (directorio humano, invitaciones y MFA opcional,
+            // PR #249, 2026-10-27). Último en llegar re-midió la suite
+            // fusionada con master: 1566 passed, 0 fallidos, 129 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1566) {
+              console.error("PISO ROTO: se esperaban 1566 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 
