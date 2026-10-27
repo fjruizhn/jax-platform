@@ -34,6 +34,9 @@ sudo unlink "$STAGE"
 Medir los `server_id` de las MariaDB existentes y elegir uno diferente. El
 instalador crea un secreto raíz propio, copia Compose, transporte y unidad
 desde `SHA`, y atesta los bytes instalados. No inicia ni altera JAX.
+`/etc/axioma-office` debe ser `root:root 0755` para que `officeweb` y
+`officemigrate` atraviesen hasta el selector `0644`; `deployment.env`,
+`runtime.env` y `migrate.env` siguen `0600`, y `mariadb/` sigue `0700`.
 
 ```bash
 sudo /usr/local/libexec/axioma-office-base-install \

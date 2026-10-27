@@ -26,6 +26,16 @@ def test_office_units_and_launcher_do_not_follow_the_global_jax_selector():
         assert "/usr/local/libexec/jax-platform-pair-exec.py" not in unit
 
 
+def test_first_install_keeps_selector_traversable_without_exposing_credentials():
+    base = SCRIPT.parent
+    installer = (base / "install-office-base-runtime.sh").read_text(encoding="utf-8")
+    readiness = (base / "office-base-artifact-readiness.sh").read_text(encoding="utf-8")
+    assert "install -d -o root -g root -m 0755 /etc/axioma-office\n" in installer
+    assert "install -d -o root -g root -m 0700 /etc/axioma-office/mariadb" in installer
+    assert "$(stat -c '%a' /etc/axioma-office) == 755" in readiness
+    assert "$(stat -c '%a' \"$path\") == 700" in readiness
+
+
 def test_first_install_runbook_adopts_without_jax_activation_and_imports_owner_before_start():
     runbook = (SCRIPT.parents[2] / "docs/runbooks/office-dedicated-stack.md").read_text(encoding="utf-8")
     assert "sudo /usr/local/libexec/adopt-pair-root.py" in runbook

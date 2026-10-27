@@ -8,6 +8,10 @@ phase=$4
 for path in /etc/axioma-office /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
   [[ -d $path && ! -L $path && $(stat -c '%U:%G' "$path") == root:root ]]
 done
+[[ $(stat -c '%a' /etc/axioma-office) == 755 ]]
+for path in /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
+  [[ $(stat -c '%a' "$path") == 700 ]]
+done
 check_file() {
   local tracked=$1 installed=$2 owner_mode=$3
   [[ -f $installed && ! -L $installed && $(stat -c '%U:%G:%a' "$installed") == "$owner_mode" ]] || exit 1
