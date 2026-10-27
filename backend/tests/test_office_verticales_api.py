@@ -179,7 +179,13 @@ def test_external_publication_nulls_description_but_keeps_the_vertical(client, m
             "INSERT INTO office_project_grant (project_id,user_id,grant_role,audience,status,granted_by) VALUES (%s,%s,'COLLABORATOR','CLIENT_PUBLISHED','ACTIVE',%s)",
             (project_id, external, root),
         )
-        group = await sql("INSERT INTO office_recipient_group (project_id,tenant_id,group_kind,status,created_by) VALUES (%s,1,'CLIENT','ACTIVE',%s)", (project_id, root))
+        # The create endpoint already provisions exactly one ACTIVE CLIENT
+        # group per project (its idempotent contract); publication links the
+        # external reader to that group instead of minting a second one.
+        group = (await sql(
+            "SELECT recipient_group_id FROM office_recipient_group WHERE project_id=%s AND group_kind='CLIENT' AND status='ACTIVE'",
+            (project_id,), True,
+        ))[0][0]
         await sql("INSERT INTO office_external_relation (project_id,user_id,recipient_group_id,status) VALUES (%s,%s,%s,'ACTIVE')", (project_id, external, group))
 
     client.portal.call(relate)
