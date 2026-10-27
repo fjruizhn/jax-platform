@@ -1679,6 +1679,7 @@ export default {
     kicker: 'Protected administration',
     title: 'Virtual Office',
     intro: 'Protected space for Office projects, people, and permissions.',
+    userAdmin: { open: 'Manage users', title: 'Office users', intro: 'Invite people and manage each project team.', back: 'Back to Office', projects: 'Project teams', empty: 'Create a project to start inviting people.', noPermission: 'You cannot manage people in this project.' },
     account: 'Account',
     accountUnavailable: 'Account unavailable',
     accessInfo: 'Access information',

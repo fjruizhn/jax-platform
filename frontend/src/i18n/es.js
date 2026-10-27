@@ -1775,6 +1775,7 @@ export default {
     kicker: 'Administración protegida',
     title: 'Oficina virtual',
     intro: 'Espacio protegido para proyectos, personas y permisos de Oficina.',
+    userAdmin: { open: 'Administrar usuarios', title: 'Usuarios de Oficina', intro: 'Invitá personas y administrá el equipo de cada proyecto.', back: 'Volver a la oficina', projects: 'Equipos por proyecto', empty: 'Creá un proyecto para empezar a invitar personas.', noPermission: 'No administrás las personas de este proyecto.' },
     account: 'Cuenta',
     accountUnavailable: 'Cuenta no disponible',
     accessInfo: 'Información de acceso',
