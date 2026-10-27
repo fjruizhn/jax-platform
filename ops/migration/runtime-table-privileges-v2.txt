@@ -60,6 +60,7 @@ office_mfa_credential INSERT,UPDATE
 office_mfa_recovery_code INSERT,UPDATE,DELETE
 office_mfa_security_event INSERT
 office_mfa_totp_use INSERT
+office_people_authority_event INSERT
 office_professional_grant INSERT,UPDATE
 office_profile_revocation_event INSERT
 office_project_grant INSERT,UPDATE

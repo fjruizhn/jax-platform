@@ -43,7 +43,7 @@ grep -q -- '--hash=sha256:' "$LOCK" || { echo 'wheelhouse lock lacks SHA-256 has
 parent=$(dirname "$RELEASE")
 install -d -o root -g root -m 0755 "$parent"
 [[ ! -L $parent && ! -L $RELEASE ]] || { echo 'release path symlink is forbidden' >&2; exit 1; }
-if systemctl is-active --quiet axioma-office-invitation-worker.timer || systemctl is-active --quiet axioma-office-invitation-worker.service; then
+if systemctl is-active --quiet axioma-office-invitation-worker.timer || systemctl is-active --quiet axioma-office-invitation-worker.service || systemctl is-active --quiet axioma-office-delivery.timer || systemctl is-active --quiet axioma-office-delivery.service; then
   echo 'stop the worker timer and service before building its release' >&2; exit 1
 fi
 stage=$(mktemp -d "$parent/.axioma-office-invitation-worker.new.XXXXXX")
@@ -96,7 +96,7 @@ while IFS= read -r -d '' link; do
   [[ $link == "$stage/backend/.venv/lib64" && $(readlink "$link") == lib ]] || unsafe_link=1
 done < <(find "$stage" -type l -print0)
 (( unsafe_link == 0 )) || { echo 'release symlink is forbidden' >&2; exit 1; }
-if systemctl is-active --quiet axioma-office-invitation-worker.timer || systemctl is-active --quiet axioma-office-invitation-worker.service; then
+if systemctl is-active --quiet axioma-office-invitation-worker.timer || systemctl is-active --quiet axioma-office-invitation-worker.service || systemctl is-active --quiet axioma-office-delivery.timer || systemctl is-active --quiet axioma-office-delivery.service; then
   echo 'stop the worker timer and service before replacing its release' >&2; exit 1
 fi
 if [[ -e $RELEASE ]]; then mv "$RELEASE" "${RELEASE}.previous.$(date +%s)"; fi

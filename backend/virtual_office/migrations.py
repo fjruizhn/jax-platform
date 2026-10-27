@@ -717,6 +717,13 @@ OFFICE_PROFILE_REVOCATION_DDL = (
     "CREATE TRIGGER IF NOT EXISTS no_delete_office_profile_revocation_event BEFORE DELETE ON office_profile_revocation_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'",
 )
 
+OFFICE_PEOPLE_AUTHORITY_DDL = (
+    "CREATE TABLE IF NOT EXISTS office_people_authority_event (event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,actor_user_id INT NOT NULL,target_user_id INT NOT NULL,tenant_id INT NOT NULL,target_tenant_id INT NOT NULL,action VARCHAR(40) NOT NULL,old_role VARCHAR(24) NULL,new_role VARCHAR(24) NULL,old_status VARCHAR(16) NULL,new_status VARCHAR(16) NULL,version_before BIGINT NOT NULL,version_after BIGINT NOT NULL,authorization_event_id BIGINT UNSIGNED NOT NULL,occurred_at DATETIME(6) NOT NULL,KEY idx_office_people_authority_target(target_user_id,occurred_at,event_id),CONSTRAINT fk_office_people_authority_actor FOREIGN KEY(actor_user_id) REFERENCES jax_users(user_id),CONSTRAINT fk_office_people_authority_target FOREIGN KEY(target_user_id) REFERENCES office_account_profile(user_id),CONSTRAINT fk_office_people_authority_tenant FOREIGN KEY(tenant_id) REFERENCES jax_tenants(tenant_id),CONSTRAINT fk_office_people_authority_target_tenant FOREIGN KEY(target_tenant_id) REFERENCES jax_tenants(tenant_id),CONSTRAINT fk_office_people_authority_auth FOREIGN KEY(authorization_event_id) REFERENCES office_authorization_event(event_id),CONSTRAINT chk_office_people_authority_shape CHECK(((action='SET_GLOBAL_ROLE' AND old_role IS NOT NULL AND new_role IS NOT NULL AND old_role<>new_role AND old_status IS NULL AND new_status IS NULL AND version_before>=1 AND version_after=version_before+1) OR ((action='GRANT_DELEGATION' AND (old_status IS NULL OR old_status='REVOKED') AND new_status='ACTIVE' AND version_before>=0 AND version_after=version_before+1) OR (action IN ('REVOKE_DELEGATION','REVOKE_DELEGATION_ON_ROLE_CHANGE') AND old_status='ACTIVE' AND new_status='REVOKED' AND version_before>=1 AND version_after=version_before+1)) AND old_role IS NULL AND new_role IS NULL))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TRIGGER IF NOT EXISTS guard_office_people_authority_event_insert BEFORE INSERT ON office_people_authority_event FOR EACH ROW BEGIN IF NOT EXISTS (SELECT 1 FROM office_authorization_event a WHERE a.event_id=NEW.authorization_event_id AND a.actor_user_id=NEW.actor_user_id AND a.tenant_id=NEW.tenant_id AND a.operation='ADMINISTER_OFFICE' AND a.result='ALLOWED') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office people authority authorization denied'; END IF; END",
+    "CREATE TRIGGER IF NOT EXISTS no_update_office_people_authority_event BEFORE UPDATE ON office_people_authority_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_people_authority_event append-only'",
+    "CREATE TRIGGER IF NOT EXISTS no_delete_office_people_authority_event BEFORE DELETE ON office_people_authority_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='office_people_authority_event append-only'",
+)
+
 _MEMBERSHIP_RECEIPT_TRIGGERS = {
     "no_update_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
     "no_delete_office_membership_mutation_receipt": ("office_membership_mutation_receipt", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_membership_mutation_receipt append-only'"),
@@ -2828,6 +2835,8 @@ async def apply_office_migrations(cursor) -> None:
     for statement in OFFICE_PROJECT_ROLE_RECEIPT_DDL:
         await cursor.execute(statement)
     for statement in OFFICE_PROFILE_REVOCATION_DDL:
+        await cursor.execute(statement)
+    for statement in OFFICE_PEOPLE_AUTHORITY_DDL:
         await cursor.execute(statement)
     await _ensure_terminal_ledger_foreign_keys(cursor)
     if await _table_exists(cursor, "office_membership_mutation_receipt"):

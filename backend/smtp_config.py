@@ -256,17 +256,23 @@ def filas_a_guardar(filas_actuales: dict[str, str], datos: dict) -> dict[str, st
 
 async def leer_filas() -> dict[str, str]:
     """Las obligatorias y las opcionales, en una sola consulta."""
-    claves = CLAVES + CLAVES_OPCIONALES
-    marcadores = ", ".join(["%s"] * len(claves))
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # config_key es PRIMARY KEY: el IN va por el índice.
-            await cur.execute(
-                f"SELECT config_key, config_value FROM axioma_config WHERE config_key IN ({marcadores})",
-                claves,
-            )
-            return {clave: valor for clave, valor in await cur.fetchall()}
+            return await leer_filas_in_cursor(cur)
+
+
+async def leer_filas_in_cursor(cur, *, for_update: bool = False) -> dict[str, str]:
+    claves = CLAVES + CLAVES_OPCIONALES
+    marcadores = ", ".join(["%s"] * len(claves))
+    # config_key is the primary key. Office locks the same rows during a
+    # configuration edit, avoiding a stale password reuse decision.
+    suffix = " FOR UPDATE" if for_update else ""
+    await cur.execute(
+        f"SELECT config_key, config_value FROM axioma_config WHERE config_key IN ({marcadores}){suffix}",
+        claves,
+    )
+    return {clave: valor for clave, valor in await cur.fetchall()}
 
 
 async def guardar_filas(filas: dict[str, str], actor_user_id: int, ip: str | None = None) -> None:

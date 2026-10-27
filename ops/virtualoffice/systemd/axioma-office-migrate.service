@@ -9,6 +9,7 @@ Before=axioma-office-backend.service
 Type=oneshot
 RemainAfterExit=yes
 User=officemigrate
+Group=officemigrate
 WorkingDirectory=/
 LoadCredential=migrate.env:/etc/axioma-office/migrate.env
 ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/jax-platform-pair-exec.py office-migrate ${CREDENTIALS_DIRECTORY}/migrate.env

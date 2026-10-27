@@ -2,6 +2,7 @@
 SmtpController de AteneaERP (show/update/testConnection/test) sobre
 smtp_config. Solo superadmin."""
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import math
 import os
@@ -18,6 +19,10 @@ from auth.models import AuthUser
 from auth import rate_limit
 from auth.rate_limit import SlidingWindowLimiter, parse_rate
 from db.connection import get_pool
+from db.transaccion import AISLAMIENTO_ADMIN, transaccion
+from virtual_office.authority import authorize_office_in_cursor
+from virtual_office.capabilities import OfficeOperation
+import config_audit
 from validacion import EMAIL_MAX, direccion_unica_valida, tiene_caracteres_de_control
 
 logger = logging.getLogger(__name__)
@@ -68,12 +73,30 @@ class SmtpPrueba(BaseModel):
     to: Optional[str] = None
 
 
+@asynccontextmanager
+async def _office_smtp_guard(user: AuthUser):
+    """Keep Office root authority locked through the write or SMTP effect."""
+    if os.getenv("OFFICE_DEDICATED_DB") != "1":
+        yield None
+        return
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await authorize_office_in_cursor(
+            cur, int(user.user_id), OfficeOperation.ADMINISTER_OFFICE,
+        )
+        if not decision.allowed or decision.global_role != "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_admin_access_denied")
+        yield cur
+
+
 @router.get("/smtp")
 async def ver_smtp(user: AuthUser = Depends(require_superadmin)):
     # email_sesion: para prellenar el destinatario de la prueba sin depender
     # del store de auth del frontend.
-    return {**smtp_config.estado_para_pantalla(await smtp_config.leer_filas()),
-            "email_sesion": await _email_de(int(user.user_id))}
+    async with _office_smtp_guard(user) as office_cur:
+        filas = (await smtp_config.leer_filas_in_cursor(office_cur) if office_cur is not None
+                 else await smtp_config.leer_filas())
+        return {**smtp_config.estado_para_pantalla(filas),
+                "email_sesion": await _email_de(int(user.user_id))}
 
 
 def _limitar(limitador: SlidingWindowLimiter, user: AuthUser) -> None:
@@ -113,17 +136,21 @@ async def guardar_smtp(req: SmtpUpdate, request: Request, user: AuthUser = Depen
     datos = req.model_dump()
     if "test_to" not in req.model_fields_set:
         del datos["test_to"]  # ausente = no se toca smtp.test_to
-    actuales = await smtp_config.leer_filas()
-    motivo_previo = smtp_config.motivo_de_corrupcion(actuales)
-    try:
-        filas = smtp_config.filas_a_guardar(actuales, datos)
-    except smtp_config.SmtpDestinatarioInvalido as exc:
-        raise HTTPException(status_code=400, detail=exc.codigo) from exc
-    except (smtp_config.SmtpExigeContrasena, smtp_config.SmtpReescribirContrasena) as exc:
-        # 422 y no 500: quien opera lo resuelve volviendo a escribir la contraseña.
-        raise HTTPException(status_code=422, detail=exc.codigo) from exc
-    await smtp_config.guardar_filas(filas, int(user.user_id),
-                                    rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES))
+    async with _office_smtp_guard(user) as office_cur:
+        actuales = (await smtp_config.leer_filas_in_cursor(office_cur, for_update=True)
+                    if office_cur is not None else await smtp_config.leer_filas())
+        motivo_previo = smtp_config.motivo_de_corrupcion(actuales)
+        try:
+            filas = smtp_config.filas_a_guardar(actuales, datos)
+        except smtp_config.SmtpDestinatarioInvalido as exc:
+            raise HTTPException(status_code=400, detail=exc.codigo) from exc
+        except (smtp_config.SmtpExigeContrasena, smtp_config.SmtpReescribirContrasena) as exc:
+            raise HTTPException(status_code=422, detail=exc.codigo) from exc
+        ip = rate_limit.client_ip(request, rate_limit.TRUSTED_PROXIES)
+        if office_cur is None:
+            await smtp_config.guardar_filas(filas, int(user.user_id), ip)
+        else:
+            await config_audit.escribir(office_cur, filas, int(user.user_id), "smtp", ip)
     if motivo_previo is not None:
         logger.warning("SMTP reconfigurado sobre un estado corrupto (motivo anterior: %s) por user_id=%s",
                        motivo_previo, user.user_id)
@@ -138,18 +165,21 @@ _SIN_CONTRASENA_PARA_PROBAR = {"sin_contrasena": "smtp_sin_contrasena", "passwor
 async def probar_conexion_smtp(req: SmtpConexion, user: AuthUser = Depends(require_superadmin)):
     _limitar(SMTP_CONN_LIMITER, user)
     _validar_entrada(req)
-    password = req.password or ""
-    if not smtp_config.trae_contrasena_nueva(req.model_dump()):
+    async with _office_smtp_guard(user) as office_cur:
+        password = req.password or ""
+        if not smtp_config.trae_contrasena_nueva(req.model_dump()):
+            try:
+                current = (await smtp_config.leer_filas_in_cursor(office_cur) if office_cur is not None
+                           else await smtp_config.leer_filas())
+                password = smtp_config.contrasena_para_reusar(current, req.model_dump())
+            except smtp_config.SmtpExigeContrasena as exc:
+                raise HTTPException(status_code=422, detail=_SIN_CONTRASENA_PARA_PROBAR[exc.motivo]) from exc
+            except smtp_config.SmtpReescribirContrasena as exc:
+                raise HTTPException(status_code=422, detail=exc.codigo) from exc
         try:
-            password = smtp_config.contrasena_para_reusar(await smtp_config.leer_filas(), req.model_dump())
-        except smtp_config.SmtpExigeContrasena as exc:
-            raise HTTPException(status_code=422, detail=_SIN_CONTRASENA_PARA_PROBAR[exc.motivo]) from exc
-        except smtp_config.SmtpReescribirContrasena as exc:
-            raise HTTPException(status_code=422, detail=exc.codigo) from exc
-    try:
-        await asyncio.to_thread(smtp_config.probar_conexion, req.host, req.port, req.encryption, req.user, password)
-    except smtp_config.SmtpPasoFallido as exc:
-        raise HTTPException(status_code=422, detail={"code": exc.codigo, "server": exc.servidor}) from exc
+            await asyncio.to_thread(smtp_config.probar_conexion, req.host, req.port, req.encryption, req.user, password)
+        except smtp_config.SmtpPasoFallido as exc:
+            raise HTTPException(status_code=422, detail={"code": exc.codigo, "server": exc.servidor}) from exc
     return {"ok": True}
 
 
@@ -169,31 +199,26 @@ async def enviar_prueba_smtp(req: Optional[SmtpPrueba] = None,
                              user: AuthUser = Depends(require_superadmin)):
     # El límite va PRIMERO: ni un destino inválido se valida con el cupo agotado.
     _limitar(SMTP_TEST_LIMITER, user)
-    filas = await smtp_config.leer_filas()
-    try:
-        settings = smtp_config.interpretar(filas)
-    except smtp_config.SmtpNoDisponible as exc:
-        raise HTTPException(status_code=503, detail=exc.codigo) from exc
-    # Destino: el pedido, si no smtp.test_to guardado, si no el de la sesión
-    # (la regla vive en smtp_config.destinatario_de_prueba).
-    try:
-        elegido = smtp_config.destinatario_de_prueba(req.to if req else None, filas)
-    except smtp_config.SmtpDestinatarioInvalido as exc:
-        raise HTTPException(status_code=400, detail=exc.codigo) from exc
-    destinatario = elegido or await _email_de(int(user.user_id))
-    try:
-        mensaje = smtp_config.construir_mensaje(settings, destinatario, ASUNTO_PRUEBA, TEXTO_PRUEBA, HTML_PRUEBA)
-    except ValueError as exc:
-        # EmailMessage rechaza encabezados con caracteres de control. Las
-        # filas nuevas no los pueden traer (_validar_entrada) y las viejas ya
-        # son estado corrupto (motivo_de_corrupcion): esto es la última red.
-        logger.warning("Correo de prueba SMTP: no se pudo armar el mensaje: %s", exc)
-        raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
-    try:
-        # La prueba se ESPERA a propósito (quien la pide quiere el veredicto),
-        # pero en un hilo: smtplib no toca el event loop.
-        await asyncio.to_thread(smtp_config.enviar, settings, mensaje)
-    except (UnicodeEncodeError, OSError, smtplib.SMTPException) as exc:
-        raise smtp_config.http_de_fallo_de_envio(exc, logger, "Correo de prueba SMTP", destinatario) from exc
+    async with _office_smtp_guard(user) as office_cur:
+        filas = (await smtp_config.leer_filas_in_cursor(office_cur) if office_cur is not None
+                 else await smtp_config.leer_filas())
+        try:
+            settings = smtp_config.interpretar(filas)
+        except smtp_config.SmtpNoDisponible as exc:
+            raise HTTPException(status_code=503, detail=exc.codigo) from exc
+        try:
+            elegido = smtp_config.destinatario_de_prueba(req.to if req else None, filas)
+        except smtp_config.SmtpDestinatarioInvalido as exc:
+            raise HTTPException(status_code=400, detail=exc.codigo) from exc
+        destinatario = elegido or await _email_de(int(user.user_id))
+        try:
+            mensaje = smtp_config.construir_mensaje(settings, destinatario, ASUNTO_PRUEBA, TEXTO_PRUEBA, HTML_PRUEBA)
+        except ValueError as exc:
+            logger.warning("Correo de prueba SMTP: no se pudo armar el mensaje: %s", exc)
+            raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
+        try:
+            await asyncio.to_thread(smtp_config.enviar, settings, mensaje)
+        except (UnicodeEncodeError, OSError, smtplib.SMTPException) as exc:
+            raise smtp_config.http_de_fallo_de_envio(exc, logger, "Correo de prueba SMTP", destinatario) from exc
     logger.info("Correo de prueba SMTP enviado a %s por user_id=%s", destinatario, user.user_id)
     return {"ok": True, "to": destinatario}
