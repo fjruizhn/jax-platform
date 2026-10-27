@@ -18,6 +18,18 @@ function credentials() { fireEvent.change(screen.getByPlaceholderText('nombre@em
 beforeEach(() => { vi.clearAllMocks(); login.mockResolvedValue({ mfa_required: true, challenge_token: 'x'.repeat(43), expires_at: 'soon', token_type: 'mfa_challenge' }) })
 
 describe('Login MFA', () => {
+  it('shows a scannable QR during recovery enrollment and clears it on cancellation', async () => {
+    recover.mockResolvedValue({ data: { recovery_token: 'r'.repeat(43), expires_at: 'soon' } })
+    recoveryEnrollmentStart.mockResolvedValue({ data: { enrollment_token: 'e'.repeat(43), secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP' } })
+    show(); credentials()
+    await screen.findByText('Usar un código de recuperación')
+    fireEvent.click(screen.getByText('Usar un código de recuperación'))
+    fireEvent.change(screen.getByLabelText('Código de recuperación'), { target: { value: 'a'.repeat(32) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }))
+    expect(await screen.findByRole('img', { name: 'Escaneá este código QR con tu aplicación autenticadora.' })).toBeInTheDocument()
+    fireEvent.click(screen.getByText(/Volver al inicio/))
+    expect(screen.queryByRole('img', { name: 'Escaneá este código QR con tu aplicación autenticadora.' })).not.toBeInTheDocument()
+  })
   it('keeps a login challenge out of the authenticated store and shows OTP', async () => {
     show(); credentials()
     expect(await screen.findByLabelText('Código de autenticación')).toBeInTheDocument()
