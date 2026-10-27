@@ -184,7 +184,8 @@ PY
   [[ $(curl --noproxy '*' --path-as-is --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 "${resolve[@]}" "$base/api/virtual-office/%2e%2e/admin/users") == 404 ]] || die 'encoded traversal is exposed'
   [[ $(status /api/apariencia) == 200 ]] || die 'public appearance route is unavailable'
   [[ $(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -X POST "${resolve[@]}" "$base/api/apariencia") == 404 ]] || die 'public appearance route accepts a write method'
-  [[ $(status /api/auth/login) != 404 ]] || die 'login route is unavailable'
+  # Login is POST-only. A GET may correctly return 404 even when login works.
+  [[ $(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 --header 'Content-Type: application/json' --data '{}' "${resolve[@]}" "$base/api/auth/login") == 422 ]] || die 'login route is unavailable'
   ih=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base/"); ah=$(curl --noproxy '*' --silent --show-error --head --max-time 10 "${resolve[@]}" "$base$asset_path")
   grep -Eiq '^HTTP/[^ ]+ 200' <<<"$ah" || die 'asset path did not return HTTP 200'
   asset=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 "${resolve[@]}" "$base$asset_path" | sha256sum | awk '{print $1}')
