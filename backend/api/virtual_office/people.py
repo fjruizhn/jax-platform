@@ -398,7 +398,10 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_global_role_denied")
         authorization_event_id = await record_authorization_event(cur, decision)
-        if payload.global_role != "GENERAL_ADMIN":
+        # An older database may contain a delegation left active while the
+        # person is a collaborator.  Revoke it before promotion too; a later
+        # role change must never revive that stale grant.
+        if target[4] != "GENERAL_ADMIN" or payload.global_role != "GENERAL_ADMIN":
             await cur.execute(
                 "SELECT status,version FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s "
                 "AND capability='ADMINISTER_OFFICE' FOR UPDATE",

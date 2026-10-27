@@ -369,6 +369,29 @@ def test_demoting_general_admin_revokes_delegation_and_promotion_does_not_restor
           ("SET_GLOBAL_ROLE", None, None, 2, 3))
 
 
+def test_promotion_revokes_a_latent_legacy_delegation(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+
+    async def legacy_mismatch():
+        target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        await sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) "
+                  "VALUES (1,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (target, root))
+        return target
+
+    target = client.portal.call(legacy_mismatch)
+    promoted = client.put(f"/api/virtual-office/people/{target}/global-role",
+                          json={"global_role": "GENERAL_ADMIN", "expected_version": 1},
+                          headers=_headers(root, tv, mv, proof))
+    assert promoted.status_code == 200
+    assert client.portal.call(sql, "SELECT status,version FROM office_admin_delegation WHERE user_id=%s", (target,), True) == (("REVOKED", 2),)
+    assert client.portal.call(
+        sql, "SELECT action,version_before,version_after FROM office_people_authority_event "
+             "WHERE target_user_id=%s ORDER BY event_id", (target,), True,
+    ) == (("REVOKE_DELEGATION_ON_ROLE_CHANGE", 1, 2), ("SET_GLOBAL_ROLE", 1, 2))
+
+
 def test_delegation_uses_the_target_canonical_tenant_not_request_tenant(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, root_tv, root_mv, root_proof = client.portal.call(_root_with_proof)

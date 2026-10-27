@@ -17,7 +17,9 @@ El segundo llamado incluye los hashes exactos de ambos atestadores de
 procedimientos. Produce el `invitation-worker.env` root:root 0600.
 
 Instalar el release inmutable con `install-invitation-worker-release.sh`
-usando el SHA aprobado y el lock/wheelhouse de ese mismo SHA. El instalador
+usando `--release /opt/axioma-office-dedicated-delivery`, el SHA aprobado y un
+lock/wheelhouse propios de ese mismo SHA. El helper de readiness se instala como
+`/usr/local/libexec/axioma-office-dedicated-worker-readiness`. El instalador
 rechaza un timer Office propio activo durante el reemplazo. Desde el checkout
 del commit aprobado, instalar el helper dedicado y activar solamente después
 de que los dos preflight pasen:

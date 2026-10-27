@@ -12,7 +12,7 @@ check_file() {
 }
 check_file ops/virtualoffice/systemd/axioma-office-delivery.service /etc/systemd/system/axioma-office-delivery.service root:root:644
 check_file ops/virtualoffice/systemd/axioma-office-delivery.timer /etc/systemd/system/axioma-office-delivery.timer root:root:644
-check_file ops/virtualoffice/invitation-worker-readiness.sh /usr/local/libexec/axioma-office-invitation-worker-readiness root:root:755
+check_file ops/virtualoffice/invitation-worker-readiness.sh /usr/local/libexec/axioma-office-dedicated-worker-readiness root:root:755
 check_file ops/virtualoffice/office-delivery-artifact-readiness.sh /usr/local/libexec/axioma-office-delivery-artifact-readiness root:root:750
 check_file ops/virtualoffice/enable-office-delivery-timer.sh /usr/local/libexec/axioma-office-delivery-enable root:root:750
 grep -Fqx 'User=officeinvite' /etc/systemd/system/axioma-office-delivery.service
@@ -22,9 +22,9 @@ grep -Fqx 'Unit=axioma-office-delivery.service' /etc/systemd/system/axioma-offic
 [[ $(id -nG officeinvite) == officeinvite ]]
 [[ -f /etc/axioma-office/invitation-worker.env && ! -L /etc/axioma-office/invitation-worker.env &&
    $(stat -c '%U:%G:%a' /etc/axioma-office/invitation-worker.env) == root:root:600 ]]
-[[ -f /opt/axioma-office-invitation-worker/release-manifest.json ]]
+[[ -f /opt/axioma-office-dedicated-delivery/release-manifest.json ]]
 [[ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' \
-  /opt/axioma-office-invitation-worker/release-manifest.json) == "$revision" ]]
+  /opt/axioma-office-dedicated-delivery/release-manifest.json) == "$revision" ]]
 if [[ $effective == --effective ]]; then
   systemctl is-enabled axioma-office-delivery.timer | grep -qx enabled
   systemctl is-active axioma-office-delivery.timer | grep -qx active

@@ -38,7 +38,7 @@ if systemctl is-active --quiet axioma-office-delivery.timer || systemctl is-acti
   echo 'stop the dedicated delivery timer before replacing its units' >&2; exit 1;
 fi
 install -d -o root -g root -m 0755 /usr/local/libexec /etc/systemd/system
-install -o root -g root -m 0755 "$base/invitation-worker-readiness.sh" /usr/local/libexec/axioma-office-invitation-worker-readiness
+install -o root -g root -m 0755 "$base/invitation-worker-readiness.sh" /usr/local/libexec/axioma-office-dedicated-worker-readiness
 install -o root -g root -m 0750 "$base/office-delivery-artifact-readiness.sh" /usr/local/libexec/axioma-office-delivery-artifact-readiness
 install -o root -g root -m 0750 "$base/enable-office-delivery-timer.sh" /usr/local/libexec/axioma-office-delivery-enable
 install -o root -g root -m 0644 "$base/systemd/axioma-office-delivery.service" /etc/systemd/system/axioma-office-delivery.service

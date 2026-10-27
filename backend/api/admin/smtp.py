@@ -88,6 +88,27 @@ async def _office_smtp_guard(user: AuthUser):
         yield cur
 
 
+async def _smtp_thread_with_authority(func, *args):
+    """A cancelled request cannot outlive the Office authority lock.
+
+    asyncio.to_thread keeps running when its awaiting task is cancelled.  The
+    caller holds the database authorization transaction until that thread
+    completes, even after one or more cancellation requests.
+    """
+    task = asyncio.create_task(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        raise
+
+
 @router.get("/smtp")
 async def ver_smtp(user: AuthUser = Depends(require_superadmin)):
     # email_sesion: para prellenar el destinatario de la prueba sin depender
@@ -177,7 +198,7 @@ async def probar_conexion_smtp(req: SmtpConexion, user: AuthUser = Depends(requi
             except smtp_config.SmtpReescribirContrasena as exc:
                 raise HTTPException(status_code=422, detail=exc.codigo) from exc
         try:
-            await asyncio.to_thread(smtp_config.probar_conexion, req.host, req.port, req.encryption, req.user, password)
+            await _smtp_thread_with_authority(smtp_config.probar_conexion, req.host, req.port, req.encryption, req.user, password)
         except smtp_config.SmtpPasoFallido as exc:
             raise HTTPException(status_code=422, detail={"code": exc.codigo, "server": exc.servidor}) from exc
     return {"ok": True}
@@ -217,7 +238,7 @@ async def enviar_prueba_smtp(req: Optional[SmtpPrueba] = None,
             logger.warning("Correo de prueba SMTP: no se pudo armar el mensaje: %s", exc)
             raise HTTPException(status_code=503, detail="smtp_config_corrupta") from exc
         try:
-            await asyncio.to_thread(smtp_config.enviar, settings, mensaje)
+            await _smtp_thread_with_authority(smtp_config.enviar, settings, mensaje)
         except (UnicodeEncodeError, OSError, smtplib.SMTPException) as exc:
             raise smtp_config.http_de_fallo_de_envio(exc, logger, "Correo de prueba SMTP", destinatario) from exc
     logger.info("Correo de prueba SMTP enviado a %s por user_id=%s", destinatario, user.user_id)

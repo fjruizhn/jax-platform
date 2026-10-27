@@ -752,6 +752,19 @@ _PROFILE_REVOCATION_TRIGGERS = {
     "no_update_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "UPDATE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
     "no_delete_office_profile_revocation_event": ("office_profile_revocation_event", "BEFORE", "DELETE", "ROW", "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'office_profile_revocation_event append-only'"),
 }
+_PEOPLE_AUTHORITY_TRIGGERS = {
+    name: (
+        "office_people_authority_event", "BEFORE", operation, "ROW",
+        next(statement for statement in OFFICE_PEOPLE_AUTHORITY_DDL if statement.startswith(
+            f"CREATE TRIGGER IF NOT EXISTS {name} "
+        )).split(" FOR EACH ROW ", 1)[1],
+    )
+    for name, operation in (
+        ("guard_office_people_authority_event_insert", "INSERT"),
+        ("no_update_office_people_authority_event", "UPDATE"),
+        ("no_delete_office_people_authority_event", "DELETE"),
+    )
+}
 
 _PROJECT_ROLE_RECEIPT_COLUMNS = (
     ("receipt_id", "char", "char(36)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
@@ -851,6 +864,34 @@ _PROFILE_REVOCATION_COLUMNS = (
     ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
     ("occurred_at", "datetime", "datetime(6)", "NO", None, None, "", None),
 )
+_PEOPLE_AUTHORITY_COLUMNS = (
+    ("event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "auto_increment", None),
+    ("actor_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_user_id", "int", "int(11)", "NO", None, None, "", None),
+    ("tenant_id", "int", "int(11)", "NO", None, None, "", None),
+    ("target_tenant_id", "int", "int(11)", "NO", None, None, "", None),
+    ("action", "varchar", "varchar(40)", "NO", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", None),
+    ("old_role", "varchar", "varchar(24)", "YES", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", "NULL"),
+    ("new_role", "varchar", "varchar(24)", "YES", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", "NULL"),
+    ("old_status", "varchar", "varchar(16)", "YES", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", "NULL"),
+    ("new_status", "varchar", "varchar(16)", "YES", "utf8mb4", "utf8mb4_uca1400_ai_ci", "", "NULL"),
+    ("version_before", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("version_after", "bigint", "bigint(20)", "NO", None, None, "", None),
+    ("authorization_event_id", "bigint", "bigint(20) unsigned", "NO", None, None, "", None),
+    ("occurred_at", "datetime", "datetime(6)", "NO", None, None, "", None),
+)
+_PEOPLE_AUTHORITY_INDEXES = {
+    "PRIMARY": (("event_id",), True),
+    "idx_office_people_authority_target": (("target_user_id", "occurred_at", "event_id"), False),
+}
+_PEOPLE_AUTHORITY_FOREIGN_KEYS = {
+    "fk_office_people_authority_actor": (("actor_user_id",), "jax_users", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_people_authority_target": (("target_user_id",), "office_account_profile", ("user_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_people_authority_tenant": (("tenant_id",), "jax_tenants", ("tenant_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_people_authority_target_tenant": (("target_tenant_id",), "jax_tenants", ("tenant_id",), "RESTRICT", "RESTRICT"),
+    "fk_office_people_authority_auth": (("authorization_event_id",), "office_authorization_event", ("event_id",), "RESTRICT", "RESTRICT"),
+}
+_PEOPLE_AUTHORITY_CHECK_DIGEST = "845c10f8f94193416d39b32310c7ef4d711f60743c9109c3ec64279c8c87e586"
 
 _MEMBERSHIP_RECEIPT_FOREIGN_KEYS = {
     "fk_office_membership_receipt_jax_request": (("namespace", "idempotency_key"), "jax_namespace_membership_mutation_request", ("namespace", "idempotency_key"), "RESTRICT", "RESTRICT"),
@@ -1830,6 +1871,18 @@ async def assert_profile_revocation_runtime_metadata(cur, *, allow_redacted_trig
     for name, digest in _PROFILE_REVOCATION_CHECK_DIGESTS.items():
         if _check_digest(await _check_clause(cur, name)) != digest:
             raise RuntimeError(f"Office profile revocation CHECK {name} is invalid")
+
+
+async def assert_people_authority_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
+    table = "office_people_authority_event"
+    await _assert_columns(cur, table=table, expected=_PEOPLE_AUTHORITY_COLUMNS)
+    await _assert_indexes(cur, table=table, expected=_PEOPLE_AUTHORITY_INDEXES)
+    await _assert_foreign_keys(cur, table=table, expected=_PEOPLE_AUTHORITY_FOREIGN_KEYS)
+    await _assert_append_only_table_metadata(
+        cur, table=table, triggers=_PEOPLE_AUTHORITY_TRIGGERS,
+        allow_redacted_trigger_body=allow_redacted_trigger_body)
+    if _check_digest(await _check_clause(cur, "chk_office_people_authority_shape")) != _PEOPLE_AUTHORITY_CHECK_DIGEST:
+        raise RuntimeError("Office people authority CHECK is invalid")
 
 
 async def assert_project_role_receipt_runtime_metadata(cur, *, allow_redacted_trigger_body: bool = False) -> None:
@@ -2843,6 +2896,7 @@ async def apply_office_migrations(cursor) -> None:
         await assert_membership_receipt_runtime_metadata(cursor)
     await assert_project_role_receipt_runtime_metadata(cursor)
     await assert_profile_revocation_runtime_metadata(cursor)
+    await assert_people_authority_runtime_metadata(cursor)
     # Candidate storage is intentionally inert: it is only untrusted bytes and
     # claims, never publication, approval, or a release decision.  It must be
     # attested here, before db.migrations stamps the Office runtime revision.

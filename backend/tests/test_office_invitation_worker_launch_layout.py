@@ -70,6 +70,10 @@ def test_dedicated_office_delivery_has_own_installer_gate_and_timer():
     assert 'systemctl disable --now axioma-office-delivery.timer' in activator
     assert 'invitation_smtp_preflight' in activator
     assert 'axioma-office-delivery.timer' in release_installer
+    assert '/opt/axioma-office-dedicated-delivery/backend' in service
+    assert '/usr/local/libexec/axioma-office-dedicated-worker-readiness' in service
+    assert '/usr/local/libexec/axioma-office-invitation-worker-readiness' not in installer
+    assert 'case "$RELEASE" in' in release_installer
 
 
 def test_routine_installer_requires_fixed_sql_and_installed_attestor():

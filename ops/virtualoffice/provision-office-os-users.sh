@@ -11,7 +11,8 @@ for account in officeweb officemigrate; do
   [[ $name == "$account" && $home == /nonexistent && $shell == /usr/sbin/nologin ]] || {
     printf '%s\n' "invalid Office service identity: $account" >&2; exit 1;
   }
-  [[ $uid != 0 && $gid == "$(getent group "$account" | cut -d: -f3)" && $(id -nG "$account") == "$account" ]] || {
+  [[ $uid =~ ^[0-9]+$ && $uid -gt 0 && $uid -lt 1000 &&
+     $gid == "$(getent group "$account" | cut -d: -f3)" && $(id -nG "$account") == "$account" ]] || {
     printf '%s\n' "Office service identity has shared or supplemental groups: $account" >&2; exit 1;
   }
 done
