@@ -36,6 +36,8 @@ def test_first_install_keeps_selector_traversable_without_exposing_credentials(t
     assert "$(stat -c '%a' /etc/axioma-office) == 711" in readiness
     assert "$(stat -c '%a' \"$path\") == 700" in readiness
     assert "stat -c '%U:%G:%a' /etc/axioma-office/deployment.env" in readiness
+    assert readiness.index("if [[ $phase == migration || $phase == services ]]; then") < readiness.index(
+        "stat -c '%U:%G:%a' /etc/axioma-office/deployment.env")
 
     # Execute the real pre-read guard against a disposable stand-in for the
     # production path. A world-readable secret must fail before parsing it.

@@ -9,8 +9,6 @@ for path in /etc/axioma-office /etc/axioma-office/mariadb /var/lib/axioma-office
   [[ -d $path && ! -L $path && $(stat -c '%U:%G' "$path") == root:root ]]
 done
 [[ $(stat -c '%a' /etc/axioma-office) == 711 ]]
-[[ -f /etc/axioma-office/deployment.env && ! -L /etc/axioma-office/deployment.env &&
-   $(stat -c '%U:%G:%a' /etc/axioma-office/deployment.env) == root:root:600 ]]
 for path in /etc/axioma-office/mariadb /var/lib/axioma-office-mariadb /var/lib/axioma-office-mariadb/secrets; do
   [[ $(stat -c '%a' "$path") == 700 ]]
 done
@@ -45,6 +43,8 @@ systemctl show axioma-office-database.service -p DropInPaths | grep -Fqx DropInP
    ! -L /var/lib/axioma-office-mariadb/secrets/root_password.txt &&
    $(stat -c '%U:%G:%a' /var/lib/axioma-office-mariadb/secrets/root_password.txt) == root:root:600 ]]
 if [[ $phase == migration || $phase == services ]]; then
+  [[ -f /etc/axioma-office/deployment.env && ! -L /etc/axioma-office/deployment.env &&
+     $(stat -c '%U:%G:%a' /etc/axioma-office/deployment.env) == root:root:600 ]]
   python3 -I -S - "$revision" <<'PY'
 import hashlib, json, os, stat, sys
 from pathlib import Path
