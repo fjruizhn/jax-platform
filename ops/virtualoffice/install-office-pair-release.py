@@ -48,6 +48,11 @@ def sync_tree(path: Path) -> None:
     for directory, _, filenames in os.walk(path):
         for name in filenames:
             file_path = Path(directory) / name
+            mode = file_path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                continue  # the parent directory fsync persists the link itself
+            if not stat.S_ISREG(mode):
+                raise RuntimeError('Office pair contains an unsupported file type')
             fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
             try:
                 os.fsync(fd)

@@ -27,6 +27,9 @@ def test_office_process_exposes_only_bounded_browser_routes():
     smtp = browser.get("/api/admin/smtp")
     assert smtp.status_code == 401
     assert smtp.headers["cache-control"] == "no-store"
+    verticales = browser.get("/api/virtual-office/verticales")
+    assert verticales.status_code == 401
+    assert verticales.headers["cache-control"] == "no-store"
 
 
 def test_office_import_does_not_require_the_classic_jax_repository():

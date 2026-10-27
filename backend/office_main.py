@@ -35,6 +35,7 @@ from api.virtual_office.invitations import router as invitations_router
 from api.virtual_office.account_invitations import router as account_invitations_router
 from api.virtual_office.session import router as session_router
 from api.virtual_office.agents import router as agents_router
+from api.virtual_office.verticales import router as verticales_router
 
 
 _AUTH_ROUTES = frozenset({
@@ -130,7 +131,7 @@ async def validation_error(request: Request, _error: RequestValidationError):
 
 for router in (auth_router, appearance_router, smtp_router, projects_router, people_router,
                grants_router, invitations_router, account_invitations_router,
-               session_router, agents_router):
+               session_router, agents_router, verticales_router):
     app.include_router(router)
 
 app.add_middleware(limite_json.LimiteDeProfundidadJSON,

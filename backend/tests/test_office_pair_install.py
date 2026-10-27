@@ -41,6 +41,7 @@ def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tm
     source.mkdir(parents=True)
     (source / "pair-manifest.json").write_text('{"fixture":true}\n', encoding="utf-8")
     (source / "payload").write_text("first release", encoding="utf-8")
+    (source / "payload-link").symlink_to("payload")
     manifest_digest = hashlib.sha256((source / "pair-manifest.json").read_bytes()).hexdigest()
     office_root = tmp_path / "office-pairs"
     (office_root / "releases").mkdir(parents=True)
@@ -71,6 +72,7 @@ def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tm
     first_selection = selection.read_bytes()
     first_release = (office_root / "current").resolve(strict=True)
     assert (first_release / "payload").read_text() == "first release"
+    assert (first_release / "payload-link").is_symlink()
     run("a" * 40)
     assert selection.read_bytes() == first_selection
     with pytest.raises(RuntimeError, match="upgrade requires"):
