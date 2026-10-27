@@ -132,6 +132,49 @@ def test_create_rejects_inactive_or_unknown_verticals(client, monkeypatch):
         assert response.json()["detail"] == "office_project_vertical_invalid"
 
 
+def test_replay_without_then_with_vertical_repairs_the_missing_companion(client, monkeypatch):
+    # The JAX idempotency digest does not include the vertical (only the
+    # form signature does), so a same-key replay that adds a room is not a
+    # digest conflict: Phase B repairs the missing companion row.  This
+    # test pins that current behavior explicitly.
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    key = str(uuid.uuid4())
+    payload = _project_payload()
+    created = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
+    assert created.status_code == 200
+    project_id = created.json()["id"]
+    payload["vertical"] = "agencia"
+    replay = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
+    assert replay.status_code == 200
+    assert replay.json() == {"id": project_id, "created": False}
+    assert client.portal.call(
+        sql, "SELECT vertical FROM office_project_vertical WHERE project_id=%s", (project_id,), True
+    ) == (("agencia",),)
+
+
+def test_phase_b_vertical_drift_is_retryable_and_never_rewrites(client, monkeypatch):
+    # A companion row whose value differs from the authorized intent (torn
+    # state, manual repair, a future migration) is never silently rewritten:
+    # Phase B refuses with a retryable 503 and leaves the stored value alone.
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)
+    key = str(uuid.uuid4())
+    payload = _project_payload(vertical="agencia")
+    created = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
+    assert created.status_code == 200
+    project_id = created.json()["id"]
+    # Only SQL can produce a divergent value today: creation validates the
+    # payload against the registry before Phase B ever runs.
+    client.portal.call(sql, "UPDATE office_project_vertical SET vertical='banca' WHERE project_id=%s", (project_id,))
+    replay = client.post("/api/virtual-office/projects", json=payload, headers=_proof_headers(root, tv, mv, proof, key))
+    assert replay.status_code == 503
+    assert replay.json()["detail"] == "office_project_initialization_retryable"
+    assert client.portal.call(
+        sql, "SELECT vertical FROM office_project_vertical WHERE project_id=%s", (project_id,), True
+    ) == (("banca",),)
+
+
 def test_list_filter_keeps_registered_verticals_and_rejects_unknown_ones(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_office_root_with_current_proof)

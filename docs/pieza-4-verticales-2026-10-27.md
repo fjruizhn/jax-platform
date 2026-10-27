@@ -22,7 +22,7 @@ no de permisos.
    `proximamente` (junta, bufete, arquitectura, contable, banca) o `futura`
    (biblioteca).
 2. **Tabla compañera `office_project_vertical`** (PK `project_id`, FK a
-   `office_project`). Ausencia de fila = proyecto general, sin sala. La
+   `projects(id)`). Ausencia de fila = proyecto general, sin sala. La
    vertical se asigna **solo al crear** (idempotente): no hay endpoint de
    cambio de vertical en v1 porque mover un proyecto entre verticales
    arrastraría preguntas de visibilidad/auditoría que no aportan hoy.
@@ -49,8 +49,14 @@ no de permisos.
 - `POST /api/virtual-office/projects` acepta `vertical` opcional; se valida
   contra el registro y se persiste en la misma transacción idempotente
   (drift de vertical entre intento y commit → reintento de fase B, igual
-  que el drift existente de grupo). La firma de idempotencia incluye la
-  vertical: cambiar de sala en el formulario es otro intento, otra clave.
+  que el drift existente de grupo). La firma que incluye la vertical es la
+  del **formulario** (JXP, `JSON.stringify(payload)`): cambiar de sala en
+  el formulario es otro intento, otra clave. El digest de idempotencia de
+  JAX **no** incluye la vertical, así que un replay con la misma clave que
+  añade sala no es conflicto: fase B repara la fila compañera ausente
+  (comportamiento fijado por prueba en `test_office_verticales_api.py`;
+  el registro del intento en el digest, si algún día se exige, es trabajo
+  del lado jax, no de esta pieza).
 - Externos: la publicación externa sigue anulando `description` pero
   **conserva** la vertical — el eje no filtra información sensible.
 - Migración runtime `office-v13c` (DDL idempotente) + privilegio INSERT
@@ -71,9 +77,12 @@ no de permisos.
   24px). Diálogo informativo para las demás. El creador de proyectos
   ofrece el selector de sala solo con verticales (solo `activa` se ofrece)
   y la preselección respeta el filtro activo.
-- La firma de idempotencia del creador incluye la vertical cuando se elige
-  sala; sin sala, el payload no lleva la clave (compatibilidad exacta con
-  los tests existentes de creación).
+- La firma del formulario del creador (JXP, `JSON.stringify(payload)`)
+  incluye la vertical cuando se elige sala; sin sala, el payload no lleva
+  la clave (compatibilidad exacta con los tests existentes de creación).
+  El digest de JAX no la incluye — ver el contrato de `POST /projects`
+  arriba: cambiar de sala en el formulario es otro intento con otra clave,
+  pero un replay con la misma clave que añade sala no es conflicto.
 
 ## MINOR 2 (declaración medida, cierre)
 
@@ -88,16 +97,20 @@ solo si el catálogo de imágenes crece.
 
 ## Pruebas
 
-- **Backend** `tests/test_office_verticales_api.py` (7 pruebas): registro
+- **Backend** `tests/test_office_verticales_api.py` (9 pruebas): registro
   anunciado en orden con una sola activa, 403 al extraño, asignación al
   crear + exposición en detalle/lista/replay idempotente, ausencia =
   general, 422 por vertical inválida al crear, filtro de lista (incluye
-  vacía honesta para `proximamente` y 422 para desconocida), y externo con
-  descripción anulada y vertical conservada. La suite con DB corre en CI
-  (`backend-tests-con-db`, MariaDB efímera): en hall9000 el guard
-  fail-closed de `base_de_test.py` impide ejecutarla contra 3306/3308
-  (puertos de producción) y no hay docker local — por diseño, no se
-  sortea.
+  vacía honesta para `proximamente` y 422 para desconocida), externo con
+  descripción anulada y vertical conservada, y las dos fijaciones de
+  contrato de fase B que exige la auditoría: replay misma clave
+  None→vertical repara la fila compañera ausente (el digest de JAX no
+  incluye la vertical, no es conflicto), y drift de valor divergente →
+  503 reinteligible sin reescribir el valor guardado. La suite con DB
+  corre en CI (`backend-tests-con-db`, MariaDB efímera): en hall9000 el
+  guard fail-closed de `base_de_test.py` impide ejecutarla contra
+  3306/3308 (puertos de producción) y no hay docker local — por diseño,
+  no se sortea.
 - **Frontend** 1553/1553 (piso 1545 → 1553 en `policy.yml`). +1
   HubOficina reescrito sobre registro (incluye sala desconocida que nunca
   se renderiza), +4 OfficeProjectCreator (sala en el creador, guard de
