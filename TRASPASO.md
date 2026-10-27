@@ -326,3 +326,16 @@ creador. Cierra MINOR 2 como decisión medida (doc
 denegado en hall9000). Reparto con Codex: GLM entrega rama+auditoría+PR+merge
 +build certificado; Codex toma verificación de producción, QA E2E y deploy
 con su runbook bajo la palabra de Fernando.
+
+2026-10-27 · GLM (Ada) · Merge 94f54638 toma el revert #248: master quitó
+el #246 (administración de usuarios) por CI roja post-merge — flake TOTP
+en test_office_identity_guard, revert auditado como PR #248. Esa
+administración NO vuelve a entrar por esta rama; el enganche de verticales
+queda intacto y el piso se re-midió sobre el árbol con el revert: 1553
+passed, 0 fallidos, 128 archivos (1545 de pieza 3 + 8 de pieza 4). La
+suite de verticales quedó en 9 pruebas tras las dos fijaciones de fase B
+exigidas por auditoría (fff6f88e). Nota de Codex
+(cambio-direccion-oficina-admin-2026-10-27.md): Oficina y Axioma son
+productos separados — pieza 4 es compatible porque el registro de
+verticales vive en el módulo propio de la Oficina y se sirve por
+`/api/virtual-office/*`, sin tocar pantallas ni SMTP de Axioma.
