@@ -15,6 +15,7 @@ import VirtualOffice from './pages/VirtualOffice'
 import OfficeInvitation from './pages/OfficeInvitation'
 import OfficeBootstrap from './pages/OfficeBootstrap'
 import OfficeUsers from './pages/OfficeUsers'
+import AdminSmtp from './pages/admin/AdminSmtp'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 import { officeSessionApi } from './api/virtualOffice'
@@ -136,6 +137,10 @@ export default function App() {
               <RequireOfficeSession><OfficeUsers /></RequireOfficeSession>
             </RequireAuth>
           }
+        />
+        <Route
+          path="/virtual-office/admin/correo"
+          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireSuperadmin><AdminSmtp /></RequireSuperadmin></RequireOfficeSession></RequireAuth>}
         />
         {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
             redirige TODO este bloque a /virtual-office; en la de Axioma lo

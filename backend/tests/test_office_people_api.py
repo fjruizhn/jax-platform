@@ -71,7 +71,7 @@ def test_office_directory_lists_human_profiles_without_mfa_but_keeps_mutations_p
     assert listed.status_code == 200
     assert {root, peer}.issubset({item["user_id"] for item in listed.json()["people"]})
     assert listed.headers["cache-control"] == "no-store"
-    assert listed.headers["vary"] == "Authorization"
+    assert "Authorization" in {part.strip() for part in listed.headers["vary"].split(",")}
     assert client.get("/api/virtual-office/people", headers=_headers_without_mfa(peer, peer_tv)).status_code == 403
     projects = client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers)
     assert projects.status_code == 200

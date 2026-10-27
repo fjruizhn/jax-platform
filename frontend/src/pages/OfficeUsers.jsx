@@ -250,6 +250,7 @@ export default function OfficeUsers({ officeSession, onOfficeDenied }) {
         <h1 className="mt-3 text-2xl font-bold">{t.virtualOffice.userAdmin.title}</h1>
         <p className="mt-2 text-sm text-texto-suave">{t.virtualOffice.userAdmin.intro}</p>
         <Link to="/virtual-office" className={`${BUTTON} mt-4 inline-flex items-center`}>{t.virtualOffice.userAdmin.back}</Link>
+        {isRoot && <Link to="/virtual-office/admin/correo" className={`${BUTTON} mt-4 ml-2 inline-flex items-center`}>{t.adminSmtp}</Link>}
       </header>
 
       {canBrowsePeople && <section className="tarjeta-oficina" aria-labelledby="office-human-users-title">

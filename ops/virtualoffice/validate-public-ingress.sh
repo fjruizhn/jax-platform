@@ -102,26 +102,26 @@ check_proxy_allowlist() {
   local expected actual
   expected=$(cat <<'ROUTES' | LC_ALL=C sort
 location = /api/apariencia {
-location = /api/auth/forgot-password { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/login { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/logout { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/me { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/me/password { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/disable { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/enrollment/confirm { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/enrollment/start { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/login/verify { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/recover { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/recovery-codes/regenerate { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/recovery/enrollment/start { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/reenrollment/start { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/status { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/step-up { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/mfa/step-up/verify { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/refresh { proxy_pass http://virtualoffice_jax_api; }
-location = /api/auth/reset-password { proxy_pass http://virtualoffice_jax_api; }
-location = /api/virtual-office { proxy_pass http://virtualoffice_jax_api; }
-location ^~ /api/virtual-office/ { proxy_pass http://virtualoffice_jax_api; }
+location = /api/auth/forgot-password { proxy_pass http://virtualoffice_api; }
+location = /api/auth/login { proxy_pass http://virtualoffice_api; }
+location = /api/auth/logout { proxy_pass http://virtualoffice_api; }
+location = /api/auth/me { proxy_pass http://virtualoffice_api; }
+location = /api/auth/me/password { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/disable { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/enrollment/confirm { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/enrollment/start { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/login/verify { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/recover { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/recovery-codes/regenerate { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/recovery/enrollment/start { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/reenrollment/start { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/status { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/step-up { proxy_pass http://virtualoffice_api; }
+location = /api/auth/mfa/step-up/verify { proxy_pass http://virtualoffice_api; }
+location = /api/auth/refresh { proxy_pass http://virtualoffice_api; }
+location = /api/auth/reset-password { proxy_pass http://virtualoffice_api; }
+location = /api/virtual-office { proxy_pass http://virtualoffice_api; }
+location ^~ /api/virtual-office/ { proxy_pass http://virtualoffice_api; }
 ROUTES
 )
   actual=$(awk '
@@ -157,6 +157,7 @@ PY
   verify_release_permissions "$resolved" "$root"
   [[ $(readlink -f -- "$release") == "$resolved" ]] || die 'release target changed during verification'
   grep -Fqx '    server_name virtualoffice.axioma-ia.io;' "$config" || die 'exact public host is absent'
+  grep -Fqx '    server 172.16.20.5:8081;' "$config" || die 'dedicated Office API upstream is absent'
   grep -Fqx "    root $nginx_root;" "$config" || die 'nginx root is not bound to this site current/dist'
   grep -Fqx '    location ^~ /api/ { return 404; }' "$config" || die 'non-Office API is not denied'
   grep -Fqx '    location ^~ /ws/ { return 404; }' "$config" || die 'websocket namespace is not denied'

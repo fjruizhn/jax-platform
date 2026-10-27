@@ -170,6 +170,9 @@ for key in JAX_DB_HOST JAX_DB_PORT JAX_DB_NAME JAX_DB_GRANTEE_HOST JAX_RUNTIME_D
 [[ ${CFG[JAX_DB_GRANTEE_HOST]} =~ ^[A-Za-z0-9.:-]+$ ]] || die "invalid database grantee host"
 [[ ${CFG[JAX_DB_NAME]} =~ ^[A-Za-z0-9_]{1,64}$ ]] || die "invalid database name"
 [[ ${CFG[JAX_DB_PORT]} =~ ^[0-9]{1,5}$ ]] || die "invalid database port"
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then
+  [[ ${CFG[JAX_DB_NAME]} != jax_memory && ${CFG[JAX_DB_PORT]} != 3308 ]] || die "Office must use its own MariaDB target"
+fi
 
 RUNTIME_USER=${CFG[JAX_RUNTIME_DB_USER]}
 MIGRATE_USER=${CFG[JAX_MIGRATE_DB_USER]}
@@ -615,6 +618,7 @@ migrate_content+="JAX_DB_PORT=${CFG[JAX_DB_PORT]}"$'\n'
 migrate_content+="JAX_DB_NAME=$DB"$'\n'
 migrate_content+="JAX_DB_USER=$MIGRATE_USER"$'\n'
 migrate_content+="JAX_DB_PASSWORD=$migrate_password"$'\n'
+if [[ ${CFG[OFFICE_DEDICATED_DB]:-} == 1 ]]; then migrate_content+="OFFICE_DEDICATED_DB=1"$'\n'; fi
 for key in JAX_REPO_PATH JAX_EJECUTOR_INVENTARIO; do [[ -v "CFG[$key]" ]] && migrate_content+="$key=${CFG[$key]}"$'\n'; done
 migrate_content+="JAX_MIGRATE_DB_READINESS_ATTEMPTS=${CFG[JAX_MIGRATE_DB_READINESS_ATTEMPTS]:-12}"$'\n'
 migrate_content+="JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS=${CFG[JAX_MIGRATE_DB_READINESS_TIMEOUT_SECONDS]:-10}"$'\n'

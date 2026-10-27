@@ -1,0 +1,35 @@
+services:
+  office-mariadb:
+    image: mariadb:12.3.3
+    container_name: axioma-office-mariadb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3310:3306"
+    volumes:
+      - /var/lib/axioma-office-mariadb/data:/var/lib/mysql
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/office_mariadb_root_password
+      MARIADB_AUTO_UPGRADE: "1"
+      TZ: America/Tegucigalpa
+    secrets:
+      - office_mariadb_root_password
+    networks:
+      office-db-net:
+        ipv4_address: 172.30.6.2
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_uca1400_ai_ci
+      - --transaction-isolation=REPEATABLE-READ
+
+networks:
+  office-db-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.6.0/24
+
+secrets:
+  office_mariadb_root_password:
+    file: /var/lib/axioma-office-mariadb/secrets/root_password.txt
