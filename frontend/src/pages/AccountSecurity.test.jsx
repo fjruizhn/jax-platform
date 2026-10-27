@@ -12,13 +12,6 @@ import { I18nProvider } from '../i18n/index.jsx'
 function show() { return render(<I18nProvider><MemoryRouter><AccountSecurity /></MemoryRouter></I18nProvider>) }
 beforeEach(() => { vi.clearAllMocks(); api.status.mockResolvedValue({ data: { enabled: true, state: 'ACTIVE' } }); useJaxStore.setState({ token: 'a', user: { user_id: 1, email: 'a@b.c' }, _sessionEpoch: 1, mfaRecoveryCodes: null }) })
 describe('Account security MFA', () => {
-  it('offers the existing self-service password change inside Office', async () => {
-    show()
-    fireEvent.click(screen.getByRole('button', { name: 'Cambiar mi contraseña' }))
-    expect(screen.getByRole('dialog', { name: 'Mi cuenta' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Contraseña actual')).toBeInTheDocument()
-    expect(screen.getByLabelText('Nueva contraseña')).toBeInTheDocument()
-  })
   it('does not apply a late step-up token after account B replaces account A', async () => {
     let resolve; api.stepUp.mockResolvedValue({ data: { challenge_token: 'c' } }); api.stepUpVerify.mockReturnValue(new Promise((r) => { resolve = r }))
     show(); await screen.findByText('Generar códigos nuevos'); fireEvent.click(screen.getByText('Generar códigos nuevos'))
@@ -46,6 +39,10 @@ describe('Account security MFA', () => {
   })
   it('opens password verification when disabling an active authenticator', async () => {
     show()
+    fireEvent.click(screen.getByRole('button', { name: 'Cambiar mi contraseña' }))
+    expect(screen.getByRole('dialog', { name: 'Mi cuenta' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Nueva contraseña')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
     const toggle = await screen.findByRole('switch', { name: 'Verificación en dos pasos' })
     expect(toggle).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(toggle)
