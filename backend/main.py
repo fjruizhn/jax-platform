@@ -137,6 +137,7 @@ from api.virtual_office.projects import router as virtual_office_projects_router
 from api.virtual_office.people import router as virtual_office_people_router
 from api.virtual_office.grants import router as virtual_office_grants_router
 from api.virtual_office.invitations import router as virtual_office_invitations_router
+from api.virtual_office.account_invitations import router as virtual_office_account_invitations_router
 from api.virtual_office.session import router as virtual_office_session_router
 from api.virtual_office.agents import router as virtual_office_agents_router
 from api.virtual_office.verticales import router as virtual_office_verticales_router
@@ -419,6 +420,7 @@ ROUTERS = (
     virtual_office_people_router,
     virtual_office_grants_router,
     virtual_office_invitations_router,
+    virtual_office_account_invitations_router,
     virtual_office_session_router,
     virtual_office_agents_router,
     virtual_office_verticales_router,

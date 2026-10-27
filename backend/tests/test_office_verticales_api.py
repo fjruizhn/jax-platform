@@ -14,6 +14,8 @@ import time
 import uuid
 
 from auth.jwt import create_access_token
+from fastapi.testclient import TestClient
+from office_main import app as dedicated_office_app
 from tests.identidades import crear_usuario, sql
 
 
@@ -68,6 +70,10 @@ def test_verticales_endpoint_announces_the_server_registry(client, monkeypatch):
     ]
     assert [vertical["estado"] for vertical in announced].count("activa") == 1
     assert next(vertical for vertical in announced if vertical["id"] == "agencia")["estado"] == "activa"
+    dedicated = TestClient(dedicated_office_app).get(
+        "/api/virtual-office/verticales", headers=_headers(root))
+    assert dedicated.status_code == 200
+    assert dedicated.json() == response.json()
 
 
 def test_verticales_endpoint_requires_an_active_office_profile(client, monkeypatch):

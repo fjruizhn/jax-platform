@@ -455,6 +455,25 @@ def test_unknown_account_class_fails_closed_before_global_role(monkeypatch):
     assert decision.code == "office_account_class_denied"
 
 
+def test_human_directory_and_invitation_need_office_authority_but_not_mfa(monkeypatch):
+    roles = {7: "OFFICE_SUPERUSER", 8: "GENERAL_ADMIN", 9: "COLLABORATOR"}
+
+    async def actor_row(_cur, actor, *, for_update):
+        return {"tenant_id": 1, "user_status": "active", "account_class": "OFFICE_INTERNAL",
+                "tenant_status": "active", "global_role": roles[actor], "profile_status": "ACTIVE"}
+
+    async def delegation_row(_cur, actor, tenant, operation, *, for_update):
+        assert (actor, tenant, operation) == (8, 1, OfficeOperation.ADMINISTER_OFFICE)
+        return {"status": "ACTIVE"}
+
+    monkeypatch.setattr(authority.repository, "fetch_actor", actor_row)
+    monkeypatch.setattr(authority.repository, "fetch_delegation", delegation_row)
+    for operation in (OfficeOperation.VIEW_OFFICE_DIRECTORY, OfficeOperation.INVITE_OFFICE_PERSON):
+        assert asyncio.run(authorize_office_in_cursor(object(), 7, operation)).allowed is True
+        assert asyncio.run(authorize_office_in_cursor(object(), 8, operation)).allowed is True
+        assert asyncio.run(authorize_office_in_cursor(object(), 9, operation)).allowed is False
+
+
 async def _insert_controlled_step_up_proof(
     user_id: int, *, timestamp: str = "current", result: str = "VERIFIED",
     token_version_delta: int = 0, mfa_version_delta: int = 0,

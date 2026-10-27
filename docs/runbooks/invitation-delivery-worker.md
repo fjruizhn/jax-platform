@@ -1,5 +1,51 @@
 # Entrega de invitaciones de Virtual Office
 
+## Instalación en la MariaDB propia de Oficina
+
+Para `virtualoffice.axioma-ia.io` se usa exclusivamente `axioma-office-delivery.timer`,
+`officeinvite` y `/etc/axioma-office/invitation-worker.env`. El timer histórico
+`axioma-office-invitation-worker.timer` de JAX no entrega correo de esta base.
+Después de instalar y migrar la MariaDB independiente, importar el propietario
+y SMTP, y verificar un SHA exacto aprobado, ejecutar los instaladores de
+procedimientos de invitación de cuenta y proyecto contra
+`office-dedicated-mariadb-admin-transport.sh`. El primer llamado a
+`provision-invitation-worker.sh` usa `--env /etc/axioma-office/runtime.env`,
+`--state-root /etc/axioma-office`, `--worker-os-user officeinvite`,
+`--worker-db-user officeinvite`, `--admin-transport` apuntando al transporte
+dedicado instalado desde ese SHA y el host grantee medido por la conexión real.
+El segundo llamado incluye los hashes exactos de ambos atestadores de
+procedimientos. Produce el `invitation-worker.env` root:root 0600.
+
+Instalar el release inmutable con `install-invitation-worker-release.sh`
+usando `--release /opt/axioma-office-dedicated-delivery`, el SHA aprobado y un
+lock/wheelhouse propios de ese mismo SHA. El helper de readiness se instala como
+`/usr/local/libexec/axioma-office-dedicated-worker-readiness`. El instalador
+rechaza un timer Office propio activo durante el reemplazo. Desde el checkout
+del commit aprobado, instalar el helper dedicado y activar solamente después
+de que los dos preflight pasen:
+
+```bash
+SHA='SHA_COMPLETO_AUDITADO'
+SOURCE=/ruta/al/checkout-verificado
+set -euo pipefail
+GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" fsck --strict --no-dangling
+test "$(GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" rev-parse HEAD)" = "$SHA"
+STAGE=$(sudo mktemp /var/tmp/office-delivery-install.XXXXXXXX)
+GIT_NO_REPLACE_OBJECTS=1 git -C "$SOURCE" show "$SHA:ops/virtualoffice/install-office-delivery-runtime.sh" | sudo tee "$STAGE" >/dev/null
+sudo install -o root -g root -m 0750 "$STAGE" /usr/local/libexec/axioma-office-delivery-install
+sudo rm -f "$STAGE"
+sudo /usr/local/libexec/axioma-office-delivery-install --source "$SOURCE" --revision "$SHA"
+sudo /usr/local/libexec/axioma-office-delivery-enable --source "$SOURCE" --revision "$SHA"
+```
+
+El atestador compara los archivos instalados byte a byte contra el commit y
+revisa la unidad efectiva, la identidad `officeinvite`, el environment y el
+manifest del release. La activación ejecuta las comprobaciones de MariaDB,
+procedimientos y SMTP como `officeinvite`; si la verificación posterior falla,
+deshabilita el timer. Se mide después el correo recibido y la cola real.
+
+## Instalación histórica en JAX
+
 El proceso web nunca entrega correo de invitación. `axioma-office-invitation-worker.timer`
 activa una instancia `Type=oneshot` cada 30 segundos, y systemd no inicia otra
 instancia del mismo servicio mientras la anterior sigue activa.

@@ -14,6 +14,8 @@ import AccountSecurity from './pages/AccountSecurity'
 import VirtualOffice from './pages/VirtualOffice'
 import OfficeInvitation from './pages/OfficeInvitation'
 import OfficeBootstrap from './pages/OfficeBootstrap'
+import OfficeUsers from './pages/OfficeUsers'
+import AdminSmtp from './pages/admin/AdminSmtp'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 import { officeSessionApi } from './api/virtualOffice'
@@ -22,6 +24,11 @@ function RequireSuperadmin({ children }) {
   const user = useJaxStore((s) => s.user)
   if (!user || user.role !== 'superadmin') return <Navigate to="/" replace />
   return children
+}
+
+function RequireOfficeRoot({ children, officeSession }) {
+  return officeSession?.identity?.global_role === 'OFFICE_SUPERUSER'
+    ? children : <Navigate to="/virtual-office" replace />
 }
 
 // OP 358 pieza 1 — guardia de instalación: en el dominio de la Oficina Virtual
@@ -95,7 +102,7 @@ function RequireOfficeSession({ children }) {
       ? { ...current, status: 'denied' }
       : current
   ))
-  return cloneElement(children, { onOfficeDenied: invalidateOffice })
+  return cloneElement(children, { officeSession: decision.officeSession, onOfficeDenied: invalidateOffice })
 }
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)
@@ -127,6 +134,18 @@ export default function App() {
               <RequireOfficeSession><VirtualOffice /></RequireOfficeSession>
             </RequireAuth>
           }
+        />
+        <Route
+          path="/virtual-office/admin/usuarios"
+          element={
+            <RequireAuth allowOfficeAccount>
+              <RequireOfficeSession><OfficeUsers /></RequireOfficeSession>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/virtual-office/admin/correo"
+          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot><AdminSmtp /></RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
         />
         {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
             redirige TODO este bloque a /virtual-office; en la de Axioma lo

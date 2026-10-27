@@ -11,6 +11,8 @@ HELPER="$ROOT_DIR/ops/virtualoffice/provision-invitation-worker.sh"
 RELEASE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-worker-release.sh"
 ROUTINE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-invitation-delivery-routines.sh"
 ROUTINE_ATTESTOR="$ROOT_DIR/ops/virtualoffice/attest-invitation-delivery-routines.sh"
+ACCOUNT_ROUTINE_INSTALLER="$ROOT_DIR/ops/virtualoffice/install-account-invitation-delivery-routines.sh"
+ACCOUNT_ROUTINE_ATTESTOR="$ROOT_DIR/ops/virtualoffice/attest-account-invitation-delivery-routines.sh"
 [[ $(id -u) == 0 ]] || { echo 'run this fixture with sudo -n only' >&2; exit 2; }
 docker inspect "$CONTAINER" >/dev/null
 docker port "$CONTAINER" 3306/tcp | grep -qx "127.0.0.1:$PORT" || { echo 'fixture DB allowlist mismatch' >&2; exit 2; }
@@ -66,10 +68,16 @@ OWNED=1
 SQL_FILE="$TEMP/office-invitation-delivery-v1.sql"
 cp "$ROOT_DIR/ops/virtualoffice/office-invitation-delivery-v1.sql" "$SQL_FILE"
 chown root:root "$SQL_FILE"; chmod 644 "$SQL_FILE"
+ACCOUNT_SQL_FILE="$TEMP/office-account-invitation-delivery-v1.sql"
+cp "$ROOT_DIR/ops/virtualoffice/office-account-invitation-delivery-v1.sql" "$ACCOUNT_SQL_FILE"
+chown root:root "$ACCOUNT_SQL_FILE"; chmod 644 "$ACCOUNT_SQL_FILE"
 INSTALLED_ATTESTOR="$TEMP/installed/axioma-office-invitation-delivery-attest"
 mkdir -p "$TEMP/installed"
 cp "$ROUTINE_ATTESTOR" "$INSTALLED_ATTESTOR"
 chown root:root "$INSTALLED_ATTESTOR"; chmod 750 "$INSTALLED_ATTESTOR"
+INSTALLED_ACCOUNT_ATTESTOR="$TEMP/installed/axioma-office-account-invitation-delivery-attest"
+cp "$ACCOUNT_ROUTINE_ATTESTOR" "$INSTALLED_ACCOUNT_ATTESTOR"
+chown root:root "$INSTALLED_ACCOUNT_ATTESTOR"; chmod 750 "$INSTALLED_ACCOUNT_ATTESTOR"
 ENV_FILE="$TEMP/runtime.env"
 cat > "$ENV_FILE" <<EOF
 JAX_DB_HOST=127.0.0.1
@@ -133,7 +141,7 @@ printf "USE \`%s\`; DROP PROCEDURE IF EXISTS office_invitation_claim_next_v1; DR
 printf "DROP USER IF EXISTS 'jaxoffice_invitation_owner'@'localhost';\nCREATE USER 'jaxoffice_invitation_owner'@'localhost' ACCOUNT UNLOCK;\n" | admin
 OWNER_FIXTURE=1
 
-run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" --attestor "$INSTALLED_ATTESTOR" --attestor-sha256 "$(sha256sum "$INSTALLED_ATTESTOR" | awk '{print $1}')"; }
+run_helper() { "$HELPER" --env "$ENV_FILE" --state-root "$TEMP/state" --admin-transport "$TRANSPORT" --skip-os-identities --worker-db-user "$USER_NAME" --measured-grantee-host "$HOST" --attestor "$INSTALLED_ATTESTOR" --attestor-sha256 "$(sha256sum "$INSTALLED_ATTESTOR" | awk '{print $1}')" --account-attestor "$INSTALLED_ACCOUNT_ATTESTOR" --account-attestor-sha256 "$(sha256sum "$INSTALLED_ACCOUNT_ATTESTOR" | awk '{print $1}')"; }
 owner_grants_before=$(printf "SHOW GRANTS FOR 'jaxoffice_invitation_owner'@'localhost';\n" | admin | tr '\140' '\047')
 owner_locked_before=$(printf "SELECT JSON_UNQUOTE(JSON_EXTRACT(Priv, '$.account_locked')) FROM mysql.global_priv WHERE User='jaxoffice_invitation_owner' AND Host='localhost';\n" | admin)
 [[ "$owner_locked_before" == false ]] || { echo 'fixture owner did not start unlocked' >&2; exit 2; }
@@ -209,6 +217,11 @@ fi
   echo 'rejected SQL changed the routine component' >&2; exit 1;
 }
 "$ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$SQL_FILE" --attestor "$INSTALLED_ATTESTOR"
+# Minimal isolated schema for the separate account outbox authority.  The
+# fixture proves routine/install/readiness mechanics; lifecycle DB contracts
+# are covered by backend disposable tests.
+printf "USE \`%s\`; CREATE TABLE office_account_invitation (invitation_id char(36) primary key,status varchar(16) not null,expires_at datetime(6) not null,version bigint not null); CREATE TABLE office_account_invitation_outbox (outbox_id char(36) primary key,invitation_id char(36) not null unique,state varchar(16) not null,attempt_id char(36) null,attempt_count int not null default 0,payload_ciphertext mediumblob null,message_id varchar(320) null,result_code varchar(64) null,claimed_at datetime(6) null,finished_at datetime(6) null,created_at datetime(6) not null default current_timestamp(6),updated_at datetime(6) not null default current_timestamp(6) on update current_timestamp(6), key idx_office_account_invitation_outbox_queue(state,created_at,outbox_id));\n" "$DB" | admin
+"$ACCOUNT_ROUTINE_INSTALLER" --db "$DB" --admin-transport "$TRANSPORT" --worker-db-user "$USER_NAME" --worker-host "$HOST" --sql-file "$ACCOUNT_SQL_FILE" --attestor "$INSTALLED_ACCOUNT_ATTESTOR"
 # The normal lifecycle is deliberately two-step: prepare the locked principals,
 # install and attest the exact routines, then make the post-routine rerun prove
 # the finished capability without changing its grants.

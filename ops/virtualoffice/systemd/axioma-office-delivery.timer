@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Virtual Office invitation email delivery
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Persistent=true
+Unit=axioma-office-delivery.service
+
+[Install]
+WantedBy=timers.target

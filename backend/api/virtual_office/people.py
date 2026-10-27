@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from auth.middleware import get_current_user
@@ -56,6 +56,34 @@ async def _current_admin(cur, *, actor_user_id: int, proof_event_id: int | None)
     if not decision.allowed:
         raise HTTPException(status_code=403, detail="office_people_access_denied")
     return decision
+
+
+async def _directory_reader(cur, *, actor_user_id: int):
+    decision = await authorize_office_in_cursor(
+        cur, actor_user_id, OfficeOperation.VIEW_OFFICE_DIRECTORY,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="office_people_access_denied")
+    return decision
+
+
+async def _record_people_authority_change(cur, decision, *, target_user_id: int,
+                                          target_tenant_id: int, action: str,
+                                          version_before: int, version_after: int,
+                                          old_role: str | None = None,
+                                          new_role: str | None = None,
+                                          old_status: str | None = None,
+                                          new_status: str | None = None,
+                                          authorization_event_id: int) -> None:
+    await cur.execute(
+        "INSERT INTO office_people_authority_event "
+        "(actor_user_id,target_user_id,tenant_id,target_tenant_id,action,old_role,new_role,old_status,new_status,"
+        "version_before,version_after,authorization_event_id,occurred_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP(6))",
+        (decision.actor_user_id, target_user_id, decision.tenant_id, target_tenant_id,
+         action, old_role, new_role, old_status, new_status,
+         version_before, version_after, authorization_event_id),
+    )
 
 
 async def _lock_actor_target_tenants(cur, *, actor_user_id: int, target_user_id: int,
@@ -176,8 +204,8 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
         profile = await cur.fetchone()
         if profile is None:
             raise HTTPException(status_code=404, detail="office_person_not_found")
-        if profile[0] == "OFFICE_SUPERUSER":
-            raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
+        # Another active root (the locked actor) can revoke this root. Self
+        # revocation remains forbidden so the final administrator survives.
         if int(profile[2]) != expected_version:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
         if profile[1] == "REVOKED":
@@ -199,6 +227,7 @@ async def revoke_existing_profile(target_user_id: int, expected_version: int = Q
 
 @router.get("")
 async def list_people(
+    response: Response,
     tenant_id: int | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=100),
     after_user_id: int | None = Query(default=None, gt=0),
@@ -207,8 +236,7 @@ async def list_people(
     """Return directory metadata, never credentials, tokens, or audit detail."""
     actor_user_id = _actor_id(user)
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
-        decision = await _current_admin(cur, actor_user_id=actor_user_id,
-                                        proof_event_id=user.mfa_proof_event_id)
+        decision = await _directory_reader(cur, actor_user_id=actor_user_id)
         # A delegated general admin remains tenant scoped.  Root can cross
         # Office tenants, but only has access to active canonical profiles.
         if decision.global_role != "OFFICE_SUPERUSER":
@@ -218,9 +246,11 @@ async def list_people(
         else:
             target_tenant_id = tenant_id
         sql = (
-            "SELECT u.user_id,u.tenant_id,u.email,u.account_class,p.global_role,p.status,p.version "
+            "SELECT u.user_id,u.tenant_id,u.email,u.account_class,p.global_role,p.status,p.version,d.status,d.version "
             "FROM office_account_profile p JOIN jax_users u ON u.user_id=p.user_id "
             "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+            "LEFT JOIN office_admin_delegation d ON d.tenant_id=u.tenant_id AND d.user_id=u.user_id "
+            "AND d.capability='ADMINISTER_OFFICE' "
             "WHERE u.status='active' AND t.status='active' AND p.status='ACTIVE'"
         )
         params: list[object] = []
@@ -237,10 +267,85 @@ async def list_people(
     output = [
         {"user_id": int(row[0]), "tenant_id": int(row[1]), "email": row[2],
          "account_class": row[3], "global_role": row[4],
-         "status": row[5], "version": int(row[6])}
+         "status": row[5], "version": int(row[6]),
+         "delegation_status": row[7], "delegation_version": int(row[8]) if row[8] is not None else 0}
         for row in rows[:limit]
     ]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
     return {"people": output, "next_after_user_id": output[-1]["user_id"] if len(rows) > limit else None}
+
+
+@router.get("/assignable-projects")
+async def list_assignable_projects(response: Response,
+                                   limit: int = Query(default=50, ge=1, le=100),
+                                   after_project_id: int = Query(default=0, ge=0),
+                                   user: AuthUser = Depends(get_current_user)):
+    """Return names of tenant projects a delegated administrator can staff."""
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await _directory_reader(cur, actor_user_id=_actor_id(user))
+        if decision.global_role == "OFFICE_SUPERUSER":
+            raise HTTPException(status_code=403, detail="office_people_access_denied")
+        await cur.execute(
+            "SELECT s.project_id,p.name FROM jax_project_scope s "
+            "FORCE INDEX (idx_jax_project_scope_tenant_status) "
+            "JOIN projects p ON p.id=s.project_id "
+            "WHERE s.tenant_id=%s AND s.status='ACTIVE' "
+            "AND s.authorization_namespace='OFFICE_CONFIDENTIAL' "
+            "AND s.project_id>%s ORDER BY s.project_id LIMIT %s",
+            (decision.tenant_id, after_project_id, limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
+    return {"projects": [{"id": int(row[0]), "name": row[1], "tenant_id": decision.tenant_id} for row in page],
+            "next_after_id": int(page[-1][0]) if len(rows) > limit else None}
+
+
+@router.get("/{target_user_id}/projects")
+async def list_person_projects(target_user_id: int, response: Response,
+                               limit: int = Query(default=50, ge=1, le=100),
+                               after_project_id: int = Query(default=0, ge=0),
+                               user: AuthUser = Depends(get_current_user)):
+    """Show one Office person's project grants without exposing other tenants."""
+    if target_user_id < 1:
+        raise HTTPException(status_code=404, detail="office_person_not_found")
+    async with transaccion(AISLAMIENTO_ADMIN) as cur:
+        decision = await _directory_reader(cur, actor_user_id=_actor_id(user))
+        await cur.execute(
+            "SELECT u.tenant_id,u.account_class FROM jax_users u "
+            "JOIN office_account_profile a ON a.user_id=u.user_id "
+            "JOIN jax_tenants t ON t.tenant_id=u.tenant_id "
+            "WHERE u.user_id=%s AND u.status='active' AND a.status='ACTIVE' AND t.status='active'",
+            (target_user_id,),
+        )
+        target = await cur.fetchone()
+        if target is None or (decision.global_role != "OFFICE_SUPERUSER"
+                              and int(target[0]) != decision.tenant_id):
+            raise HTTPException(status_code=404, detail="office_person_not_found")
+        audience = "CLIENT_PUBLISHED" if target[1] == "EXTERNAL_CLIENT" else "INTERNAL"
+        await cur.execute(
+            "SELECT g.project_id,p.name,g.grant_role,g.version,g.status "
+            "FROM office_project_grant g FORCE INDEX (idx_office_project_grant_person_all) "
+            "JOIN jax_project_scope s ON s.project_id=g.project_id "
+            "JOIN projects p ON p.id=g.project_id "
+            "LEFT JOIN jax_project_membership m ON m.project_id=g.project_id AND m.user_id=g.user_id "
+            "WHERE g.user_id=%s AND g.status IN ('ACTIVE','REVOKED') AND g.audience=%s "
+            "AND g.project_id>%s AND s.tenant_id=%s "
+            "AND s.authorization_namespace='OFFICE_CONFIDENTIAL' AND s.status='ACTIVE' "
+            "AND (g.status='REVOKED' OR m.status='ACTIVE') "
+            "ORDER BY g.project_id LIMIT %s",
+            (target_user_id, audience, after_project_id, int(target[0]), limit + 1),
+        )
+        rows = await cur.fetchall()
+    page = rows[:limit]
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
+    return {"user_id": target_user_id, "projects": [
+        {"project_id": int(row[0]), "name": row[1], "grant_role": row[2],
+         "version": int(row[3]), "status": row[4], "audience": audience}
+        for row in page], "next_after_project_id": int(page[-1][0]) if len(rows) > limit else None}
 
 
 @router.put("/{target_user_id}/global-role")
@@ -277,11 +382,14 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
             raise HTTPException(status_code=409, detail="office_external_role_incompatible")
         if int(target[6]) != payload.expected_version:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
-        # Removing an Office root is the separate recovery/continuity
-        # ceremony, not an ordinary profile edit.  In particular, two roots
-        # must never be able to concurrently demote each other and leave no
-        # authority capable of performing the recovery contract.
-        if target[4] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER":
+        if target[4] == payload.global_role:
+            return {"user_id": target_user_id, "global_role": payload.global_role,
+                    "version": payload.expected_version, "replayed": True}
+        # Only a different active root may demote another root. The actor's
+        # profile is held by the current authorization transaction, while
+        # the target profile is locked here; opposing demotions serialize.
+        if (target[4] == "OFFICE_SUPERUSER" and payload.global_role != "OFFICE_SUPERUSER"
+                and target_user_id == actor_user_id):
             raise HTTPException(status_code=409, detail="office_root_demotion_requires_recovery")
         # Reread current authority after the target profile lock.  A revoked
         # root can never use a decision taken before this write point.
@@ -289,6 +397,33 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
                                         proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_global_role_denied")
+        authorization_event_id = await record_authorization_event(cur, decision)
+        # An older database may contain a delegation left active while the
+        # person is a collaborator.  Revoke it before promotion too; a later
+        # role change must never revive that stale grant.
+        if target[4] != "GENERAL_ADMIN" or payload.global_role != "GENERAL_ADMIN":
+            await cur.execute(
+                "SELECT status,version FROM office_admin_delegation WHERE tenant_id=%s AND user_id=%s "
+                "AND capability='ADMINISTER_OFFICE' FOR UPDATE",
+                (target_tenant_hint, target_user_id),
+            )
+            delegation = await cur.fetchone()
+            if delegation is not None and delegation[0] == "ACTIVE":
+                delegation_version = int(delegation[1])
+                await cur.execute(
+                    "UPDATE office_admin_delegation SET status='REVOKED',version=version+1 "
+                    "WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' "
+                    "AND status='ACTIVE' AND version=%s",
+                    (target_tenant_hint, target_user_id, delegation_version),
+                )
+                if cur.rowcount != 1:
+                    raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
+                await _record_people_authority_change(
+                    cur, decision, target_user_id=target_user_id, target_tenant_id=target_tenant_hint,
+                    action="REVOKE_DELEGATION_ON_ROLE_CHANGE", old_status="ACTIVE", new_status="REVOKED",
+                    version_before=delegation_version, version_after=delegation_version + 1,
+                    authorization_event_id=authorization_event_id,
+                )
         await cur.execute(
             "UPDATE office_account_profile SET global_role=%s,version=version+1,updated_at=UTC_TIMESTAMP(6) "
             "WHERE user_id=%s AND version=%s AND status='ACTIVE'",
@@ -296,7 +431,12 @@ async def update_global_role(target_user_id: int, payload: GlobalRoleUpdate,
         )
         if cur.rowcount != 1:
             raise HTTPException(status_code=409, detail="office_profile_version_conflict")
-        await record_authorization_event(cur, decision)
+        await _record_people_authority_change(
+            cur, decision, target_user_id=target_user_id, target_tenant_id=target_tenant_hint,
+            action="SET_GLOBAL_ROLE", old_role=target[4], new_role=payload.global_role,
+            version_before=payload.expected_version, version_after=payload.expected_version + 1,
+            authorization_event_id=authorization_event_id,
+        )
     return {"user_id": target_user_id, "global_role": payload.global_role,
             "version": payload.expected_version + 1}
 
@@ -306,7 +446,6 @@ async def grant_tenant_administration(target_user_id: int, payload: DelegationUp
                                       user: AuthUser = Depends(get_current_user)):
     """Grant tenant-scoped general administration to an existing GENERAL_ADMIN."""
     actor_user_id = _actor_id(user)
-    config = load_mfa_config_from_environment()
     async with transaccion(AISLAMIENTO_ADMIN) as cur:
         target_tenant_hint = await _lock_actor_target_tenants(
             cur, actor_user_id=actor_user_id, target_user_id=target_user_id,
@@ -331,6 +470,7 @@ async def grant_tenant_administration(target_user_id: int, payload: DelegationUp
             if payload.expected_version != 0:
                 raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
             await cur.execute("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) VALUES (%s,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (tenant_id, target_user_id, actor_user_id))
+            previous_status, previous_version = None, 0
             version, replayed = 1, False
         else:
             status, version = existing[1], int(existing[2])
@@ -342,11 +482,19 @@ async def grant_tenant_administration(target_user_id: int, payload: DelegationUp
                 if payload.expected_version != version:
                     raise HTTPException(status_code=409, detail="office_delegation_version_conflict")
                 await cur.execute("UPDATE office_admin_delegation SET status='ACTIVE',granted_by=%s,version=version+1 WHERE tenant_id=%s AND user_id=%s AND capability='ADMINISTER_OFFICE' AND version=%s", (actor_user_id, tenant_id, target_user_id, version))
+                previous_status, previous_version = "REVOKED", version
                 version, replayed = version + 1, False
         decision = await _current_admin(cur, actor_user_id=actor_user_id, proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_delegation_denied")
-        await record_authorization_event(cur, decision)
+        authorization_event_id = await record_authorization_event(cur, decision)
+        if not replayed:
+            await _record_people_authority_change(
+                cur, decision, target_user_id=target_user_id, target_tenant_id=tenant_id,
+                action="GRANT_DELEGATION", old_status=previous_status, new_status="ACTIVE",
+                version_before=previous_version, version_after=version,
+                authorization_event_id=authorization_event_id,
+            )
     return {"user_id": target_user_id, "tenant_id": tenant_id, "capability": "ADMINISTER_OFFICE", "version": version, "replayed": replayed}
 
 
@@ -383,5 +531,11 @@ async def revoke_tenant_administration(target_user_id: int, expected_version: in
         decision = await _current_admin(cur, actor_user_id=actor_user_id, proof_event_id=user.mfa_proof_event_id)
         if decision.global_role != "OFFICE_SUPERUSER":
             raise HTTPException(status_code=403, detail="office_delegation_denied")
-        await record_authorization_event(cur, decision)
+        authorization_event_id = await record_authorization_event(cur, decision)
+        await _record_people_authority_change(
+            cur, decision, target_user_id=target_user_id, target_tenant_id=tenant_id,
+            action="REVOKE_DELEGATION", old_status="ACTIVE", new_status="REVOKED",
+            version_before=expected_version, version_after=expected_version + 1,
+            authorization_event_id=authorization_event_id,
+        )
     return {"user_id": target_user_id, "tenant_id": tenant_id, "capability": "ADMINISTER_OFFICE", "version": expected_version + 1, "replayed": False}

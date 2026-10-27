@@ -43,6 +43,7 @@ export default function OfficeInvitationManager({ projectId, onForbidden }) {
   const listLoading = useRef(false)
   const issueIntent = useRef(null)
   const revokeKey = useRef(null)
+  const previousProjectId = useRef(projectId)
 
   async function handleForbidden() {
     setOpen(false)
@@ -80,13 +81,16 @@ export default function OfficeInvitationManager({ projectId, onForbidden }) {
   }
 
   useEffect(() => {
-    issueIntent.current = null
-    revokeKey.current = null
-    setOpen(false)
-    setEmail('')
-    setAudience('INTERNAL')
-    setRevoke(null)
-    setNotice(null)
+    if (previousProjectId.current !== projectId) {
+      issueIntent.current = null
+      revokeKey.current = null
+      setOpen(false)
+      setEmail('')
+      setAudience('INTERNAL')
+      setRevoke(null)
+      setNotice(null)
+      previousProjectId.current = projectId
+    }
     load()
     return () => { listGeneration.current += 1; listLoading.current = false }
   }, [projectId])

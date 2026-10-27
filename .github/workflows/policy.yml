@@ -1182,8 +1182,11 @@ jobs:
             // re-medido por el último en llegar sobre el árbol fusionado
             // con master (revert #248): 1553 passed, 0 fallidos, 128
             // archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1553) {
-              console.error("PISO ROTO: se esperaban 1553 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1553 -> 1566 (directorio humano, invitaciones y MFA opcional,
+            // PR #249, 2026-10-27). Último en llegar re-midió la suite
+            // fusionada con master: 1566 passed, 0 fallidos, 129 archivos.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1566) {
+              console.error("PISO ROTO: se esperaban 1566 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

@@ -54,6 +54,28 @@ def test_effective_worker_gate_loads_its_root_owned_environment():
     assert '"$SYSTEMCTL" disable --now axioma-office-invitation-worker.timer' in activation
 
 
+def test_dedicated_office_delivery_has_own_installer_gate_and_timer():
+    base = ROOT / "ops" / "virtualoffice"
+    installer = (base / "install-office-delivery-runtime.sh").read_text(encoding="utf-8")
+    gate = (base / "office-delivery-artifact-readiness.sh").read_text(encoding="utf-8")
+    activator = (base / "enable-office-delivery-timer.sh").read_text(encoding="utf-8")
+    service = (base / "systemd" / "axioma-office-delivery.service").read_text(encoding="utf-8")
+    release_installer = (base / "install-invitation-worker-release.sh").read_text(encoding="utf-8")
+    assert 'git -C "$source_repo" archive --format=tar "$revision"' in installer
+    assert 'systemctl daemon-reload' in installer
+    assert 'git -C "$source_repo" show "$revision:$tracked" | cmp -s - "$installed"' in gate
+    assert 'systemctl show axioma-office-delivery.service -p Group' in gate
+    assert '/etc/axioma-office/invitation-worker.env' in service
+    assert 'systemctl enable --now axioma-office-delivery.timer' in activator
+    assert 'systemctl disable --now axioma-office-delivery.timer' in activator
+    assert 'invitation_smtp_preflight' in activator
+    assert 'axioma-office-delivery.timer' in release_installer
+    assert '/opt/axioma-office-dedicated-delivery/backend' in service
+    assert '/usr/local/libexec/axioma-office-dedicated-worker-readiness' in service
+    assert '/usr/local/libexec/axioma-office-invitation-worker-readiness' not in installer
+    assert 'case "$RELEASE" in' in release_installer
+
+
 def test_routine_installer_requires_fixed_sql_and_installed_attestor():
     installer = ROOT / "ops" / "virtualoffice" / "install-invitation-delivery-routines.sh"
     source = installer.read_text(encoding="utf-8")

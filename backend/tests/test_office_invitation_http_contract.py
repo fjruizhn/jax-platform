@@ -90,9 +90,38 @@ def test_unicode_bearer_is_rejected_before_limiter_preflight_or_bcrypt(monkeypat
     assert rejected.value.detail == "office_invitation_invalid"
 
 
+def test_anonymous_rate_limit_runs_before_either_bearer_database_lookup(monkeypatch):
+    calls = []
+    def denied(*_args):
+        calls.append("limit")
+        raise HTTPException(status_code=429, detail="rate_limited")
+    async def lookup_must_not_run(_token: str):
+        calls.append("database")
+        raise AssertionError("database lookup before rate limit")
+    monkeypatch.setattr(invitation_api.rate_limit, "check_invitation_accept_rate", denied)
+    monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", lookup_must_not_run)
+    monkeypatch.setattr(invitation_api, "account_invitation_bearer_preflight", lookup_must_not_run)
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(accept_invitation(InvitationAcceptRequest(token="A" * 43, password=None),
+                                      _anonymous_request(), None))
+    assert rejected.value.status_code == 429
+    assert calls == ["limit"]
+
+
 def _anonymous_request() -> Request:
     return Request({"type": "http", "method": "POST", "path": "/api/virtual-office/invitations/accept",
                     "headers": [], "client": ("127.0.0.1", 54321)})
+
+
+def _select_project_bearer(monkeypatch) -> None:
+    async def project(_token: str) -> bool:
+        return True
+
+    async def account(_token: str) -> bool:
+        return False
+
+    monkeypatch.setattr(invitation_api, "invitation_bearer_preflight", project)
+    monkeypatch.setattr(invitation_api, "account_invitation_bearer_preflight", account)
 
 
 def test_invalid_bearer_fails_before_bcrypt(monkeypatch):
@@ -142,6 +171,7 @@ def test_jax_retryable_authority_error_is_a_stable_retryable_http_response(monke
 
     monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
     monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", retryable_authority_error)
+    _select_project_bearer(monkeypatch)
     authenticated_user = AuthUser(user_id="1", tenant_id="1", role="operator",
                                   email="person@example.test", account_class="OFFICE_INTERNAL")
     with pytest.raises(HTTPException) as rejected:
@@ -174,6 +204,7 @@ def test_jax_authority_denials_are_stable_invitation_denials(
 
     monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
     monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", denied_authority_error)
+    _select_project_bearer(monkeypatch)
     authenticated_user = AuthUser(user_id="1", tenant_id="1", role="operator",
                                   email="person@example.test", account_class="OFFICE_INTERNAL")
     with pytest.raises(HTTPException) as rejected:
@@ -213,6 +244,7 @@ def test_transaction_contention_is_retryable_at_every_invitation_endpoint(
         call = lambda: revoke_invitation(1, str(uuid.uuid4()), 1, str(uuid.uuid4()), _authenticated_user())
         monkeypatch.setattr(invitation_api, "revoke_invitation_in_cursor", database_contention)
     else:
+        _select_project_bearer(monkeypatch)
         call = lambda: accept_invitation(
             InvitationAcceptRequest(token="A" * 43, password=None),
             _anonymous_request(), _authenticated_user())
@@ -233,6 +265,7 @@ def test_non_contention_database_error_is_not_mapped_to_retryable(monkeypatch):
 
     monkeypatch.setattr(invitation_api, "transaccion", transaction_stub)
     monkeypatch.setattr(invitation_api, "accept_invitation_in_cursor", syntax_error)
+    _select_project_bearer(monkeypatch)
     with pytest.raises(OperationalError) as rejected:
         asyncio.run(accept_invitation(
             InvitationAcceptRequest(token="A" * 43, password=None),

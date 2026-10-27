@@ -47,6 +47,11 @@ GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO 'jaxoffice
 GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO 'jaxoffice_invitation_owner'@'localhost'
 EOF
 )
+account_count=$(q "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='$DB' AND ROUTINE_NAME IN ('office_account_invitation_claim_next_v1','office_account_invitation_expire_due_v1','office_account_invitation_settle_delivery_v1','office_account_invitation_settle_stale_v1');")
+if [[ $account_count == 4 ]]; then
+ expected_owner+=$'\n'"GRANT SELECT, UPDATE ('version', 'status') ON '$DB'.'office_account_invitation' TO 'jaxoffice_invitation_owner'@'localhost'"$'\n'"GRANT SELECT, UPDATE ('result_code', 'state', 'finished_at', 'attempt_id', 'claimed_at', 'attempt_count', 'payload_ciphertext', 'message_id') ON '$DB'.'office_account_invitation_outbox' TO 'jaxoffice_invitation_owner'@'localhost'"
+ for p in office_account_invitation_claim_next_v1 office_account_invitation_expire_due_v1 office_account_invitation_settle_delivery_v1 office_account_invitation_settle_stale_v1; do expected_owner+=$'\n'"GRANT EXECUTE ON PROCEDURE '$DB'.'$p' TO 'jaxoffice_invitation_owner'@'localhost'"; done
+fi
 [[ $(printf '%s\n' "$owner_grants" | sort) == $(printf '%s\n' "$expected_owner" | sort) ]] || { echo 'delivery definer grants are not exact' >&2; exit 1; }
 # The delivery user has configuration/outbox observation plus exactly these
 # procedures; any lifecycle/event DML is an authority escalation.
@@ -62,6 +67,9 @@ GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_expire_due_v1' TO '$worker'@
 GRANT EXECUTE ON PROCEDURE '$DB'.'office_invitation_settle_delivery_v1' TO '$worker'@'$WORKER_HOST'
 EOF
 )
+if [[ $account_count == 4 ]]; then
+ for p in office_account_invitation_claim_next_v1 office_account_invitation_expire_due_v1 office_account_invitation_settle_delivery_v1 office_account_invitation_settle_stale_v1; do expected_worker+=$'\n'"GRANT EXECUTE ON PROCEDURE '$DB'.'$p' TO '$worker'@'$WORKER_HOST'"; done
+fi
 [[ $(printf '%s\n' "$grants" | sort) == $(printf '%s\n' "$expected_worker" | sort) ]] || { echo 'delivery worker grants are not exact' >&2; exit 1; }
 printf '%s\n' "$grants" | grep -E "(UPDATE|INSERT|DELETE).*office_invitation|SELECT.*office_invitation(_issuance|_event)?['\`]" >/dev/null && { echo 'delivery direct lifecycle privilege denied' >&2; exit 1; }
 # Definer is a locked, role-free capability account; inherited roles would
@@ -70,4 +78,4 @@ role_count=$(q "SELECT COUNT(*) FROM mysql.roles_mapping WHERE User='jaxoffice_i
 [[ $role_count == 0 ]] || { echo 'delivery definer roles denied' >&2; exit 1; }
 # No additional delivery-named stored program may be executable by the worker.
 visible=$(printf '%s\n' "$grants" | grep -c 'EXECUTE ON PROCEDURE')
-[[ $visible == 3 ]] || { echo 'delivery worker routine privilege set is not exact' >&2; exit 1; }
+[[ $visible == $((3 + account_count)) ]] || { echo 'delivery worker routine privilege set is not exact' >&2; exit 1; }

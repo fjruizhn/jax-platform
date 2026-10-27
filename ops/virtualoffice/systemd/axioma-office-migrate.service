@@ -1,0 +1,15 @@
+[Unit]
+Description=Virtual Office schema migration
+Requires=axioma-office-database.service
+After=network-online.target axioma-office-database.service
+Wants=network-online.target
+Before=axioma-office-backend.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=officemigrate
+Group=officemigrate
+WorkingDirectory=/
+LoadCredential=migrate.env:/etc/axioma-office/migrate.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/axioma-office-pair-exec.py office-migrate ${CREDENTIALS_DIRECTORY}/migrate.env

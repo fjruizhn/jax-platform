@@ -1,0 +1,18 @@
+[Unit]
+Description=Virtual Office private API
+After=network.target docker.service axioma-office-migrate.service
+Requires=axioma-office-migrate.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=officeweb
+Group=officeweb
+WorkingDirectory=/
+LoadCredential=runtime.env:/etc/axioma-office/runtime.env
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/axioma-office-pair-exec.py office-web ${CREDENTIALS_DIRECTORY}/runtime.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

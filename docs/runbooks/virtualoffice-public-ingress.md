@@ -14,6 +14,7 @@ solamente para este host (`max-age=31536000`, sin `includeSubDomains`), y
 reenvía sólo:
 
 - las rutas de autenticación enumeradas en el archivo;
+- las rutas exactas de administración SMTP de la Oficina;
 - `GET /api/apariencia`, la configuración pública y de sólo lectura que carga
   el shell antes de autenticar;
 - `/api/virtual-office` y sus hijos.
@@ -252,19 +253,20 @@ CI verde, pruebas de autorización y MFA, respaldo restaurado, carga medida,
 revisión de cookies/origen/CSRF, verificación externa TLS/DNS, y el acto de
 producción autorizado.
 
-Además, antes de arrancar el backend con la protección de navegador de
-`office-public-auth-hardening`, hay que fijar en su `EnvironmentFile` los
-orígenes y hosts explícitos. Los valores operacionales se verifican contra la
-topología vigente; el ejemplo de abajo supone que el ingreso privado sigue
-siendo `172.16.20.11` y que el origen clásico sigue en `axioma-ia.io`:
+Antes de arrancar el backend dedicado, fijar en
+`/etc/axioma-office/deployment.env` los orígenes y hosts explícitos. El
+provisionador escribe esos valores en `/etc/axioma-office/runtime.env`, que
+systemd entrega al proceso como `LoadCredential`. Verificar las IP contra la
+topología vigente; este ejemplo supone que el ingreso privado sigue siendo
+`172.16.20.11`:
 
 ```text
 JAX_ENVIRONMENT=production
-JAX_PUBLIC_HOST_ORIGIN_BINDINGS=axioma-ia.io=https://axioma-ia.io;virtualoffice.axioma-ia.io=https://virtualoffice.axioma-ia.io
+JAX_PUBLIC_HOST_ORIGIN_BINDINGS=virtualoffice.axioma-ia.io=https://virtualoffice.axioma-ia.io
 JAX_OPERATIONAL_TRUSTED_HOSTS=127.0.0.1,localhost,172.16.20.5
 JAX_TRUSTED_PROXIES=172.16.20.11
 JAX_REFRESH_COOKIE_SECURE=true
-FRONTEND_ORIGIN=https://axioma-ia.io
+FRONTEND_ORIGIN=https://virtualoffice.axioma-ia.io
 OFFICE_PUBLIC_ORIGIN=https://virtualoffice.axioma-ia.io
 OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.axioma-ia.io
 ```
@@ -272,6 +274,6 @@ OFFICE_INVITATION_PUBLIC_BASE_URL=https://virtualoffice.axioma-ia.io
 La configuración de Uvicorn debe confiar sólo en la IP privada del ingreso
 (`--proxy-headers --forwarded-allow-ips=172.16.20.11`), conservar un solo
 worker y superar su prueba de readiness. Respaldar y probar la restauración del
-`EnvironmentFile` y del drop-in de systemd antes de cualquier reinicio.
+`deployment.env`, `runtime.env` y la unidad systemd antes de cualquier reinicio.
 Comprobar los valores efectivos del servicio: los valores de este ejemplo no
 constituyen por sí solos una lectura de producción.

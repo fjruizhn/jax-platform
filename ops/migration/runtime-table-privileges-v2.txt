@@ -38,6 +38,9 @@ model INSERT,UPDATE
 model_binding_proposal INSERT,UPDATE
 model_catalog_audit INSERT
 motor INSERT,UPDATE
+office_account_invitation INSERT,UPDATE
+office_account_invitation_outbox INSERT,UPDATE
+office_account_invitation_receipt INSERT
 office_account_profile INSERT,UPDATE
 office_admin_delegation INSERT,UPDATE
 office_agent INSERT,UPDATE
@@ -57,6 +60,7 @@ office_mfa_credential INSERT,UPDATE
 office_mfa_recovery_code INSERT,UPDATE,DELETE
 office_mfa_security_event INSERT
 office_mfa_totp_use INSERT
+office_people_authority_event INSERT
 office_professional_grant INSERT,UPDATE
 office_profile_revocation_event INSERT
 office_project_grant INSERT,UPDATE

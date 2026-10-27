@@ -19,7 +19,7 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel
 
 import ajustes
-from api.admin.config_admin import DEFAULT_CONFIG
+from config_defaults import DEFAULT_CONFIG
 from db.connection import get_pool
 
 router = APIRouter()

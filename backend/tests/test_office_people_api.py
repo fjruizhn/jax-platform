@@ -49,6 +49,98 @@ def _headers(user_id: int, token_version: int, mfa_version: int, proof: int, *, 
     )}
 
 
+def _headers_without_mfa(user_id: int, token_version: int, *, tenant_id: int = 1):
+    return {"Authorization": "Bearer " + create_access_token(
+        str(user_id), str(tenant_id), "operator", token_version,
+    )}
+
+
+def test_office_directory_lists_human_profiles_without_mfa_but_keeps_mutations_protected(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, _mv, _proof = client.portal.call(_root_with_proof)
+
+    async def scenario():
+        peer, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (peer,))
+        peer_tv = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (peer,), True))[0][0]
+        return peer, int(peer_tv)
+
+    peer, peer_tv = client.portal.call(scenario)
+    root_headers = _headers_without_mfa(root, tv)
+    listed = client.get(f"/api/virtual-office/people?after_user_id={min(root, peer) - 1}", headers=root_headers)
+    assert listed.status_code == 200
+    assert {root, peer}.issubset({item["user_id"] for item in listed.json()["people"]})
+    assert listed.headers["cache-control"] == "no-store"
+    assert "Authorization" in {part.strip() for part in listed.headers["vary"].split(",")}
+    assert client.get("/api/virtual-office/people", headers=_headers_without_mfa(peer, peer_tv)).status_code == 403
+    projects = client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers)
+    assert projects.status_code == 200
+    assert projects.json() == {"user_id": peer, "projects": [], "next_after_project_id": None}
+    assert projects.headers["cache-control"] == "no-store"
+    assert client.get(f"/api/virtual-office/people/{peer}/projects", headers=_headers_without_mfa(peer, peer_tv)).status_code == 403
+
+    async def add_project():
+        project_id = await sql(
+            "INSERT INTO projects (project_uuid,name,status) VALUES (UUID(),%s,'active')",
+            ("office-person-" + uuid.uuid4().hex,),
+        )
+        await sql(
+            "INSERT INTO jax_project_scope "
+            "(project_id,tenant_id,authorization_namespace,status,created_at,created_by,updated_at) "
+            "VALUES (%s,1,'OFFICE_CONFIDENTIAL','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (project_id,),
+        )
+        await sql(
+            "INSERT INTO jax_project_membership "
+            "(membership_id,project_id,tenant_id,user_id,project_role,status,created_at,created_by,updated_at) "
+            "VALUES (%s,%s,1,%s,'CONTRIBUTOR','ACTIVE',UTC_TIMESTAMP(6),'test',UTC_TIMESTAMP(6))",
+            (str(uuid.uuid4()), project_id, peer),
+        )
+        await sql(
+            "INSERT INTO office_project_grant "
+            "(project_id,user_id,grant_role,audience,status,granted_by) "
+            "VALUES (%s,%s,'COLLABORATOR','INTERNAL','ACTIVE',%s)",
+            (project_id, peer, root),
+        )
+        return project_id
+
+    project_id = client.portal.call(add_project)
+    visible = client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers)
+    assert visible.status_code == 200
+    assert [item["project_id"] for item in visible.json()["projects"]] == [project_id]
+
+    async def delegated_admin():
+        admin, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'GENERAL_ADMIN','ACTIVE')", (admin,))
+        await sql(
+            "INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) "
+            "VALUES (1,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (admin, root),
+        )
+        version = (await sql("SELECT token_version FROM jax_users WHERE user_id=%s", (admin,), True))[0][0]
+        return admin, int(version)
+
+    admin, admin_tv = client.portal.call(delegated_admin)
+    assignable = client.get(f"/api/virtual-office/people/assignable-projects?after_project_id={project_id - 1}",
+                            headers=_headers_without_mfa(admin, admin_tv))
+    assert assignable.status_code == 200
+    assert project_id in [item["id"] for item in assignable.json()["projects"]]
+    assert assignable.headers["cache-control"] == "no-store"
+    client.portal.call(sql, "UPDATE jax_project_membership SET status='REVOKED' WHERE project_id=%s AND user_id=%s", (project_id, peer))
+    assert client.get(f"/api/virtual-office/people/{peer}/projects", headers=root_headers).json()["projects"] == []
+    assert client.put(
+        f"/api/virtual-office/people/{peer}/global-role",
+        json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=root_headers,
+    ).status_code == 403
+    monkeypatch.setenv("OFFICE_DEDICATED_DB", "1")
+    monkeypatch.setenv("OFFICE_MFA_POLICY", "optional")
+    optional = client.put(
+        f"/api/virtual-office/people/{peer}/global-role",
+        json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=root_headers,
+    )
+    assert optional.status_code == 200
+    assert optional.json()["global_role"] == "GENERAL_ADMIN"
+
+
 def test_people_directory_is_delegated_tenant_metadata_not_content(client, monkeypatch):
     _configure_mfa(monkeypatch)
     root, tv, mv, proof = client.portal.call(_root_with_proof)
@@ -62,7 +154,7 @@ def test_people_directory_is_delegated_tenant_metadata_not_content(client, monke
     response = client.get(f"/api/virtual-office/people?after_user_id={peer - 1}", headers=_headers(root, tv, mv, proof))
     assert response.status_code == 200
     row = next(item for item in response.json()["people"] if item["user_id"] == peer)
-    assert set(row) == {"user_id", "tenant_id", "email", "account_class", "global_role", "status", "version"}
+    assert set(row) == {"user_id", "tenant_id", "email", "account_class", "global_role", "status", "version", "delegation_status", "delegation_version"}
     assert "password" not in response.text.lower()
 
 
@@ -88,6 +180,10 @@ def test_root_can_promote_existing_profile_with_version_and_no_identity_conversi
     stale = client.put(f"/api/virtual-office/people/{target}/global-role", json={"global_role": "GENERAL_ADMIN", "expected_version": 1}, headers=headers)
     assert stale.status_code == 409
     assert client.portal.call(sql, "SELECT account_class,global_role,version FROM jax_users u JOIN office_account_profile p ON p.user_id=u.user_id WHERE u.user_id=%s", (target,), True) == ((account_class, "OFFICE_SUPERUSER", 2),)
+    assert client.portal.call(
+        sql, "SELECT actor_user_id,target_user_id,action,old_role,new_role,version_before,version_after "
+             "FROM office_people_authority_event WHERE target_user_id=%s", (target,), True,
+    ) == ((root, target, "SET_GLOBAL_ROLE", "COLLABORATOR", "OFFICE_SUPERUSER", 1, 2),)
 
 
 def test_global_role_mutation_never_creates_unprofiled_office_binding(client, monkeypatch):
@@ -242,6 +338,58 @@ def test_root_grants_and_revokes_tenant_bound_administration_with_cas(client, mo
     )
     assert revoke_replay.status_code == 200
     assert revoke_replay.json()["replayed"] is True
+    assert client.portal.call(
+        sql, "SELECT actor_user_id,target_user_id,action,old_status,new_status,version_before,version_after "
+             "FROM office_people_authority_event WHERE target_user_id=%s ORDER BY event_id", (manager,), True,
+    ) == ((root, manager, "GRANT_DELEGATION", None, "ACTIVE", 0, 1),
+          (root, manager, "REVOKE_DELEGATION", "ACTIVE", "REVOKED", 1, 2))
+
+
+def test_demoting_general_admin_revokes_delegation_and_promotion_does_not_restore_it(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, root_tv, root_mv, root_proof = client.portal.call(_root_with_proof)
+    manager, manager_tv, manager_mv, manager_proof = client.portal.call(_general_admin_with_proof)
+    headers = _headers(root, root_tv, root_mv, root_proof)
+    assert client.put(f"/api/virtual-office/people/{manager}/delegation",
+                      json={"expected_version": 0}, headers=headers).status_code == 200
+    demoted = client.put(f"/api/virtual-office/people/{manager}/global-role",
+                         json={"global_role": "COLLABORATOR", "expected_version": 1}, headers=headers)
+    assert demoted.status_code == 200
+    assert client.portal.call(sql, "SELECT status,version FROM office_admin_delegation WHERE user_id=%s", (manager,), True) == (("REVOKED", 2),)
+    promoted = client.put(f"/api/virtual-office/people/{manager}/global-role",
+                          json={"global_role": "GENERAL_ADMIN", "expected_version": 2}, headers=headers)
+    assert promoted.status_code == 200
+    assert client.get("/api/virtual-office/people", headers=_headers(manager, manager_tv, manager_mv, manager_proof)).status_code == 403
+    assert client.portal.call(
+        sql, "SELECT action,old_status,new_status,version_before,version_after FROM office_people_authority_event "
+             "WHERE target_user_id=%s ORDER BY event_id", (manager,), True,
+    ) == (("GRANT_DELEGATION", None, "ACTIVE", 0, 1),
+          ("REVOKE_DELEGATION_ON_ROLE_CHANGE", "ACTIVE", "REVOKED", 1, 2),
+          ("SET_GLOBAL_ROLE", None, None, 1, 2),
+          ("SET_GLOBAL_ROLE", None, None, 2, 3))
+
+
+def test_promotion_revokes_a_latent_legacy_delegation(client, monkeypatch):
+    _configure_mfa(monkeypatch)
+    root, tv, mv, proof = client.portal.call(_root_with_proof)
+
+    async def legacy_mismatch():
+        target, _ = await crear_usuario()
+        await sql("INSERT INTO office_account_profile (user_id,global_role,status) VALUES (%s,'COLLABORATOR','ACTIVE')", (target,))
+        await sql("INSERT INTO office_admin_delegation (tenant_id,user_id,capability,status,granted_by) "
+                  "VALUES (1,%s,'ADMINISTER_OFFICE','ACTIVE',%s)", (target, root))
+        return target
+
+    target = client.portal.call(legacy_mismatch)
+    promoted = client.put(f"/api/virtual-office/people/{target}/global-role",
+                          json={"global_role": "GENERAL_ADMIN", "expected_version": 1},
+                          headers=_headers(root, tv, mv, proof))
+    assert promoted.status_code == 200
+    assert client.portal.call(sql, "SELECT status,version FROM office_admin_delegation WHERE user_id=%s", (target,), True) == (("REVOKED", 2),)
+    assert client.portal.call(
+        sql, "SELECT action,version_before,version_after FROM office_people_authority_event "
+             "WHERE target_user_id=%s ORDER BY event_id", (target,), True,
+    ) == (("REVOKE_DELEGATION_ON_ROLE_CHANGE", 1, 2), ("SET_GLOBAL_ROLE", 1, 2))
 
 
 def test_delegation_uses_the_target_canonical_tenant_not_request_tenant(client, monkeypatch):

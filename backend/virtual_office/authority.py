@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
 
 from db.connection import get_pool
 
@@ -119,6 +120,11 @@ async def _apply_mfa_requirement(cur, decision: OfficeDecision, require_recent_m
     requirement.  It cannot turn a role-derived requirement off.
     """
     if not decision.allowed:
+        return decision
+    # This process has a separate Office database and optional account MFA.
+    # Enrolled users still verify MFA at login; unenrolled users can work.
+    if (os.getenv("OFFICE_DEDICATED_DB") == "1"
+            and os.getenv("OFFICE_MFA_POLICY") == "optional"):
         return decision
     privileged_view = (
         decision.operation == OfficeOperation.VIEW_PROJECT.value
@@ -259,8 +265,10 @@ async def _authorize(cur, actor, operation, project, recipient_group, require_re
         return _decision(True, "office_superuser", actor, operation, None, tenant, global_role)
     # Identity-security authority is root-only.  A general Office
     # administrator must never inherit another user's credentials/MFA power.
-    if operation is OfficeOperation.ADMINISTER_OFFICE and global_role == "GENERAL_ADMIN":
-        delegation = await repository.fetch_delegation(cur, actor, tenant, operation, for_update=locked)
+    if operation in {OfficeOperation.ADMINISTER_OFFICE, OfficeOperation.VIEW_OFFICE_DIRECTORY,
+                     OfficeOperation.INVITE_OFFICE_PERSON} and global_role == "GENERAL_ADMIN":
+        delegation = await repository.fetch_delegation(
+            cur, actor, tenant, OfficeOperation.ADMINISTER_OFFICE, for_update=locked)
         if delegation is not None and delegation["status"] == "ACTIVE":
             return _decision(True, "office_delegation", actor, operation, None, tenant, global_role)
     return _decision(False, "office_delegation_missing", actor, operation, None, tenant, global_role)
