@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useI18n } from '../i18n/index.jsx'
 import { useJaxStore } from '../store/useJaxStore'
 import Dialogo from '../components/Dialogo'
@@ -143,6 +144,7 @@ export default function VirtualOffice({ officeSession, onOfficeDenied }) {
             <div><dt className="text-texto-tenue">{t.virtualOffice.account}</dt><dd className="break-all">{user?.email || t.virtualOffice.accountUnavailable}</dd></div>
           </dl>
           <button type="button" onClick={() => setShowAccess(true)} className={`${TAMANO_BOTON_ACCION} mt-4 rounded border border-borde text-texto hover:bg-hundido`}>{t.virtualOffice.accessInfo}</button>
+          {['INTERNAL', 'OFFICE_INTERNAL'].includes(session?.identity?.account_class) && <Link to="/virtual-office/admin/usuarios" className={`${TAMANO_BOTON_ACCION} ml-2 mt-4 inline-flex items-center rounded border border-borde px-3 text-texto hover:bg-hundido`}>{t.virtualOffice.userAdmin.open}</Link>}
         </header>
 
         {/* OP 358 pieza 3: el hub de salas es la oficina central de la
