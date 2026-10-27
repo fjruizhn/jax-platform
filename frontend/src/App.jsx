@@ -14,7 +14,6 @@ import AccountSecurity from './pages/AccountSecurity'
 import VirtualOffice from './pages/VirtualOffice'
 import OfficeInvitation from './pages/OfficeInvitation'
 import OfficeBootstrap from './pages/OfficeBootstrap'
-import OfficeUsers from './pages/OfficeUsers'
 import RequireAuth from './components/RequireAuth'
 import TituloDePagina from './components/TituloDePagina'
 import { officeSessionApi } from './api/virtualOffice'
@@ -96,7 +95,7 @@ function RequireOfficeSession({ children }) {
       ? { ...current, status: 'denied' }
       : current
   ))
-  return cloneElement(children, { officeSession: decision.officeSession, onOfficeDenied: invalidateOffice })
+  return cloneElement(children, { onOfficeDenied: invalidateOffice })
 }
 export default function App() {
   const restoreSession = useJaxStore((s) => s.restoreSession)
@@ -126,14 +125,6 @@ export default function App() {
           element={
             <RequireAuth allowOfficeAccount>
               <RequireOfficeSession><VirtualOffice /></RequireOfficeSession>
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/virtual-office/admin/usuarios"
-          element={
-            <RequireAuth allowOfficeAccount>
-              <RequireOfficeSession><OfficeUsers /></RequireOfficeSession>
             </RequireAuth>
           }
         />
