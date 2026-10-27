@@ -39,7 +39,7 @@ def test_la_lista_sale_del_codigo_con_los_force_index_reales():
         ("office_mfa_security_event", "idx_office_mfa_security_event_proof"),
         ("office_invitation", "idx_office_invitation_status_expiry"),
         ("jax_project_scope", "idx_jax_project_scope_tenant_status"),
-        ("office_project_grant", "idx_office_project_grant_list"),
+        ("office_project_grant", "idx_office_project_grant_person_all"),
         ("office_account_invitation", "idx_office_account_invitation_history"),
     }, forzados
     for (tabla, _indice), donde in forzados.items():
