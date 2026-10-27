@@ -20,6 +20,7 @@ grep -Fqx 'Group=officeinvite' /etc/systemd/system/axioma-office-delivery.servic
 grep -Fqx 'EnvironmentFile=/etc/axioma-office/invitation-worker.env' /etc/systemd/system/axioma-office-delivery.service
 grep -Fqx 'Unit=axioma-office-delivery.service' /etc/systemd/system/axioma-office-delivery.timer
 grep -Fqx 'OnFailure=aviso-fallo@%n.service' /etc/systemd/system/axioma-office-delivery.service
+systemctl cat aviso-fallo@.service >/dev/null
 [[ $(id -nG officeinvite) == officeinvite ]]
 worker_entry=$(getent passwd officeinvite)
 IFS=: read -r worker_name _ worker_uid worker_gid _ worker_home worker_shell <<< "$worker_entry"
@@ -36,7 +37,15 @@ if [[ $effective == --effective ]]; then
   systemctl is-active axioma-office-delivery.timer | grep -qx active
   systemctl show axioma-office-delivery.service -p User | grep -Fqx User=officeinvite
   systemctl show axioma-office-delivery.service -p Group | grep -Fqx Group=officeinvite
+  systemctl show axioma-office-delivery.service -p DropInPaths | grep -Fqx DropInPaths=
   systemctl show axioma-office-delivery.service -p EnvironmentFiles | grep -Fq /etc/axioma-office/invitation-worker.env
   systemctl show axioma-office-delivery.service -p ExecStart | grep -Fq virtual_office.invitation_delivery_worker
   systemctl show axioma-office-delivery.service -p OnFailure | grep -Fq 'aviso-fallo@'
+  systemctl show axioma-office-delivery.service -p WorkingDirectory | grep -Fqx WorkingDirectory=/opt/axioma-office-dedicated-delivery/backend
+  systemctl show axioma-office-delivery.service -p NoNewPrivileges | grep -Fqx NoNewPrivileges=yes
+  systemctl show axioma-office-delivery.service -p PrivateDevices | grep -Fqx PrivateDevices=yes
+  systemctl show axioma-office-delivery.service -p CapabilityBoundingSet | grep -Fqx CapabilityBoundingSet=
+  systemctl show axioma-office-delivery.service -p LimitCORE | grep -Fqx LimitCORE=0
+  systemctl show axioma-office-delivery.service -p ProtectSystem | grep -Fqx ProtectSystem=strict
+  systemctl show axioma-office-delivery.service -p UMask | grep -Fqx UMask=0077
 fi

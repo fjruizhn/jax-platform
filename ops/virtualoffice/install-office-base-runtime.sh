@@ -29,7 +29,10 @@ GIT_NO_REPLACE_OBJECTS=1 git -C "$source_repo" archive --format=tar "$revision" 
   ops/migration/provision-db-runtime.sh \
   ops/migration/runtime-table-privileges-v1.txt \
   ops/migration/runtime-table-privileges-v2.txt \
+  ops/migration/pair_artifact_readiness.py \
   ops/virtualoffice/mariadb/docker-compose.yml \
+  ops/virtualoffice/office-pair-exec.py \
+  ops/virtualoffice/install-office-pair-release.py \
   ops/virtualoffice/office-dedicated-mariadb-admin-transport.sh \
   ops/virtualoffice/provision-office-os-users.sh \
   ops/virtualoffice/systemd/axioma-office-database.service \
@@ -75,6 +78,17 @@ if [[ $phase == database ]]; then
   fi
   install -o root -g root -m 0644 "$base/mariadb/docker-compose.yml" /etc/axioma-office/mariadb/compose.yml
   install -o root -g root -m 0750 "$base/office-dedicated-mariadb-admin-transport.sh" /usr/local/libexec/axioma-office-mariadb-admin
+  install -d -o root -g root -m 0755 /opt/axioma-office-pair /opt/axioma-office-pair/releases /opt/axioma-office-pair/libexec
+  if [[ ! -e /opt/axioma-office-pair/.runtime.lock ]]; then
+    install -o root -g root -m 0644 /dev/null /opt/axioma-office-pair/.runtime.lock
+  fi
+  [[ -f /opt/axioma-office-pair/.runtime.lock && ! -L /opt/axioma-office-pair/.runtime.lock &&
+     $(stat -c '%U:%G:%a' /opt/axioma-office-pair/.runtime.lock) == root:root:644 ]] || {
+    echo 'Office pair runtime lock is unsafe' >&2; exit 1;
+  }
+  install -o root -g root -m 0644 "$stage/ops/migration/pair_artifact_readiness.py" /opt/axioma-office-pair/libexec/pair_artifact_readiness.py
+  install -o root -g root -m 0644 "$base/office-pair-exec.py" /usr/local/libexec/axioma-office-pair-exec.py
+  install -o root -g root -m 0750 "$base/install-office-pair-release.py" /usr/local/libexec/axioma-office-pair-install
   install -d -o root -g root -m 0755 /usr/local/libexec/axioma-office-db-runtime
   install -o root -g root -m 0750 "$stage/ops/migration/provision-db-runtime.sh" /usr/local/libexec/axioma-office-db-runtime/provision-db-runtime.sh
   install -o root -g root -m 0644 "$stage/ops/migration/runtime-table-privileges-v1.txt" /usr/local/libexec/axioma-office-db-runtime/runtime-table-privileges-v1.txt

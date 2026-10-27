@@ -104,8 +104,8 @@ async def _smtp_thread_with_authority(func, *args):
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 continue
-            except Exception:
-                break
+            except Exception as error:
+                raise asyncio.CancelledError from error
         raise
 
 

@@ -64,11 +64,13 @@ crear ni modificar `jaxweb`/`jaxmigrate`. Primero ejecutarlo con `--migrator-onl
 instalar el par de release del mismo `SHA` y la unidad migradora, y ejecutar
 la migración. Después provisionar el principal web con el manifest de ese
 `SHA`. Ambos environments resultantes son `root:root 0600` y contienen
-únicamente los secretos de Oficina. La activación del par JAX/JXP del mismo
-SHA se realiza con el procedimiento de [despliegue del par](despliegue.md),
-incluida su selección firmada/atestada; el gate siguiente rechaza otra
-revisión activa. Medir el host grantee del puente Docker y ejecutar ambos
-pasos del provisionador instalado desde `SHA`:
+únicamente los secretos de Oficina. Construir/atestiguar el par fuente
+JAX/JXP del mismo SHA mediante el [procedimiento del par](despliegue.md),
+sin activar el selector global de JAX. La Oficina copia el release verificado
+a `/opt/axioma-office-pair` y publica una selección propia que el activador
+de JAX no puede modificar. Es una instalación inicial idempotente; una versión
+distinta exige una migración controlada de Oficina. Medir el host grantee del
+puente Docker y ejecutar ambos pasos del provisionador instalado desde `SHA`:
 
 ```bash
 MEASURED_HOST=$(sudo docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' axioma-office-mariadb)
@@ -83,6 +85,12 @@ sudo "$PROVISION" --migrator-only --skip-os-identities \
   --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
   --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
   --measured-grantee-host "$MEASURED_HOST"
+JAX_SHA='SHA_JAX_EMPAREJADO'
+PAIR_MANIFEST_SHA256='SHA256_DEL_MANIFIESTO_VERIFICADO'
+sudo /usr/local/libexec/axioma-office-pair-install \
+  --source-release "/opt/jax-platform-pair/releases/$SHA-$JAX_SHA" \
+  --expected-platform-sha "$SHA" --expected-jax-sha "$JAX_SHA" \
+  --expected-manifest-sha256 "$PAIR_MANIFEST_SHA256"
 sudo /usr/local/libexec/axioma-office-base-install \
   --source "$SOURCE" --revision "$SHA" --phase migration
 sudo systemctl start axioma-office-migrate.service
