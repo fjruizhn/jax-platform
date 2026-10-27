@@ -307,3 +307,35 @@ Corrección de auditoría Sol: el broker ahora usa `json=` (Content-Type JSON
 explícito); la activación exige exactamente `/etc/jax/migrate.env`, nunca la
 credencial web. En DB desechable, web SELECT-only recibió INSERT denied y el
 principal migrador activó el motor correctamente.
+
+2026-10-27 · GLM (Ada) · Pieza 4 de OP 358 (enganche de verticales) en rama
+`pieza-4-verticales` sobre `48dbbd6b`: registro de verticales en código
+(`backend/virtual_office/verticales.py`, solo agencia activa), tabla compañera
+`office_project_vertical` (migración runtime `office-v13c` + privilegio
+INSERT), endpoint `GET /api/virtual-office/verticales` (403 al extraño),
+filtro `?vertical=` en el listado (422 para desconocidas, vacía honesta para
+proximamente), vertical opcional al crear dentro de la transacción
+idempotente (la firma incluye la vertical), externos conservan vertical con
+descripción anulada. Frontend: hub alimentado por el registro del servidor
+(solo salas presentes en registro+VISUAL+i18n; backend adelantado no rompe el
+hub), filtro de proyectos con «Quitar filtro», selector de sala en el
+creador. Cierra MINOR 2 como decisión medida (doc
+`docs/pieza-4-verticales-2026-10-27.md`). Vitest 1553/1553 local, piso
+1545 → 1553 en `policy.yml`; suite backend nueva (7 pruebas) valida en CI
+`backend-tests-con-db` (guard fail-closed prohíbe 3306/3308 locales, docker
+denegado en hall9000). Reparto con Codex: GLM entrega rama+auditoría+PR+merge
++build certificado; Codex toma verificación de producción, QA E2E y deploy
+con su runbook bajo la palabra de Fernando.
+
+2026-10-27 · GLM (Ada) · Merge 94f54638 toma el revert #248: master quitó
+el #246 (administración de usuarios) por CI roja post-merge — flake TOTP
+en test_office_identity_guard, revert auditado como PR #248. Esa
+administración NO vuelve a entrar por esta rama; el enganche de verticales
+queda intacto y el piso se re-midió sobre el árbol con el revert: 1553
+passed, 0 fallidos, 128 archivos (1545 de pieza 3 + 8 de pieza 4). La
+suite de verticales quedó en 9 pruebas tras las dos fijaciones de fase B
+exigidas por auditoría (fff6f88e). Nota de Codex
+(cambio-direccion-oficina-admin-2026-10-27.md): Oficina y Axioma son
+productos separados — pieza 4 es compatible porque el registro de
+verticales vive en el módulo propio de la Oficina y se sirve por
+`/api/virtual-office/*`, sin tocar pantallas ni SMTP de Axioma.
