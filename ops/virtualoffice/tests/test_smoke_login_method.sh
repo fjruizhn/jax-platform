@@ -7,14 +7,17 @@ trap 'rm -rf -- "$fixture"' EXIT
 cat > "$fixture/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-method=GET; output=body; host_override=; url=
+method=GET; output=body; host_override=; url=; body=; json_header=0
 while (($#)); do
   case $1 in
-    --data|-d) method=POST; shift 2 ;;
+    --data|-d) method=POST; body=$2; shift 2 ;;
     -X|--request) method=$2; shift 2 ;;
     --head|-I) output=head; shift ;;
     --write-out|-w) output=status; shift 2 ;;
-    -H|--header) [[ $2 == 'Host: invalid-host.axioma-ia.io' ]] && host_override=invalid; shift 2 ;;
+    -H|--header)
+      [[ $2 == 'Host: invalid-host.axioma-ia.io' ]] && host_override=invalid
+      [[ $2 == 'Content-Type: application/json' ]] && json_header=1
+      shift 2 ;;
     --resolve|--noproxy|--max-time|--output|-o) shift 2 ;;
     http*) url=$1; shift ;;
     *) shift ;;
@@ -22,7 +25,12 @@ while (($#)); do
 done
 case $url in
   https://invalid-sni.axioma-ia.io/*) code=421 ;;
-  */api/auth/login) if [[ $method == POST ]]; then code=${LOGIN_POST_STATUS:-422}; else code=404; fi ;;
+  */api/auth/login)
+    if [[ $method == POST && $body == '{}' && $json_header == 1 ]]; then
+      code=${LOGIN_POST_STATUS:-422}
+    else
+      code=400
+    fi ;;
   */api/virtual-office/session) code=401 ;;
   */api/apariencia) if [[ $method == POST ]]; then code=404; else code=200; fi ;;
   */assets/index-test.js|https://virtualoffice.axioma-ia.io/) code=200 ;;
