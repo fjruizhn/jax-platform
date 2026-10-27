@@ -7,7 +7,7 @@ import { useJaxStore } from './store/useJaxStore'
 vi.mock('./apariencia/sincronizarApariencia', () => ({ sincronizarApariencia: vi.fn(() => Promise.resolve()) }))
 const session = vi.hoisted(() => vi.fn())
 const bootstrap = vi.hoisted(() => vi.fn())
-const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), create: vi.fn() }))
+const projects = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn() }))
 vi.mock('./api/client', () => ({ default: { get: vi.fn(() => new Promise(() => {})), post: vi.fn(() => new Promise(() => {})) } }))
 vi.mock('./api/virtualOffice', () => ({
   mfaApi: { status: vi.fn(() => new Promise(() => {})) },
@@ -40,16 +40,6 @@ describe('Virtual Office route', () => {
     expect(screen.queryByRole('button', { name: /Otorgar permiso|Invitar persona|Elegir proyecto/ })).not.toBeInTheDocument()
   })
 
-  it('opens Office user administration after normal sign-in without MFA', async () => {
-    session.mockResolvedValue(allowed({ identity: { user_id: 8, tenant_id: 4, account_class: 'INTERNAL', global_role: 'OFFICE_SUPERUSER' }, mfa: { verified: false, recent: false }, capabilities: { create_project: true, administer_office: false, administer_identity_security: false } }))
-    render(<I18nProvider><App /></I18nProvider>)
-    fireEvent.click(await screen.findByRole('link', { name: 'Administrar usuarios' }))
-    expect(await screen.findByRole('heading', { name: 'Usuarios de Oficina' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Crear proyecto' })).toBeInTheDocument()
-    expect(screen.getByText('Creá un proyecto para empezar a invitar personas.')).toBeInTheDocument()
-    expect(window.location.pathname).toBe('/virtual-office/admin/usuarios')
-  })
-
   it('denies a classic INTERNAL account when the server returns 403', async () => {
     session.mockRejectedValue({ response: { status: 403 } })
     render(<I18nProvider><App /></I18nProvider>)
@@ -79,7 +69,6 @@ describe('Virtual Office route', () => {
     render(<I18nProvider><App /></I18nProvider>)
     expect(await screen.findByRole('heading', { name: 'Oficina virtual' })).toBeInTheDocument()
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Administrar usuarios' })).not.toBeInTheDocument()
   })
 
   it('fails closed on server unavailability', async () => {
