@@ -26,6 +26,15 @@ def test_office_units_and_launcher_do_not_follow_the_global_jax_selector():
         assert "/usr/local/libexec/jax-platform-pair-exec.py" not in unit
 
 
+def test_first_install_runbook_adopts_without_jax_activation_and_imports_owner_before_start():
+    runbook = (SCRIPT.parents[2] / "docs/runbooks/office-dedicated-stack.md").read_text(encoding="utf-8")
+    assert "sudo /usr/local/libexec/adopt-pair-root.py" in runbook
+    assert "sudo /usr/local/libexec/bootstrap-pair-predecessor.py" not in runbook
+    assert "sudo /usr/local/libexec/activate-platform-pair-release.sh" not in runbook
+    assert runbook.index('"$PAIR/ops/virtualoffice/import-owner.py"') < runbook.index(
+        'sudo systemctl start axioma-office-backend.service')
+
+
 def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tmp_path, monkeypatch):
     source_root = tmp_path / "jax-pairs"
     source = source_root / "first"
@@ -49,7 +58,7 @@ def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tm
     monkeypatch.setattr(module, "HELPER", helper)
     monkeypatch.setattr(module, "inactive", lambda _unit: None)
     monkeypatch.setattr(module.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(module, "read_selection", lambda: json.loads(selection.read_text()))
+    monkeypatch.setattr(module, "read_selection", lambda path=None: json.loads((path or selection).read_text()))
 
     def run(platform_sha):
         monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--source-release", str(source),
@@ -68,3 +77,19 @@ def test_office_pair_initial_install_is_idempotent_and_rejects_silent_upgrade(tm
         run("c" * 40)
     assert selection.read_bytes() == first_selection
     assert (office_root / "current").resolve(strict=True) == first_release
+
+    # A power cut after one of the two selector writes must be resumable.
+    selection.unlink()
+    run("a" * 40)
+    assert json.loads(selection.read_text())["release"] == str(first_release)
+    (office_root / "current").unlink()
+    run("a" * 40)
+    assert (office_root / "current").resolve(strict=True) == first_release
+
+    selection.unlink()
+    (office_root / "current").unlink()
+    (office_root / ".current.new").symlink_to(Path("releases") / first_release.name)
+    selection.with_name(".platform-pair-selection.new").write_bytes(first_selection)
+    run("a" * 40)
+    assert (office_root / "current").resolve(strict=True) == first_release
+    assert selection.read_bytes() == first_selection

@@ -66,11 +66,33 @@ la migración. Después provisionar el principal web con el manifest de ese
 `SHA`. Ambos environments resultantes son `root:root 0600` y contienen
 únicamente los secretos de Oficina. Construir/atestiguar el par fuente
 JAX/JXP del mismo SHA mediante el [procedimiento del par](despliegue.md),
-sin activar el selector global de JAX. La Oficina copia el release verificado
+pero adoptar el artefacto con el adoptador directamente. No ejecutar
+`bootstrap-pair-predecessor.py` ni `activate-platform-pair-release.sh`:
+ambos cambian el selector global de JAX. La Oficina copia el release verificado
 a `/opt/axioma-office-pair` y publica una selección propia que el activador
 de JAX no puede modificar. Es una instalación inicial idempotente; una versión
 distinta exige una migración controlada de Oficina. Medir el host grantee del
 puente Docker y ejecutar ambos pasos del provisionador instalado desde `SHA`:
+
+```bash
+# Después de crear request.json y recibir receipt.json con el supervisor
+# según despliegue.md, adoptar solo los bytes sellados. Este comando no
+# publica /etc/jax/platform-pair-selection.json ni cambia JAX/current.
+JAX_SHA='SHA_JAX_EMPAREJADO'
+PAIR_MANIFEST_SHA256='SHA256_DEL_MANIFIESTO_VERIFICADO'
+JAX_SELECTION_BEFORE=$(sudo sha256sum /etc/jax/platform-pair-selection.json)
+JAX_CURRENT_BEFORE=$(sudo readlink /opt/jax-platform-pair/current)
+sudo /usr/local/libexec/adopt-pair-root.py \
+  --source /ruta-de-jaxbuild/par \
+  --destination "/opt/jax-platform-pair/releases/$SHA-$JAX_SHA" \
+  --expected-manifest-sha256 "$PAIR_MANIFEST_SHA256" \
+  --request /ruta-root/request.json --receipt /ruta-root/receipt.json
+test "$(sudo sha256sum /etc/jax/platform-pair-selection.json)" = "$JAX_SELECTION_BEFORE"
+test "$(sudo readlink /opt/jax-platform-pair/current)" = "$JAX_CURRENT_BEFORE"
+```
+
+Si la adopción o cualquiera de las dos comparaciones falla, detener la
+instalación de Oficina.
 
 ```bash
 MEASURED_HOST=$(sudo docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' axioma-office-mariadb)
@@ -85,8 +107,6 @@ sudo "$PROVISION" --migrator-only --skip-os-identities \
   --env /etc/axioma-office/deployment.env --state-root /etc/axioma-office \
   --admin-transport /usr/local/libexec/axioma-office-mariadb-admin \
   --measured-grantee-host "$MEASURED_HOST"
-JAX_SHA='SHA_JAX_EMPAREJADO'
-PAIR_MANIFEST_SHA256='SHA256_DEL_MANIFIESTO_VERIFICADO'
 sudo /usr/local/libexec/axioma-office-pair-install \
   --source-release "/opt/jax-platform-pair/releases/$SHA-$JAX_SHA" \
   --expected-platform-sha "$SHA" --expected-jax-sha "$JAX_SHA" \
@@ -105,20 +125,37 @@ sudo "$PROVISION" --skip-os-identities \
 sudo /usr/local/libexec/axioma-office-base-install \
   --source "$SOURCE" --revision "$SHA" --phase services
 sudo /usr/local/libexec/axioma-office-base-artifact-readiness "$SOURCE" "$SHA" --phase services
+```
+
+**Antes de arrancar el backend por primera vez**, importar la cuenta raíz.
+El contrato de arranque exige al menos una cuenta en `jax_users`; invertir
+este orden impide iniciar la API. Ejecutar los importadores con el Python del
+par Office ya atestiguado, usando `/etc/jax/runtime.env` solo como fuente de
+lectura y las credenciales Office propias como destino:
+
+```bash
+PAIR=/opt/axioma-office-pair/current/jax-platform
+PYTHON="$PAIR/backend/.venv/bin/python"
+OWNER_EMAIL='correo-exacto-del-superadministrador'
+sudo "$PYTHON" -I -B "$PAIR/ops/virtualoffice/import-owner.py" \
+  --source-env /etc/jax/runtime.env \
+  --office-env /etc/axioma-office/migrate.env \
+  --email "$OWNER_EMAIL"
+sudo "$PYTHON" -I -B "$PAIR/ops/virtualoffice/import-smtp.py" \
+  --source-env /etc/jax/runtime.env \
+  --office-env /etc/axioma-office/runtime.env \
+  --owner-email "$OWNER_EMAIL"
 sudo systemctl start axioma-office-backend.service
 sudo systemctl status axioma-office-database.service axioma-office-migrate.service axioma-office-backend.service
 ```
 
-Antes del primer login, ejecutar `ops/virtualoffice/import-owner.py` una
-sola vez desde el release aprobado con credenciales de lectura fuente y
-escritura Office distintas. Verifica `@@server_id` y `@@hostname` de ambos
-extremos y copia únicamente el hash actual de la cuenta superadministradora
-activa; no copia sesiones, MFA ni proyectos. Ejecutar después
-`ops/virtualoffice/import-smtp.py`, que recifra el secreto SMTP con la clave
-Fernet nueva de Oficina. No imprimir secretos en logs ni scripts. Comprobar
-login con la contraseña existente y luego el cambio de contraseña dentro de
-Oficina; verificar que la cuenta de Axioma sigue validando su contraseña
-anterior.
+`import-owner.py` verifica `@@server_id` y `@@hostname` de ambos extremos y
+copia una sola vez el hash actual de la cuenta superadministradora activa;
+no copia sesiones, MFA ni proyectos. `import-smtp.py` recifra el secreto SMTP
+con la clave Fernet nueva de Oficina. No imprimir secretos en logs ni scripts.
+Comprobar login con la contraseña existente y luego el cambio de contraseña
+dentro de Oficina; verificar que la cuenta de Axioma sigue validando su
+contraseña anterior.
 
 ## 4. Correo y publicación
 

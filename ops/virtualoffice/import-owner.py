@@ -52,7 +52,8 @@ async def _assert_distinct_servers(source_db, office_db, target: dict[str, str])
             return await cur.fetchone()
     source_identity = await identity(source_db)
     office_identity = await identity(office_db)
-    if (source_identity[:2] == office_identity[:2]
+    if (source_identity[0] == office_identity[0]
+            or source_identity[1] == office_identity[1]
             or str(office_identity[0]) != target.get("OFFICE_DB_SERVER_ID")
             or office_identity[1] != target.get("OFFICE_DB_HOSTNAME")
             or office_identity[2] != target["JAX_DB_NAME"]):

@@ -36,11 +36,32 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
-def read_selection() -> dict:
-    node = SELECTION.lstat()
+def sync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def sync_tree(path: Path) -> None:
+    for directory, _, filenames in os.walk(path):
+        for name in filenames:
+            file_path = Path(directory) / name
+            fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    for directory, _, _ in os.walk(path, topdown=False):
+        sync_dir(Path(directory))
+
+
+def read_selection(path: Path = SELECTION) -> dict:
+    node = path.lstat()
     if not stat.S_ISREG(node.st_mode) or node.st_uid != 0 or node.st_gid != 0 or stat.S_IMODE(node.st_mode) != 0o644:
         raise RuntimeError('Office selection has unsafe ownership or mode')
-    data = json.loads(SELECTION.read_text(encoding='utf-8'))
+    data = json.loads(path.read_text(encoding='utf-8'))
     if set(data) != {'release', 'jax_platform_revision', 'jax_revision', 'manifest_sha256'}:
         raise RuntimeError('Office selection shape is invalid')
     return data
@@ -80,9 +101,14 @@ def main() -> None:
         'jax_revision': args.expected_jax_sha, 'manifest_sha256': args.expected_manifest_sha256,
     }
     def existing_selection_matches() -> bool:
-        if not SELECTION.exists():
+        current_link = ROOT / 'current'
+        if not SELECTION.exists() and not SELECTION.is_symlink():
             return False
-        if read_selection() != expected or (ROOT / 'current').resolve(strict=True) != target:
+        if read_selection() != expected:
+            raise RuntimeError('Office pair upgrade requires its own migration procedure')
+        if not current_link.exists() and not current_link.is_symlink():
+            return False
+        if not current_link.is_symlink() or current_link.resolve(strict=True) != target:
             raise RuntimeError('Office pair upgrade requires its own migration procedure')
         module.verify(target, expected_jxp=args.expected_platform_sha, expected_jax=args.expected_jax_sha)
         if digest(target / 'pair-manifest.json') != args.expected_manifest_sha256:
@@ -108,33 +134,54 @@ def main() -> None:
                 module.verify(stage, expected_jxp=args.expected_platform_sha, expected_jax=args.expected_jax_sha)
                 if digest(stage / 'pair-manifest.json') != args.expected_manifest_sha256:
                     raise RuntimeError('copied pair manifest differs')
+                sync_tree(stage)
                 os.replace(stage, target)
+                sync_dir(target.parent)
             finally:
                 if stage.exists():
                     shutil.rmtree(stage)
         module.verify(target, expected_jxp=args.expected_platform_sha, expected_jax=args.expected_jax_sha)
         if digest(target / 'pair-manifest.json') != args.expected_manifest_sha256:
             raise RuntimeError('installed pair manifest differs')
-        if (ROOT / 'current').exists() or (ROOT / 'current').is_symlink():
-            raise RuntimeError('Office selector is incomplete')
+        current_link = ROOT / 'current'
+        if current_link.exists() or current_link.is_symlink():
+            if not current_link.is_symlink() or current_link.resolve(strict=True) != target:
+                raise RuntimeError('Office selector conflicts with reviewed release')
+        if SELECTION.exists() or SELECTION.is_symlink():
+            if read_selection() != expected:
+                raise RuntimeError('Office selection conflicts with reviewed release')
         tmp_link = ROOT / '.current.new'
         tmp_selection = SELECTION.with_name('.platform-pair-selection.new')
-        if tmp_link.exists() or tmp_link.is_symlink() or tmp_selection.exists():
-            raise RuntimeError('Office selector staging state is ambiguous')
+        if tmp_link.exists() or tmp_link.is_symlink():
+            if not tmp_link.is_symlink() or os.readlink(tmp_link) != f'releases/{target.name}':
+                raise RuntimeError('Office selector staging state is ambiguous')
+            tmp_link.unlink()
+            sync_dir(ROOT)
+        if tmp_selection.exists() or tmp_selection.is_symlink():
+            if read_selection(tmp_selection) != expected:
+                raise RuntimeError('Office selection staging state is ambiguous')
+            tmp_selection.unlink()
+            sync_dir(SELECTION.parent)
         published_link = False
         published_selection = False
         try:
-            tmp_link.symlink_to(Path('releases') / target.name)
-            with tmp_selection.open('x', encoding='utf-8') as stream:
-                os.fchmod(stream.fileno(), 0o644)
-                json.dump(expected, stream, separators=(',', ':'))
-                stream.write('\n')
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(tmp_link, ROOT / 'current')
-            published_link = True
-            os.replace(tmp_selection, SELECTION)
-            published_selection = True
+            if not current_link.is_symlink():
+                tmp_link.symlink_to(Path('releases') / target.name)
+                sync_dir(ROOT)
+                os.replace(tmp_link, current_link)
+                sync_dir(ROOT)
+                published_link = True
+            if not SELECTION.exists():
+                with tmp_selection.open('x', encoding='utf-8') as stream:
+                    os.fchmod(stream.fileno(), 0o644)
+                    json.dump(expected, stream, separators=(',', ':'))
+                    stream.write('\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                sync_dir(SELECTION.parent)
+                os.replace(tmp_selection, SELECTION)
+                sync_dir(SELECTION.parent)
+                published_selection = True
             if read_selection() != expected or (ROOT / 'current').resolve(strict=True) != target:
                 raise RuntimeError('Office selector publication failed')
         except BaseException:
