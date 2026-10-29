@@ -934,6 +934,7 @@ export default {
   // Outgoing email (SMTP) — AdminSmtp.jsx (2026-09-12, user admin stage 1)
   adminSmtp: 'Email (SMTP)',
   smtpTitle: 'Outgoing email (SMTP)',
+  smtpBackToUsers: 'Back to users',
   smtpDesc: (nombre) => `Server ${nombre} uses to send password recovery links.`,
   smtpHost: 'Server',
   smtpPort: 'Port',
