@@ -145,7 +145,11 @@ export default function App() {
         />
         <Route
           path="/virtual-office/admin/correo"
-          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot><AdminSmtp /></RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
+          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot>
+            <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
+              <section className="mx-auto max-w-lg"><AdminSmtp /></section>
+            </main>
+          </RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
         />
         {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
             redirige TODO este bloque a /virtual-office; en la de Axioma lo
