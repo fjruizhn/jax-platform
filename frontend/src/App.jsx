@@ -1,5 +1,6 @@
 import { cloneElement, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, Link, useLocation } from 'react-router-dom'
+import { useI18n } from './i18n/index.jsx'
 import { useJaxStore } from './store/useJaxStore'
 import { sincronizarApariencia } from './apariencia/sincronizarApariencia'
 import { esInstalacionDeOficina } from './lib/instalacionOficina'
@@ -29,6 +30,18 @@ function RequireSuperadmin({ children }) {
 function RequireOfficeRoot({ children, officeSession }) {
   return officeSession?.identity?.global_role === 'OFFICE_SUPERUSER'
     ? children : <Navigate to="/virtual-office" replace />
+}
+
+function OfficeSmtp() {
+  const { t } = useI18n()
+  return <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
+    <section className="mx-auto max-w-lg">
+      <Link to="/virtual-office/admin/usuarios" className="mb-6 inline-flex min-h-10 items-center rounded-lg border border-borde bg-superficie px-3 py-2 text-sm font-semibold text-texto hover:bg-superficie-2 focus-visible:ring-2 focus-visible:ring-foco">
+        {t.smtpBackToUsers}
+      </Link>
+      <AdminSmtp />
+    </section>
+  </main>
 }
 
 // OP 358 pieza 1 — guardia de instalación: en el dominio de la Oficina Virtual
@@ -145,11 +158,7 @@ export default function App() {
         />
         <Route
           path="/virtual-office/admin/correo"
-          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot>
-            <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
-              <section className="mx-auto max-w-lg"><AdminSmtp /></section>
-            </main>
-          </RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
+          element={<RequireAuth allowOfficeAccount><RequireOfficeSession><RequireOfficeRoot><OfficeSmtp /></RequireOfficeRoot></RequireOfficeSession></RequireAuth>}
         />
         {/* OP 358 pieza 1: ruta pathless — en la instalación de la oficina
             redirige TODO este bloque a /virtual-office; en la de Axioma lo

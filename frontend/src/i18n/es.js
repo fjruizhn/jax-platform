@@ -998,6 +998,7 @@ export default {
   // Correo saliente (SMTP) — AdminSmtp.jsx (2026-09-12, admin usuarios etapa 1)
   adminSmtp: 'Correo (SMTP)',
   smtpTitle: 'Correo saliente (SMTP)',
+  smtpBackToUsers: 'Volver a usuarios',
   smtpDesc: (nombre) => `Servidor con el que ${nombre} envía los enlaces de recuperación de contraseña.`,
   smtpHost: 'Servidor',
   smtpPort: 'Puerto',
