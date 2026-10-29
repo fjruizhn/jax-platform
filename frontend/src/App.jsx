@@ -36,10 +36,9 @@ function OfficeSmtp() {
   const { t } = useI18n()
   return <main data-foco-inicial tabIndex={-1} className="min-h-dvh bg-fondo p-4 text-texto sm:p-6">
     <section className="mx-auto max-w-lg">
-      <Link to="/virtual-office/admin/usuarios" className="mb-6 inline-flex min-h-10 items-center rounded-lg border border-borde bg-superficie px-3 py-2 text-sm font-semibold text-texto hover:bg-superficie-2 focus-visible:ring-2 focus-visible:ring-foco">
+      <AdminSmtp headerAction={<Link to="/virtual-office/admin/usuarios" className="ml-auto inline-flex min-h-10 shrink-0 items-center rounded-lg border border-borde bg-superficie px-3 py-2 text-sm font-semibold text-texto hover:bg-superficie-2 focus-visible:ring-2 focus-visible:ring-foco">
         {t.smtpBackToUsers}
-      </Link>
-      <AdminSmtp />
+      </Link>} />
     </section>
   </main>
 }

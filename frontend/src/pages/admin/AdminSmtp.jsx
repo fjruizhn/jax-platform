@@ -23,7 +23,7 @@ const INPUT = 'w-full bg-hundido border border-borde-control rounded-lg px-3 py-
 const LABEL = 'block text-xs text-texto-suave mb-1 font-semibold uppercase tracking-wider'
 const BOTON = 'px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50'
 
-export default function AdminSmtp() {
+export default function AdminSmtp({ headerAction = null }) {
   const { t } = useI18n()
   const nombre = useNombreDelSistema(t)
   const [form, setForm] = useState(VACIO)
@@ -138,8 +138,13 @@ export default function AdminSmtp() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-texto-fuerte mb-1">{t.smtpTitle}</h1>
-      <p className="text-xs text-texto-tenue mb-6">{t.smtpDesc(nombre)}</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="mb-1 text-xl font-bold text-texto-fuerte">{t.smtpTitle}</h1>
+          <p className="text-xs text-texto-tenue">{t.smtpDesc(nombre)}</p>
+        </div>
+        {headerAction}
+      </div>
 
       {estado.corrupta && (
         <div role="alert" className="max-w-lg mb-4 text-sm text-peligro bg-peligro-fondo border border-peligro-borde rounded-lg px-3 py-2">
