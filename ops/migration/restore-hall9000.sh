@@ -51,9 +51,9 @@ JAX_DIR="/home/fruiz/jax"
 # Platform runs only from the immutable release staging location used by the
 # units.  LAS MANOS remains at its legacy root above.
 PLATFORM_DIR="/srv/jax-prod/jax-platform"
-NODE_DIR="/home/fruiz/.nvm/versions/node/v24.16.0"
+NODE_DIR="/home/fruiz/.nvm/versions/node/v24.22.1"
 NODE_BIN="$NODE_DIR/bin"
-EXPECTED_NODE="v24.16.0"
+EXPECTED_NODE="v24.22.1"
 
 REPO_JAX="git@github.com:fjruizhn/Jax.git"
 REPO_PLATFORM="git@github.com:fjruizhn/jax-platform.git"
@@ -159,7 +159,7 @@ if [ -x "$NODE_BIN/node" ]; then
   NV="$("$NODE_BIN/node" --version 2>/dev/null)"
   if [ "$NV" = "$EXPECTED_NODE" ]; then ok "node $NV en $NODE_BIN"
   else warn "node en $NODE_BIN es $NV, se esperaba $EXPECTED_NODE"; fi
-else err "no existe $NODE_BIN/node (nvm v24.16.0)"; FAIL=1; fi
+else err "no existe $NODE_BIN/node (nvm v24.22.1)"; FAIL=1; fi
 
 # Nota: ssh -T a GitHub sale con exit 1 (no da shell access) — es normal. Con
 # `pipefail`, un pipe `ssh | grep` propagaría ese 1 aunque grep sí matchee, dando
