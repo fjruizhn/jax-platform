@@ -218,7 +218,7 @@ público.**
 # Compilar DESDE el checkout de produccion (frontend/dist/ esta en .gitignore,
 # asi que no ensucia el checkout ni desarma el freno del ExecStartPre)
 # Como jaxsvc, dueño del checkout desde 2026-10-05 (fruiz solo lee, por ACL)
-sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.16.0/bin:/usr/bin:/bin \
+sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.22.1/bin:/usr/bin:/bin \
   bash -c 'cd /srv/jax-prod/jax-platform/frontend && npm run build'
 
 # Respaldar el sitio actual en atem-ai
