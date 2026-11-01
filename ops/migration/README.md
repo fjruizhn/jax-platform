@@ -36,6 +36,6 @@ sudo -v && bash verify-hall9000.sh
 | `systemd-units/` | Los 10 units systemd. |
 
 ## Requisitos en hall9000 (ya preparados)
-Git · MariaDB 11.8 · Ollama (ROCm) · Node v24.16.0 (nvm) · usuario `fruiz` · SSH key registrada en GitHub (cuenta `fjruizhn`).
+Git · MariaDB 11.8 · Ollama (ROCm) · Node v24.22.1 (nvm) · usuario `fruiz` · SSH key registrada en GitHub (cuenta `fjruizhn`).
 
 > Detalle completo, credenciales, descifrado y checklist post-restauración → **`MIGRATION.md`**.

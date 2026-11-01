@@ -107,9 +107,9 @@ sudo systemctl enable --now jax-las-manos jax-platform jax-platform-frontend jax
 
 ## 5. Runtime / dependencias
 
-- **Node.js v24.16.0 vía nvm** (⚠ NUNCA NodeSource en este servidor — política CLAUDE.md):
+- **Node.js v24.22.1 vía nvm** (⚠ NUNCA NodeSource en este servidor — política CLAUDE.md):
 ```bash
-nvm install v24.16.0 && nvm use v24.16.0
+nvm install v24.22.1 && nvm use v24.22.1
 cd ~/jax-platform/frontend && npm install
 ```
 - **Python 3.12 + venv** por servicio:
@@ -154,7 +154,7 @@ Antes de que login/reset funcione en la máquina nueva:
 - [ ] Copiar `/etc/jax/.env`
 - [ ] Restore DB `jax_memory`
 - [ ] Copiar + habilitar 5 units systemd
-- [ ] nvm install v24.16.0 + npm install + venv/pip
+- [ ] nvm install v24.22.1 + npm install + venv/pip
 - [ ] ollama pull (4 modelos)
 - [ ] Correr migración DB + setear SMTP env
 - [ ] Deploy frontend (rsync a VM dev)
