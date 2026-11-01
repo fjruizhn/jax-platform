@@ -1138,7 +1138,7 @@ def visual() -> None:
         semilla = sembrar(sufijo, amigable=True)
         sembrar_documentos_visuales(semilla)
         e1._puerto_libre(VITE_PORT)
-        nodo = os.environ.get("NODE_BIN", str(Path.home() / ".nvm/versions/node/v24.16.0/bin"))
+        nodo = os.environ.get("NODE_BIN", str(Path.home() / ".nvm/versions/node/v24.22.1/bin"))
         venv = dict(os.environ, PATH=f"{nodo}:{os.environ['PATH']}", PROYECTOS_E1_BACKEND_URL=BACKEND_URL)
         vite = subprocess.Popen(["npx", "vite", "--config", "vite.proyectos-e1.config.js", "--host", "127.0.0.1",
                                  "--port", str(VITE_PORT), "--strictPort"], cwd=str(FRONTEND_DIR), env=venv,
