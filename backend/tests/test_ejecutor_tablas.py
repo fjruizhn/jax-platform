@@ -8,14 +8,15 @@ import pytest
 
 from db.migrations import (
     MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1, MIGRACION_EJECUTOR_REGLAS_V1,
+    MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,
     _asegurar_forma_de_ejecutor_punto_restauracion, _ejecutor_inventario_v1,
-    _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, _METODOS_PUNTO_RESTAURACION,
+    _ejecutor_reglas_envoltorios_v1, _ejecutor_reglas_v1, _ejecutor_retirar_bridge_v1, _METODOS_PUNTO_RESTAURACION,
     parsear_inventario,
 )
 from tests.identidades import sql
 
 _SEMILLA_CODIGOS = {
-    "canario_c1", "ssh_sin_tt", "apt_full_upgrade_bridge", "migrate_fresh_produccion", "sed_i_env",
+    "canario_c1", "ssh_sin_tt", "apt_full_upgrade_prod", "migrate_fresh_produccion", "sed_i_env",
     "pure_ftpd_parar_atemai", "respaldos_borrar", "ajustes_claude_code", "borrar_archivos",
     "sql_destructivo", "dns_correo", "parar_servicio", "quitar_paquetes", "disco",
 }
@@ -36,7 +37,7 @@ async def _correr(funcion):
 
 def _vaciar(client):
     for nombre in (MIGRACION_EJECUTOR_REGLAS_V1, MIGRACION_EJECUTOR_REGLAS_ENVOLTORIOS_V1,
-                   MIGRACION_EJECUTOR_INVENTARIO_V1):
+                   MIGRACION_EJECUTOR_INVENTARIO_V1, MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1):
         client.portal.call(sql, "DELETE FROM axioma_migracion_de_datos WHERE nombre = %s", (nombre,))
     client.portal.call(sql, "DELETE FROM ejecutor_punto_restauracion")
     client.portal.call(sql, "DELETE FROM ejecutor_regla")
@@ -106,6 +107,43 @@ def test_inventario_desde_el_entorno(client, sin_marcas, monkeypatch):
                                     "ORDER BY nombre", None, True)
     assert filas == (("bridge", "192.0.2.20", 58291, "clientes", 0, 1),
                      ("hall9000", "192.0.2.5", 58291, "hypervisor", 1, 0))
+
+
+def _base_anterior_al_cutover(client):
+    """Una base sembrada con el inventario y la regla de antes del cutover."""
+    client.portal.call(_correr, _ejecutor_reglas_v1)
+    client.portal.call(sql, "UPDATE ejecutor_regla SET codigo = 'apt_full_upgrade_bridge', ambito_host = 'bridge', "
+                            "ejemplos_coincide = REPLACE(ejemplos_coincide, 'axioma@prod', 'axioma@bridge') "
+                            "WHERE codigo = 'apt_full_upgrade_prod'")
+    for nombre, ip, rol in (("bridge", "192.0.2.20", "clientes"), ("ejecutor-prueba", "192.0.2.50", "desarrollo"),
+                            ("prod", "192.0.2.10", "produccion")):
+        client.portal.call(sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol) VALUES (%s, %s, 58291, %s)",
+                           (nombre, ip, rol))
+    for host in ("bridge", "prod"):
+        client.portal.call(sql, "INSERT INTO ejecutor_punto_restauracion (host_nombre, referencia, metodo, "
+                                "respaldado_at, restaurado_y_verificado_at, verificado_por, evidencia) "
+                                "VALUES (%s, 'r', 'imagen_vm', NOW(), NOW(), 't', 'e')", (host,))
+
+
+def test_retirar_bridge_deja_inventario_respaldos_y_reglas_coherentes(client, sin_marcas):
+    _base_anterior_al_cutover(client)
+    client.portal.call(_correr, _ejecutor_retirar_bridge_v1)
+    assert client.portal.call(sql, "SELECT nombre, activo FROM ejecutor_host ORDER BY nombre", None, True) == (
+        ("bridge", 0), ("ejecutor-prueba", 0), ("prod", 1))
+    assert client.portal.call(sql, "SELECT host_nombre FROM ejecutor_punto_restauracion", None, True) == (("prod",),)
+    assert client.portal.call(sql, "SELECT ambito_host FROM ejecutor_regla WHERE codigo = 'apt_full_upgrade_prod'",
+                              None, True) == (("prod",),)
+    for codigo, coincide, no_coincide in client.portal.call(
+            sql, "SELECT codigo, ejemplos_coincide, ejemplos_no_coincide FROM ejecutor_regla", None, True):
+        assert "bridge" not in codigo + coincide + no_coincide
+
+
+def test_retirar_bridge_corre_una_sola_vez(client, sin_marcas):
+    _base_anterior_al_cutover(client)
+    client.portal.call(_correr, _ejecutor_retirar_bridge_v1)
+    client.portal.call(sql, "UPDATE ejecutor_host SET activo = 1 WHERE nombre = 'bridge'")
+    client.portal.call(_correr, _ejecutor_retirar_bridge_v1)
+    assert client.portal.call(sql, "SELECT activo FROM ejecutor_host WHERE nombre = 'bridge'", None, True) == ((1,),)
 
 
 def test_inventario_ausente_no_marca_la_migracion(client, sin_marcas, monkeypatch):
