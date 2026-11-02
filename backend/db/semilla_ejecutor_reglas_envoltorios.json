@@ -181,7 +181,7 @@
       {
         "tool_name": "Bash",
         "tool_input": {
-          "command": "script --command='ssh axioma@bridge uptime' /dev/null"
+          "command": "script --command='ssh axioma@prod uptime' /dev/null"
         }
       }
     ],
@@ -364,7 +364,7 @@
       {
         "tool_name": "Bash",
         "tool_input": {
-          "command": "eval \"ssh axioma@bridge uptime\""
+          "command": "eval \"ssh axioma@prod uptime\""
         }
       },
       {

@@ -11,28 +11,28 @@
    "ejemplos_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "ssh -p 58291 axioma@atemai uptime"}},
      {"tool_name": "Bash", "tool_input": {"command": "uptime; ssh axioma@prod df -h"}},
-     {"tool_name": "Bash", "tool_input": {"command": "sudo ssh axioma@bridge uptime"}}],
+     {"tool_name": "Bash", "tool_input": {"command": "sudo ssh axioma@prod uptime"}}],
    "ejemplos_no_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt -p 58291 axioma@atemai uptime"}},
      {"tool_name": "Bash", "tool_input": {"command": "grep ssh /var/log/auth.log"}},
      {"tool_name": "Bash", "tool_input": {"command": "systemctl status ssh"}},
      {"tool_name": "Bash", "tool_input": {"command": "ls /etc/ssh -la"}}]},
-  {"codigo": "apt_full_upgrade_bridge", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
+  {"codigo": "apt_full_upgrade_prod", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
    "patron": "\\bapt(?:-get)?\\s+(?:-\\S+\\s+)*(?:full-upgrade|dist-upgrade)\\b",
-   "ambito_host": "bridge", "ambito_roles": [], "es_canario": false,
-   "origen": "spec 2026-09-15 §4 semilla: apt full-upgrade en .20",
+   "ambito_host": "prod", "ambito_roles": [], "es_canario": false,
+   "origen": "spec 2026-09-15 §4 semilla: apt full-upgrade en .20; pasó a .10 con el cutover",
    "ejemplos_coincide": [
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt full-upgrade -y'"}},
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt-get -y dist-upgrade'"}}],
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo apt full-upgrade -y'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo apt-get -y dist-upgrade'"}}],
    "ejemplos_no_coincide": [
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'apt list --upgradable'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'apt list --upgradable'"}},
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'sudo apt full-upgrade -y'"}}]},
   {"codigo": "migrate_fresh_produccion", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
    "patron": "\\bmigrate:fresh\\b", "ambito_host": null, "ambito_roles": ["produccion", "clientes"], "es_canario": false,
    "origen": "spec 2026-09-15 §4 semilla; Principio III: nunca migrate:fresh en producción",
    "ejemplos_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'cd /www/app && php artisan migrate:fresh --force'"}},
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'php artisan migrate:fresh'"}}],
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'php artisan migrate:fresh'"}}],
    "ejemplos_no_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@atemai 'php artisan migrate:fresh'"}},
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'php artisan migrate:status'"}}]},
@@ -98,7 +98,7 @@
    "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: DROP",
    "ejemplos_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'DROP TABLE clientes'"}},
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge \"mysql app -e 'delete from users where id=3'\""}}],
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod \"mysql app -e 'delete from users where id=3'\""}}],
    "ejemplos_no_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'SELECT COUNT(*) FROM users'"}},
      {"tool_name": "Bash", "tool_input": {"command": "mysql -e 'SHOW TABLES'"}}]},
@@ -127,7 +127,7 @@
    "ambito_host": null, "ambito_roles": [], "es_canario": false, "origen": "spec 2026-09-15 §4 C2: quitar paquetes",
    "ejemplos_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "sudo apt-get -y purge exim4"}},
-     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@bridge 'sudo apt autoremove'"}},
+     {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo apt autoremove'"}},
      {"tool_name": "Bash", "tool_input": {"command": "sudo dpkg -P paquete"}}],
    "ejemplos_no_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "apt list --installed"}},
