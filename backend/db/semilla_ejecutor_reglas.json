@@ -20,7 +20,7 @@
   {"codigo": "apt_full_upgrade_prod", "tipo": "prohibido", "herramientas": "Bash", "campo": "command",
    "patron": "\\bapt(?:-get)?\\s+(?:-\\S+\\s+)*(?:full-upgrade|dist-upgrade)\\b",
    "ambito_host": "prod", "ambito_roles": [], "es_canario": false,
-   "origen": "spec 2026-09-15 §4 semilla: apt full-upgrade en .20",
+   "origen": "spec 2026-09-15 §4 semilla: apt full-upgrade en .20; pasó a .10 con el cutover",
    "ejemplos_coincide": [
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo apt full-upgrade -y'"}},
      {"tool_name": "Bash", "tool_input": {"command": "ssh -tt axioma@prod 'sudo apt-get -y dist-upgrade'"}}],

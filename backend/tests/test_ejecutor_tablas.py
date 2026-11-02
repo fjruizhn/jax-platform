@@ -41,6 +41,7 @@ def _vaciar(client):
         client.portal.call(sql, "DELETE FROM axioma_migracion_de_datos WHERE nombre = %s", (nombre,))
     client.portal.call(sql, "DELETE FROM ejecutor_punto_restauracion")
     client.portal.call(sql, "DELETE FROM ejecutor_regla")
+    client.portal.call(sql, "DROP TABLE IF EXISTS ejecutor_punto_restauracion_retirado")
     client.portal.call(sql, "DELETE FROM ejecutor_host")
 
 
@@ -112,8 +113,12 @@ def test_inventario_desde_el_entorno(client, sin_marcas, monkeypatch):
 def _base_anterior_al_cutover(client):
     """Una base sembrada con el inventario y la regla de antes del cutover."""
     client.portal.call(_correr, _ejecutor_reglas_v1)
+    client.portal.call(sql, "INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                       (MIGRACION_EJECUTOR_INVENTARIO_V1,))
+    client.portal.call(sql, "DROP TABLE IF EXISTS ejecutor_punto_restauracion_retirado")
     client.portal.call(sql, "UPDATE ejecutor_regla SET codigo = 'apt_full_upgrade_bridge', ambito_host = 'bridge', "
-                            "ejemplos_coincide = REPLACE(ejemplos_coincide, 'axioma@prod', 'axioma@bridge') "
+                            "ejemplos_coincide = REPLACE(ejemplos_coincide, 'axioma@prod', 'axioma@bridge'), "
+                            "ejemplos_no_coincide = REPLACE(ejemplos_no_coincide, 'axioma@prod', 'axioma@bridge') "
                             "WHERE codigo = 'apt_full_upgrade_prod'")
     for nombre, ip, rol in (("bridge", "192.0.2.20", "clientes"), ("ejecutor-prueba", "192.0.2.50", "desarrollo"),
                             ("prod", "192.0.2.10", "produccion")):
@@ -131,6 +136,8 @@ def test_retirar_bridge_deja_inventario_respaldos_y_reglas_coherentes(client, si
     assert client.portal.call(sql, "SELECT nombre, activo FROM ejecutor_host ORDER BY nombre", None, True) == (
         ("bridge", 0), ("ejecutor-prueba", 0), ("prod", 1))
     assert client.portal.call(sql, "SELECT host_nombre FROM ejecutor_punto_restauracion", None, True) == (("prod",),)
+    assert client.portal.call(sql, "SELECT host_nombre FROM ejecutor_punto_restauracion_retirado",
+                              None, True) == (("bridge",),)
     assert client.portal.call(sql, "SELECT ambito_host FROM ejecutor_regla WHERE codigo = 'apt_full_upgrade_prod'",
                               None, True) == (("prod",),)
     for codigo, coincide, no_coincide in client.portal.call(
@@ -144,6 +151,32 @@ def test_retirar_bridge_corre_una_sola_vez(client, sin_marcas):
     client.portal.call(sql, "UPDATE ejecutor_host SET activo = 1 WHERE nombre = 'bridge'")
     client.portal.call(_correr, _ejecutor_retirar_bridge_v1)
     assert client.portal.call(sql, "SELECT activo FROM ejecutor_host WHERE nombre = 'bridge'", None, True) == ((1,),)
+
+
+def test_retirar_bridge_espera_al_inventario(client, sin_marcas):
+    client.portal.call(sql, "INSERT INTO ejecutor_host (nombre, ip, puerto, rol) VALUES ('bridge', '192.0.2.20', 58291, 'clientes')")
+    client.portal.call(_correr, _ejecutor_retirar_bridge_v1)
+    assert client.portal.call(sql, "SELECT activo FROM ejecutor_host", None, True) == ((1,),)
+    assert client.portal.call(sql, "SELECT COUNT(*) FROM axioma_migracion_de_datos WHERE nombre = %s",
+                              (MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,), True) == ((0,),)
+
+
+def test_retirar_bridge_deshace_todo_si_falla(client, sin_marcas):
+    _base_anterior_al_cutover(client)
+    client.portal.call(sql, "INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                       (MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,))
+
+    async def correr_con_duplicado(cur):
+        await cur.execute("DELETE FROM axioma_migracion_de_datos WHERE nombre = %s",
+                          (MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,))
+        await cur.execute("UPDATE ejecutor_regla SET codigo = 'apt_full_upgrade_prod' WHERE codigo = 'sed_i_env'")
+        await _ejecutor_retirar_bridge_v1(cur)
+
+    with pytest.raises(Exception, match="Duplicate entry"):
+        client.portal.call(_correr, correr_con_duplicado)
+    assert client.portal.call(sql, "SELECT activo FROM ejecutor_host WHERE nombre = 'bridge'", None, True) == ((1,),)
+    assert client.portal.call(sql, "SELECT COUNT(*) FROM ejecutor_punto_restauracion WHERE host_nombre = 'bridge'",
+                              None, True) == ((1,),)
 
 
 def test_inventario_ausente_no_marca_la_migracion(client, sin_marcas, monkeypatch):

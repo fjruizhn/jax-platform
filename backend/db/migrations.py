@@ -3589,22 +3589,36 @@ async def _ejecutor_inventario_v1(cur) -> None:
 async def _ejecutor_retirar_bridge_v1(cur) -> None:
     """Cutover de bridge (.20) a prod (.10), decisión de Fernando (2026-11-01): `bridge` ya no
     existe y `ejecutor-prueba` tampoco. `politica.validar` rechaza una regla o un respaldo de una
-    máquina inactiva, así que los tres cambios van juntos: quedan fuera del inventario, sus puntos
-    de restauración se borran y la prohibición de bridge pasa a prod, donde están los clientes."""
-    if await _marcada(cur, MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1):
+    máquina inactiva, así que todo va en una transacción: quedan fuera del inventario, sus puntos
+    de restauración pasan a la tabla de retirados y la prohibición de bridge pasa a prod, donde
+    están los clientes. Espera al inventario: sin él, una siembra tardía volvería a activarlas."""
+    if await _marcada(cur, MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1) or not await _marcada(
+            cur, MIGRACION_EJECUTOR_INVENTARIO_V1):
         return
     retiradas = ("bridge", "ejecutor-prueba")
-    await cur.execute("UPDATE ejecutor_host SET activo = 0 WHERE nombre IN (%s, %s)", retiradas)
-    await cur.execute("DELETE FROM ejecutor_punto_restauracion WHERE host_nombre IN (%s, %s)", retiradas)
-    await cur.execute(
-        "UPDATE ejecutor_regla SET codigo = 'apt_full_upgrade_prod', ambito_host = 'prod' "
-        "WHERE codigo = 'apt_full_upgrade_bridge'")
-    for columna in ("ejemplos_coincide", "ejemplos_no_coincide"):
+    # DDL fuera de la transacción: MariaDB la cerraría con un commit implícito.
+    await cur.execute("CREATE TABLE IF NOT EXISTS ejecutor_punto_restauracion_retirado "
+                      "LIKE ejecutor_punto_restauracion")
+    await cur.execute("START TRANSACTION")
+    try:
+        await cur.execute("UPDATE ejecutor_host SET activo = 0 WHERE nombre IN (%s, %s)", retiradas)
+        await cur.execute("INSERT INTO ejecutor_punto_restauracion_retirado "
+                          "SELECT * FROM ejecutor_punto_restauracion WHERE host_nombre IN (%s, %s)", retiradas)
+        await cur.execute("DELETE FROM ejecutor_punto_restauracion WHERE host_nombre IN (%s, %s)", retiradas)
         await cur.execute(
-            f"UPDATE ejecutor_regla SET {columna} = REPLACE({columna}, 'axioma@bridge', 'axioma@prod') "
-            f"WHERE {columna} LIKE '%%axioma@bridge%%'")
-    await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
-                      (MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,))
+            "UPDATE ejecutor_regla SET codigo = 'apt_full_upgrade_prod', ambito_host = 'prod', "
+            "origen = 'spec 2026-09-15 §4 semilla: apt full-upgrade en .20; pasó a .10 con el cutover' "
+            "WHERE codigo = 'apt_full_upgrade_bridge'")
+        for columna in ("ejemplos_coincide", "ejemplos_no_coincide"):
+            await cur.execute(
+                f"UPDATE ejecutor_regla SET {columna} = REPLACE({columna}, 'axioma@bridge', 'axioma@prod') "
+                f"WHERE {columna} LIKE '%%axioma@bridge%%'")
+        await cur.execute("INSERT INTO axioma_migracion_de_datos (nombre) VALUES (%s)",
+                          (MIGRACION_EJECUTOR_RETIRAR_BRIDGE_V1,))
+    except BaseException:
+        await cur.execute("ROLLBACK")
+        raise
+    await cur.execute("COMMIT")
 
 
 _EJECUTOR_CONFIG_C5 = (
