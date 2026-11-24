@@ -218,6 +218,15 @@ describe('DetallePipeline', () => {
     expect(link.textContent).toBe(urlLarga)
   })
 
+  it('una fuente con URL de protocolo no permitido se muestra sin enlace', async () => {
+    api.get.mockResolvedValue({
+      data: { ...RESULTADO, steps: [{ ...RESULTADO.steps[1], sources: [{ title: 'texto hostil', url: 'javascript:alert(1)' }] }] },
+    })
+    renderDetalle()
+    expect(await screen.findByText('texto hostil')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'texto hostil' })).not.toBeInTheDocument()
+  })
+
   it('onClose (si se pasa) se llama al hacer click en cerrar', async () => {
     api.get.mockResolvedValue({ data: RESULTADO })
     const onClose = vi.fn()

@@ -1,5 +1,6 @@
 import { useI18n, localeFor } from '../../i18n/index.jsx'
 import { datosLegibles, traducir, traducirCodigo } from './textos'
+import { urlExternaSegura } from '../../lib/urlExterna'
 
 // Detalle de una misión (SP2, 2026-09-17). Por turno: estado y código
 // traducidos, rechazo, afirmaciones con la línea citada COMPLETA y LITERAL
@@ -143,6 +144,7 @@ export default function DetalleMision({ mision }) {
   const { t } = useI18n()
   const tx = t.ejecutor
   const esCodigo = mision.tipo === 'codigo'
+  const prUrl = urlExternaSegura(mision.pr_url)
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -156,10 +158,10 @@ export default function DetalleMision({ mision }) {
             <>{tx.maquinasDeMision}: <span className="font-mono">{(mision.maquinas || []).join(', ')}</span></>
           )}
         </p>
-        {esCodigo && (mision.pr_url || mision.estado_entrega) && (
+        {esCodigo && (prUrl || mision.estado_entrega) && (
           <p className="text-xs text-texto-suave flex flex-wrap items-center gap-2">
-            {mision.pr_url && (
-              <a href={mision.pr_url} target="_blank" rel="noopener noreferrer" className="text-acento-texto hover:underline">
+            {prUrl && (
+              <a href={prUrl} target="_blank" rel="noopener noreferrer" className="text-acento-texto hover:underline">
                 {tx.verPr}
               </a>
             )}

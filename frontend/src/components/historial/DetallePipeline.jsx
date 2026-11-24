@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import api from '../../api/client'
 import { useI18n, localeFor } from '../../i18n/index.jsx'
+import { urlExternaSegura } from '../../lib/urlExterna'
 import { colorToken, tokenDeFaceta } from '../../tema/tokens'
 import { TAMANO_MINIMO_TOQUE } from '../../tema/botones'
 import AlertaError from '../AlertaError'
@@ -109,17 +110,15 @@ function Paso({ step, t }) {
         // URL larguísima sin espacios.
         <div className="mt-2 text-xs flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className="text-texto-tenue">{t.pipelineSources}:</span>
-          {step.sources.map((s, i) => (
-            <a
-              key={i}
-              href={s.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-acento-texto hover:underline break-all"
-            >
-              {s.title || s.url}
-            </a>
-          ))}
+          {step.sources.map((s, i) => {
+            const url = urlExternaSegura(s.url)
+            const texto = s.title || s.url
+            return url ? (
+              <a key={i} href={url} target="_blank" rel="noreferrer" className="text-acento-texto hover:underline break-all">
+                {texto}
+              </a>
+            ) : <span key={i} className="text-texto break-all">{texto}</span>
+          })}
         </div>
       )}
     </li>

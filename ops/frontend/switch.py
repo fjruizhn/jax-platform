@@ -2,6 +2,7 @@
 """Activate a static frontend, or unconditionally restore the original unit."""
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -39,9 +40,28 @@ def release_index(release):
     return dist / "index.html"
 
 
+def script_tema(index: bytes) -> bytes:
+    """El único script inline autorizado por CSP, extraído del HTML que nginx sirve."""
+    encontrado = re.search(rb'<script id="tema-inicial">\s*(.*?)\s*</script>', index, re.DOTALL)
+    if not encontrado:
+        raise ValueError("index has no tema-inicial script")
+    return encontrado.group(1)
+
+
+def csp_para_index(index: bytes) -> str:
+    digest = base64.b64encode(hashlib.sha256(script_tema(index)).digest()).decode("ascii")
+    return ("default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; script-src 'self' 'sha256-" + digest + "'; style-src 'self'; "
+            "font-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; manifest-src 'self'")
+
+
 def nginx_config(dist, port, backend):
     if not 1 <= port <= 65535 or not re.fullmatch(r"[A-Za-z0-9.-]+:[0-9]{1,5}", backend):
         raise ValueError("invalid port or backend")
+    index = Path(dist) / "index.html"
+    csp_header = ""
+    if index.is_file():
+        csp_header = f'\n            add_header Content-Security-Policy "{csp_para_index(index.read_bytes())}" always;'
     return f"""worker_processes 2;
 pid nginx.pid;
 error_log stderr warn;
@@ -57,7 +77,9 @@ http {{
         client_max_body_size 0;
         root {dist};
         index index.html;
-        location = /index.html {{ add_header Cache-Control "no-cache"; }}
+        location = /index.html {{
+            add_header Cache-Control "no-cache";{csp_header}
+        }}
         location ~ "^/assets/.+-[A-Za-z0-9_-]{{8,}}\\.[A-Za-z0-9]+$" {{
             try_files $uri =404;
             expires 1y;

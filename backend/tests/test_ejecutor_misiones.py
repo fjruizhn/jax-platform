@@ -237,6 +237,22 @@ def test_runner_configurado_lanza_el_modulo_del_repo_jax(monkeypatch):
     assert env["PYTHONPATH"] == "/tmp:/tmp/las_manos" and env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_runner_solo_entrega_las_variables_del_contrato(monkeypatch):
+    monkeypatch.setenv("JAX_EJECUTOR_PYTHON", sys.executable)
+    monkeypatch.setenv("JAX_REPO_PATH", "/tmp")
+    monkeypatch.setenv("JAX_GITHUB_TOKEN", "necesario-para-entrega")
+    monkeypatch.setenv("JAX_EJECUTOR_MISIONES", "/var/lib/jax/misiones")
+    monkeypatch.setenv("FERNET_KEY", "necesaria-para-configuracion")
+    monkeypatch.setenv("JWT_SECRET", "no-debe-llegar")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "no-debe-llegar")
+    monkeypatch.setenv("CLAUDE_OAUTH_TOKEN", "no-debe-llegar")
+    _argv, _cwd, env = misiones._runner()
+    assert env["JAX_GITHUB_TOKEN"] == "necesario-para-entrega"
+    assert env["JAX_EJECUTOR_MISIONES"] == "/var/lib/jax/misiones"
+    assert env["FERNET_KEY"] == "necesaria-para-configuracion"
+    assert {"JWT_SECRET", "TELEGRAM_BOT_TOKEN", "CLAUDE_OAUTH_TOKEN"}.isdisjoint(env)
+
+
 def test_solo_un_superadmin(client):
     h = cabeceras(client, "ejecutor-operador")
     for metodo, ruta in (("get", "/estado"), ("post", "/pausa/poner"), ("post", "/pausa/quitar"),

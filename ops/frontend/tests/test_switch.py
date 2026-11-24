@@ -28,6 +28,18 @@ def command(*argv):
 
 
 class ReleaseValidationTest(unittest.TestCase):
+    def test_csp_usa_el_hash_del_script_de_tema_del_index_real(self):
+        with tempfile.TemporaryDirectory() as temp:
+            dist = Path(temp)
+            index = dist / "index.html"
+            index.write_text('<script id="tema-inicial">tema post-build</script>')
+            config = switch.nginx_config(dist, 5173, "localhost:8080")
+            esperado = "sha256-" + __import__("base64").b64encode(
+                hashlib.sha256(b"tema post-build").digest()).decode()
+            self.assertIn(esperado, config)
+            self.assertIn("default-src 'self'", config)
+            self.assertIn("object-src 'none'", config)
+
     def test_api_proxy_waits_beyond_chat_timeout_and_queue_margin(self):
         config = switch.nginx_config(Path("/tmp/release/dist"), 5173, "localhost:8080")
         self.assertEqual(config.count("proxy_read_timeout 600s;"), 2)
@@ -39,7 +51,7 @@ class ReleaseValidationTest(unittest.TestCase):
             root = Path(temp)
             index = root / "release" / "dist" / "index.html"
             index.parent.mkdir(parents=True)
-            index.write_bytes(b"selected-release")
+            index.write_bytes(b'<script id="tema-inicial">tema</script>selected-release')
             dropin = root / "unit.d"
             calls = []
 
