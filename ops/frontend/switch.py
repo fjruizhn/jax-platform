@@ -42,7 +42,7 @@ def release_index(release):
 
 def script_tema(index: bytes) -> bytes:
     """El único script inline autorizado por CSP, extraído del HTML que nginx sirve."""
-    encontrado = re.search(rb'<script id="tema-inicial">\s*(.*?)\s*</script>', index, re.DOTALL)
+    encontrado = re.search(rb'<script id="tema-inicial">(.*?)</script>', index, re.DOTALL)
     if not encontrado:
         raise ValueError("index has no tema-inicial script")
     return encontrado.group(1)
@@ -51,7 +51,10 @@ def script_tema(index: bytes) -> bytes:
 def csp_para_index(index: bytes) -> str:
     digest = base64.b64encode(hashlib.sha256(script_tema(index)).digest()).decode("ascii")
     return ("default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
-            "form-action 'self'; script-src 'self' 'sha256-" + digest + "'; style-src 'self'; "
+            "form-action 'self'; script-src 'self' 'sha256-" + digest + "'; "
+            # React usa style={{}} para datos de facetas, barras y límites. Mantenerlo evita
+            # romper esos estados visibles; el script inline sigue limitado a su hash exacto.
+            "style-src 'self' 'unsafe-inline'; "
             "font-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; manifest-src 'self'")
 
 

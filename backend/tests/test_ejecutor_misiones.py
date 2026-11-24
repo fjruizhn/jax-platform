@@ -243,6 +243,11 @@ def test_runner_solo_entrega_las_variables_del_contrato(monkeypatch):
     monkeypatch.setenv("JAX_GITHUB_TOKEN", "necesario-para-entrega")
     monkeypatch.setenv("JAX_EJECUTOR_MISIONES", "/var/lib/jax/misiones")
     monkeypatch.setenv("FERNET_KEY", "necesaria-para-configuracion")
+    for nombre, valor in {
+        "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "33991", "JAX_DB_USER": "runner",
+        "JAX_DB_PASSWORD": "solo-canario", "JAX_DB_NAME": "jax_runner_test",
+    }.items():
+        monkeypatch.setenv(nombre, valor)
     monkeypatch.setenv("JWT_SECRET", "no-debe-llegar")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "no-debe-llegar")
     monkeypatch.setenv("CLAUDE_OAUTH_TOKEN", "no-debe-llegar")
@@ -250,7 +255,16 @@ def test_runner_solo_entrega_las_variables_del_contrato(monkeypatch):
     assert env["JAX_GITHUB_TOKEN"] == "necesario-para-entrega"
     assert env["JAX_EJECUTOR_MISIONES"] == "/var/lib/jax/misiones"
     assert env["FERNET_KEY"] == "necesaria-para-configuracion"
+    assert {nombre: env[nombre] for nombre in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_USER", "JAX_DB_PASSWORD", "JAX_DB_NAME")} == {
+        "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "33991", "JAX_DB_USER": "runner",
+        "JAX_DB_PASSWORD": "solo-canario", "JAX_DB_NAME": "jax_runner_test",
+    }
     assert {"JWT_SECRET", "TELEGRAM_BOT_TOKEN", "CLAUDE_OAUTH_TOKEN"}.isdisjoint(env)
+    canario = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ['JAX_DB_NAME']); print('JWT_SECRET' in os.environ)"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert canario.stdout.splitlines() == ["jax_runner_test", "False"]
 
 
 def test_solo_un_superadmin(client):

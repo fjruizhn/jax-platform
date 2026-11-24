@@ -39,6 +39,16 @@ class ReleaseValidationTest(unittest.TestCase):
             self.assertIn(esperado, config)
             self.assertIn("default-src 'self'", config)
             self.assertIn("object-src 'none'", config)
+            self.assertIn("style-src 'self' 'unsafe-inline'", config)
+
+    def test_csp_del_index_fuente_cubre_los_bytes_exactos_del_script(self):
+        index = Path(__file__).resolve().parents[3] / "frontend" / "index.html"
+        script = switch.script_tema(index.read_bytes())
+        self.assertEqual(len(script), 1630)
+        self.assertEqual(
+            __import__("base64").b64encode(hashlib.sha256(script).digest()).decode(),
+            "C9DcVt+bMoG6BvSI/2tYckJqKsUJIGBQ3Sa4/KPyl8I=",
+        )
 
     def test_api_proxy_waits_beyond_chat_timeout_and_queue_margin(self):
         config = switch.nginx_config(Path("/tmp/release/dist"), 5173, "localhost:8080")
@@ -158,7 +168,7 @@ class IsolatedSystemdTest(unittest.TestCase):
         dist = cls.release / "dist"
         dist.mkdir(parents=True, mode=0o755)
         index = dist / "index.html"
-        index.write_bytes(b"<html>static-release</html>")
+        index.write_bytes(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
         index.chmod(0o644)
         assets = dist / "assets"
         assets.mkdir(mode=0o755)
@@ -212,11 +222,15 @@ Restart=no
     def test_rollback_ignores_process_and_unit_lifecycle_state(self):
         switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
-        self.wait_for(b"<html>static-release</html>")
+        self.wait_for(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
         self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url).stdout)
         self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url + "index.html").stdout)
+        csp = b"Content-Security-Policy:"
+        self.assertIn(csp, command("curl", "-fsSI", self.url).stdout)
+        self.assertIn(csp, command("curl", "-fsSI", self.url + "index.html").stdout)
         self.assertEqual(command("curl", "-fsS", self.url + "client/route").stdout,
-                         b"<html>static-release</html>")
+                         b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
+        self.assertIn(csp, command("curl", "-fsSI", self.url + "client/route").stdout)
         self.assertIn(b"immutable", command("curl", "-fsSI", self.url + "assets/index-12345678.js").stdout)
         self.assertNotIn(b"immutable", command("curl", "-fsSI", self.url + "assets/plain.js").stdout)
         self.assertEqual(subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
@@ -232,7 +246,7 @@ Restart=no
 
         # A new nginx PID must not invalidate rollback.
         command("systemctl", "restart", self.unit)
-        self.wait_for(b"<html>static-release</html>")
+        self.wait_for(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
 
         command("systemctl", "stop", self.unit)
         switch.rollback(self.dropin_dir, self.unit)
