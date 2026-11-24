@@ -10,6 +10,7 @@ la exclusión de un turno a la vez, la pausa, la persistencia y la lectura del s
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import time
