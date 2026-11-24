@@ -236,7 +236,7 @@ ANTERIOR=$(mktemp)
 trap 'rm -f "$ANTERIOR"' EXIT
 ssh -p 58291 "$PUBLICO" "sudo cat '$R/index.html'" > "$ANTERIOR"
 # aaPanel puede no exponer nginx en PATH; usar el binario que realmente sirve el vhost.
-NGINX="$(ssh -p 58291 "$PUBLICO" '(command -v nginx) || { test -x /www/server/nginx/sbin/nginx && printf %s /www/server/nginx/sbin/nginx; }')"
+NGINX="$(ssh -p 58291 "$PUBLICO" 'if command -v nginx >/dev/null; then command -v nginx; elif test -x /www/server/nginx/sbin/nginx; then printf %s /www/server/nginx/sbin/nginx; else exit 1; fi')"
 test -n "$NGINX"
 
 # Confirmar que nginx incluye el vhost remoto conocido (aaPanel) y que su bloque tiene
@@ -250,7 +250,8 @@ test -f "$DIST/index.html" && test -f "$SWITCH"
 
 # Respaldo completo y verificable del vhost y sitio ANTES de editar/copiarlos.
 ssh -p 58291 "$PUBLICO" "set -e; test -f '$VHOST' && test -f '$R/index.html'; \
-  mkdir -p '$B'; sudo cp -a '$VHOST' '$B/vhost.conf'; \
+  mkdir -m 700 -p '$B'; test \"\$(stat -c %a '$B')\" = 700; \
+  sudo cp -a '$VHOST' '$B/vhost.conf'; \
   sudo tar --xattrs --acls -C '$R' -cpf '$B/sitio.tar' .; \
   sudo cmp -s '$VHOST' '$B/vhost.conf'; PRUEBA=\$(mktemp -d); \
   sudo tar --xattrs --acls -C \"\$PRUEBA\" -xpf '$B/sitio.tar'; \
