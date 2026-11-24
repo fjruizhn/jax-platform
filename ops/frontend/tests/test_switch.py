@@ -1,3 +1,4 @@
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -28,6 +29,20 @@ def command(*argv):
 
 
 class ReleaseValidationTest(unittest.TestCase):
+    def test_csp_de_transicion_admite_hashes_del_index_anterior_y_nuevo(self):
+        anterior = b'<script id="tema-inicial">tema anterior</script>'
+        nuevo = b'<script id="tema-inicial">tema nuevo</script>'
+        hash_anterior = base64.b64encode(hashlib.sha256(b"tema anterior").digest()).decode()
+        hash_nuevo = base64.b64encode(hashlib.sha256(b"tema nuevo").digest()).decode()
+
+        transicion = switch.csp_para_indices(nuevo, anterior)
+        solo_nuevo = switch.csp_para_indices(nuevo)
+
+        self.assertIn("'sha256-" + hash_anterior + "'", transicion)
+        self.assertIn("'sha256-" + hash_nuevo + "'", transicion)
+        self.assertNotIn("'sha256-" + hash_anterior + "'", solo_nuevo)
+        self.assertIn("'sha256-" + hash_nuevo + "'", solo_nuevo)
+
     def test_csp_usa_el_hash_del_script_de_tema_del_index_real(self):
         with tempfile.TemporaryDirectory() as temp:
             dist = Path(temp)

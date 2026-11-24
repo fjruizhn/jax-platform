@@ -12,11 +12,11 @@ Las fuentes de pipelines y el URL de un PR son datos externos. El proceso de eje
 
 ## Límites y pendiente operativo
 
-La CSP en `ops/frontend/switch.py` cubre únicamente el modo nginx estático opcional. El sitio público vigente se sirve desde `atem-ai:/www/wwwroot/axioma-ia.io` por aaPanel, según `docs/runbooks/despliegue.md`; no hay un vhost versionado de ese sitio en este repositorio. Antes de desplegar, generar la directiva desde el `index.html` público exacto y añadirla al vhost aaPanel bajo ventana/GO, verificando por HTTP `/`, `/index.html` y una ruta SPA. Sacar `FERNET_KEY` o dependencias de JAX del runner requiere cambiar el contrato de capacidades, por lo que no forma parte de este cambio.
+La CSP en `ops/frontend/switch.py` cubre únicamente el modo nginx estático opcional, pero su helper puro ahora genera la política de transición con hashes de los bytes exactos de dos `index.html` (publicado viejo y bundle nuevo), y después sólo el nuevo. El sitio público vigente se sirve desde `atem-ai:/www/wwwroot/axioma-ia.io` por aaPanel, según `docs/runbooks/despliegue.md`; no hay un vhost versionado de ese sitio en este repositorio. El runbook define respaldo y restauración verificables de vhost y sitio, `nginx -t`/reload, hash dual antes de copiar el bundle, hash nuevo posterior, HTTP en `/`, `/index.html`, SPA y `/api/health`, más comprobación en navegador. Sigue pendiente ejecutar esa secuencia bajo ventana/GO; este cambio no toca producción. Sacar `FERNET_KEY` o dependencias de JAX del runner requiere cambiar el contrato de capacidades, por lo que no forma parte de este cambio.
 
 ## Lecciones y alternativas
 
-Hashar el texto normalizado del script es incorrecto: CSP compara los bytes reales, incluidos saltos y sangrías. Se descartó `style-src 'self'` porque bloquearía los estilos inline que la UI ya necesita; se conserva el límite estricto sobre scripts. Se descartó heredar el entorno completo por su radio de exposición; la lista blanca conserva las cinco variables de base de datos y el contrato del Ejecutor.
+Hashar el texto normalizado del script es incorrecto: CSP compara los bytes reales, incluidos saltos y sangrías. Se descartó cambiar de hash antes de publicar el bundle porque bloquearía el tema del `index.html` todavía servido; la política dual es sólo la transición y se reduce al hash nuevo tras verificar la copia. Se descartó `style-src 'self'` porque bloquearía los estilos inline que la UI ya necesita; se conserva el límite estricto sobre scripts. Se descartó heredar el entorno completo por su radio de exposición; la lista blanca conserva las cinco variables de base de datos y el contrato del Ejecutor.
 
 ## Rendimiento
 

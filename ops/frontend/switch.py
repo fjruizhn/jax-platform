@@ -48,14 +48,26 @@ def script_tema(index: bytes) -> bytes:
     return encontrado.group(1)
 
 
-def csp_para_index(index: bytes) -> str:
-    digest = base64.b64encode(hashlib.sha256(script_tema(index)).digest()).decode("ascii")
+def csp_para_indices(index_nuevo: bytes, index_anterior: bytes | None = None) -> str:
+    """CSP para el bundle nuevo y, durante el reemplazo, el index aún publicado."""
+    hashes = []
+    for index in (index_anterior, index_nuevo):
+        if index is None:
+            continue
+        digest = base64.b64encode(hashlib.sha256(script_tema(index)).digest()).decode("ascii")
+        if digest not in hashes:
+            hashes.append(digest)
+    scripts = " ".join("'sha256-" + digest + "'" for digest in hashes)
     return ("default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
-            "form-action 'self'; script-src 'self' 'sha256-" + digest + "'; "
+            "form-action 'self'; script-src 'self' " + scripts + "; "
             # React usa style={{}} para datos de facetas, barras y límites. Mantenerlo evita
             # romper esos estados visibles; el script inline sigue limitado a su hash exacto.
             "style-src 'self' 'unsafe-inline'; "
             "font-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; manifest-src 'self'")
+
+
+def csp_para_index(index: bytes) -> str:
+    return csp_para_indices(index)
 
 
 def nginx_config(dist, port, backend):
