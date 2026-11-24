@@ -1,3 +1,4 @@
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
@@ -28,6 +29,42 @@ def command(*argv):
 
 
 class ReleaseValidationTest(unittest.TestCase):
+    def test_csp_de_transicion_admite_hashes_del_index_anterior_y_nuevo(self):
+        anterior = b'<script id="tema-inicial">tema anterior</script>'
+        nuevo = b'<script id="tema-inicial">tema nuevo</script>'
+        hash_anterior = base64.b64encode(hashlib.sha256(b"tema anterior").digest()).decode()
+        hash_nuevo = base64.b64encode(hashlib.sha256(b"tema nuevo").digest()).decode()
+
+        transicion = switch.csp_para_indices(nuevo, anterior)
+        solo_nuevo = switch.csp_para_indices(nuevo)
+
+        self.assertIn("'sha256-" + hash_anterior + "'", transicion)
+        self.assertIn("'sha256-" + hash_nuevo + "'", transicion)
+        self.assertNotIn("'sha256-" + hash_anterior + "'", solo_nuevo)
+        self.assertIn("'sha256-" + hash_nuevo + "'", solo_nuevo)
+
+    def test_csp_usa_el_hash_del_script_de_tema_del_index_real(self):
+        with tempfile.TemporaryDirectory() as temp:
+            dist = Path(temp)
+            index = dist / "index.html"
+            index.write_text('<script id="tema-inicial">tema post-build</script>')
+            config = switch.nginx_config(dist, 5173, "localhost:8080")
+            esperado = "sha256-" + __import__("base64").b64encode(
+                hashlib.sha256(b"tema post-build").digest()).decode()
+            self.assertIn(esperado, config)
+            self.assertIn("default-src 'self'", config)
+            self.assertIn("object-src 'none'", config)
+            self.assertIn("style-src 'self' 'unsafe-inline'", config)
+
+    def test_csp_del_index_fuente_cubre_los_bytes_exactos_del_script(self):
+        index = Path(__file__).resolve().parents[3] / "frontend" / "index.html"
+        script = switch.script_tema(index.read_bytes())
+        self.assertEqual(len(script), 1630)
+        self.assertEqual(
+            __import__("base64").b64encode(hashlib.sha256(script).digest()).decode(),
+            "C9DcVt+bMoG6BvSI/2tYckJqKsUJIGBQ3Sa4/KPyl8I=",
+        )
+
     def test_api_proxy_waits_beyond_chat_timeout_and_queue_margin(self):
         config = switch.nginx_config(Path("/tmp/release/dist"), 5173, "localhost:8080")
         self.assertEqual(config.count("proxy_read_timeout 600s;"), 2)
@@ -39,7 +76,7 @@ class ReleaseValidationTest(unittest.TestCase):
             root = Path(temp)
             index = root / "release" / "dist" / "index.html"
             index.parent.mkdir(parents=True)
-            index.write_bytes(b"selected-release")
+            index.write_bytes(b'<script id="tema-inicial">tema</script>selected-release')
             dropin = root / "unit.d"
             calls = []
 
@@ -146,7 +183,7 @@ class IsolatedSystemdTest(unittest.TestCase):
         dist = cls.release / "dist"
         dist.mkdir(parents=True, mode=0o755)
         index = dist / "index.html"
-        index.write_bytes(b"<html>static-release</html>")
+        index.write_bytes(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
         index.chmod(0o644)
         assets = dist / "assets"
         assets.mkdir(mode=0o755)
@@ -200,11 +237,15 @@ Restart=no
     def test_rollback_ignores_process_and_unit_lifecycle_state(self):
         switch.apply(self.release, self.dropin_dir, self.port, self.backend_host,
                      self.url, self.unit)
-        self.wait_for(b"<html>static-release</html>")
+        self.wait_for(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
         self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url).stdout)
         self.assertIn(b"Cache-Control: no-cache", command("curl", "-fsSI", self.url + "index.html").stdout)
+        csp = b"Content-Security-Policy:"
+        self.assertIn(csp, command("curl", "-fsSI", self.url).stdout)
+        self.assertIn(csp, command("curl", "-fsSI", self.url + "index.html").stdout)
         self.assertEqual(command("curl", "-fsS", self.url + "client/route").stdout,
-                         b"<html>static-release</html>")
+                         b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
+        self.assertIn(csp, command("curl", "-fsSI", self.url + "client/route").stdout)
         self.assertIn(b"immutable", command("curl", "-fsSI", self.url + "assets/index-12345678.js").stdout)
         self.assertNotIn(b"immutable", command("curl", "-fsSI", self.url + "assets/plain.js").stdout)
         self.assertEqual(subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
@@ -220,7 +261,7 @@ Restart=no
 
         # A new nginx PID must not invalidate rollback.
         command("systemctl", "restart", self.unit)
-        self.wait_for(b"<html>static-release</html>")
+        self.wait_for(b'<script id="tema-inicial">tema de prueba</script><html>static-release</html>')
 
         command("systemctl", "stop", self.unit)
         switch.rollback(self.dropin_dir, self.unit)

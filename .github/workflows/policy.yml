@@ -1189,8 +1189,11 @@ jobs:
             // fusionada con master: 1566 passed, 0 fallidos, 129 archivos.
             // 1566 -> 1570 (QR de MFA, PR #252, 2026-10-27): suite completa
             // re-medida sobre master: 1570 passed, 0 fallidos, 130 archivos.
-            if (r.numFailedTests !== 0 || r.numPassedTests !== 1570) {
-              console.error("PISO ROTO: se esperaban 1570 tests de vitest CORRIDOS y 0 fallidos.");
+            // 1570 -> 1581 (enlaces externos Paperclip, PR #257, 2026-11-24):
+            // suite completa medida por CI en el head b25ea107, 1581 passed,
+            // 0 fallidos, 131 archivos; +11 pruebas sobre master.
+            if (r.numFailedTests !== 0 || r.numPassedTests !== 1581) {
+              console.error("PISO ROTO: se esperaban 1581 tests de vitest CORRIDOS y 0 fallidos.");
               process.exit(1);
             }'
 

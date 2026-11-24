@@ -372,6 +372,12 @@ describe('Ejecutor -- misión de código (Task 11)', () => {
     expect(screen.getByText('fjruizhn/jax-platform')).toBeInTheDocument()
   })
 
+  it('DetalleMision no convierte un PR de protocolo no permitido en enlace', async () => {
+    await pintarConMision(mision('completada', [], { tipo: 'codigo', repo: 'fjruizhn/jax-platform', pr_url: 'javascript:alert(1)', estado_entrega: 'abierto' }))
+    expect(screen.queryByRole('link', { name: tx.verPr })).not.toBeInTheDocument()
+    expect(screen.getByText(tx.entrega.abierto)).toBeInTheDocument()
+  })
+
   it('la bitácora traduce las violaciones de entrega_codigo por regla', async () => {
     await pintarConMision(mision('rechazada', [turno({ estado: 'rechazado' })], { tipo: 'codigo' }), [
       { id: 1, turno: 1, evento: 'entrega_codigo', datos: { violaciones: [{ regla: 'secretos', ruta: 'ops/x.sh', detalle: 'token en claro' }] }, at: '2026-09-28T10:00:00Z' },

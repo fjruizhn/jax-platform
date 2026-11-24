@@ -214,36 +214,168 @@ público.**
 
 ## 4 · El sitio público — el paso que se olvida
 
+> **CSP de aaPanel:** este procedimiento cambia producción. Requiere ventana/GO y se
+> ejecuta en `atem-ai`; no se sustituye por el nginx estático opcional de `ops/frontend`.
+> La transición instala ambos hashes **antes** de copiar el bundle, y conserva sólo el
+> hash nuevo después. Así ni el `index.html` que todavía está publicado ni el recién
+> copiado quedan bloqueados durante la rotación.
+
 ```bash
+# Este bloque corre en una sola shell: un build fallido detiene el despliegue antes de
+# mirar o publicar un `dist/` anterior.
+set -euo pipefail
+
 # Compilar DESDE el checkout de produccion (frontend/dist/ esta en .gitignore,
 # asi que no ensucia el checkout ni desarma el freno del ExecStartPre)
 # Como jaxsvc, dueño del checkout desde 2026-10-05 (fruiz solo lee, por ACL)
 sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.22.1/bin:/usr/bin:/bin \
   bash -c 'cd /srv/jax-prod/jax-platform/frontend && npm run build'
 
-# Respaldar el sitio actual en atem-ai
-ssh -p 58291 fruiz@172.16.20.11 'R=/www/wwwroot/axioma-ia.io; \
-  B=~/respaldos-sitio/axioma-$(date +%Y%m%d-%H%M%S); mkdir -p "$B"; sudo cp -a "$R"/. "$B"/'
+# Desde hall9000: el bundle y el helper viven aquí; el sitio/vhost viven en atem-ai.
+PUBLICO=fruiz@172.16.20.11
+R=/www/wwwroot/axioma-ia.io
+DIST=/srv/jax-prod/jax-platform/frontend/dist
+SWITCH=/srv/jax-prod/jax-platform/ops/frontend/switch.py
+ANTERIOR=$(mktemp)
+trap 'rm -f "$ANTERIOR"' EXIT
+ssh -p 58291 "$PUBLICO" "sudo cat '$R/index.html'" > "$ANTERIOR"
+# Guardar también la cabecera efectiva previa: el vhost respaldado puede no tener CSP.
+CABECERAS_PREVIAS="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r')"
+CSP_PREVIA="$(printf '%s\n' "$CABECERAS_PREVIAS" | grep -i '^content-security-policy:' || true)"
+HASH_ANTERIOR="$(sha256sum "$ANTERIOR" | awk '{print $1}')"
+# aaPanel puede no exponer nginx en PATH; usar el binario que realmente sirve el vhost.
+NGINX="$(ssh -p 58291 "$PUBLICO" 'if command -v nginx >/dev/null; then command -v nginx; elif test -x /www/server/nginx/sbin/nginx; then printf %s /www/server/nginx/sbin/nginx; else exit 1; fi')"
+test -n "$NGINX"
+
+# Confirmar que nginx incluye el vhost remoto conocido (aaPanel) y que su bloque tiene
+# `server_name` para el dominio. Si esta comprobación no lo muestra, detenerse: no editar
+# un archivo alternativo.
+ssh -p 58291 "$PUBLICO" \
+  "sudo '$NGINX' -T 2>&1 | grep -n -B2 -A8 -E 'server_name.*(axioma-ia\\.io|www\\.axioma-ia\\.io)'"
+VHOST=/www/server/panel/vhost/nginx/axioma-ia.io.conf
+RB=/home/fruiz/respaldos-sitio
+B=$RB/axioma-$(date +%Y%m%d-%H%M%S)-$$
+test -f "$DIST/index.html" && test -f "$SWITCH"
+
+# Respaldo completo y verificable del vhost y sitio ANTES de editar/copiarlos.
+ssh -p 58291 "$PUBLICO" "set -e; test -f '$VHOST' && test -f '$R/index.html'; \
+  mkdir -m 700 -p '$RB'; test \"\$(stat -c %a '$RB')\" = 700; \
+  mkdir -m 700 '$B'; test \"\$(stat -c %a '$B')\" = 700; \
+  sudo cp -a '$VHOST' '$B/vhost.conf'; \
+  sudo tar --xattrs --acls -C '$R' -cpf '$B/sitio.tar' .; \
+  sudo cmp -s '$VHOST' '$B/vhost.conf'; PRUEBA=\$(mktemp -d); \
+  sudo tar --xattrs --acls -C \"\$PRUEBA\" -xpf '$B/sitio.tar'; \
+  sudo tar --compare --file '$B/sitio.tar' -C \"\$PRUEBA\"; sudo rm -rf \"\$PRUEBA\""
+
+# La directiva dual se deriva de bytes reales: index publicado (viejo) + build (nuevo).
+# No pegar hashes ni normalizar el script. Imprimirla para pegarla como una sola línea
+# En sudoedit, eliminar TODAS las directivas CSP previas y dejar exactamente una
+# `add_header ... always;` en `server` y una idéntica en `location = /index.html`.
+# Ese location ya define Cache-Control y no hereda el header del server; nginx emitirá
+# una sola CSP por respuesta, no dos.
+CSP_DUAL="$(python3 - "$SWITCH" "$DIST/index.html" "$ANTERIOR" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("frontend_switch", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.csp_para_indices(Path(sys.argv[2]).read_bytes(), Path(sys.argv[3]).read_bytes()))
+PY
+)"
+printf 'add_header Content-Security-Policy "%s" always;\n' "$CSP_DUAL"
+ssh -tt -p 58291 "$PUBLICO" "sudoedit '$VHOST'"  # reemplazar, no añadir, las dos directivas CSP
+ssh -p 58291 "$PUBLICO" "sudo '$NGINX' -t && sudo systemctl reload nginx"
+
+# El header dual debe estar activo ANTES de publicar archivos nuevos.
+verificar_csp() {
+  local url=$1 esperado=$2 cabeceras
+  cabeceras="$(curl -fsSI "$url" | tr -d '\r' | grep -i '^content-security-policy:' || true)"
+  test "$(printf '%s\n' "$cabeceras" | sed '/^$/d' | wc -l)" -eq 1
+  test "$cabeceras" = "Content-Security-Policy: $esperado"
+}
+for URL in https://axioma-ia.io/ https://axioma-ia.io/index.html https://axioma-ia.io/ruta-csp; do
+  verificar_csp "$URL" "$CSP_DUAL"
+done
 
 # Publicar SIEMPRE desde la ruta absoluta del checkout de producción (nunca `-C dist`
 # relativo: desde ~/jax-platform/frontend publicaría el bundle de una rama de desarrollo)
-DIST=/srv/jax-prod/jax-platform/frontend/dist
 ls "$DIST"/assets/index-*.js | xargs -n1 basename   # anotarlo: es el que sección 5 tiene que ver publicado
-tar -czf - -C "$DIST" . | ssh -p 58291 fruiz@172.16.20.11 \
-  'T=$(mktemp -d) && tar -xzf - -C "$T" && sudo cp -a "$T"/. /www/wwwroot/axioma-ia.io/ \
-   && sudo chown -R www:www /www/wwwroot/axioma-ia.io/{assets,index.html,favicon.svg}; rm -rf "$T"'
+tar -czf - -C "$DIST" . | ssh -p 58291 "$PUBLICO" \
+  "set -euo pipefail; T=\$(mktemp -d); limpiar() { rm -rf \"\$T\" || :; }; trap limpiar EXIT; \
+   tar -xzf - -C \"\$T\"; sudo cp -a \"\$T\"/. '$R'/; \
+   sudo chown -R www:www '$R'/assets '$R'/index.html '$R'/favicon.svg"
+
+# No quitar el hash viejo hasta demostrar que HTTPS entrega exactamente el index nuevo.
+HASH_DIST="$(sha256sum "$DIST/index.html" | awk '{print $1}')"
+HASH_HTTPS="$(curl -fsS https://axioma-ia.io/index.html | sha256sum | awk '{print $1}')"
+test "$HASH_HTTPS" = "$HASH_DIST"
+
+# Sólo cuando el sitio ya sirve el index nuevo, reducir CSP al hash nuevo y recargar.
+CSP_NUEVO="$(python3 - "$SWITCH" "$DIST/index.html" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("frontend_switch", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.csp_para_indices(Path(sys.argv[2]).read_bytes()))
+PY
+)"
+printf 'add_header Content-Security-Policy "%s" always;\n' "$CSP_NUEVO"
+ssh -tt -p 58291 "$PUBLICO" "sudoedit '$VHOST'"  # reemplazar las dos directivas duales, sin crear otra
+ssh -p 58291 "$PUBLICO" "sudo '$NGINX' -t && sudo systemctl reload nginx"
 ```
 
 ## 5 · Verificar DESDE AFUERA
 
-Desde adentro todo se ve bien aunque el sitio público esté viejo. El control es
-que **el hash del bundle haya cambiado**:
+Sin cerrar la misma shell de la sección 4 (conserva `verificar_csp`, `CSP_NUEVO`
+y el estado previo), desde adentro todo se ve bien aunque el sitio público esté viejo. El control es
+que **el hash del bundle haya cambiado**, que la CSP final tenga solamente el hash
+nuevo, y que el navegador no reporte bloqueos CSP:
 
 ```bash
 curl -s https://axioma-ia.io | grep -oE 'assets/index-[^"]*\.js'   # != ESTADO-ANTES.txt
 # y además IGUAL al de producción (no basta con que cambie: tiene que ser ESTE):
 ls /srv/jax-prod/jax-platform/frontend/dist/assets/index-*.js | xargs -n1 basename
-curl -s -o /dev/null -w "%{http_code}\n" https://axioma-ia.io/api/health
+for URL in https://axioma-ia.io/ https://axioma-ia.io/index.html https://axioma-ia.io/ruta-csp; do
+  verificar_csp "$URL" "$CSP_NUEVO"
+done
+curl -fsS https://axioma-ia.io/api/health
+```
+
+En navegador, abrir `/`, `/index.html` y `/ruta-csp`; comprobar en Network que cada
+respuesta lleva la CSP, en Console que no hay violaciones CSP, y alternar tema claro,
+oscuro y Office. Si falla cualquiera de esas comprobaciones, el rollback seguro es:
+
+```bash
+# Primero volver a la CSP dual en server Y location = /index.html; evita servir el
+# index viejo bajo una CSP sólo-nueva. No restaurar todavía el vhost previo.
+printf 'add_header Content-Security-Policy "%s" always;\n' "$CSP_DUAL"
+ssh -tt -p 58291 "$PUBLICO" "sudoedit '$VHOST'"
+ssh -p 58291 "$PUBLICO" "sudo '$NGINX' -t && sudo systemctl reload nginx"
+for URL in https://axioma-ia.io/ https://axioma-ia.io/index.html https://axioma-ia.io/ruta-csp; do
+  verificar_csp "$URL" "$CSP_DUAL"
+done
+
+# Con ambas CSP vigentes, extraer y comprobar primero un staging hermano. Sólo entonces
+# intercambiarlo; si el segundo mv falla, volver inmediatamente el sitio vivo a su lugar.
+ssh -p 58291 "$PUBLICO" "set -euo pipefail; STAGE=\$(sudo mktemp -d '${R}.restore.XXXXXX'); \
+  limpiar() { if test -n \"\$STAGE\"; then sudo rm -rf \"\$STAGE\" || :; fi; }; trap limpiar EXIT; \
+  sudo tar --xattrs --acls -C \"\$STAGE\" -xpf '$B/sitio.tar'; \
+  sudo tar --compare --file '$B/sitio.tar' -C \"\$STAGE\"; \
+  FALLIDO='${R}.fallido.'\$(date +%Y%m%d-%H%M%S).\$\$; test ! -e \"\$FALLIDO\"; \
+  sudo mv '$R' \"\$FALLIDO\"; if ! sudo mv \"\$STAGE\" '$R'; then sudo mv \"\$FALLIDO\" '$R'; exit 1; fi; STAGE=''"
+
+# Sólo ahora restaurar el vhost anterior (incluso si trae exclusivamente hash viejo).
+ssh -p 58291 "$PUBLICO" "set -e; sudo cp -a '$B/vhost.conf' '$VHOST'; \
+  sudo cmp -s '$VHOST' '$B/vhost.conf'; sudo '$NGINX' -t && sudo systemctl reload nginx"
+CABECERAS_RESTAURADAS="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r')"
+CSP_RESTAURADA="$(printf '%s\n' "$CABECERAS_RESTAURADAS" | grep -i '^content-security-policy:' || true)"
+test "$CSP_RESTAURADA" = "$CSP_PREVIA"  # vacío es válido si el vhost previo no tenía CSP
+HASH_RESTAURADO="$(curl -fsS https://axioma-ia.io/index.html | sha256sum | awk '{print $1}')"
+test "$HASH_RESTAURADO" = "$HASH_ANTERIOR"
+curl -fsS https://axioma-ia.io/api/health
 ```
 
 ---

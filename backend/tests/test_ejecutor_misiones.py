@@ -10,6 +10,7 @@ la exclusión de un turno a la vez, la pausa, la persistencia y la lectura del s
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import time
@@ -235,6 +236,46 @@ def test_runner_configurado_lanza_el_modulo_del_repo_jax(monkeypatch):
     argv, cwd, env = misiones._runner()
     assert argv == [sys.executable, "-m", "jax.ejecutor.mision_servicio"] and cwd == "/tmp"
     assert env["PYTHONPATH"] == "/tmp:/tmp/las_manos" and env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_runner_solo_entrega_las_variables_del_contrato(monkeypatch):
+    monkeypatch.setenv("JAX_EJECUTOR_PYTHON", sys.executable)
+    monkeypatch.setenv("JAX_REPO_PATH", "/tmp")
+    monkeypatch.setenv("JAX_GITHUB_TOKEN", "necesario-para-entrega")
+    monkeypatch.setenv("JAX_EJECUTOR_MISIONES", "/var/lib/jax/misiones")
+    monkeypatch.setenv("FERNET_KEY", "necesaria-para-configuracion")
+    for nombre, valor in {
+        "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "33991", "JAX_DB_USER": "runner",
+        "JAX_DB_PASSWORD": "solo-canario", "JAX_DB_NAME": "jax_runner_test",
+    }.items():
+        monkeypatch.setenv(nombre, valor)
+    secretos_ajenos = {
+        "JAX_JWT_SECRET": "no-debe-llegar",
+        "CLAUDE_CODE_OAUTH_TOKEN": "no-debe-llegar",
+        "SMTP_HOST": "no-debe-llegar",
+        "SMTP_PORT": "no-debe-llegar",
+        "SMTP_USER": "no-debe-llegar",
+        "SMTP_PASSWORD": "no-debe-llegar",
+        "JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA": "no-debe-llegar",
+    }
+    for nombre, valor in secretos_ajenos.items():
+        monkeypatch.setenv(nombre, valor)
+    _argv, _cwd, env = misiones._runner()
+    assert env["JAX_GITHUB_TOKEN"] == "necesario-para-entrega"
+    assert env["JAX_EJECUTOR_MISIONES"] == "/var/lib/jax/misiones"
+    assert env["FERNET_KEY"] == "necesaria-para-configuracion"
+    assert {nombre: env[nombre] for nombre in ("JAX_DB_HOST", "JAX_DB_PORT", "JAX_DB_USER", "JAX_DB_PASSWORD", "JAX_DB_NAME")} == {
+        "JAX_DB_HOST": "127.0.0.1", "JAX_DB_PORT": "33991", "JAX_DB_USER": "runner",
+        "JAX_DB_PASSWORD": "solo-canario", "JAX_DB_NAME": "jax_runner_test",
+    }
+    assert set(secretos_ajenos).isdisjoint(env)
+    canario = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ['JAX_DB_NAME']); print(any(k in os.environ for k in "
+         "('JAX_JWT_SECRET', 'CLAUDE_CODE_OAUTH_TOKEN', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', "
+         "'JAX_LAS_MANOS_CREDENCIAL_PLATAFORMA')))"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert canario.stdout.splitlines() == ["jax_runner_test", "False"]
 
 
 def test_solo_un_superadmin(client):

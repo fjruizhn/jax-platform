@@ -56,6 +56,29 @@ ESTADO_DE_MISION = {"en_curso": "en_curso", "completado": "completada", "rechaza
 LIMITE_DE_LINEA_BYTES = 32 * 1024 * 1024
 LIMITE_DE_LISTA = 100
 
+# El runner es un hijo de jax-platform, no un proceso con derecho a heredar su
+# identidad completa. Esta es la interfaz que consume JAX para cada turno,
+# inventariada contra jax/ejecutor (Paperclip, 2026-11-24). Añadir una variable
+# exige declarar por qué el runner la necesita y una prueba de contrato.
+ENTORNO_RUNNER = frozenset({
+    "FERNET_KEY", "JAX_DB_HOST", "JAX_DB_NAME", "JAX_DB_PASSWORD", "JAX_DB_PORT", "JAX_DB_USER",
+    "JAX_GITHUB_TOKEN", "JAX_KILL_SWITCH_PATH",
+    "JAX_EJECUTOR_ADMIN_USUARIO", "JAX_EJECUTOR_CANARIO_PUERTO", "JAX_EJECUTOR_CERCO_SONDAS",
+    "JAX_EJECUTOR_CONTROLADOR_LLAVE", "JAX_EJECUTOR_CUENTA", "JAX_EJECUTOR_CUENTA_HOME",
+    "JAX_EJECUTOR_FRENO_ESTADO", "JAX_EJECUTOR_FRENO_KNOWN_HOSTS", "JAX_EJECUTOR_FRENO_LLAVE",
+    "JAX_EJECUTOR_FRENO_REMOTOS", "JAX_EJECUTOR_GANCHO_TOPE_S", "JAX_EJECUTOR_GIT_TOPE_S",
+    "JAX_EJECUTOR_HUELLA_KNOWN_HOSTS", "JAX_EJECUTOR_HUELLA_LLAVE", "JAX_EJECUTOR_LIB",
+    "JAX_EJECUTOR_LLAVES_ROOT", "JAX_EJECUTOR_MISIONES", "JAX_EJECUTOR_NODE_BIN",
+    "JAX_EJECUTOR_PAUSA", "JAX_EJECUTOR_POLITICA", "JAX_EJECUTOR_REGISTRO",
+    "JAX_EJECUTOR_SSH_PUERTO", "JAX_EJECUTOR_TURNO_TOPE_S", "JAX_EJECUTOR_VIGIA_ESPERA_S",
+    "JAX_EJECUTOR_VIGIA_LATIDO", "JAX_EJECUTOR_VIGIA_LATIDO_CADA_S",
+    "JAX_EJECUTOR_VIGIA_LATIDO_MAX_S", "JAX_PROXY_CARRIL_HOST", "JAX_PROXY_CARRIL_JAXQWEN_GID",
+    "JAX_PROXY_CARRIL_JAXQWEN_SOCKET", "JAX_PROXY_CARRIL_JAXQWEN_UID",
+    "JAX_PROXY_CARRIL_MAX_SALIDA_TOKENS", "JAX_PROXY_CARRIL_MODELO", "JAX_PROXY_CARRIL_PENSAMIENTO",
+    "JAX_PROXY_CARRIL_PUERTO", "JAX_PROXY_CARRIL_RAIZ", "JAX_PROXY_CARRIL_TOPE_S",
+    "JAX_PROXY_CARRIL_UPSTREAM",
+})
+
 SQL_MAQUINAS = ("SELECT nombre, rol, con_datos_de_clientes, activo FROM ejecutor_host ORDER BY nombre")
 SQL_COMPUERTA = "SELECT config_value FROM axioma_config WHERE config_key = %s"
 # ¿El auditor local (`ejecutor.auditor_faceta_local`) está bindeado a un proveedor
@@ -136,7 +159,8 @@ def _runner() -> tuple[list[str], str, dict]:
     repo = os.environ.get("JAX_REPO_PATH", "").strip()
     if not repo or not Path(repo).is_absolute():
         raise SinConfigurar("JAX_REPO_PATH")
-    entorno = dict(os.environ)
+    entorno = {nombre: os.environ[nombre] for nombre in ENTORNO_RUNNER if nombre in os.environ}
+    entorno["PATH"] = "/usr/bin:/bin"
     entorno["PYTHONPATH"] = f"{repo}:{repo}/las_manos"
     entorno["PYTHONDONTWRITEBYTECODE"] = "1"
     return [python, "-m", "jax.ejecutor.mision_servicio"], repo, entorno
