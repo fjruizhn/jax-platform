@@ -240,7 +240,9 @@ ANTERIOR=$(mktemp)
 trap 'rm -f "$ANTERIOR"' EXIT
 ssh -p 58291 "$PUBLICO" "sudo cat '$R/index.html'" > "$ANTERIOR"
 # Guardar también la cabecera efectiva previa: el vhost respaldado puede no tener CSP.
-CSP_PREVIA="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r' | grep -i '^content-security-policy:' || true)"
+CABECERAS_PREVIAS="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r')"
+CSP_PREVIA="$(printf '%s\n' "$CABECERAS_PREVIAS" | grep -i '^content-security-policy:' || true)"
+HASH_ANTERIOR="$(sha256sum "$ANTERIOR" | awk '{print $1}')"
 # aaPanel puede no exponer nginx en PATH; usar el binario que realmente sirve el vhost.
 NGINX="$(ssh -p 58291 "$PUBLICO" 'if command -v nginx >/dev/null; then command -v nginx; elif test -x /www/server/nginx/sbin/nginx; then printf %s /www/server/nginx/sbin/nginx; else exit 1; fi')"
 test -n "$NGINX"
@@ -368,8 +370,11 @@ ssh -p 58291 "$PUBLICO" "set -euo pipefail; STAGE=\$(sudo mktemp -d '${R}.restor
 # Sólo ahora restaurar el vhost anterior (incluso si trae exclusivamente hash viejo).
 ssh -p 58291 "$PUBLICO" "set -e; sudo cp -a '$B/vhost.conf' '$VHOST'; \
   sudo cmp -s '$VHOST' '$B/vhost.conf'; sudo '$NGINX' -t && sudo systemctl reload nginx"
-CSP_RESTAURADA="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r' | grep -i '^content-security-policy:' || true)"
+CABECERAS_RESTAURADAS="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r')"
+CSP_RESTAURADA="$(printf '%s\n' "$CABECERAS_RESTAURADAS" | grep -i '^content-security-policy:' || true)"
 test "$CSP_RESTAURADA" = "$CSP_PREVIA"  # vacío es válido si el vhost previo no tenía CSP
+HASH_RESTAURADO="$(curl -fsS https://axioma-ia.io/index.html | sha256sum | awk '{print $1}')"
+test "$HASH_RESTAURADO" = "$HASH_ANTERIOR"
 curl -fsS https://axioma-ia.io/api/health
 ```
 
