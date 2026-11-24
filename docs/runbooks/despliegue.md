@@ -221,6 +221,10 @@ público.**
 > copiado quedan bloqueados durante la rotación.
 
 ```bash
+# Este bloque corre en una sola shell: un build fallido detiene el despliegue antes de
+# mirar o publicar un `dist/` anterior.
+set -euo pipefail
+
 # Compilar DESDE el checkout de produccion (frontend/dist/ esta en .gitignore,
 # asi que no ensucia el checkout ni desarma el freno del ExecStartPre)
 # Como jaxsvc, dueño del checkout desde 2026-10-05 (fruiz solo lee, por ACL)
@@ -228,7 +232,6 @@ sudo -u jaxsvc env HOME=/var/lib/jaxsvc PATH=/home/fruiz/.nvm/versions/node/v24.
   bash -c 'cd /srv/jax-prod/jax-platform/frontend && npm run build'
 
 # Desde hall9000: el bundle y el helper viven aquí; el sitio/vhost viven en atem-ai.
-set -euo pipefail
 PUBLICO=fruiz@172.16.20.11
 R=/www/wwwroot/axioma-ia.io
 DIST=/srv/jax-prod/jax-platform/frontend/dist
@@ -236,6 +239,8 @@ SWITCH=/srv/jax-prod/jax-platform/ops/frontend/switch.py
 ANTERIOR=$(mktemp)
 trap 'rm -f "$ANTERIOR"' EXIT
 ssh -p 58291 "$PUBLICO" "sudo cat '$R/index.html'" > "$ANTERIOR"
+# Guardar también la cabecera efectiva previa: el vhost respaldado puede no tener CSP.
+CSP_PREVIA="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r' | grep -i '^content-security-policy:' || true)"
 # aaPanel puede no exponer nginx en PATH; usar el binario que realmente sirve el vhost.
 NGINX="$(ssh -p 58291 "$PUBLICO" 'if command -v nginx >/dev/null; then command -v nginx; elif test -x /www/server/nginx/sbin/nginx; then printf %s /www/server/nginx/sbin/nginx; else exit 1; fi')"
 test -n "$NGINX"
@@ -322,7 +327,8 @@ ssh -p 58291 "$PUBLICO" "sudo '$NGINX' -t && sudo systemctl reload nginx"
 
 ## 5 · Verificar DESDE AFUERA
 
-Desde adentro todo se ve bien aunque el sitio público esté viejo. El control es
+Sin cerrar la misma shell de la sección 4 (conserva `verificar_csp`, `CSP_NUEVO`
+y el estado previo), desde adentro todo se ve bien aunque el sitio público esté viejo. El control es
 que **el hash del bundle haya cambiado**, que la CSP final tenga solamente el hash
 nuevo, y que el navegador no reporte bloqueos CSP:
 
@@ -346,6 +352,9 @@ oscuro y Office. Si falla cualquiera de esas comprobaciones, el rollback seguro 
 printf 'add_header Content-Security-Policy "%s" always;\n' "$CSP_DUAL"
 ssh -tt -p 58291 "$PUBLICO" "sudoedit '$VHOST'"
 ssh -p 58291 "$PUBLICO" "sudo '$NGINX' -t && sudo systemctl reload nginx"
+for URL in https://axioma-ia.io/ https://axioma-ia.io/index.html https://axioma-ia.io/ruta-csp; do
+  verificar_csp "$URL" "$CSP_DUAL"
+done
 
 # Con ambas CSP vigentes, extraer y comprobar primero un staging hermano. Sólo entonces
 # intercambiarlo; si el segundo mv falla, volver inmediatamente el sitio vivo a su lugar.
@@ -359,7 +368,8 @@ ssh -p 58291 "$PUBLICO" "set -euo pipefail; STAGE=\$(sudo mktemp -d '${R}.restor
 # Sólo ahora restaurar el vhost anterior (incluso si trae exclusivamente hash viejo).
 ssh -p 58291 "$PUBLICO" "set -e; sudo cp -a '$B/vhost.conf' '$VHOST'; \
   sudo cmp -s '$VHOST' '$B/vhost.conf'; sudo '$NGINX' -t && sudo systemctl reload nginx"
-curl -fsSI https://axioma-ia.io/ | tr -d '\r' | grep -i '^content-security-policy:'
+CSP_RESTAURADA="$(curl -fsSI https://axioma-ia.io/ | tr -d '\r' | grep -i '^content-security-policy:' || true)"
+test "$CSP_RESTAURADA" = "$CSP_PREVIA"  # vacío es válido si el vhost previo no tenía CSP
 curl -fsS https://axioma-ia.io/api/health
 ```
 
